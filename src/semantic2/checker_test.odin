@@ -7,6 +7,55 @@ import "src:tokenizer"
 
 import "core:testing"
 
+checker_test_check_source :: proc(
+	t: ^testing.T,
+	project: ^Project,
+	source: string,
+	path := "mem://semantic2_test.abap",
+) -> (Checker, ^Project_File) {
+	parsed := parser.parse(source, path, context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+
+	checker := checker_make(project)
+	file := checker_add_file(&checker, parsed.path, parsed.root)
+	checker_check_file(&checker, file)
+	return checker, file
+}
+
+checker_test_lookup :: proc(
+	t: ^testing.T,
+	project: ^Project,
+	scope: ^Scope,
+	namespace: Namespace,
+	name: string,
+	kind: Entity_Kind,
+) -> ^Entity {
+	interned := string_interner.insert(project.interner, name)
+	_, entity, ok := checker_lookup_declaration_from_scope(scope, namespace, interned)
+	testing.expect(t, ok)
+	if ok {
+		testing.expect_value(t, entity.kind, kind)
+	}
+	return entity
+}
+
+checker_test_find_scope_entity :: proc(
+	t: ^testing.T,
+	project: ^Project,
+	scope: ^Scope,
+	name: string,
+	kind: Entity_Kind,
+) -> ^Entity {
+	interned := string_interner.insert(project.interner, name)
+	for entity in scope.declarations {
+		if entity.name == interned && entity.kind == kind {
+			return entity
+		}
+	}
+	testing.expect(t, false)
+	return nil
+}
+
 @(test)
 root_semantic_checker_creates_builtin_and_file_scopes :: proc(t: ^testing.T) {
 	project := project_make()
@@ -433,4 +482,161 @@ root_semantic_checker_walks_file_declarations_routine_body_and_expressions :: pr
 	testing.expect(t, .Used in lv_entity.flags)
 	testing.expect(t, len(checker.info.uses) >= 3)
 	testing.expect(t, len(checker.info.expr_infos) >= 4)
+}
+
+@(test)
+root_semantic_decl_split_collects_broadened_file_declarations :: proc(t: ^testing.T) {
+	source :=
+		"REPORT zdecl.\n" +
+		"INCLUDE zinc IF FOUND.\n" +
+		"DATA gv_value TYPE i.\n" +
+		"DATA(lv_inline) = 1.\n" +
+		"CONSTANTS gc_limit TYPE i VALUE 1.\n" +
+		"FIELD-SYMBOLS <fs_row> TYPE any.\n" +
+		"STATICS sv_count TYPE i.\n" +
+		"TABLES mara.\n" +
+		"RANGES r_matnr FOR mara-matnr.\n" +
+		"PARAMETERS p_count TYPE i DEFAULT 1.\n" +
+		"SELECT-OPTIONS s_matnr FOR mara-matnr DEFAULT 'A' TO 'Z'.\n" +
+		"CONTROLS tc_main TYPE tableview USING SCREEN 100.\n" +
+		"TYPES: BEGIN OF ty_line,\n" +
+		"         id TYPE i,\n" +
+		"       END OF ty_line.\n" +
+		"DATA: BEGIN OF gs_row,\n" +
+		"        id TYPE i,\n" +
+		"      END OF gs_row.\n" +
+		"CONSTANTS: BEGIN OF gc_pair,\n" +
+		"             a TYPE i VALUE 1,\n" +
+		"             b TYPE i VALUE 2,\n" +
+		"           END OF gc_pair.\n"
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://decl_split.abap")
+	_ = checker
+
+	report := checker_test_lookup(t, &project, file.root_scope, .Value, "zdecl", .Report)
+	include := checker_test_lookup(t, &project, file.root_scope, .Value, "zinc", .Include)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "gv_value", .Variable)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "lv_inline", .Variable)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "gc_limit", .Constant)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "<fs_row>", .Field_Symbol)
+	statics := checker_test_lookup(t, &project, file.root_scope, .Value, "sv_count", .Variable)
+	tables := checker_test_lookup(t, &project, file.root_scope, .Value, "mara", .Variable)
+	ranges := checker_test_lookup(t, &project, file.root_scope, .Value, "r_matnr", .Variable)
+	param := checker_test_lookup(t, &project, file.root_scope, .Value, "p_count", .Variable)
+	select_option := checker_test_lookup(t, &project, file.root_scope, .Value, "s_matnr", .Variable)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "tc_main", .Control)
+	typ := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_line", .Type_Def)
+	data_struct := checker_test_lookup(t, &project, file.root_scope, .Value, "gs_row", .Variable)
+	const_struct := checker_test_lookup(t, &project, file.root_scope, .Value, "gc_pair", .Constant)
+
+	if report != nil {
+		payload := report.payload.(^Entity_Report_Payload)
+		testing.expect_value(t, len(payload.provided_names), 1)
+	}
+	if include != nil {
+		payload := include.payload.(^Entity_Include_Payload)
+		testing.expect(t, payload.if_found)
+	}
+	testing.expect(t, statics != nil && .Static in statics.flags)
+	testing.expect(t, tables != nil && .Has_Declared_Type in tables.flags)
+	testing.expect(t, param != nil && param.decl_info.default_clause != nil)
+	if ranges != nil && ranges.type != nil {
+		testing.expect_value(t, ranges.type.kind, Type_Kind.Structure)
+		testing.expect_value(t, len(ranges.type.structure.fields), 4)
+	}
+	if select_option != nil && select_option.type != nil {
+		testing.expect_value(t, select_option.type.kind, Type_Kind.Structure)
+		testing.expect_value(t, len(select_option.type.structure.fields), 4)
+	}
+	if typ != nil {
+		payload := typ.payload.(^Entity_Type_Name_Payload)
+		testing.expect(t, payload.structure != nil)
+		if payload.structure != nil {
+			testing.expect_value(t, len(payload.structure.fields), 1)
+		}
+	}
+	if data_struct != nil && data_struct.type != nil {
+		testing.expect_value(t, data_struct.type.kind, Type_Kind.Structure)
+		testing.expect_value(t, len(data_struct.type.structure.fields), 1)
+	}
+	if const_struct != nil && const_struct.type != nil {
+		testing.expect_value(t, const_struct.type.kind, Type_Kind.Structure)
+		testing.expect_value(t, len(const_struct.type.structure.fields), 2)
+	}
+}
+
+@(test)
+root_semantic_decl_split_collects_class_interface_and_oop_members :: proc(t: ^testing.T) {
+	source :=
+		"INTERFACE lif_demo.\n" +
+		"  METHODS get_value RETURNING VALUE(rv_value) TYPE string.\n" +
+		"  EVENTS changed EXPORTING VALUE(ev_value) TYPE string.\n" +
+		"ENDINTERFACE.\n" +
+		"CLASS lcl_demo DEFINITION.\n" +
+		"  PUBLIC SECTION.\n" +
+		"    INTERFACES lif_demo.\n" +
+		"    ALIASES get_value FOR lif_demo~get_value.\n" +
+		"    DATA mv_value TYPE string READ-ONLY.\n" +
+		"    CLASS-DATA gv_count TYPE i.\n" +
+		"    METHODS run IMPORTING iv_value TYPE string.\n" +
+		"    CLASS-METHODS create RETURNING VALUE(ro_demo) TYPE REF TO lcl_demo.\n" +
+		"    EVENTS done EXPORTING VALUE(ev_value) TYPE string.\n" +
+		"ENDCLASS.\n" +
+		"CLASS lcl_demo IMPLEMENTATION.\n" +
+		"  METHOD run.\n" +
+		"    DATA lv_local TYPE string.\n" +
+		"    lv_local = iv_value.\n" +
+		"  ENDMETHOD.\n" +
+		"ENDCLASS.\n"
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://oop_decl_split.abap")
+
+	iface := checker_test_lookup(t, &project, file.root_scope, .Type, "lif_demo", .Interface)
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_demo", .Class)
+	testing.expect(t, iface != nil && class != nil)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	testing.expect(t, class_payload.definition_scope != nil)
+	testing.expect_value(t, len(class_payload.implemented_interfaces), 1)
+	class_scope := class_payload.definition_scope
+
+	alias := checker_test_find_scope_entity(t, &project, class_scope, "get_value", .Alias)
+	attr := checker_test_lookup(t, &project, class_scope, .Value, "mv_value", .Variable)
+	static_attr := checker_test_lookup(t, &project, class_scope, .Value, "gv_count", .Variable)
+	run := checker_test_lookup(t, &project, class_scope, .Routine, "run", .Method)
+	create := checker_test_lookup(t, &project, class_scope, .Routine, "create", .Method)
+	event := checker_test_lookup(t, &project, class_scope, .Routine, "done", .Event)
+
+	if alias != nil {
+		payload := alias.payload.(^Entity_Alias_Payload)
+		testing.expect_value(t, string_interner.load(project.interner, payload.target_interface_name), "lif_demo")
+		testing.expect_value(t, string_interner.load(project.interner, payload.target_member_name), "get_value")
+	}
+	testing.expect(t, attr != nil && .Read_Only in attr.flags)
+	testing.expect(t, static_attr != nil && .Static in static_attr.flags)
+	if run != nil {
+		payload := run.payload.(^Entity_Routine_Payload)
+		testing.expect(t, payload.has_implementation)
+		testing.expect_value(t, len(payload.parameters), 1)
+		local := checker_test_lookup(t, &project, payload.body_scope, .Value, "lv_local", .Variable)
+		testing.expect(t, local != nil && local.state == .Resolved)
+	}
+	if create != nil {
+		payload := create.payload.(^Entity_Routine_Payload)
+		testing.expect(t, payload.is_static)
+		testing.expect_value(t, len(payload.parameters), 1)
+	}
+	if event != nil {
+		payload := event.payload.(^Entity_Routine_Payload)
+		testing.expect_value(t, payload.member_kind, Class_Member_Kind.Event)
+		testing.expect_value(t, len(payload.parameters), 1)
+	}
 }

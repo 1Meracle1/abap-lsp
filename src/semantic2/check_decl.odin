@@ -1,0 +1,1459 @@
+package abap_frontend_semantic
+
+import "src:ast"
+import string_interner "src:string_interner"
+
+import "core:strings"
+
+Decl_Structure_Frame :: struct {
+	entity:    ^Entity,
+	structure: ^Structure,
+	scope:     ^Scope,
+}
+
+checker_collect_file_entities :: proc(ctx: ^Checker_Context, file: ^Project_File) {
+	checker_context_set_file(ctx, file)
+	if file.root == nil {
+		return
+	}
+	for stmt in file.root.stmts {
+		checker_collect_stmt_entities(ctx, stmt)
+	}
+}
+
+checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
+	if stmt == nil {
+		return
+	}
+	#partial switch n in stmt.derived_stmt {
+	case ^ast.Data_Decl:
+		checker_collect_data_decl(ctx, n)
+	case ^ast.Data_Chained_Decl:
+		checker_collect_data_chained_decl(ctx, n)
+	case ^ast.Data_Inline_Decl:
+		_ = checker_collect_variable_decl(ctx, ctx.scope, n.name, .Variable, n.range, &n.node.decl_base.stmt_base, nil, nil)
+	case ^ast.Types_Decl:
+		checker_collect_types_decl(ctx, n)
+	case ^ast.Constants_Decl:
+		checker_collect_constants_decl(ctx, n)
+	case ^ast.Field_Symbols_Decl:
+		checker_collect_field_symbols_decl(ctx, n)
+	case ^ast.Statics_Decl:
+		checker_collect_statics_decl(ctx, n)
+	case ^ast.Tables_Decl:
+		checker_collect_tables_decl(ctx, n)
+	case ^ast.Ranges_Decl:
+		checker_collect_ranges_decl(ctx, n)
+	case ^ast.Parameters_Decl:
+		checker_collect_parameters_decl(ctx, n)
+	case ^ast.Select_Options_Decl:
+		checker_collect_select_options_decl(ctx, n)
+	case ^ast.Controls_Decl:
+		checker_collect_controls_decl(ctx, n)
+	case ^ast.Class_Data_Decl:
+		checker_collect_class_data_decl(ctx, n)
+	case ^ast.Function_Pool_Decl:
+		checker_collect_report_decl(ctx, n.name, n.range, &n.node.decl_base.stmt_base)
+	case ^ast.Include_Stmt:
+		checker_collect_include_stmt(ctx, n)
+	case ^ast.Report_Stmt:
+		checker_collect_report_stmt(ctx, n)
+	case ^ast.Class_Decl:
+		checker_collect_class_decl(ctx, n)
+	case ^ast.Interface_Decl:
+		checker_collect_interface_decl(ctx, n)
+	case ^ast.Form_Decl:
+		checker_collect_routine_decl(ctx, n.name, .Form, n.range, n.header_range, n.header_text, &n.node.stmt_base)
+	case ^ast.Method_Decl:
+		checker_collect_method_decl(ctx, n)
+	case ^ast.Function_Decl:
+		checker_collect_routine_decl(ctx, n.name, .Module, n.range, n.header_range, n.header_text, &n.node.stmt_base)
+	case ^ast.Module_Decl:
+		checker_collect_routine_decl(ctx, n.name, .Module, n.range, n.header_range, n.header_text, &n.node.stmt_base)
+	case ^ast.Event_Block_Stmt:
+		checker_collect_routine_decl(ctx, n.kind, .Event, n.range, n.header_range, n.header_text, &n.node.stmt_base)
+	case ^ast.Oop_Simple_Stmt:
+		checker_collect_oop_simple_stmt(ctx, n, nil, .Public)
+	}
+}
+
+checker_collect_data_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Data_Decl, owner: ^Entity = nil) {
+	if decl.kind == .Normal {
+		entity := checker_collect_variable_decl(
+			ctx,
+			ctx.scope,
+			decl.name,
+			.Variable,
+			decl.range,
+			&decl.node.decl_base.stmt_base,
+			decl.type_clause,
+			decl.value_clause,
+		)
+		checker_note_variable_decl_flags(entity, read_only = decl.read_only)
+		checker_note_member_owner(entity, owner, .Attribute)
+		return
+	}
+
+	frames := make([dynamic]Decl_Structure_Frame, 0, 2, context.temp_allocator)
+	checker_collect_data_branch(
+		ctx,
+		&frames,
+		decl.kind,
+		decl.flags,
+		decl.name,
+		decl.range,
+		&decl.node.decl_base.stmt_base,
+		decl.type_clause,
+		decl.value_clause,
+		.Variable,
+		owner,
+		decl.read_only,
+	)
+}
+
+checker_collect_data_chained_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Data_Chained_Decl, owner: ^Entity = nil) {
+	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
+	for clause in decl.decls {
+		checker_collect_data_branch(
+			ctx,
+			&frames,
+			clause.kind,
+			clause.flags,
+			clause.name,
+			decl.range,
+			&decl.node.decl_base.stmt_base,
+			clause.type_clause,
+			clause.value_clause,
+			.Variable,
+			owner,
+			clause.read_only,
+		)
+	}
+}
+
+checker_collect_constants_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Constants_Decl, owner: ^Entity = nil) {
+	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
+	for clause in decl.constants {
+		checker_collect_data_branch(
+			ctx,
+			&frames,
+			clause.kind,
+			clause.flags,
+			clause.name,
+			decl.range,
+			&decl.node.decl_base.stmt_base,
+			clause.type_clause,
+			clause.value_clause,
+			.Constant,
+			owner,
+		)
+	}
+}
+
+checker_collect_statics_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Statics_Decl, owner: ^Entity = nil) {
+	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
+	for clause in decl.statics {
+		entity := checker_collect_data_branch(
+			ctx,
+			&frames,
+			clause.kind,
+			clause.flags,
+			clause.name,
+			decl.range,
+			&decl.node.decl_base.stmt_base,
+			clause.type_clause,
+			clause.value_clause,
+			.Variable,
+			owner,
+		)
+		checker_note_variable_decl_flags(entity, is_static = true)
+	}
+}
+
+checker_collect_class_data_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_Data_Decl, owner: ^Entity = nil) {
+	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
+	for clause in decl.decls {
+		entity := checker_collect_data_branch(
+			ctx,
+			&frames,
+			clause.kind,
+			clause.flags,
+			clause.name,
+			decl.range,
+			&decl.node.decl_base.stmt_base,
+			clause.type_clause,
+			clause.value_clause,
+			.Variable,
+			owner,
+			clause.read_only,
+		)
+		checker_note_variable_decl_flags(entity, is_static = true, read_only = clause.read_only)
+	}
+}
+
+checker_collect_data_branch :: proc(
+	ctx: ^Checker_Context,
+	frames: ^[dynamic]Decl_Structure_Frame,
+	kind: ast.Decl_Clause_Kind,
+	flags: ast.Decl_Clause_Flags,
+	name: string,
+	range: Range,
+	node: ^ast.Node,
+	type_clause: ^ast.Data_Type_Clause,
+	value_clause: ^ast.Value_Clause,
+	entity_kind: Entity_Kind,
+	owner: ^Entity = nil,
+	read_only := false,
+) -> ^Entity {
+	if .Common_Part_Delimiter in flags {
+		return nil
+	}
+
+	switch kind {
+	case .Begin_Group:
+		entity: ^Entity
+		if len(frames^) > 0 {
+			parent := &frames^[len(frames^) - 1]
+			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name, range, node, type_clause, value_clause)
+		} else {
+			entity = checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, range, node, type_clause, value_clause)
+			checker_note_variable_decl_flags(entity, read_only = read_only)
+			checker_note_member_owner(entity, owner, .Attribute)
+		}
+		if entity == nil {
+			return nil
+		}
+		structure, scope := checker_attach_structure_to_entity(ctx, entity, range)
+		append(frames, Decl_Structure_Frame{entity = entity, structure = structure, scope = scope})
+		return entity
+	case .End_Group:
+		if len(frames^) > 0 {
+			_ = pop(frames)
+		}
+	case .Normal:
+		if len(frames^) > 0 {
+			parent := &frames^[len(frames^) - 1]
+			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name, range, node, type_clause, value_clause)
+		}
+		entity := checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, range, node, type_clause, value_clause)
+		checker_note_variable_decl_flags(entity, read_only = read_only)
+		checker_note_member_owner(entity, owner, .Attribute)
+		return entity
+	case .Include_Type, .Include_Structure:
+		return nil
+	}
+	return nil
+}
+
+checker_collect_types_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Types_Decl) {
+	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
+	for clause in decl.types {
+		checker_collect_type_clause(ctx, &frames, clause, decl.range, &decl.node.decl_base.stmt_base)
+	}
+}
+
+checker_collect_type_clause :: proc(
+	ctx: ^Checker_Context,
+	frames: ^[dynamic]Decl_Structure_Frame,
+	clause: ast.Types_Clause,
+	range: Range,
+	node: ^ast.Node,
+) -> ^Entity {
+	if .Common_Part_Delimiter in clause.flags {
+		return nil
+	}
+
+	switch clause.kind {
+	case .Begin_Group:
+		entity: ^Entity
+		if len(frames^) > 0 {
+			parent := &frames^[len(frames^) - 1]
+			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, range, node, clause.type_clause, nil)
+		} else {
+			entity = checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause)
+		}
+		if entity == nil {
+			return nil
+		}
+		structure, scope := checker_attach_structure_to_entity(ctx, entity, range)
+		append(frames, Decl_Structure_Frame{entity = entity, structure = structure, scope = scope})
+		return entity
+	case .End_Group:
+		if len(frames^) > 0 {
+			_ = pop(frames)
+		}
+	case .Normal:
+		if len(frames^) > 0 {
+			parent := &frames^[len(frames^) - 1]
+			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, range, node, clause.type_clause, nil)
+		}
+		return checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause)
+	case .Include_Type, .Include_Structure:
+		return nil
+	}
+	return nil
+}
+
+checker_attach_structure_to_entity :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	range: Range,
+) -> (^Structure, ^Scope) {
+	assert(entity != nil)
+	scope := checker_create_scope(ctx.checker, entity.scope, .Structure, range, entity, entity.decl_info)
+	structure := project_new_structure(ctx.project, entity.name, ctx.file, scope, range)
+	structure_type := project_type_structure(ctx.project, structure)
+	if entity.kind == .Type_Def {
+		entity.type = project_type_named(ctx.project, entity.name, entity, structure_type)
+		if payload, ok := entity.payload.(^Entity_Type_Name_Payload); ok && payload != nil {
+			payload.structure = structure
+			payload.underlying = structure_type
+			payload.original_type = entity.type
+		}
+	} else {
+		entity.type = structure_type
+	}
+	return structure, scope
+}
+
+checker_collect_type_decl :: proc(
+	ctx: ^Checker_Context,
+	scope: ^Scope,
+	name: string,
+	range: Range,
+	node: ^ast.Node,
+	type_clause: ^ast.Data_Type_Clause,
+) -> ^Entity {
+	if name == "" {
+		return nil
+	}
+	entity := project_new_entity(ctx.project, .Type_Def)
+	entity.node = node
+	interned := checker_intern_name(ctx.project, name)
+	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Type_Def, range, node, type_clause)
+	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	return entity
+}
+
+checker_collect_structure_field :: proc(
+	ctx: ^Checker_Context,
+	structure: ^Structure,
+	scope: ^Scope,
+	owner: ^Entity,
+	name: string,
+	range: Range,
+	node: ^ast.Node,
+	type_clause: ^ast.Data_Type_Clause,
+	value_clause: ^ast.Value_Clause = nil,
+) -> ^Entity {
+	assert(structure != nil && scope != nil && owner != nil)
+	if name == "" {
+		return nil
+	}
+	entity := project_new_entity(ctx.project, .Field)
+	entity.node = node
+	entity.owner = owner
+	entity.source_file = ctx.file
+	interned := checker_intern_name(ctx.project, name)
+	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Field, range, node, type_clause, value_clause)
+	payload, ok := entity.payload.(^Entity_Field_Payload)
+	if ok && payload != nil {
+		payload.owner_structure = structure
+		payload.decl_unit = ctx.file
+		payload.decl_range = range
+		payload.field_index = i32(len(structure.fields))
+		payload.value_clause = value_clause
+		payload.type_clause_form = type_clause.form if type_clause != nil else ast.Data_Type_Form.Type
+		payload.has_type_clause_form = type_clause != nil
+		if type_clause != nil {
+			payload.flags += {.Has_Type_Ref}
+		}
+	}
+	append(&structure.fields, entity)
+	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	return entity
+}
+
+checker_collect_variable_decl :: proc(
+	ctx: ^Checker_Context,
+	scope: ^Scope,
+	name: string,
+	kind: Entity_Kind,
+	range: Range,
+	node: ^ast.Node,
+	type_clause: ^ast.Data_Type_Clause,
+	value_clause: ^ast.Value_Clause,
+	default_clause: ^ast.Default_Clause = nil,
+) -> ^Entity {
+	if name == "" {
+		return nil
+	}
+	entity := project_new_entity(ctx.project, kind)
+	entity.node = node
+	interned := checker_intern_name(ctx.project, name)
+	decl := project_new_decl_info(ctx.project, entity, scope, interned, kind, range, node, type_clause, value_clause, default_clause)
+	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_note_variable_decl_flags(entity, has_type = type_clause != nil)
+	return entity
+}
+
+checker_note_variable_decl_flags :: proc(
+	entity: ^Entity,
+	has_type := false,
+	is_static := false,
+	read_only := false,
+) {
+	if entity == nil {
+		return
+	}
+	if has_type {
+		entity.flags += {.Has_Declared_Type}
+		entity.flags -= {.Untyped}
+	} else {
+		if !(.Has_Declared_Type in entity.flags) {
+			entity.flags += {.Untyped}
+		}
+	}
+	if is_static {
+		entity.flags += {.Static}
+	}
+	if read_only {
+		entity.flags += {.Read_Only}
+	}
+}
+
+checker_note_member_owner :: proc(entity: ^Entity, owner: ^Entity, member_kind: Class_Member_Kind) {
+	if entity == nil || owner == nil {
+		return
+	}
+	entity.owner = owner
+	if payload, ok := entity.payload.(^Entity_Routine_Payload); ok && payload != nil {
+		payload.member_kind = member_kind
+	}
+}
+
+checker_collect_field_symbols_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Field_Symbols_Decl, owner: ^Entity = nil) {
+	for clause in decl.field_symbols {
+		entity := checker_collect_variable_decl(
+			ctx,
+			ctx.scope,
+			clause.name,
+			.Field_Symbol,
+			decl.range,
+			&decl.node.decl_base.stmt_base,
+			clause.type_clause,
+			nil,
+		)
+		checker_note_member_owner(entity, owner, .Attribute)
+	}
+}
+
+checker_collect_tables_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Tables_Decl, owner: ^Entity = nil) {
+	for clause in decl.tables {
+		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, decl.range, &decl.node.decl_base.stmt_base, nil, nil)
+		checker_note_variable_decl_flags(entity, has_type = clause.name != "")
+		checker_note_member_owner(entity, owner, .Attribute)
+	}
+}
+
+checker_collect_ranges_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Ranges_Decl, owner: ^Entity = nil) {
+	for clause in decl.ranges {
+		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, decl.range, &decl.node.decl_base.stmt_base, nil, nil)
+		if entity != nil {
+			structure, scope := checker_attach_structure_to_entity(ctx, entity, decl.range)
+			checker_collect_range_component(ctx, structure, scope, entity, "sign", decl.range, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "option", decl.range, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "low", decl.range, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "high", decl.range, &decl.node.decl_base.stmt_base)
+		}
+		checker_note_member_owner(entity, owner, .Attribute)
+	}
+}
+
+checker_collect_select_options_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Select_Options_Decl, owner: ^Entity = nil) {
+	for clause in decl.options {
+		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, decl.range, &decl.node.decl_base.stmt_base, nil, nil, clause.default_clause)
+		if entity != nil {
+			structure, scope := checker_attach_structure_to_entity(ctx, entity, decl.range)
+			checker_collect_range_component(ctx, structure, scope, entity, "sign", decl.range, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "option", decl.range, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "low", decl.range, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "high", decl.range, &decl.node.decl_base.stmt_base)
+		}
+		checker_note_member_owner(entity, owner, .Attribute)
+	}
+}
+
+checker_collect_range_component :: proc(
+	ctx: ^Checker_Context,
+	structure: ^Structure,
+	scope: ^Scope,
+	owner: ^Entity,
+	name: string,
+	range: Range,
+	node: ^ast.Node,
+) {
+	_ = checker_collect_structure_field(ctx, structure, scope, owner, name, range, node, nil, nil)
+}
+
+checker_collect_parameters_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Parameters_Decl, owner: ^Entity = nil) {
+	for clause in decl.parameters {
+		entity := checker_collect_variable_decl(
+			ctx,
+			ctx.scope,
+			clause.name,
+			.Variable,
+			decl.range,
+			&decl.node.decl_base.stmt_base,
+			clause.type_clause,
+			nil,
+			clause.default_clause,
+		)
+		if entity != nil && .As_Checkbox in clause.flags {
+			entity.flags += {.Has_Declared_Type}
+			entity.flags -= {.Untyped}
+		}
+		checker_note_member_owner(entity, owner, .Attribute)
+	}
+}
+
+checker_collect_controls_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Controls_Decl, owner: ^Entity = nil) {
+	for clause in decl.controls {
+		entity := checker_collect_variable_decl(
+			ctx,
+			ctx.scope,
+			clause.name,
+			.Control,
+			decl.range,
+			&decl.node.decl_base.stmt_base,
+			clause.type_clause,
+			nil,
+		)
+		checker_note_member_owner(entity, owner, .Attribute)
+	}
+}
+
+checker_collect_report_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Report_Stmt) {
+	if stmt.kind != .Report && stmt.kind != .Program {
+		return
+	}
+	if name, range, ok := checker_expr_name(stmt.name); ok {
+		checker_collect_report_decl(ctx, name, range, &stmt.node.stmt_base)
+	}
+}
+
+checker_collect_report_decl :: proc(ctx: ^Checker_Context, name: string, range: Range, node: ^ast.Node) -> ^Entity {
+	if name == "" {
+		return nil
+	}
+	entity := project_new_entity(ctx.project, .Report)
+	entity.node = node
+	interned := checker_intern_name(ctx.project, name)
+	decl := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Report, range, node)
+	if payload, ok := entity.payload.(^Entity_Report_Payload); ok && payload != nil {
+		append(&payload.provided_names, interned)
+	}
+	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	return entity
+}
+
+checker_collect_include_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Include_Stmt) {
+	for include_name in stmt.names {
+		if include_name.name == "" {
+			continue
+		}
+		entity := project_new_entity(ctx.project, .Include)
+		entity.node = &stmt.node.stmt_base
+		interned := checker_intern_name(ctx.project, include_name.name)
+		decl := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Include, include_name.range, &stmt.node.stmt_base)
+		if payload, ok := entity.payload.(^Entity_Include_Payload); ok && payload != nil {
+			payload.if_found = stmt.if_found
+		}
+		_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	}
+}
+
+checker_collect_class_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_Decl) -> ^Entity {
+	entity := checker_find_object_entity(ctx, decl.name, .Class)
+	if entity == nil && decl.name != "" {
+		entity = project_new_entity(ctx.project, .Class)
+		entity.node = &decl.node.stmt_base
+		interned := checker_intern_name(ctx.project, decl.name)
+		info := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Class, decl.header_range, &decl.node.stmt_base)
+		_ = checker_add_entity_and_decl_info(ctx, entity, info)
+	}
+	if entity == nil {
+		return nil
+	}
+
+	payload, ok := entity.payload.(^Entity_Object_Payload)
+	assert(ok && payload != nil)
+	if .Bodyless in decl.flags {
+		entity.flags += {.Forward}
+		return entity
+	}
+	if .Implementation in decl.flags {
+		entity.flags += {.Has_Implementation}
+		checker_collect_class_implementation(ctx, entity, decl.body)
+		return entity
+	}
+
+	entity.flags -= {.Forward}
+	if .Abstract in decl.flags {
+		entity.flags += {.Abstract}
+		payload.is_abstract = true
+	}
+	if decl.superclass_name != "" {
+		payload.superclass_name = checker_intern_name(ctx.project, decl.superclass_name)
+	}
+	scope := checker_ensure_object_definition_scope(ctx, entity, .Class, decl.range)
+	body_ctx := ctx^
+	body_ctx.scope = scope
+	checker_collect_class_body(&body_ctx, decl.body, entity, .Private)
+	return entity
+}
+
+checker_collect_interface_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Interface_Decl) -> ^Entity {
+	entity := checker_find_object_entity(ctx, decl.name, .Interface)
+	if entity == nil && decl.name != "" {
+		entity = project_new_entity(ctx.project, .Interface)
+		entity.node = &decl.node.stmt_base
+		interned := checker_intern_name(ctx.project, decl.name)
+		info := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Interface, decl.header_range, &decl.node.stmt_base)
+		_ = checker_add_entity_and_decl_info(ctx, entity, info)
+	}
+	if entity == nil {
+		return nil
+	}
+	if decl.is_bodyless {
+		entity.flags += {.Forward}
+		return entity
+	}
+	entity.flags -= {.Forward}
+	scope := checker_ensure_object_definition_scope(ctx, entity, .Interface, decl.range)
+	body_ctx := ctx^
+	body_ctx.scope = scope
+	checker_collect_class_body(&body_ctx, decl.body, entity, .Public)
+	return entity
+}
+
+checker_find_object_entity :: proc(ctx: ^Checker_Context, name: string, kind: Entity_Kind) -> ^Entity {
+	if name == "" {
+		return nil
+	}
+	interned := checker_intern_name(ctx.project, name)
+	_, entity, ok := checker_lookup_declaration(ctx, .Type, interned)
+	if ok && entity.kind == kind {
+		return entity
+	}
+	return nil
+}
+
+checker_ensure_object_definition_scope :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	scope_kind: Scope_Kind,
+	range: Range,
+) -> ^Scope {
+	payload, ok := entity.payload.(^Entity_Object_Payload)
+	assert(ok && payload != nil)
+	if payload.definition_scope == nil {
+		payload.definition_scope = checker_create_scope(ctx.checker, entity.scope, scope_kind, range, entity, entity.decl_info)
+	}
+	return payload.definition_scope
+}
+
+checker_collect_class_implementation :: proc(ctx: ^Checker_Context, owner: ^Entity, body: [dynamic]^ast.Stmt) {
+	scope := checker_ensure_object_definition_scope(ctx, owner, .Class if owner.kind == .Class else .Interface, owner.name_range)
+	body_ctx := ctx^
+	body_ctx.scope = scope
+	for stmt in body {
+		if method, ok := stmt.derived_stmt.(^ast.Method_Decl); ok {
+			checker_collect_method_decl(&body_ctx, method)
+			continue
+		}
+		checker_collect_stmt_entities(&body_ctx, stmt)
+	}
+}
+
+checker_collect_class_body :: proc(
+	ctx: ^Checker_Context,
+	body: [dynamic]^ast.Stmt,
+	owner: ^Entity,
+	default_visibility: Visibility,
+) {
+	visibility := default_visibility
+	for stmt in body {
+		if stmt == nil {
+			continue
+		}
+		if oop, ok := stmt.derived_stmt.(^ast.Oop_Simple_Stmt); ok {
+			if oop.kind == .Class_Section {
+				visibility = checker_visibility_from_ast(oop.visibility, visibility)
+			} else {
+				checker_collect_oop_simple_stmt(ctx, oop, owner, visibility)
+			}
+			continue
+		}
+		#partial switch n in stmt.derived_stmt {
+		case ^ast.Data_Decl:
+			checker_collect_data_decl(ctx, n, owner)
+		case ^ast.Data_Chained_Decl:
+			checker_collect_data_chained_decl(ctx, n, owner)
+		case ^ast.Class_Data_Decl:
+			checker_collect_class_data_decl(ctx, n, owner)
+		case ^ast.Statics_Decl:
+			checker_collect_statics_decl(ctx, n, owner)
+		case ^ast.Constants_Decl:
+			checker_collect_constants_decl(ctx, n, owner)
+		case ^ast.Field_Symbols_Decl:
+			checker_collect_field_symbols_decl(ctx, n, owner)
+		case ^ast.Types_Decl:
+			checker_collect_types_decl(ctx, n)
+		case:
+			checker_collect_stmt_entities(ctx, stmt)
+		}
+	}
+}
+
+checker_collect_oop_simple_stmt :: proc(
+	ctx: ^Checker_Context,
+	stmt: ^ast.Oop_Simple_Stmt,
+	owner: ^Entity,
+	visibility: Visibility,
+) {
+	#partial switch stmt.kind {
+	case .Methods, .Class_Methods:
+		for member in stmt.members {
+			entity := checker_collect_oop_routine_member(ctx, stmt, member, owner, .Method, visibility)
+			if entity != nil {
+				payload := entity.payload.(^Entity_Routine_Payload)
+				payload.is_static = stmt.kind == .Class_Methods
+				payload.member_kind = .Method
+				if payload.is_static {
+					entity.flags += {.Static}
+				}
+				if .Redefinition in member.flags {
+					entity.flags += {.Redefinition}
+					payload.is_redefinition = true
+				}
+				if member.event_handler.event_name != "" {
+					entity.flags += {.For_Event}
+					payload.for_event = true
+					payload.event_name = checker_intern_name(ctx.project, member.event_handler.event_name)
+					payload.event_range = member.event_handler.event_range
+					payload.event_source_type = checker_type_ref_data_from_expr(ctx, member.event_handler.source_type, .Type)
+				}
+			}
+		}
+	case .Events, .Class_Events:
+		for member in stmt.members {
+			entity := checker_collect_oop_routine_member(ctx, stmt, member, owner, .Event, visibility)
+			if entity != nil {
+				payload := entity.payload.(^Entity_Routine_Payload)
+				payload.is_static = stmt.kind == .Class_Events
+				payload.member_kind = .Event
+				if payload.is_static {
+					entity.flags += {.Static}
+				}
+			}
+		}
+	case .Interfaces:
+		if owner == nil {
+			return
+		}
+		payload, ok := owner.payload.(^Entity_Object_Payload)
+		assert(ok && payload != nil)
+		for member in stmt.members {
+			if member.name != "" {
+				append(&payload.implemented_interfaces, checker_intern_name(ctx.project, member.name))
+			}
+		}
+	case .Aliases:
+		checker_collect_oop_aliases(ctx, stmt, owner, visibility)
+	case:
+	}
+}
+
+checker_collect_oop_routine_member :: proc(
+	ctx: ^Checker_Context,
+	stmt: ^ast.Oop_Simple_Stmt,
+	member: ast.Oop_Member_Clause,
+	owner: ^Entity,
+	kind: Entity_Kind,
+	visibility: Visibility,
+) -> ^Entity {
+	name := member.name
+	if kind == .Method {
+		name = checker_oop_method_entity_name(member)
+	}
+	entity := checker_collect_routine_decl(ctx, name, kind, stmt.range, member.range, stmt.text, &stmt.node.stmt_base)
+	if entity == nil {
+		return nil
+	}
+	entity.owner = owner
+	payload, ok := entity.payload.(^Entity_Routine_Payload)
+	assert(ok && payload != nil)
+	payload.visibility = visibility
+	checker_collect_oop_signature(ctx, entity, member.signatures[:], kind)
+	return entity
+}
+
+checker_collect_oop_aliases :: proc(
+	ctx: ^Checker_Context,
+	stmt: ^ast.Oop_Simple_Stmt,
+	owner: ^Entity,
+	visibility: Visibility,
+) {
+	if owner == nil {
+		return
+	}
+	if len(stmt.aliases) > 0 {
+		for alias in stmt.aliases {
+			checker_collect_oop_alias(ctx, alias.name, alias.target, stmt.range, &stmt.node.stmt_base, owner, visibility)
+		}
+		return
+	}
+	for member in stmt.members {
+		for sig in member.signatures {
+			if sig.kind == .For && len(sig.values) > 0 {
+				checker_collect_oop_alias(ctx, member.name, sig.values[0], stmt.range, &stmt.node.stmt_base, owner, visibility)
+				break
+			}
+		}
+	}
+}
+
+checker_collect_oop_alias :: proc(
+	ctx: ^Checker_Context,
+	name: string,
+	target: ^ast.Expr,
+	range: Range,
+	node: ^ast.Node,
+	owner: ^Entity,
+	visibility: Visibility,
+) -> ^Entity {
+	if name == "" {
+		return nil
+	}
+	entity := project_new_entity(ctx.project, .Alias)
+	entity.node = node
+	entity.owner = owner
+	interned := checker_intern_name(ctx.project, name)
+	decl := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Alias, range, node)
+	if payload, ok := entity.payload.(^Entity_Alias_Payload); ok && payload != nil {
+		target_ref := checker_type_ref_data_from_expr(ctx, target, .Type)
+		payload.target_interface_name = target_ref.base_name
+		if len(target_ref.field_path) > 0 {
+			payload.target_member_name = target_ref.field_path[0]
+		}
+		payload.visibility = visibility
+	}
+	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	return entity
+}
+
+checker_collect_method_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Method_Decl) -> ^Entity {
+	name := decl.member_name
+	if name == "" {
+		name = checker_method_entity_name(decl.name)
+	}
+	entity := checker_find_routine_entity_in_scope(ctx, name, .Method)
+	if entity == nil {
+		entity = checker_collect_routine_decl(ctx, name, .Method, decl.range, decl.header_range, decl.header_text, &decl.node.stmt_base)
+	} else {
+		checker_attach_routine_body_decl(ctx, entity, decl.range, decl.header_range, decl.header_text, &decl.node.stmt_base)
+	}
+	if entity == nil {
+		return nil
+	}
+	payload, ok := entity.payload.(^Entity_Routine_Payload)
+	assert(ok && payload != nil)
+	payload.has_implementation = true
+	payload.implementation_unit = ctx.file
+	payload.implementation_range = decl.range
+	entity.flags += {.Has_Implementation}
+	return entity
+}
+
+checker_find_routine_entity_in_scope :: proc(ctx: ^Checker_Context, name: string, kind: Entity_Kind) -> ^Entity {
+	if name == "" {
+		return nil
+	}
+	interned := checker_intern_name(ctx.project, name)
+	if entity, ok := scope_lookup_declaration(ctx.scope, .Routine, interned); ok && entity.kind == kind {
+		return entity
+	}
+	return nil
+}
+
+checker_collect_routine_decl :: proc(
+	ctx: ^Checker_Context,
+	name: string,
+	kind: Entity_Kind,
+	range: Range,
+	header_range: Range,
+	signature: string,
+	node: ^ast.Node,
+	scope: ^Scope = nil,
+) -> ^Entity {
+	if name == "" {
+		return nil
+	}
+	decl_scope := scope if scope != nil else ctx.scope
+	entity := project_new_entity(ctx.project, kind)
+	entity.node = node
+	interned := checker_intern_name(ctx.project, name)
+	decl := project_new_decl_info(ctx.project, entity, decl_scope, interned, kind, header_range, node)
+	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_initialize_routine_payload(ctx, entity, range, signature)
+	checker_collect_routine_parameters(ctx, entity, node)
+	return entity
+}
+
+checker_attach_routine_body_decl :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	range: Range,
+	header_range: Range,
+	signature: string,
+	node: ^ast.Node,
+) {
+	assert(entity != nil)
+	decl_scope := entity.scope
+	payload, ok := entity.payload.(^Entity_Routine_Payload)
+	assert(ok && payload != nil)
+	if payload.signature_scope != nil {
+		decl_scope = payload.signature_scope
+	}
+	decl := project_new_decl_info(ctx.project, nil, decl_scope, entity.name, entity.kind, header_range, node)
+	decl.entity = entity
+	entity.decl_info = decl
+	entity.node = node
+	checker_initialize_routine_payload(ctx, entity, range, signature)
+	checker_add_definition(ctx.info, entity)
+	if entity.state == .Unresolved {
+		checker_enqueue_entity(ctx.info, entity)
+	}
+}
+
+checker_initialize_routine_payload :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	range: Range,
+	signature: string,
+) {
+	payload, ok := entity.payload.(^Entity_Routine_Payload)
+	assert(ok && payload != nil)
+	if signature != "" {
+		payload.signature = strings.clone(signature, ctx.project.allocator)
+	}
+	if payload.signature_scope == nil {
+		payload.signature_scope = checker_create_scope(ctx.checker, entity.scope, checker_scope_kind_for_routine(entity.kind), range, entity, entity.decl_info)
+	}
+	payload.body_scope = payload.signature_scope
+}
+
+checker_collect_routine_parameters :: proc(ctx: ^Checker_Context, owner: ^Entity, node: ^ast.Node) {
+	assert(owner != nil)
+	payload, ok := owner.payload.(^Entity_Routine_Payload)
+	assert(ok && payload != nil && payload.signature_scope != nil && node != nil)
+	#partial switch n in node.derived {
+	case ^ast.Form_Decl:
+		for param in n.form_parameters {
+			checker_collect_parameter_decl(
+				ctx,
+				payload.signature_scope,
+				owner,
+				param.name,
+				param.range,
+				param.type_clause,
+				checker_form_parameter_section_from_ast(param.section),
+				checker_parameter_passing_from_ast(param.passing),
+			)
+		}
+	case ^ast.Function_Decl:
+		for param in n.function_parameters {
+			checker_collect_parameter_decl(
+				ctx,
+				payload.signature_scope,
+				owner,
+				param.name,
+				param.range,
+				param.type_clause,
+				checker_function_parameter_section_from_ast(param.section),
+				checker_parameter_passing_from_ast(param.passing),
+				optional = .Is_Optional in param.flags,
+				has_default = .Has_Default_Value in param.flags,
+			)
+		}
+		for exception in n.exceptions {
+			exc := checker_collect_variable_decl(ctx, payload.signature_scope, exception.name, .Exception, exception.range, node, nil, nil)
+			if exc == nil {
+				continue
+			}
+			exc.owner = owner
+			append(&payload.exceptions, exc.name)
+		}
+	}
+}
+
+checker_collect_oop_signature :: proc(
+	ctx: ^Checker_Context,
+	owner: ^Entity,
+	signatures: []ast.Oop_Signature_Clause,
+	routine_kind: Entity_Kind,
+) {
+	payload, ok := owner.payload.(^Entity_Routine_Payload)
+	assert(ok && payload != nil)
+	for sig in signatures {
+		section, section_ok := checker_oop_parameter_section_from_ast(sig.kind, routine_kind)
+		if section_ok {
+			for param in sig.parameters {
+				checker_collect_parameter_decl(
+					ctx,
+					payload.signature_scope,
+					owner,
+					param.name,
+					param.range,
+					param.type_clause,
+					section,
+					checker_parameter_passing_from_ast(param.passing),
+					optional = param.optional,
+					has_default = param.has_default,
+				)
+			}
+			continue
+		}
+		if sig.kind == .Exceptions || sig.kind == .Raising {
+			for value in sig.values {
+				if name, _, name_ok := checker_expr_name(value); name_ok {
+					append(&payload.exceptions, checker_intern_name(ctx.project, name))
+				}
+			}
+		}
+	}
+}
+
+checker_collect_parameter_decl :: proc(
+	ctx: ^Checker_Context,
+	scope: ^Scope,
+	owner: ^Entity,
+	name: string,
+	range: Range,
+	type_clause: ^ast.Data_Type_Clause,
+	section: Entity_Parameter_Section,
+	passing: Entity_Parameter_Passing,
+	optional := false,
+	has_default := false,
+) -> ^Entity {
+	entity := checker_collect_variable_decl(ctx, scope, name, .Parameter, range, owner.node, type_clause, nil)
+	if entity == nil {
+		return nil
+	}
+	entity.owner = owner
+	entity.flags += {.Parameter}
+	if optional {
+		entity.flags += {.Optional}
+	}
+	if has_default {
+		entity.flags += {.Has_Default_Value}
+	}
+	if payload, ok := entity.payload.(^Entity_Variable_Payload); ok && payload != nil {
+		payload.section = section
+		payload.passing = passing
+	}
+	if routine, ok := owner.payload.(^Entity_Routine_Payload); ok && routine != nil {
+		append(&routine.parameters, entity)
+	}
+	return entity
+}
+
+checker_check_queued_entities :: proc(ctx: ^Checker_Context) {
+	for index := 0; index < len(ctx.info.entity_queue); index += 1 {
+		entity := ctx.info.entity_queue[index]
+		checker_check_entity_decl(ctx, entity)
+	}
+	clear(&ctx.info.entity_queue)
+}
+
+checker_check_entity_decl :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	decl: ^Decl_Info = nil,
+	named_type: ^Type = nil,
+) {
+	if entity == nil || entity.state == .Resolved || entity.state == .Failed {
+		return
+	}
+	current_decl := decl
+	if entity.state == .Resolving || checker_type_path_contains(ctx, entity) {
+		entity.state = .Failed
+		checker_add_diagnostic(ctx, .Declaration_Cycle, entity.name_range, "declaration cycle", entity, current_decl)
+		return
+	}
+	if current_decl == nil {
+		current_decl = entity.decl_info
+	}
+	assert(current_decl != nil)
+	assert(current_decl.scope != nil)
+
+	local := ctx^
+	local.scope = current_decl.scope
+	local.decl = current_decl
+	local.current_decl = current_decl
+	entity.state = .Resolving
+	current_decl.state = .Resolving
+
+	track_path := checker_entity_tracks_type_path(entity)
+	if track_path {
+		append(&local.type_path, entity)
+	}
+	defer if track_path {
+		_ = pop(&local.type_path)
+	}
+
+	switch entity.kind {
+	case .Builtin:
+		checker_check_builtin_decl(&local, entity)
+	case .Variable, .Field_Symbol, .Parameter, .Exception, .Control:
+		checker_check_variable_decl(&local, entity, current_decl)
+	case .Constant, .Enum_Member:
+		checker_check_constant_decl(&local, entity, current_decl)
+	case .Type_Def:
+		checker_check_type_decl(&local, entity, current_decl, named_type)
+	case .Form, .Method, .Module, .Event:
+		checker_check_routine_decl(&local, entity, current_decl)
+	case .Class, .Interface:
+		checker_check_object_decl(&local, entity, current_decl)
+	case .Field, .Include, .Alias, .Report:
+		checker_check_metadata_decl(&local, entity, current_decl)
+	case .Invalid:
+		entity.state = .Failed
+		current_decl.state = .Failed
+		return
+	}
+
+	if entity.state == .Resolving {
+		entity.state = .Resolved
+	}
+	if current_decl.state == .Resolving {
+		current_decl.state = .Resolved if entity.state == .Resolved else .Failed
+	}
+	if entity.state == .Resolved {
+		append(&ctx.info.checked_entities, entity)
+	}
+}
+
+checker_check_builtin_decl :: proc(ctx: ^Checker_Context, entity: ^Entity) {
+	if entity.type == nil {
+		entity.type = project_type_unknown(ctx.project)
+	}
+}
+
+checker_check_variable_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
+	checker_check_type_clause(ctx, decl.type_clause)
+	checker_check_value_clause(ctx, decl.value_clause)
+	checker_check_default_clause(ctx, decl.default_clause)
+	if entity.type == nil {
+		entity.type = project_type_unknown(ctx.project)
+	}
+}
+
+checker_check_constant_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
+	checker_check_type_clause(ctx, decl.type_clause)
+	checker_check_value_clause(ctx, decl.value_clause)
+	if entity.type == nil {
+		entity.type = project_type_unknown(ctx.project)
+	}
+}
+
+checker_check_type_decl :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	decl: ^Decl_Info,
+	named_type: ^Type,
+) {
+	checker_check_type_clause(ctx, decl.type_clause)
+	if named_type != nil {
+		entity.type = named_type
+		return
+	}
+	if entity.type == nil {
+		entity.type = project_type_named(ctx.project, entity.name, entity, project_type_unknown(ctx.project))
+	}
+}
+
+checker_check_routine_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
+	payload, ok := entity.payload.(^Entity_Routine_Payload)
+	assert(ok && payload != nil)
+	assert(payload.signature_scope != nil && payload.body_scope != nil)
+	if entity.type == nil || entity.type.kind != .Routine {
+		entity.type = project_type_routine(ctx.project, payload.signature_scope)
+	}
+	entity.type.routine.parameters = payload.parameters
+	entity.type.routine.exceptions = payload.exceptions
+	body := checker_routine_body_from_decl(decl)
+	if len(body) > 0 {
+		body_ctx := ctx^
+		body_ctx.scope = payload.body_scope
+		body_ctx.current_routine = entity
+		body_ctx.current_signature = entity.type
+		checker_check_stmt_list(&body_ctx, body)
+	}
+}
+
+checker_scope_kind_for_routine :: proc(kind: Entity_Kind) -> Scope_Kind {
+	#partial switch kind {
+	case .Form:
+		return .Form
+	case .Module:
+		return .Module
+	case .Event:
+		return .Event
+	case .Method:
+		return .Method
+	case:
+		unreachable()
+	}
+	return .Method
+}
+
+checker_check_object_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
+	_ = decl
+	payload, ok := entity.payload.(^Entity_Object_Payload)
+	assert(ok && payload != nil)
+	if payload.definition_scope == nil {
+		scope_kind := Scope_Kind.Class if entity.kind == .Class else Scope_Kind.Interface
+		payload.definition_scope = checker_create_scope(ctx.checker, entity.scope, scope_kind, owner = entity)
+	}
+	if entity.type == nil {
+		entity.type = project_type_class_or_interface(ctx.project, entity.name, entity, entity.kind)
+	}
+}
+
+checker_check_metadata_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
+	checker_check_type_clause(ctx, decl.type_clause)
+	checker_check_value_clause(ctx, decl.value_clause)
+	checker_check_default_clause(ctx, decl.default_clause)
+	if entity.type == nil {
+		entity.type = project_type_unknown(ctx.project)
+	}
+}
+
+checker_check_type_clause :: proc(ctx: ^Checker_Context, clause: ^ast.Data_Type_Clause) {
+	if clause == nil {
+		return
+	}
+	checker_check_expr(ctx, clause.type_ref, .Type)
+	checker_check_expr(ctx, clause.initial_size, .Value)
+}
+
+checker_check_value_clause :: proc(ctx: ^Checker_Context, clause: ^ast.Value_Clause) {
+	if clause == nil {
+		return
+	}
+	checker_check_expr(ctx, clause.expr)
+}
+
+checker_check_default_clause :: proc(ctx: ^Checker_Context, clause: ^ast.Default_Clause) {
+	if clause == nil {
+		return
+	}
+	checker_check_expr(ctx, clause.expr)
+}
+
+checker_entity_tracks_type_path :: proc(entity: ^Entity) -> bool {
+	#partial switch entity.kind {
+	case .Variable, .Constant, .Enum_Member, .Type_Def, .Field:
+		return true
+	case:
+		return false
+	}
+}
+
+checker_type_path_contains :: proc(ctx: ^Checker_Context, entity: ^Entity) -> bool {
+	for item in ctx.type_path {
+		if item == entity {
+			return true
+		}
+	}
+	return false
+}
+
+checker_routine_body_from_decl :: proc(decl: ^Decl_Info) -> [dynamic]^ast.Stmt {
+	if decl == nil || decl.decl_node == nil {
+		return nil
+	}
+	#partial switch n in decl.decl_node.derived {
+	case ^ast.Form_Decl:
+		return n.body
+	case ^ast.Method_Decl:
+		return n.body
+	case ^ast.Function_Decl:
+		return n.body
+	case ^ast.Module_Decl:
+		return n.body
+	case ^ast.Event_Block_Stmt:
+		return n.body
+	}
+	return nil
+}
+
+checker_form_parameter_section_from_ast :: proc(section: ast.Form_Parameter_Section) -> Entity_Parameter_Section {
+	#partial switch section {
+	case .Tables:
+		return .Form_Tables
+	case .Using:
+		return .Form_Using
+	case .Changing:
+		return .Form_Changing
+	}
+	return .None
+}
+
+checker_function_parameter_section_from_ast :: proc(
+	section: ast.Function_Parameter_Section,
+) -> Entity_Parameter_Section {
+	#partial switch section {
+	case .Importing:
+		return .Function_Importing
+	case .Exporting:
+		return .Function_Exporting
+	case .Changing:
+		return .Function_Changing
+	case .Tables:
+		return .Function_Tables
+	}
+	return .None
+}
+
+checker_oop_parameter_section_from_ast :: proc(
+	section: ast.Oop_Signature_Kind,
+	routine_kind: Entity_Kind,
+) -> (Entity_Parameter_Section, bool) {
+	if routine_kind == .Event {
+		if section == .Exporting {
+			return .Method_Exporting, true
+		}
+		return .None, false
+	}
+	#partial switch section {
+	case .Importing:
+		return .Method_Importing, true
+	case .Exporting:
+		return .Method_Exporting, true
+	case .Changing:
+		return .Method_Changing, true
+	case .Receiving:
+		return .Method_Receiving, true
+	case .Returning:
+		return .Method_Returning, true
+	case:
+	}
+	return .None, false
+}
+
+checker_parameter_passing_from_ast :: proc(passing: ast.Parameter_Passing_Kind) -> Entity_Parameter_Passing {
+	switch passing {
+	case .Direct:
+		return .Direct
+	case .Value:
+		return .Value
+	case .Reference:
+		return .Reference
+	}
+	return .None
+}
+
+checker_visibility_from_ast :: proc(visibility: ast.Oop_Visibility, fallback: Visibility) -> Visibility {
+	switch visibility {
+	case .Public:
+		return .Public
+	case .Protected:
+		return .Protected
+	case .Private:
+		return .Private
+	case .Unspecified:
+	}
+	return fallback
+}
+
+checker_oop_method_entity_name :: proc(member: ast.Oop_Member_Clause) -> string {
+	if member.qualifier != "" {
+		return member.name
+	}
+	if member.member_name != "" {
+		return member.member_name
+	}
+	return checker_method_entity_name(member.name)
+}
+
+checker_method_entity_name :: proc(name: string) -> string {
+	for i := len(name) - 1; i >= 0; i -= 1 {
+		if name[i] == '~' {
+			if i > 0 && i + 1 < len(name) {
+				return name[i + 1:]
+			}
+			return name
+		}
+	}
+	return name
+}
+
+checker_expr_name :: proc(expr: ^ast.Expr) -> (string, Range, bool) {
+	if expr == nil {
+		return "", Range{}, false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return n.name, n.range, n.name != ""
+	case ^ast.Type_Ref_Expr:
+		return n.name, n.range, n.name != ""
+	case ^ast.Literal_Expr:
+		return n.value, n.range, n.value != ""
+	}
+	return "", Range{}, false
+}
+
+checker_type_ref_data_from_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	namespace: Namespace,
+) -> Field_Type_Ref_Data {
+	data := Field_Type_Ref_Data {
+		namespace       = namespace,
+		field_path      = make([dynamic]string_interner.String, 0, 2, ctx.project.allocator),
+		field_ranges    = make([dynamic]Range, 0, 2, ctx.project.allocator),
+		field_derefs    = make([dynamic]bool, 0, 2, ctx.project.allocator),
+		field_selectors = make([dynamic]ast.Selector_Op, 0, 2, ctx.project.allocator),
+	}
+	if expr == nil {
+		return data
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Type_Ref_Expr:
+		base := n.base_name
+		if base == "" {
+			base = n.name
+		}
+		if base != "" {
+			data.base_name = checker_intern_name(ctx.project, base)
+			data.base_range = n.base_range if n.base_range.end > n.base_range.start else n.range
+		}
+		data.is_ref = n.is_ref
+		for segment in n.path {
+			append(&data.field_path, checker_intern_name(ctx.project, segment.name))
+			append(&data.field_ranges, segment.range)
+			append(&data.field_derefs, segment.selector == .Arrow || segment.selector == .Fat_Arrow)
+			append(&data.field_selectors, segment.selector)
+		}
+	case ^ast.Ident_Expr:
+		data.base_name = checker_intern_name(ctx.project, n.name)
+		data.base_range = n.range
+	case ^ast.Literal_Expr:
+		data.base_name = checker_intern_name(ctx.project, n.value)
+		data.base_range = n.range
+	}
+	return data
+}
