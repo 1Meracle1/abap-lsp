@@ -136,6 +136,21 @@ checker_type_from_ref_data :: proc(
 	}
 	_, entity, ok := checker_lookup_reference(ctx, type_ref.namespace, type_ref.base_name)
 	if !ok {
+		kind := External_Candidate_Kind.Global_Symbol
+		reason := External_Candidate_Reason.Unresolved_Reference
+		if type_ref.namespace == .Type {
+			reason = .Unresolved_Type
+		}
+		checker_add_unresolved_candidate(
+			ctx,
+			type_ref.base_name,
+			type_ref.namespace,
+			kind,
+			.Type_Reference,
+			reason,
+			type_ref.base_range,
+			node,
+		)
 		if type_ref.namespace == .Type && len(type_ref.field_path) == 0 {
 			return project_type_named(ctx.project, type_ref.base_name, nil, project_type_unknown(ctx.project)), nil
 		}

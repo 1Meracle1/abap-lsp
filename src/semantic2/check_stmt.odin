@@ -754,8 +754,21 @@ checker_lookup_call_function_entity :: proc(ctx: ^Checker_Context, target: ^ast.
 		return nil
 	}
 	interned := checker_intern_name(ctx.project, name)
-	_, entity, ok := checker_lookup_reference(ctx, .Routine, interned)
-	if !ok || entity.kind != .Module {
+	_, entity, ok := checker_lookup_reference(ctx, .Routine, interned, .Function_Module)
+	if !ok {
+		checker_add_unresolved_candidate(
+			ctx,
+			interned,
+			.Routine,
+			.Function_Module,
+			.Call_Function,
+			.Unresolved_Routine,
+			checker_expr_range(target),
+			&target.expr_base if target != nil else nil,
+		)
+		return nil
+	}
+	if entity.kind != .Module {
 		return nil
 	}
 	checker_add_entity_use(ctx, &target.expr_base if target != nil else nil, entity)
@@ -792,6 +805,9 @@ checker_strip_quotes :: proc(text: string) -> string {
 checker_check_perform_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Perform_Stmt) {
 	form_operand := checker_check_expr(ctx, stmt.form, .Routine)
 	checker_check_expr(ctx, stmt.program)
+	if stmt.has_program_clause && stmt.program_kind == .Static {
+		checker_check_report_dependency_target(ctx, stmt.program, .Perform_In_Program, stmt.if_found)
+	}
 	args := make([dynamic]Checker_Call_Argument, 0, len(stmt.tables) + len(stmt.using_args) + len(stmt.changing), context.temp_allocator)
 	for expr in stmt.tables {
 		append(&args, checker_call_argument_from_expr(ctx, expr, .Tables, true))
@@ -1187,10 +1203,45 @@ checker_check_message_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Message_Stm
 
 checker_check_submit_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Submit_Stmt) {
 	checker_check_expr(ctx, stmt.target)
+	if stmt.target_kind == .Static {
+		checker_check_report_dependency_target(ctx, stmt.target, .Submit, false)
+	}
 	for option in stmt.options {
 		checker_check_expr(ctx, option.value)
 		checker_check_expr(ctx, option.high_value)
 	}
+}
+
+checker_check_report_dependency_target :: proc(
+	ctx: ^Checker_Context,
+	target: ^ast.Expr,
+	hint: External_Candidate_Hint,
+	if_found := false,
+) {
+	name := checker_call_target_name(ctx, target)
+	if name == "" {
+		return
+	}
+	interned := checker_intern_name(ctx.project, name)
+	if !string_interner.is_valid(interned) {
+		return
+	}
+	_, entity, ok := checker_lookup_reference(ctx, .Value, interned, .Report)
+	if ok && entity.kind == .Report {
+		checker_add_entity_use(ctx, &target.expr_base if target != nil else nil, entity)
+		return
+	}
+	checker_add_unresolved_candidate(
+		ctx,
+		interned,
+		.Value,
+		.Report,
+		hint,
+		.Unresolved_Reference,
+		checker_expr_range(target),
+		&target.expr_base if target != nil else nil,
+		if_found,
+	)
 }
 
 checker_check_runtime_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Runtime_Stmt) {
@@ -1518,7 +1569,7 @@ checker_class_is_or_inherits_from :: proc(
 	if !ok || payload == nil || !string_interner.is_valid(payload.superclass_name) {
 		return false
 	}
-	_, super, super_ok := checker_lookup_lexical_declaration_from_scope(class_entity.scope, .Type, payload.superclass_name)
+	super, super_ok := checker_lookup_type_name_from_scope(ctx, class_entity.scope, payload.superclass_name, .Class)
 	if !super_ok {
 		return false
 	}
@@ -1545,13 +1596,13 @@ checker_type_exposes_interface :: proc(
 		if implemented_name == interface_name {
 			return true
 		}
-		_, implemented, implemented_ok := checker_lookup_lexical_declaration_from_scope(entity.scope, .Type, implemented_name)
+		implemented, implemented_ok := checker_lookup_type_name_from_scope(ctx, entity.scope, implemented_name, .Interface)
 		if implemented_ok && checker_type_exposes_interface(ctx, implemented, interface_name, depth + 1) {
 			return true
 		}
 	}
 	if entity.kind == .Class && string_interner.is_valid(payload.superclass_name) {
-		_, super, super_ok := checker_lookup_lexical_declaration_from_scope(entity.scope, .Type, payload.superclass_name)
+		super, super_ok := checker_lookup_type_name_from_scope(ctx, entity.scope, payload.superclass_name, .Class)
 		if super_ok && checker_type_exposes_interface(ctx, super, interface_name, depth + 1) {
 			return true
 		}

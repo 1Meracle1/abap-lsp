@@ -259,6 +259,14 @@ checker_check_ident_name :: proc(
 	}
 	_, entity, ok := checker_lookup_reference(ctx, namespace, interned)
 	if !ok {
+		kind := External_Candidate_Kind.Global_Symbol
+		reason := External_Candidate_Reason.Unresolved_Reference
+		if namespace == .Type {
+			reason = .Unresolved_Type
+		} else if namespace == .Routine {
+			reason = .Unresolved_Routine
+		}
+		checker_add_unresolved_candidate(ctx, interned, namespace, kind, .Identifier, reason, node.range if node != nil else Range{}, node)
 		return nil, false
 	}
 	checker_add_entity_use(ctx, node, entity)

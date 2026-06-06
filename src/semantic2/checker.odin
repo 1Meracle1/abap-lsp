@@ -23,14 +23,25 @@ Checker_Diagnostic_Kind :: enum {
 	Unresolved_Open_Sql_Source,
 	Unknown_Field,
 	Invalid_Open_Sql_Into_Target,
+	Unresolved_Include,
+	Unresolved_Include_If_Found,
+	Include_Cycle,
+	Root_File_Included,
+}
+
+Checker_Diagnostic_Severity :: enum {
+	Error,
+	Warning,
+	Note,
 }
 
 Checker_Diagnostic :: struct {
-	kind:    Checker_Diagnostic_Kind,
-	range:   Range,
-	message: string,
-	entity:  ^Entity,
-	decl:    ^Decl_Info,
+	kind:     Checker_Diagnostic_Kind,
+	severity: Checker_Diagnostic_Severity,
+	range:    Range,
+	message:  string,
+	entity:   ^Entity,
+	decl:     ^Decl_Info,
 }
 
 Checker_Expr_Info :: struct {
@@ -69,6 +80,10 @@ Checker_Info :: struct {
 	uses:             [dynamic]Checker_Entity_Use,
 	expr_infos:       [dynamic]Checker_Expr_Record,
 	diagnostics:      [dynamic]Checker_Diagnostic,
+	unresolved:       [dynamic]Checker_Unresolved_Candidate,
+	resolved_external_dependencies:   [dynamic]Semantic_Dependency_Edge,
+	unresolved_external_dependencies: [dynamic]Semantic_Dependency_Edge,
+	external:         ^External_Semantics,
 }
 
 Checker_Context :: struct {
@@ -93,23 +108,27 @@ Checker :: struct {
 	builtin_context: Checker_Context,
 }
 
-checker_make :: proc(project: ^Project) -> (checker: Checker) {
-	checker_init(&checker, project)
+checker_make :: proc(project: ^Project, external: ^External_Semantics = nil) -> (checker: Checker) {
+	checker_init(&checker, project, external)
 	return
 }
 
-checker_init :: proc(checker: ^Checker, project: ^Project) {
+checker_init :: proc(checker: ^Checker, project: ^Project, external: ^External_Semantics = nil) {
 	assert(project != nil)
 	checker^ = {}
 	checker.project = project
-	checker.info = checker_info_make(checker, project)
+	checker.info = checker_info_make(checker, project, external)
 	checker.info.builtin_scope = checker_ensure_builtin_scope(checker)
 	checker.builtin_context = checker_context_make(checker)
 	checker.builtin_context.scope = checker.info.builtin_scope
 	checker_register_builtins(checker)
 }
 
-checker_info_make :: proc(checker: ^Checker, project: ^Project) -> Checker_Info {
+checker_info_make :: proc(
+	checker: ^Checker,
+	project: ^Project,
+	external: ^External_Semantics = nil,
+) -> Checker_Info {
 	return Checker_Info {
 		checker          = checker,
 		project          = project,
@@ -121,6 +140,10 @@ checker_info_make :: proc(checker: ^Checker, project: ^Project) -> Checker_Info 
 		uses             = make([dynamic]Checker_Entity_Use, 0, 32, project.allocator),
 		expr_infos       = make([dynamic]Checker_Expr_Record, 0, 32, project.allocator),
 		diagnostics      = make([dynamic]Checker_Diagnostic, 0, 8, project.allocator),
+		unresolved       = make([dynamic]Checker_Unresolved_Candidate, 0, 8, project.allocator),
+		resolved_external_dependencies   = make([dynamic]Semantic_Dependency_Edge, 0, 8, project.allocator),
+		unresolved_external_dependencies = make([dynamic]Semantic_Dependency_Edge, 0, 8, project.allocator),
+		external         = external,
 	}
 }
 
@@ -322,17 +345,31 @@ checker_lookup_reference :: proc(
 	ctx: ^Checker_Context,
 	namespace: Namespace,
 	name: string_interner.String,
+	preferred_external_kind: External_Candidate_Kind = .Global_Symbol,
 ) -> (
 	^Scope,
 	^Entity,
 	bool,
 ) {
-	assert(ctx != nil && ctx.scope != nil)
 	if scope, entity, ok := checker_lookup_declaration(ctx, namespace, name); ok {
 		return scope, entity, true
 	}
 	if namespace == .Value {
-		return checker_lookup_declaration(ctx, .Type, name)
+		if scope, entity, ok := checker_lookup_declaration(ctx, .Type, name); ok {
+			return scope, entity, true
+		}
+	}
+	if ctx.info.external != nil {
+		if key, binding, ok := external_semantic_index_lookup(&ctx.info.external.index, namespace, name, preferred_external_kind); ok {
+			checker_add_resolved_external_dependency(ctx, key, binding)
+			return binding.entity.scope, binding.entity, true
+		}
+		if namespace == .Value {
+			if key, binding, ok := external_semantic_index_lookup(&ctx.info.external.index, .Type, name, preferred_external_kind); ok {
+				checker_add_resolved_external_dependency(ctx, key, binding)
+				return binding.entity.scope, binding.entity, true
+			}
+		}
 	}
 	return nil, nil, false
 }
@@ -595,15 +632,17 @@ checker_add_diagnostic :: proc(
 	message: string,
 	entity: ^Entity = nil,
 	decl: ^Decl_Info = nil,
+	severity: Checker_Diagnostic_Severity = .Error,
 ) {
 	append(
 		&ctx.info.diagnostics,
 		Checker_Diagnostic {
-			kind    = kind,
-			range   = range,
-			message = strings.clone(message, ctx.project.allocator) if message != "" else "",
-			entity  = entity,
-			decl    = decl,
+			kind     = kind,
+			severity = severity,
+			range    = range,
+			message  = strings.clone(message, ctx.project.allocator) if message != "" else "",
+			entity   = entity,
+			decl     = decl,
 		},
 	)
 }

@@ -9,10 +9,12 @@ checker_check_object_semantics :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 	assert(ok && payload != nil)
 
 	if entity.kind == .Class && string_interner.is_valid(payload.superclass_name) {
-		if _, super, super_ok := checker_lookup_lexical_declaration_from_scope(entity.scope, .Type, payload.superclass_name);
+		if super, super_ok := checker_lookup_type_name_from_scope(ctx, entity.scope, payload.superclass_name, .Class);
 		   super_ok && super.kind == .Class {
 			checker_add_entity_use(ctx, entity.node, super)
 			checker_check_entity_for_operand(ctx, super)
+		} else {
+			checker_add_unresolved_oop_type_candidate(ctx, entity, payload.superclass_name, .Class)
 		}
 	}
 
@@ -20,12 +22,35 @@ checker_check_object_semantics :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 		if !string_interner.is_valid(interface_name) {
 			continue
 		}
-		if _, iface, iface_ok := checker_lookup_lexical_declaration_from_scope(entity.scope, .Type, interface_name);
+		if iface, iface_ok := checker_lookup_type_name_from_scope(ctx, entity.scope, interface_name, .Interface);
 		   iface_ok && iface.kind == .Interface {
 			checker_add_entity_use(ctx, entity.node, iface)
 			checker_check_entity_for_operand(ctx, iface)
+		} else {
+			checker_add_unresolved_oop_type_candidate(ctx, entity, interface_name, .Interface)
 		}
 	}
+}
+
+checker_add_unresolved_oop_type_candidate :: proc(
+	ctx: ^Checker_Context,
+	owner: ^Entity,
+	name: string_interner.String,
+	kind: External_Candidate_Kind,
+) {
+	if owner == nil {
+		return
+	}
+	checker_add_unresolved_candidate(
+		ctx,
+		name,
+		.Type,
+		kind,
+		.Type_Reference,
+		.Unresolved_Type,
+		owner.name_range,
+		owner.node,
+	)
 }
 
 checker_prepare_oop_routine_signature :: proc(ctx: ^Checker_Context, routine: ^Entity) {
@@ -98,7 +123,7 @@ checker_lookup_inherited_object_member :: proc(
 		if !string_interner.is_valid(interface_name) {
 			continue
 		}
-		if _, iface, iface_ok := checker_lookup_lexical_declaration_from_scope(owner.scope, .Type, interface_name);
+		if iface, iface_ok := checker_lookup_type_name_from_scope(ctx, owner.scope, interface_name, .Interface);
 		   iface_ok && iface.kind == .Interface {
 			if member, member_ok := checker_lookup_object_member(iface, namespace, name); member_ok {
 				return member, true
@@ -106,7 +131,7 @@ checker_lookup_inherited_object_member :: proc(
 		}
 	}
 	if owner.kind == .Class && string_interner.is_valid(payload.superclass_name) {
-		if _, super, super_ok := checker_lookup_lexical_declaration_from_scope(owner.scope, .Type, payload.superclass_name);
+		if super, super_ok := checker_lookup_type_name_from_scope(ctx, owner.scope, payload.superclass_name, .Class);
 		   super_ok && super.kind == .Class {
 			if member, member_ok := checker_lookup_object_member(super, namespace, name); member_ok {
 				return member, true
@@ -127,11 +152,12 @@ checker_lookup_qualified_interface_member :: proc(
 	if owner == nil || !string_interner.is_valid(interface_name) || !string_interner.is_valid(member_name) {
 		return nil, false
 	}
-	if !checker_type_exposes_interface(ctx, owner, interface_name) {
+	iface, iface_ok := checker_lookup_type_name_from_scope(ctx, owner.scope, interface_name, .Interface)
+	if !iface_ok || iface.kind != .Interface {
+		checker_add_unresolved_oop_type_candidate(ctx, owner, interface_name, .Interface)
 		return nil, false
 	}
-	_, iface, iface_ok := checker_lookup_lexical_declaration_from_scope(owner.scope, .Type, interface_name)
-	if !iface_ok || iface.kind != .Interface {
+	if !checker_type_exposes_interface(ctx, owner, interface_name) {
 		return nil, false
 	}
 	return checker_lookup_object_member(iface, namespace, member_name)
@@ -251,7 +277,7 @@ checker_ensure_oop_receiver_entities :: proc(ctx: ^Checker_Context, routine: ^En
 	if !string_interner.is_valid(owner_payload.superclass_name) {
 		return
 	}
-	if _, super, super_ok := checker_lookup_lexical_declaration_from_scope(owner.scope, .Type, owner_payload.superclass_name);
+	if super, super_ok := checker_lookup_type_name_from_scope(ctx, owner.scope, owner_payload.superclass_name, .Class);
 	   super_ok && super.kind == .Class {
 		checker_ensure_oop_receiver_entity(ctx, routine, "super", super)
 	}
@@ -418,6 +444,21 @@ checker_class_entity_is_or_inherits_from :: proc(
 		return checker_class_entity_is_or_inherits_from(super, target_name, depth + 1)
 	}
 	return false
+}
+
+checker_lookup_type_name_from_scope :: proc(
+	ctx: ^Checker_Context,
+	scope: ^Scope,
+	name: string_interner.String,
+	preferred_external_kind: External_Candidate_Kind = .Global_Symbol,
+) -> (^Entity, bool) {
+	if scope == nil || !string_interner.is_valid(name) {
+		return nil, false
+	}
+	local := ctx^
+	local.scope = scope
+	_, entity, ok := checker_lookup_reference(&local, .Type, name, preferred_external_kind)
+	return entity, ok
 }
 
 checker_entity_name_is_qualified :: proc(ctx: ^Checker_Context, name: string_interner.String) -> bool {

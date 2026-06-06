@@ -210,9 +210,18 @@ checker_sql_resolve_source :: proc(ctx: ^Checker_Context, name: string, range: R
 	if !string_interner.is_valid(source.name) {
 		return source
 	}
-	_, entity, ok := checker_lookup_reference(ctx, .Type, source.name)
+	_, entity, ok := checker_lookup_reference(ctx, .Type, source.name, .DDIC_Table)
 	if !ok {
 		checker_add_diagnostic(ctx, .Unresolved_Open_Sql_Source, range, checker_sql_source_message(ctx, "unresolved Open SQL source ", source.name))
+		checker_add_unresolved_candidate(
+			ctx,
+			source.name,
+			.Type,
+			.DDIC_Table,
+			.Open_SQL_Source,
+			.Unresolved_SQL_Source,
+			range,
+		)
 		return source
 	}
 	checker_add_entity_use(ctx, nil, entity)

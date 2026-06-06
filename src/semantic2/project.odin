@@ -21,12 +21,17 @@ Project :: struct {
 	host_allocator: mem.Allocator,
 	allocator:      mem.Allocator,
 	interner:       ^string_interner.Interner,
+	owns_interner:  bool,
 	files:          xar.Array(Project_File, 4),
 	entities:       xar.Array(Entity, 8),
 	scopes:         xar.Array(Scope, 6),
 }
 
 project_make :: proc() -> (project: Project) {
+	return project_make_with_interner(nil)
+}
+
+project_make_with_interner :: proc(interner: ^string_interner.Interner) -> (project: Project) {
 	project.host_allocator = context.allocator
 	project.arena = new(virtual.Arena, project.host_allocator)
 	assert(project.arena != nil)
@@ -35,7 +40,12 @@ project_make :: proc() -> (project: Project) {
 	assert(arena_err == .None)
 
 	project.allocator = virtual.arena_allocator(project.arena)
-	project.interner = string_interner.create()
+	if interner != nil {
+		project.interner = interner
+	} else {
+		project.interner = string_interner.create()
+		project.owns_interner = true
+	}
 	xar.init(&project.files, project.allocator)
 	xar.init(&project.entities, project.allocator)
 	xar.init(&project.scopes, project.allocator)
@@ -43,7 +53,9 @@ project_make :: proc() -> (project: Project) {
 }
 
 project_destroy :: proc(project: ^Project) {
-	string_interner.destroy(project.interner)
+	if project.owns_interner {
+		string_interner.destroy(project.interner)
+	}
 	if project.arena != nil {
 		virtual.arena_destroy(project.arena)
 		free(project.arena, project.host_allocator)
