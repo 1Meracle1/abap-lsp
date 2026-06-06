@@ -155,7 +155,13 @@ checker_type_from_ref_data :: proc(
 				continue
 			}
 			if owner := checker_type_object_entity(target); owner != nil {
-				member, member_ok := checker_lookup_object_member(owner, .Value, name)
+				member, member_ok := checker_lookup_object_member_visible(
+					ctx,
+					owner,
+					.Value,
+					name,
+					type_ref.field_ranges[i] if i < len(type_ref.field_ranges) else Range{},
+				)
 				if !member_ok {
 					return project_type_unknown(ctx.project), current_entity
 				}
@@ -173,7 +179,13 @@ checker_type_from_ref_data :: proc(
 			if owner == nil {
 				return project_type_unknown(ctx.project), current_entity
 			}
-			member, member_ok := checker_lookup_object_member(owner, .Type, name)
+			member, member_ok := checker_lookup_object_member_visible(
+				ctx,
+				owner,
+				.Type,
+				name,
+				type_ref.field_ranges[i] if i < len(type_ref.field_ranges) else Range{},
+			)
 			if !member_ok {
 				return project_type_unknown(ctx.project), current_entity
 			}

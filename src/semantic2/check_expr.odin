@@ -250,6 +250,9 @@ checker_check_ident_name :: proc(
 	lhs: bool,
 ) -> (^Entity, bool) {
 	_ = lhs
+	if entity, ok, handled := checker_check_oop_receiver_ident(ctx, node, name, namespace); handled {
+		return entity, ok
+	}
 	interned := checker_intern_name(ctx.project, name)
 	if !string_interner.is_valid(interned) {
 		return nil, false
@@ -350,7 +353,7 @@ checker_check_interface_selector_expr :: proc(
 	namespace: Namespace,
 	lhs: bool,
 ) -> Operand {
-	checker_check_expr(ctx, expr.receiver, .Value)
+	receiver := checker_check_expr(ctx, expr.receiver, .Value)
 	interface_operand := checker_check_expr(ctx, expr.interface, .Type)
 	member_namespace := checker_selector_member_namespace(.Tilde, namespace)
 	name, member_node, name_ok := checker_expr_simple_name(expr.member)
@@ -360,7 +363,21 @@ checker_check_interface_selector_expr :: proc(
 		}
 		return checker_record_operand(ctx, node, .Field, project_type_unknown(ctx.project), lhs = lhs)
 	}
-	if member, ok := checker_lookup_object_member(interface_operand.entity, member_namespace, checker_intern_name(ctx.project, name)); ok {
+	if receiver_owner := checker_type_object_entity(receiver.type); receiver_owner != nil {
+		if !checker_type_exposes_interface(ctx, receiver_owner, interface_operand.entity.name) {
+			checker_add_diagnostic(
+				ctx,
+				.Inaccessible_Member,
+				expr.interface.range,
+				"receiver does not expose interface",
+				interface_operand.entity,
+				interface_operand.entity.decl_info,
+			)
+			checker_record_operand(ctx, member_node, .Value, project_type_unknown(ctx.project), lhs = lhs)
+			return checker_record_operand(ctx, node, .Field, project_type_unknown(ctx.project), lhs = lhs)
+		}
+	}
+	if member, ok := checker_lookup_object_member_visible(ctx, interface_operand.entity, member_namespace, checker_intern_name(ctx.project, name), member_node.range if member_node != nil else Range{}); ok {
 		member_operand := checker_record_entity_operand(ctx, member_node, member, lhs)
 		return checker_record_operand(ctx, node, member_operand.mode, member_operand.type, member, lhs = lhs)
 	}
@@ -401,7 +418,7 @@ checker_lookup_selector_member :: proc(
 			}
 		}
 		if owner := checker_type_object_entity(target); owner != nil {
-			if member, ok := checker_lookup_object_member(owner, namespace, interned); ok {
+			if member, ok := checker_lookup_object_member_visible(ctx, owner, namespace, interned, node.range if node != nil else Range{}); ok {
 				return checker_record_entity_operand(ctx, node, member, lhs)
 			}
 		}
@@ -413,7 +430,7 @@ checker_lookup_selector_member :: proc(
 			owner = checker_type_object_entity(base.type)
 		}
 		if owner != nil && (owner.kind == .Class || owner.kind == .Interface) {
-			if member, ok := checker_lookup_object_member(owner, namespace, interned); ok {
+			if member, ok := checker_lookup_object_member_visible(ctx, owner, namespace, interned, node.range if node != nil else Range{}); ok {
 				return checker_record_entity_operand(ctx, node, member, lhs)
 			}
 		}

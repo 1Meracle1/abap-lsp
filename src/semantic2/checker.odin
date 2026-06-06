@@ -19,6 +19,7 @@ Checker_Diagnostic_Kind :: enum {
 	Unknown_Named_Parameter,
 	Missing_Required_Parameter,
 	Duplicate_Named_Parameter,
+	Inaccessible_Member,
 }
 
 Checker_Diagnostic :: struct {
@@ -283,7 +284,7 @@ checker_lookup_declaration_from_scope :: proc(
 	}
 
 	if owner := checker_enclosing_object_owner(scope); owner != nil {
-		if entity, ok := checker_lookup_object_member(owner, namespace, name); ok {
+		if entity, ok := checker_lookup_object_member_from_scope(scope, owner, namespace, name); ok {
 			return entity.scope, entity, true
 		}
 	}

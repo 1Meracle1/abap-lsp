@@ -936,6 +936,300 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_oop_checker_inherits_redefinition_signature_and_receivers :: proc(t: ^testing.T) {
+	source := `CLASS lcl_root DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_source_position
+      EXPORTING
+        program_name TYPE string
+        include_name TYPE string
+        source_line TYPE i.
+ENDCLASS.
+CLASS lcl_child DEFINITION INHERITING FROM lcl_root.
+  PUBLIC SECTION.
+    METHODS get_source_position REDEFINITION.
+    METHODS own.
+ENDCLASS.
+CLASS lcl_root IMPLEMENTATION.
+  METHOD get_source_position.
+  ENDMETHOD.
+ENDCLASS.
+CLASS lcl_child IMPLEMENTATION.
+  METHOD get_source_position.
+    include_name = program_name.
+    source_line = source_line.
+    me->own( ).
+    super->get_source_position( ).
+  ENDMETHOD.
+  METHOD own.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://oop_redefinition_signature.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Context), 0)
+	child := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_child", .Class)
+	testing.expect(t, child != nil)
+	if child == nil {
+		return
+	}
+	child_payload := child.payload.(^Entity_Object_Payload)
+	method := checker_test_lookup(t, &project, child_payload.definition_scope, .Routine, "get_source_position", .Method)
+	testing.expect(t, method != nil)
+	if method == nil {
+		return
+	}
+	method_payload := method.payload.(^Entity_Routine_Payload)
+	testing.expect_value(t, len(method_payload.parameters), 3)
+	program_name := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "program_name", .Parameter)
+	include_name := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "include_name", .Parameter)
+	source_line := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "source_line", .Parameter)
+	me := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "me", .Parameter)
+	super := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "super", .Parameter)
+	testing.expect(t, .Used in program_name.flags)
+	testing.expect(t, .Used in include_name.flags)
+	testing.expect(t, .Used in source_line.flags)
+	testing.expect(t, .Used in me.flags)
+	testing.expect(t, .Used in super.flags)
+}
+
+@(test)
+root_semantic_oop_checker_reuses_multi_level_redefinition_signatures_in_calls :: proc(t: ^testing.T) {
+	source := `CLASS lcl_helper DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS show_object IMPORTING im_obj_type TYPE string im_name TYPE string.
+ENDCLASS.
+CLASS lcl_root DEFINITION.
+  PUBLIC SECTION.
+    METHODS download IMPORTING im_object_type TYPE string im_object_name TYPE string.
+ENDCLASS.
+CLASS lcl_mid DEFINITION INHERITING FROM lcl_root.
+  PUBLIC SECTION.
+    METHODS download REDEFINITION.
+ENDCLASS.
+CLASS lcl_leaf DEFINITION INHERITING FROM lcl_mid.
+  PUBLIC SECTION.
+    METHODS download REDEFINITION.
+ENDCLASS.
+CLASS lcl_helper IMPLEMENTATION.
+  METHOD show_object.
+  ENDMETHOD.
+ENDCLASS.
+CLASS lcl_leaf IMPLEMENTATION.
+  METHOD download.
+    lcl_helper=>show_object(
+      im_obj_type = im_object_type
+      im_name = im_object_name ).
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://oop_multi_redefinition_signature.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Named_Parameter), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Required_Parameter), 0)
+	leaf := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_leaf", .Class)
+	testing.expect(t, leaf != nil)
+	if leaf == nil {
+		return
+	}
+	leaf_payload := leaf.payload.(^Entity_Object_Payload)
+	method := checker_test_lookup(t, &project, leaf_payload.definition_scope, .Routine, "download", .Method)
+	method_payload := method.payload.(^Entity_Routine_Payload)
+	im_object_type := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "im_object_type", .Parameter)
+	im_object_name := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "im_object_name", .Parameter)
+	testing.expect(t, .Used in im_object_type.flags)
+	testing.expect(t, .Used in im_object_name.flags)
+}
+
+@(test)
+root_semantic_oop_checker_derives_event_handler_parameter_types :: proc(t: ^testing.T) {
+	source := `CLASS lcl_source DEFINITION.
+  PUBLIC SECTION.
+    DATA object_type TYPE string.
+    EVENTS saved EXPORTING VALUE(ex_object) TYPE REF TO lcl_source.
+ENDCLASS.
+CLASS lcl_handler DEFINITION.
+  PUBLIC SECTION.
+    METHODS on_saved FOR EVENT saved OF lcl_source IMPORTING ex_object.
+ENDCLASS.
+CLASS lcl_handler IMPLEMENTATION.
+  METHOD on_saved.
+    DATA lv_type TYPE string.
+    lv_type = ex_object->object_type.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://oop_event_handler.abap")
+
+	source_class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_source", .Class)
+	handler_class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_handler", .Class)
+	testing.expect(t, source_class != nil && handler_class != nil)
+	if source_class == nil || handler_class == nil {
+		return
+	}
+	handler_payload := handler_class.payload.(^Entity_Object_Payload)
+	method := checker_test_lookup(t, &project, handler_payload.definition_scope, .Routine, "on_saved", .Method)
+	method_payload := method.payload.(^Entity_Routine_Payload)
+	testing.expect_value(t, len(method_payload.parameters), 1)
+	param := method_payload.parameters[0]
+	testing.expect(t, .Has_Declared_Type in param.flags)
+	testing.expect_value(t, param.type.kind, Type_Kind.Ref)
+	testing.expect(t, checker_type_object_entity(param.type) == source_class)
+
+	source_payload := source_class.payload.(^Entity_Object_Payload)
+	attr := checker_test_lookup(t, &project, source_payload.definition_scope, .Value, "object_type", .Variable)
+	testing.expect(t, .Used in attr.flags)
+}
+
+@(test)
+root_semantic_oop_checker_resolves_qualified_interface_signature :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_message.
+  METHODS get_longtext IMPORTING preserve_newlines TYPE abap_bool.
+ENDINTERFACE.
+INTERFACE lif_t100_message.
+  INTERFACES lif_message.
+ENDINTERFACE.
+CLASS lcl_exception DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_t100_message.
+    METHODS lif_message~get_longtext REDEFINITION.
+ENDCLASS.
+CLASS lcl_exception IMPLEMENTATION.
+  METHOD lif_message~get_longtext.
+    DATA lv_keep TYPE abap_bool.
+    lv_keep = preserve_newlines.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://oop_qualified_interface_signature.abap")
+
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_exception", .Class)
+	testing.expect(t, class != nil)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	method := checker_test_lookup(t, &project, class_payload.definition_scope, .Routine, "lif_message~get_longtext", .Method)
+	method_payload := method.payload.(^Entity_Routine_Payload)
+	testing.expect_value(t, len(method_payload.parameters), 1)
+	param := method_payload.parameters[0]
+	testing.expect_value(t, string_interner.load(project.interner, param.name), "preserve_newlines")
+	testing.expect_value(t, checker_test_type_name(&project, param.type), "abap_bool")
+	testing.expect(t, .Used in param.flags)
+}
+
+@(test)
+root_semantic_oop_checker_types_me_in_interface_method_implementation :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_log.
+  METHODS merge RETURNING VALUE(ro_log) TYPE REF TO lif_log.
+ENDINTERFACE.
+CLASS lcl_log DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_log.
+    METHODS lif_log~merge REDEFINITION.
+ENDCLASS.
+CLASS lcl_log IMPLEMENTATION.
+  METHOD lif_log~merge.
+    ro_log = me.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://oop_interface_me.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 0)
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_log", .Class)
+	testing.expect(t, class != nil)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	method := checker_test_lookup(t, &project, class_payload.definition_scope, .Routine, "lif_log~merge", .Method)
+	method_payload := method.payload.(^Entity_Routine_Payload)
+	ro_log := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "ro_log", .Parameter)
+	me := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "me", .Parameter)
+	testing.expect(t, checker_type_object_entity(ro_log.type) != nil)
+	testing.expect(t, checker_type_object_entity(me.type) == class)
+	testing.expect(t, .Used in ro_log.flags)
+	testing.expect(t, .Used in me.flags)
+}
+
+@(test)
+root_semantic_oop_checker_enforces_visibility_and_friends :: proc(t: ^testing.T) {
+	source := `CLASS lcl_target DEFINITION FRIENDS lcl_friend.
+  PRIVATE SECTION.
+    CLASS-DATA gv_value TYPE i.
+ENDCLASS.
+CLASS lcl_friend DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+CLASS lcl_other DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+CLASS lcl_friend IMPLEMENTATION.
+  METHOD run.
+    lcl_target=>gv_value = 1.
+  ENDMETHOD.
+ENDCLASS.
+CLASS lcl_other IMPLEMENTATION.
+  METHOD run.
+    lcl_target=>gv_value = 2.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://oop_visibility_friends.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Inaccessible_Member), 1)
+}
+
+@(test)
+root_semantic_oop_checker_rejects_me_super_outside_instance_methods :: proc(t: ^testing.T) {
+	source := `CLASS lcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS base.
+ENDCLASS.
+CLASS lcl_child DEFINITION INHERITING FROM lcl_parent.
+  PUBLIC SECTION.
+    CLASS-METHODS stat.
+ENDCLASS.
+CLASS lcl_child IMPLEMENTATION.
+  METHOD stat.
+    me->stat( ).
+    super->base( ).
+  ENDMETHOD.
+ENDCLASS.
+FORM run.
+  me->stat( ).
+ENDFORM.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://oop_invalid_receivers.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Context), 3)
+}
+
+@(test)
 root_semantic_decl_split_collects_broadened_file_declarations :: proc(t: ^testing.T) {
 	source := `REPORT zdecl.
 INCLUDE zinc IF FOUND.

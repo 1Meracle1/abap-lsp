@@ -77,7 +77,12 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 	}
 }
 
-checker_collect_data_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Data_Decl, owner: ^Entity = nil) {
+checker_collect_data_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Data_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	if decl.kind == .Normal {
 		entity := checker_collect_variable_decl(
 			ctx,
@@ -92,7 +97,7 @@ checker_collect_data_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Data_Decl, o
 			decl.occurs,
 		)
 		checker_note_variable_decl_flags(entity, read_only = decl.read_only)
-		checker_note_member_owner(entity, owner, .Attribute)
+		checker_note_member_owner(entity, owner, .Attribute, visibility)
 		return
 	}
 
@@ -114,10 +119,16 @@ checker_collect_data_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Data_Decl, o
 		.Variable,
 		owner,
 		decl.read_only,
+		visibility,
 	)
 }
 
-checker_collect_data_chained_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Data_Chained_Decl, owner: ^Entity = nil) {
+checker_collect_data_chained_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Data_Chained_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
 	for clause in decl.decls {
 		checker_collect_data_branch(
@@ -137,11 +148,17 @@ checker_collect_data_chained_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Data
 			.Variable,
 			owner,
 			clause.read_only,
+			visibility,
 		)
 	}
 }
 
-checker_collect_constants_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Constants_Decl, owner: ^Entity = nil) {
+checker_collect_constants_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Constants_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
 	for clause in decl.constants {
 		checker_collect_data_branch(
@@ -160,11 +177,17 @@ checker_collect_constants_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Constan
 			clause.renaming_suffix,
 			.Constant,
 			owner,
+			visibility = visibility,
 		)
 	}
 }
 
-checker_collect_statics_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Statics_Decl, owner: ^Entity = nil) {
+checker_collect_statics_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Statics_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
 	for clause in decl.statics {
 		entity := checker_collect_data_branch(
@@ -183,12 +206,18 @@ checker_collect_statics_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Statics_D
 			clause.renaming_suffix,
 			.Variable,
 			owner,
+			visibility = visibility,
 		)
 		checker_note_variable_decl_flags(entity, is_static = true)
 	}
 }
 
-checker_collect_class_data_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_Data_Decl, owner: ^Entity = nil) {
+checker_collect_class_data_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Class_Data_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
 	for clause in decl.decls {
 		entity := checker_collect_data_branch(
@@ -208,6 +237,7 @@ checker_collect_class_data_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_
 			.Variable,
 			owner,
 			clause.read_only,
+			visibility,
 		)
 		checker_note_variable_decl_flags(entity, is_static = true, read_only = clause.read_only)
 	}
@@ -230,6 +260,7 @@ checker_collect_data_branch :: proc(
 	entity_kind: Entity_Kind,
 	owner: ^Entity = nil,
 	read_only := false,
+	visibility: Visibility = .Public,
 ) -> ^Entity {
 	if .Common_Part_Delimiter in flags {
 		return nil
@@ -244,7 +275,7 @@ checker_collect_data_branch :: proc(
 		} else {
 			entity = checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, range, node, type_clause, value_clause, occurs = occurs)
 			checker_note_variable_decl_flags(entity, read_only = read_only)
-			checker_note_member_owner(entity, owner, .Attribute)
+			checker_note_member_owner(entity, owner, .Attribute, visibility)
 		}
 		if entity == nil {
 			return nil
@@ -263,7 +294,7 @@ checker_collect_data_branch :: proc(
 		}
 		entity := checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, range, node, type_clause, value_clause, occurs = occurs)
 		checker_note_variable_decl_flags(entity, read_only = read_only)
-		checker_note_member_owner(entity, owner, .Attribute)
+		checker_note_member_owner(entity, owner, .Attribute, visibility)
 		return entity
 	case .Include_Type, .Include_Structure:
 		if len(frames^) > 0 {
@@ -287,10 +318,15 @@ checker_collect_data_branch :: proc(
 	return nil
 }
 
-checker_collect_types_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Types_Decl) {
+checker_collect_types_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Types_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
 	for clause in decl.types {
-		checker_collect_type_clause(ctx, &frames, clause, decl.range, &decl.node.decl_base.stmt_base)
+		checker_collect_type_clause(ctx, &frames, clause, decl.range, &decl.node.decl_base.stmt_base, owner, visibility)
 	}
 }
 
@@ -300,6 +336,8 @@ checker_collect_type_clause :: proc(
 	clause: ast.Types_Clause,
 	range: Range,
 	node: ^ast.Node,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
 ) -> ^Entity {
 	if .Common_Part_Delimiter in clause.flags {
 		return nil
@@ -313,6 +351,7 @@ checker_collect_type_clause :: proc(
 			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, range, node, clause.type_clause, nil, clause.occurs)
 		} else {
 			entity = checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause, clause.occurs)
+			checker_note_member_owner(entity, owner, .None, visibility)
 		}
 		if entity == nil {
 			return nil
@@ -329,7 +368,9 @@ checker_collect_type_clause :: proc(
 			parent := &frames^[len(frames^) - 1]
 			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, range, node, clause.type_clause, nil, clause.occurs)
 		}
-		return checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause, clause.occurs)
+		entity := checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause, clause.occurs)
+		checker_note_member_owner(entity, owner, .None, visibility)
+		return entity
 	case .Include_Type, .Include_Structure:
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
@@ -530,17 +571,30 @@ checker_note_variable_decl_flags :: proc(
 	}
 }
 
-checker_note_member_owner :: proc(entity: ^Entity, owner: ^Entity, member_kind: Class_Member_Kind) {
+checker_note_member_owner :: proc(
+	entity: ^Entity,
+	owner: ^Entity,
+	member_kind: Class_Member_Kind,
+	visibility: Visibility = .Public,
+) {
 	if entity == nil || owner == nil {
 		return
 	}
 	entity.owner = owner
+	entity.member_kind = member_kind
+	entity.visibility = visibility
 	if payload, ok := entity.payload.(^Entity_Routine_Payload); ok && payload != nil {
 		payload.member_kind = member_kind
+		payload.visibility = visibility
 	}
 }
 
-checker_collect_field_symbols_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Field_Symbols_Decl, owner: ^Entity = nil) {
+checker_collect_field_symbols_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Field_Symbols_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	for clause in decl.field_symbols {
 		entity := checker_collect_variable_decl(
 			ctx,
@@ -552,19 +606,29 @@ checker_collect_field_symbols_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Fie
 			clause.type_clause,
 			nil,
 		)
-		checker_note_member_owner(entity, owner, .Attribute)
+		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
 }
 
-checker_collect_tables_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Tables_Decl, owner: ^Entity = nil) {
+checker_collect_tables_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Tables_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	for clause in decl.tables {
 		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, decl.range, &decl.node.decl_base.stmt_base, nil, nil)
 		checker_note_variable_decl_flags(entity, has_type = clause.name != "")
-		checker_note_member_owner(entity, owner, .Attribute)
+		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
 }
 
-checker_collect_ranges_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Ranges_Decl, owner: ^Entity = nil) {
+checker_collect_ranges_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Ranges_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	for clause in decl.ranges {
 		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, decl.range, &decl.node.decl_base.stmt_base, nil, nil)
 		if entity != nil {
@@ -574,11 +638,16 @@ checker_collect_ranges_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Ranges_Dec
 			checker_collect_range_component(ctx, structure, scope, entity, "low", decl.range, &decl.node.decl_base.stmt_base)
 			checker_collect_range_component(ctx, structure, scope, entity, "high", decl.range, &decl.node.decl_base.stmt_base)
 		}
-		checker_note_member_owner(entity, owner, .Attribute)
+		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
 }
 
-checker_collect_select_options_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Select_Options_Decl, owner: ^Entity = nil) {
+checker_collect_select_options_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Select_Options_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	for clause in decl.options {
 		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, decl.range, &decl.node.decl_base.stmt_base, nil, nil, clause.default_clause)
 		if entity != nil {
@@ -588,7 +657,7 @@ checker_collect_select_options_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Se
 			checker_collect_range_component(ctx, structure, scope, entity, "low", decl.range, &decl.node.decl_base.stmt_base)
 			checker_collect_range_component(ctx, structure, scope, entity, "high", decl.range, &decl.node.decl_base.stmt_base)
 		}
-		checker_note_member_owner(entity, owner, .Attribute)
+		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
 }
 
@@ -604,7 +673,12 @@ checker_collect_range_component :: proc(
 	_ = checker_collect_structure_field(ctx, structure, scope, owner, name, range, node, nil, nil)
 }
 
-checker_collect_parameters_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Parameters_Decl, owner: ^Entity = nil) {
+checker_collect_parameters_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Parameters_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	for clause in decl.parameters {
 		entity := checker_collect_variable_decl(
 			ctx,
@@ -621,11 +695,16 @@ checker_collect_parameters_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Parame
 			entity.flags += {.Has_Declared_Type}
 			entity.flags -= {.Untyped}
 		}
-		checker_note_member_owner(entity, owner, .Attribute)
+		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
 }
 
-checker_collect_controls_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Controls_Decl, owner: ^Entity = nil) {
+checker_collect_controls_decl :: proc(
+	ctx: ^Checker_Context,
+	decl: ^ast.Controls_Decl,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) {
 	for clause in decl.controls {
 		entity := checker_collect_variable_decl(
 			ctx,
@@ -637,7 +716,7 @@ checker_collect_controls_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Controls
 			clause.type_clause,
 			nil,
 		)
-		checker_note_member_owner(entity, owner, .Attribute)
+		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
 }
 
@@ -713,6 +792,11 @@ checker_collect_class_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_Decl)
 	}
 	if decl.superclass_name != "" {
 		payload.superclass_name = checker_intern_name(ctx.project, decl.superclass_name)
+	}
+	for friend in decl.friends {
+		if friend.name != "" {
+			append(&payload.friends, checker_intern_name(ctx.project, friend.name))
+		}
 	}
 	scope := checker_ensure_object_definition_scope(ctx, entity, .Class, decl.range)
 	body_ctx := ctx^
@@ -805,19 +889,19 @@ checker_collect_class_body :: proc(
 		}
 		#partial switch n in stmt.derived_stmt {
 		case ^ast.Data_Decl:
-			checker_collect_data_decl(ctx, n, owner)
+			checker_collect_data_decl(ctx, n, owner, visibility)
 		case ^ast.Data_Chained_Decl:
-			checker_collect_data_chained_decl(ctx, n, owner)
+			checker_collect_data_chained_decl(ctx, n, owner, visibility)
 		case ^ast.Class_Data_Decl:
-			checker_collect_class_data_decl(ctx, n, owner)
+			checker_collect_class_data_decl(ctx, n, owner, visibility)
 		case ^ast.Statics_Decl:
-			checker_collect_statics_decl(ctx, n, owner)
+			checker_collect_statics_decl(ctx, n, owner, visibility)
 		case ^ast.Constants_Decl:
-			checker_collect_constants_decl(ctx, n, owner)
+			checker_collect_constants_decl(ctx, n, owner, visibility)
 		case ^ast.Field_Symbols_Decl:
-			checker_collect_field_symbols_decl(ctx, n, owner)
+			checker_collect_field_symbols_decl(ctx, n, owner, visibility)
 		case ^ast.Types_Decl:
-			checker_collect_types_decl(ctx, n)
+			checker_collect_types_decl(ctx, n, owner, visibility)
 		case:
 			checker_collect_stmt_entities(ctx, stmt)
 		}
@@ -899,7 +983,7 @@ checker_collect_oop_routine_member :: proc(
 	if entity == nil {
 		return nil
 	}
-	entity.owner = owner
+	checker_note_member_owner(entity, owner, .Method if kind == .Method else .Event, visibility)
 	payload, ok := entity.payload.(^Entity_Routine_Payload)
 	assert(ok && payload != nil)
 	payload.visibility = visibility
@@ -947,6 +1031,8 @@ checker_collect_oop_alias :: proc(
 	entity := project_new_entity(ctx.project, .Alias)
 	entity.node = node
 	entity.owner = owner
+	entity.member_kind = .None
+	entity.visibility = visibility
 	interned := checker_intern_name(ctx.project, name)
 	decl := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Alias, range, node)
 	if payload, ok := entity.payload.(^Entity_Alias_Payload); ok && payload != nil {
@@ -1310,6 +1396,7 @@ checker_check_routine_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl:
 	payload, ok := entity.payload.(^Entity_Routine_Payload)
 	assert(ok && payload != nil)
 	assert(payload.signature_scope != nil && payload.body_scope != nil)
+	checker_prepare_oop_routine_signature(ctx, entity)
 	if entity.type == nil || entity.type.kind != .Routine {
 		entity.type = project_type_routine(ctx.project, payload.signature_scope)
 	}
@@ -1367,6 +1454,7 @@ checker_check_object_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: 
 	if entity.type == nil {
 		entity.type = project_type_class_or_interface(ctx.project, entity.name, entity, entity.kind)
 	}
+	checker_check_object_semantics(ctx, entity)
 }
 
 checker_check_metadata_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {

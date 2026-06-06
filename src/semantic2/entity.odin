@@ -83,6 +83,8 @@ Entity :: struct {
 	source_file:  ^Project_File,
 	scope:        ^Scope,
 	owner:        ^Entity,
+	member_kind:  Class_Member_Kind,
+	visibility:   Visibility,
 	type:         ^Type,
 	decl_info:    ^Decl_Info,
 	node:         ^ast.Node,
@@ -234,6 +236,7 @@ Entity_Object_Payload :: struct {
 	signature:              string,
 	superclass_name:        string_interner.String,
 	implemented_interfaces: [dynamic]string_interner.String,
+	friends:                [dynamic]string_interner.String,
 	is_abstract:            bool,
 }
 
@@ -401,6 +404,7 @@ entity_default_payload :: proc(kind: Entity_Kind, allocator: mem.Allocator) -> E
 		payload^ = Entity_Object_Payload {
 			kind = .Class,
 			implemented_interfaces = make([dynamic]string_interner.String, 0, 2, allocator),
+			friends = make([dynamic]string_interner.String, 0, 1, allocator),
 		}
 		return payload
 	case .Interface:
@@ -408,6 +412,7 @@ entity_default_payload :: proc(kind: Entity_Kind, allocator: mem.Allocator) -> E
 		payload^ = Entity_Object_Payload {
 			kind = .Interface,
 			implemented_interfaces = make([dynamic]string_interner.String, 0, 2, allocator),
+			friends = make([dynamic]string_interner.String, 0, 1, allocator),
 		}
 		return payload
 	case .Form, .Method, .Module, .Event:
