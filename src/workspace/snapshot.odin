@@ -3,7 +3,7 @@ package abap_frontend_workspace
 import analyze "src:semantic/analyze"
 import session "src:semantic/session"
 import execution "src:execution"
-import remote_deps "src:semantic/remote_dependencies"
+import remote_deps2 "src:remote_dependencies"
 
 import "core:mem"
 import "core:strings"
@@ -320,8 +320,8 @@ workspace_open_remote_dependency_object :: proc(
 	if object_kind == "" {
 		return nil, false, "unsupported dependency object kind"
 	}
-	config := dependency_config_from_workspace(workspace)
-	source_input, source_ok, source_error := remote_deps.open_remote_dependency_source(
+	config := remote_dependency_config_from_workspace(workspace)
+	source_input, source_ok, source_error := remote_deps2.open_source(
 		&config,
 		object_kind,
 		key.object_name,
@@ -333,8 +333,8 @@ workspace_open_remote_dependency_object :: proc(
 	opened := Workspace_Opened_Dependency {
 		key = dependency_object_key_clone(key, allocator),
 		input = Workspace_Source_Input {
-			uri      = strings.clone(source_input.uri, allocator),
-			text     = strings.clone(source_input.source, allocator),
+			uri      = strings.clone(source_input.path, allocator),
+			text     = strings.clone(source_input.source_text, allocator),
 			revision = current.revision + 1,
 			open     = true,
 			role = .Full_Source,
@@ -637,7 +637,7 @@ workspace_dependency_object_kind_text :: proc(kind: Dependency_Object_Kind) -> s
 	case .Function_Module:
 		return "function-module"
 	case .Type_Pool:
-		return remote_deps.TYPEPOOL_OBJECT_KIND
+		return remote_deps2.TYPEPOOL_OBJECT_KIND
 	case .Message_Class:
 		return "message-class"
 	case .DDIC_Data_Element:

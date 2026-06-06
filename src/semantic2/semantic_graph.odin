@@ -1,4 +1,4 @@
-package abap_frontend_semantic
+package abap_frontend_semantic2
 
 import string_interner "src:string_interner"
 
@@ -15,6 +15,7 @@ Semantic_Graph_Project_Ref :: struct {
 Semantic_Graph_Update :: struct {
 	changed_files:            []Workspace_File_Input,
 	fetched_external_objects: []External_Interface_Input,
+	fetched_external_sources: []External_Source_Input,
 	external_frontier_stable: bool,
 	blocked_dependencies:     []Semantic_Object_Key,
 }
@@ -37,6 +38,7 @@ Semantic_Graph_Session :: struct {
 	generation:                      u64,
 	editable_files:                  [dynamic]Workspace_File_Input,
 	external_inputs:                 [dynamic]External_Interface_Input,
+	external_source_inputs:          [dynamic]External_Source_Input,
 	external:                        External_Semantics,
 	analysis:                        Workspace_Analysis,
 	has_analysis:                    bool,
@@ -60,6 +62,7 @@ semantic_graph_session_make :: proc(
 		owns_interner = owns_interner,
 		editable_files = make([dynamic]Workspace_File_Input, 0, 8, allocator),
 		external_inputs = make([dynamic]External_Interface_Input, 0, 8, allocator),
+		external_source_inputs = make([dynamic]External_Source_Input, 0, 8, allocator),
 		external = external_semantics_make(actual_interner, allocator),
 		pending_dirty_editable_projects = make(
 			[dynamic]Semantic_Graph_Project_Ref,
@@ -83,6 +86,9 @@ semantic_graph_session_destroy :: proc(session: ^Semantic_Graph_Session) {
 	for &input in session.external_inputs {
 		semantic_graph_external_input_destroy(&input, session.allocator)
 	}
+	for &input in session.external_source_inputs {
+		semantic_graph_external_source_input_destroy(&input, session.allocator)
+	}
 	semantic_graph_project_ref_list_destroy(
 		&session.pending_dirty_editable_projects,
 		session.allocator,
@@ -92,6 +98,9 @@ semantic_graph_session_destroy :: proc(session: ^Semantic_Graph_Session) {
 	}
 	if session.external_inputs.allocator.procedure != nil {
 		delete(session.external_inputs)
+	}
+	if session.external_source_inputs.allocator.procedure != nil {
+		delete(session.external_source_inputs)
 	}
 	external_semantics_destroy(&session.external)
 	if session.owns_interner {
@@ -160,6 +169,13 @@ semantic_graph_session_apply_update :: proc(
 		semantic_graph_session_apply_external_updates(
 			session,
 			update.fetched_external_objects,
+			&result,
+		)
+	}
+	if len(update.fetched_external_sources) > 0 {
+		semantic_graph_session_apply_external_source_updates(
+			session,
+			update.fetched_external_sources,
 			&result,
 		)
 	}
@@ -274,6 +290,35 @@ semantic_graph_session_upsert_external_input :: proc(
 	return true
 }
 
+semantic_graph_session_upsert_external_source_input :: proc(
+	session: ^Semantic_Graph_Session,
+	input: External_Source_Input,
+) -> bool {
+	assert(input.path != "")
+	for &existing in session.external_source_inputs {
+		if existing.path != input.path {
+			continue
+		}
+		if semantic_graph_external_source_input_equal(existing, input) {
+			return false
+		}
+		semantic_graph_external_source_input_destroy(&existing, session.allocator)
+		existing = semantic_graph_external_source_input_clone(input, session.allocator)
+		if existing.generation == 0 {
+			existing.generation = session.generation
+		}
+		_ = external_semantics_upsert_source_input(&session.external, existing)
+		return true
+	}
+	next := semantic_graph_external_source_input_clone(input, session.allocator)
+	if next.generation == 0 {
+		next.generation = session.generation
+	}
+	append(&session.external_source_inputs, next)
+	_ = external_semantics_upsert_source_input(&session.external, next)
+	return true
+}
+
 semantic_graph_session_apply_external_updates :: proc(
 	session: ^Semantic_Graph_Session,
 	inputs: []External_Interface_Input,
@@ -286,6 +331,49 @@ semantic_graph_session_apply_external_updates :: proc(
 		assert(semantic_object_key_is_valid(key))
 		_ = semantic_graph_session_upsert_external_input(session, input)
 		semantic_graph_object_key_list_add(&queue, key)
+	}
+
+	for cursor := 0; cursor < len(queue); cursor += 1 {
+		key := queue[cursor]
+		semantic_graph_object_key_list_add(&processed, key)
+		semantic_graph_session_mark_waiters_for_provider(session, key, &queue, result)
+		if input, ok := semantic_graph_session_external_input_for_key(session, key); ok {
+			semantic_graph_session_reanalyze_external_input(session, input, result)
+		}
+	}
+
+	for key in processed {
+		if session.has_analysis {
+			semantic_graph_clear_unresolved_waiters_for_provider(
+				&session.analysis.external_index,
+				key,
+			)
+		}
+		semantic_graph_clear_unresolved_waiters_for_provider(&session.external.index, key)
+	}
+}
+
+semantic_graph_session_apply_external_source_updates :: proc(
+	session: ^Semantic_Graph_Session,
+	inputs: []External_Source_Input,
+	result: ^Semantic_Graph_Update_Result,
+) {
+	queue := make([dynamic]Semantic_Object_Key, 0, len(inputs), context.temp_allocator)
+	processed := make([dynamic]Semantic_Object_Key, 0, len(inputs), context.temp_allocator)
+	for input in inputs {
+		if !semantic_graph_session_upsert_external_source_input(session, input) {
+			continue
+		}
+		for provided in input.provided_names {
+			name := string_interner.insert(
+				session.interner,
+				strings.to_lower(provided, context.temp_allocator),
+			)
+			semantic_graph_object_key_list_add(
+				&queue,
+				Semantic_Object_Key{kind = .Include_Source, name = name},
+			)
+		}
 	}
 
 	for cursor := 0; cursor < len(queue); cursor += 1 {
@@ -413,9 +501,10 @@ semantic_graph_session_rebuild_workspace :: proc(session: ^Semantic_Graph_Sessio
 	}
 	session.analysis = semantic_workspace_analyze(
 		Workspace_Input {
-			files = session.editable_files[:],
-			external = &session.external,
-			interner = session.interner,
+			files            = session.editable_files[:],
+			external         = &session.external,
+			external_sources = session.external_source_inputs[:],
+			interner         = session.interner,
 		},
 		session.allocator,
 	)
@@ -437,7 +526,7 @@ semantic_graph_collect_frontier :: proc(
 	}
 	for record in index.projects {
 		for candidate in record.unresolved {
-			if semantic_graph_candidate_resolved(index, candidate) {
+			if semantic_graph_candidate_resolved(session, index, candidate) {
 				continue
 			}
 			if frontier_stable || semantic_graph_candidate_is_blocked(candidate, blocked) {
@@ -465,11 +554,16 @@ semantic_graph_session_current_index :: proc(
 }
 
 semantic_graph_candidate_resolved :: proc(
+	session: ^Semantic_Graph_Session,
 	index: ^External_Semantic_Index,
 	candidate: Checker_Unresolved_Candidate,
 ) -> bool {
 	if index == nil || !string_interner.is_valid(candidate.name) {
 		return false
+	}
+	if candidate.kind == .Include_Source &&
+	   semantic_graph_external_source_has_name(session, candidate.name) {
+		return true
 	}
 	_, _, ok := external_semantic_index_lookup(
 		index,
@@ -478,6 +572,23 @@ semantic_graph_candidate_resolved :: proc(
 		candidate.kind,
 	)
 	return ok
+}
+
+semantic_graph_external_source_has_name :: proc(
+	session: ^Semantic_Graph_Session,
+	name: string_interner.String,
+) -> bool {
+	if session == nil || !string_interner.is_valid(name) {
+		return false
+	}
+	for source in session.external.source_files {
+		for provided in source.provided_names {
+			if provided == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 semantic_graph_candidate_is_blocked :: proc(
@@ -843,4 +954,52 @@ semantic_graph_external_input_equal :: proc(a, b: External_Interface_Input) -> b
 		a.generation == b.generation &&
 		a.role == b.role \
 	)
+}
+
+semantic_graph_external_source_input_clone :: proc(
+	input: External_Source_Input,
+	allocator: mem.Allocator,
+) -> External_Source_Input {
+	assert(input.path != "")
+	provided_names := make([]string, len(input.provided_names), allocator)
+	for name, i in input.provided_names {
+		provided_names[i] = strings.clone(name, allocator)
+	}
+	return External_Source_Input {
+		path           = strings.clone(input.path, allocator),
+		root           = input.root,
+		provided_names = provided_names,
+		source_hash    = input.source_hash,
+		generation     = input.generation,
+	}
+}
+
+semantic_graph_external_source_input_destroy :: proc(
+	input: ^External_Source_Input,
+	allocator: mem.Allocator,
+) {
+	delete(input.path, allocator)
+	for name in input.provided_names {
+		delete(name, allocator)
+	}
+	if input.provided_names != nil {
+		delete(input.provided_names, allocator)
+	}
+	input^ = {}
+}
+
+semantic_graph_external_source_input_equal :: proc(a, b: External_Source_Input) -> bool {
+	if a.path != b.path ||
+	   a.root != b.root ||
+	   a.source_hash != b.source_hash ||
+	   a.generation != b.generation ||
+	   len(a.provided_names) != len(b.provided_names) {
+		return false
+	}
+	for name, i in a.provided_names {
+		if name != b.provided_names[i] {
+			return false
+		}
+	}
+	return true
 }

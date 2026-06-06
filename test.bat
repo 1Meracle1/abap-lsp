@@ -36,6 +36,7 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" check "%ROOT%src\semantic" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\semantic2" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\semantic\remote_dependencies" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\remote_dependencies" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\lints" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\persistence\sqlite3" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\dependency_store" -no-entry-point %ODIN_FLAGS% || exit /b
@@ -51,6 +52,7 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" test "%ROOT%src\semantic" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\semantic2" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\semantic\remote_dependencies" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\remote_dependencies" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\lints" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\persistence\sqlite3" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\dependency_store" %ODIN_FLAGS% %TEST_FLAGS%

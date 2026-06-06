@@ -1,4 +1,4 @@
-package abap_frontend_semantic
+package abap_frontend_semantic2
 
 import "src:ast"
 import string_interner "src:string_interner"
@@ -122,6 +122,14 @@ External_Source_File :: struct {
 	path:           string,
 	root:           ^ast.File,
 	provided_names: [dynamic]string_interner.String,
+}
+
+External_Source_Input :: struct {
+	path:           string,
+	root:           ^ast.File,
+	provided_names: []string,
+	source_hash:    u64,
+	generation:     u64,
 }
 
 External_Interface_Input :: struct {
@@ -740,6 +748,41 @@ external_semantics_add_source_file :: proc(
 		},
 	)
 	return &external.source_files[len(external.source_files) - 1]
+}
+
+external_semantics_upsert_source_input :: proc(
+	external: ^External_Semantics,
+	input: External_Source_Input,
+) -> ^External_Source_File {
+	assert(external != nil)
+	for &source in external.source_files {
+		if source.path != input.path {
+			continue
+		}
+		source.root = input.root
+		source.provided_names = external_source_input_intern_names(external, input.provided_names)
+		return &source
+	}
+	return external_semantics_add_source_file(
+		external,
+		input.path,
+		input.root,
+		input.provided_names,
+	)
+}
+
+external_source_input_intern_names :: proc(
+	external: ^External_Semantics,
+	provided_names: []string,
+) -> [dynamic]string_interner.String {
+	names := make([dynamic]string_interner.String, 0, len(provided_names), external.allocator)
+	for name in provided_names {
+		interned := external_intern_name(external, name)
+		if string_interner.is_valid(interned) {
+			append(&names, interned)
+		}
+	}
+	return names
 }
 
 external_semantics_lookup :: proc(

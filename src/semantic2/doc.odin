@@ -1,4 +1,4 @@
-package abap_frontend_semantic
+package abap_frontend_semantic2
 
 /*
 semantic2 is the project-snapshot semantic checker for parsed ABAP source.

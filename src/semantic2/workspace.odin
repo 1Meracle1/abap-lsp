@@ -1,4 +1,4 @@
-package abap_frontend_semantic
+package abap_frontend_semantic2
 
 import "src:ast"
 import string_interner "src:string_interner"
@@ -9,6 +9,7 @@ import "core:strings"
 Workspace_Input :: struct {
 	files:               []Workspace_File_Input,
 	external:            ^External_Semantics,
+	external_sources:    []External_Source_Input,
 	external_interfaces: []External_Interface_Input,
 	interner:            ^string_interner.Interner,
 }
@@ -118,13 +119,16 @@ semantic_workspace_prepare_external_context :: proc(
 ) {
 	external := input.external
 	owns_external := false
-	if len(input.external_interfaces) > 0 && external == nil {
+	if (len(input.external_sources) > 0 || len(input.external_interfaces) > 0) && external == nil {
 		external = new(External_Semantics, allocator)
 		assert(external != nil)
 		external^ = external_semantics_make(interner, allocator)
 		owns_external = true
 	}
 	if external != nil {
+		for source_input in input.external_sources {
+			_ = external_semantics_upsert_source_input(external, source_input)
+		}
 		for interface_input in input.external_interfaces {
 			_ = external_semantics_analyze_interface_input(external, interface_input)
 		}

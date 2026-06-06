@@ -1,4 +1,4 @@
-package abap_frontend_semantic
+package abap_frontend_semantic2
 
 import "src:parser"
 import string_interner "src:string_interner"
@@ -97,6 +97,29 @@ workspace_test_external_interface_input :: proc(
 		root       = parsed.root,
 		generation = generation,
 		role       = role,
+	}
+}
+
+workspace_test_external_source_input :: proc(
+	t: ^testing.T,
+	path: string,
+	source: string,
+	provided_names: []string,
+	generation: u64 = 0,
+) -> External_Source_Input {
+	parsed := parser.parse_with_diagnostic_policy(
+		source,
+		path,
+		context.allocator,
+		.Include_Fragment,
+	)
+	testing.expect_value(t, len(parsed.errors), 0)
+	return External_Source_Input {
+		path           = path,
+		root           = parsed.root,
+		provided_names = provided_names,
+		source_hash    = 1,
+		generation     = generation,
 	}
 }
 
@@ -421,6 +444,59 @@ semantic_graph_external_update_dirties_only_reverse_dependents :: proc(t: ^testi
 	if analysis != nil {
 		testing.expect_value(t, workspace_test_candidate_count(analysis, .Global_Symbol, "zcl_a"), 0)
 		testing.expect_value(t, workspace_test_candidate_count(analysis, .Global_Symbol, "zcl_other"), 1)
+	}
+}
+
+@(test)
+semantic_graph_fetched_external_source_expands_include_and_unblocks_frontier :: proc(t: ^testing.T) {
+	interner := string_interner.create()
+	defer string_interner.destroy(interner)
+
+	session := semantic_graph_session_make(interner)
+	defer semantic_graph_session_destroy(&session)
+
+	files := [?]Workspace_File_Input {
+		workspace_test_file(
+			t,
+			"mem://zmain.report.abap",
+			"REPORT zmain. INCLUDE zinc_ext. WRITE gv_ext.",
+		),
+	}
+	initial := semantic_graph_session_apply_update(
+		&session,
+		Semantic_Graph_Update {
+			changed_files            = files[:],
+			external_frontier_stable = false,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&initial)
+
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, initial.new_fetch_requests[:], .Include_Source, "zinc_ext"), 1)
+
+	source := workspace_test_external_source_input(
+		t,
+		"adt://zinc_ext.include.abap",
+		"DATA gv_ext TYPE i.",
+		{"zinc_ext"},
+		2,
+	)
+	source_inputs := [?]External_Source_Input{source}
+	fetched := semantic_graph_session_apply_update(
+		&session,
+		Semantic_Graph_Update {
+			fetched_external_sources = source_inputs[:],
+			external_frontier_stable = true,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&fetched)
+
+	testing.expect_value(t, workspace_test_graph_project_path_count(fetched.rebuilt_editable_projects[:], "mem://zmain.report.abap"), 1)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, fetched.new_fetch_requests[:], .Include_Source, "zinc_ext"), 0)
+
+	analysis := semantic_graph_session_current_analysis(&session)
+	testing.expect(t, analysis != nil)
+	if analysis != nil {
+		testing.expect_value(t, workspace_test_candidate_count(analysis, .Include_Source, "zinc_ext"), 0)
 	}
 }
 

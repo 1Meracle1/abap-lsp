@@ -1,4 +1,4 @@
-package abap_frontend_semantic
+package abap_frontend_semantic2
 
 import "src:ast"
 import string_interner "src:string_interner"

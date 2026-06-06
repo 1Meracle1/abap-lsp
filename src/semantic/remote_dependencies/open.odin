@@ -16,7 +16,7 @@ open_remote_dependency_source :: proc(
 	if config == nil || strings.trim_space(object_name) == "" {
 		return {}, false, "missing dependency object"
 	}
-	candidate, candidate_ok := remote_dependency_candidate_for_object(
+	candidate, candidate_ok := candidate_for_object(
 		object_kind,
 		object_name,
 	)
@@ -180,7 +180,7 @@ open_source_input_from_dependency_record :: proc(
 	return input
 }
 
-remote_dependency_candidate_for_object :: proc(
+candidate_for_object :: proc(
 	object_kind, object_name: string,
 ) -> (deps.Remote_Dependency_Candidate, bool) {
 	name := strings.trim_space(object_name)
