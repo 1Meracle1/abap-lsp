@@ -24,8 +24,6 @@ Project :: struct {
 	scopes:         xar.Array(Scope, 6),
 }
 
-project_unknown_type: Type = Type{kind = .Unknown}
-
 project_make :: proc() -> (project: Project) {
 	project.host_allocator = context.allocator
 	project.arena = new(virtual.Arena, project.host_allocator)
@@ -104,6 +102,9 @@ project_new_type :: proc(project: ^Project, kind: Type_Kind = .Unknown) -> ^Type
 	typ^ = value
 	return typ
 }
+
+@(private)
+project_unknown_type: Type = Type{kind = .Unknown}
 
 project_type_unknown :: #force_inline proc(_: ^Project = nil) -> ^Type {
 	return &project_unknown_type

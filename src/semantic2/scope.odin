@@ -5,11 +5,13 @@ import string_interner "src:string_interner"
 Scope_Kind :: enum {
 	Builtin,
 	File,
+	Structure,
 	Class,
 	Interface,
 	Form,
 	Module, // Function module; dialog MODULE blocks do not own local declarations.
 	Method,
+	Event,
 	Constructor_For, // Constructor-expression helper field context.
 }
 
