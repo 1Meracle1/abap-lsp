@@ -56,6 +56,35 @@ checker_test_find_scope_entity :: proc(
 	return nil
 }
 
+checker_test_structure_field :: proc(
+	t: ^testing.T,
+	project: ^Project,
+	structure: ^Structure,
+	name: string,
+) -> ^Entity {
+	interned := string_interner.insert(project.interner, name)
+	field, ok := checker_lookup_structure_field(structure, interned)
+	testing.expect(t, ok)
+	return field if ok else nil
+}
+
+checker_test_type_name :: proc(project: ^Project, typ: ^Type) -> string {
+	if typ == nil || !string_interner.is_valid(typ.name) {
+		return ""
+	}
+	return string_interner.load(project.interner, typ.name)
+}
+
+checker_test_diagnostic_count :: proc(checker: ^Checker, kind: Checker_Diagnostic_Kind) -> int {
+	count := 0
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == kind {
+			count += 1
+		}
+	}
+	return count
+}
+
 @(test)
 root_semantic_checker_creates_builtin_and_file_scopes :: proc(t: ^testing.T) {
 	project := project_make()
@@ -266,12 +295,11 @@ root_semantic_builtin_structures_create_project_owned_fields :: proc(t: ^testing
 
 @(test)
 root_semantic_builtin_type_refs_and_calls_resolve_through_registered_entities :: proc(t: ^testing.T) {
-	source :=
-		"DATA gv_ptr TYPE %_C_POINTER.\n" +
-		"DATA gv_len TYPE i.\n" +
-		"FORM run.\n" +
-		"  gv_len = strlen( 'abc' ).\n" +
-		"ENDFORM.\n"
+	source := `DATA gv_ptr TYPE %_C_POINTER.
+DATA gv_len TYPE i.
+FORM run.
+  gv_len = strlen( 'abc' ).
+ENDFORM.`
 
 	parsed := parser.parse(source, "mem://builtin_use.abap", context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -321,6 +349,259 @@ root_semantic_builtin_type_refs_and_calls_resolve_through_registered_entities ::
 		}
 	}
 	testing.expect(t, call_info_found)
+}
+
+@(test)
+root_semantic_type_checker_resolves_declared_type_shapes :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+ENDCLASS.
+INTERFACE lif_demo.
+ENDINTERFACE.
+TYPES: BEGIN OF ty_line,
+         text TYPE string,
+       END OF ty_line.
+TYPES ty_lines TYPE STANDARD TABLE OF ty_line WITH DEFAULT KEY.
+DATA ls_line TYPE ty_line.
+DATA lt_lines TYPE ty_lines.
+DATA lr_demo TYPE REF TO lcl_demo.
+DATA lr_if TYPE REF TO lif_demo.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://type_shapes.abap")
+
+	ty_line := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_line", .Type_Def)
+	ty_lines := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_lines", .Type_Def)
+	ls_line := checker_test_lookup(t, &project, file.root_scope, .Value, "ls_line", .Variable)
+	lt_lines := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_lines", .Variable)
+	lr_demo := checker_test_lookup(t, &project, file.root_scope, .Value, "lr_demo", .Variable)
+	lr_if := checker_test_lookup(t, &project, file.root_scope, .Value, "lr_if", .Variable)
+	testing.expect(t, ty_line != nil && ty_lines != nil && ls_line != nil && lt_lines != nil)
+	testing.expect(t, lr_demo != nil && lr_if != nil)
+	if ty_line == nil || ty_lines == nil || ls_line == nil || lt_lines == nil || lr_demo == nil || lr_if == nil {
+		return
+	}
+
+	testing.expect_value(t, ty_line.type.kind, Type_Kind.Named)
+	line_structure := checker_type_structure(ty_line.type)
+	testing.expect(t, line_structure != nil)
+	if line_structure != nil {
+		text := checker_test_structure_field(t, &project, line_structure, "text")
+		testing.expect(t, text != nil && text.type != nil)
+		if text != nil && text.type != nil {
+			testing.expect_value(t, text.type.kind, Type_Kind.Builtin)
+			testing.expect_value(t, checker_test_type_name(&project, text.type), "string")
+		}
+	}
+	testing.expect(t, checker_type_same(ls_line.type, ty_line.type))
+
+	testing.expect_value(t, ty_lines.type.kind, Type_Kind.Named)
+	testing.expect(t, ty_lines.type.base != nil)
+	if ty_lines.type.base != nil {
+		testing.expect_value(t, ty_lines.type.base.kind, Type_Kind.Table)
+		testing.expect_value(t, ty_lines.type.base.table_form, ast.Data_Type_Form.Standard_Table)
+		testing.expect(t, checker_type_same(ty_lines.type.base.base, ty_line.type))
+	}
+	testing.expect(t, checker_type_same(lt_lines.type, ty_lines.type))
+
+	testing.expect_value(t, lr_demo.type.kind, Type_Kind.Ref)
+	if lr_demo.type.base != nil {
+		testing.expect_value(t, lr_demo.type.base.kind, Type_Kind.Class)
+		testing.expect_value(t, checker_test_type_name(&project, lr_demo.type.base), "lcl_demo")
+	}
+	testing.expect_value(t, lr_if.type.kind, Type_Kind.Ref)
+	if lr_if.type.base != nil {
+		testing.expect_value(t, lr_if.type.base.kind, Type_Kind.Interface)
+		testing.expect_value(t, checker_test_type_name(&project, lr_if.type.base), "lif_demo")
+	}
+}
+
+@(test)
+root_semantic_type_checker_bounds_recursive_aliases :: proc(t: ^testing.T) {
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, `TYPES ty_self TYPE ty_self.`, "mem://recursive_type_alias.abap")
+
+	ty_self := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_self", .Type_Def)
+	testing.expect(t, ty_self != nil)
+	if ty_self == nil {
+		return
+	}
+	testing.expect_value(t, ty_self.state, Entity_State.Failed)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Declaration_Cycle), 1)
+	testing.expect(t, ty_self.type != nil)
+	if ty_self.type != nil {
+		testing.expect_value(t, ty_self.type.kind, Type_Kind.Named)
+		testing.expect(t, ty_self.type.base != nil)
+		if ty_self.type.base != nil {
+			testing.expect_value(t, ty_self.type.base.kind, Type_Kind.Unknown)
+		}
+	}
+}
+
+@(test)
+root_semantic_type_checker_expands_structured_include_members :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_base,
+         a TYPE i,
+       END OF ty_base.
+TYPES: BEGIN OF ty_wrap,
+         INCLUDE TYPE ty_base,
+         b TYPE string,
+       END OF ty_wrap.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://structured_include.abap")
+
+	wrap := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_wrap", .Type_Def)
+	testing.expect(t, wrap != nil)
+	if wrap == nil {
+		return
+	}
+	structure := checker_type_structure(wrap.type)
+	testing.expect(t, structure != nil)
+	if structure == nil {
+		return
+	}
+	testing.expect_value(t, len(structure.fields), 2)
+	testing.expect_value(t, string_interner.load(project.interner, structure.fields[0].name), "a")
+	testing.expect_value(t, string_interner.load(project.interner, structure.fields[1].name), "b")
+	testing.expect_value(t, checker_test_type_name(&project, structure.fields[0].type), "i")
+	testing.expect_value(t, checker_test_type_name(&project, structure.fields[1].type), "string")
+
+	include_name := string_interner.insert(project.interner, "include")
+	_, include_found := checker_lookup_structure_field(structure, include_name)
+	testing.expect(t, !include_found)
+}
+
+@(test)
+root_semantic_type_checker_resolves_structured_components_named_begin_and_end :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_code_range,
+         begin TYPE i,
+         end TYPE i,
+       END OF ty_code_range.
+TYPES ty_code_ranges TYPE SORTED TABLE OF ty_code_range WITH UNIQUE KEY begin.
+DATA lt_ranges TYPE ty_code_ranges.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://keyword_component_type_refs.abap")
+
+	code_range := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_code_range", .Type_Def)
+	code_ranges := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_code_ranges", .Type_Def)
+	lt_ranges := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_ranges", .Variable)
+	testing.expect(t, code_range != nil && code_ranges != nil && lt_ranges != nil)
+	if code_range == nil || code_ranges == nil || lt_ranges == nil {
+		return
+	}
+	structure := checker_type_structure(code_range.type)
+	testing.expect(t, structure != nil)
+	if structure != nil {
+		testing.expect_value(t, len(structure.fields), 2)
+		testing.expect_value(t, string_interner.load(project.interner, structure.fields[0].name), "begin")
+		testing.expect_value(t, string_interner.load(project.interner, structure.fields[1].name), "end")
+	}
+	testing.expect(t, code_ranges.type != nil && code_ranges.type.base != nil)
+	if code_ranges.type != nil && code_ranges.type.base != nil {
+		testing.expect_value(t, code_ranges.type.base.kind, Type_Kind.Table)
+		testing.expect_value(t, code_ranges.type.base.table_form, ast.Data_Type_Form.Sorted_Table)
+		testing.expect(t, checker_type_same(code_ranges.type.base.base, code_range.type))
+	}
+	testing.expect(t, checker_type_same(lt_ranges.type, code_ranges.type))
+}
+
+@(test)
+root_semantic_type_checker_resolves_like_line_of_and_ranges :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_line,
+         text TYPE string,
+       END OF ty_line.
+TYPES ty_lines TYPE STANDARD TABLE OF ty_line WITH DEFAULT KEY.
+TYPES ty_range TYPE RANGE OF string.
+DATA lt_lines TYPE ty_lines.
+FIELD-SYMBOLS <line> LIKE LINE OF lt_lines.
+DATA beket TYPE i.
+DATA int_eket LIKE beket OCCURS 0 WITH HEADER LINE.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://like_line_of.abap")
+
+	ty_line := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_line", .Type_Def)
+	ty_range := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_range", .Type_Def)
+	line := checker_test_lookup(t, &project, file.root_scope, .Value, "<line>", .Field_Symbol)
+	int_eket := checker_test_lookup(t, &project, file.root_scope, .Value, "int_eket", .Variable)
+	testing.expect(t, ty_line != nil && ty_range != nil && line != nil && int_eket != nil)
+	if ty_line == nil || ty_range == nil || line == nil || int_eket == nil {
+		return
+	}
+	testing.expect(t, checker_type_same(line.type, ty_line.type))
+	testing.expect(t, ty_range.type != nil && ty_range.type.base != nil)
+	if ty_range.type != nil && ty_range.type.base != nil {
+		testing.expect_value(t, ty_range.type.base.kind, Type_Kind.Table)
+		testing.expect_value(t, ty_range.type.base.table_form, ast.Data_Type_Form.Range_Of)
+		testing.expect_value(t, checker_test_type_name(&project, ty_range.type.base.base), "string")
+	}
+	testing.expect_value(t, int_eket.type.kind, Type_Kind.Table)
+	testing.expect_value(t, int_eket.type.table_form, ast.Data_Type_Form.Like_Table)
+	testing.expect_value(t, checker_test_type_name(&project, int_eket.type.base), "i")
+}
+
+@(test)
+root_semantic_type_checker_resolves_ast_type_ref_paths :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_demo.
+  TYPES ty_line TYPE i.
+ENDINTERFACE.
+DATA lv_date LIKE sy-datum.
+DATA lr_item TYPE REF TO lif_demo=>ty_line.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://type_ref_paths.abap")
+
+	lv_date := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_date", .Variable)
+	lr_item := checker_test_lookup(t, &project, file.root_scope, .Value, "lr_item", .Variable)
+	testing.expect(t, lv_date != nil && lr_item != nil)
+	if lv_date == nil || lr_item == nil {
+		return
+	}
+	testing.expect_value(t, checker_test_type_name(&project, lv_date.type), "d")
+	testing.expect_value(t, lr_item.type.kind, Type_Kind.Ref)
+	if lr_item.type.base != nil {
+		testing.expect_value(t, checker_test_type_name(&project, lr_item.type.base), "ty_line")
+	}
+
+	sy, sy_ok := checker_lookup_builtin_entity(&checker, .Value, "sy")
+	testing.expect(t, sy_ok && .Used in sy.flags)
+	lif_demo := checker_test_lookup(t, &project, file.root_scope, .Type, "lif_demo", .Interface)
+	testing.expect(t, lif_demo != nil && .Used in lif_demo.flags)
+}
+
+@(test)
+root_semantic_type_checker_validates_generic_builtin_contexts :: proc(t: ^testing.T) {
+	source := `FIELD-SYMBOLS <value> TYPE simple.
+FORM demo USING iv_number TYPE numeric CHANGING cv_data TYPE data.
+ENDFORM.
+DATA lr_data TYPE REF TO data.
+DATA lr_object TYPE REF TO object.
+DATA lv_simple TYPE simple.
+TYPES ty_numeric TYPE numeric.
+CONSTANTS c_any TYPE any VALUE IS INITIAL.
+DATA lr_simple TYPE REF TO simple.
+DATA lo_object TYPE object.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://generic_builtin_contexts.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Generic_Builtin_Type), 4)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Object_Type_Reference), 1)
 }
 
 @(test)
@@ -421,15 +702,14 @@ root_semantic_checker_reports_duplicate_declarations :: proc(t: ^testing.T) {
 
 @(test)
 root_semantic_scope_lookup_keeps_namespaces_and_reports_shadowing :: proc(t: ^testing.T) {
-	source :=
-		"DATA shared TYPE i.\n" +
-		"TYPES shared TYPE i.\n" +
-		"FORM shared.\n" +
-		"ENDFORM.\n" +
-		"FORM run.\n" +
-		"  DATA shared TYPE i.\n" +
-		"  shared = 1.\n" +
-		"ENDFORM.\n"
+	source := `DATA shared TYPE i.
+TYPES shared TYPE i.
+FORM shared.
+ENDFORM.
+FORM run.
+  DATA shared TYPE i.
+  shared = 1.
+ENDFORM.`
 
 	project := project_make()
 	defer project_destroy(&project)
@@ -506,15 +786,14 @@ root_semantic_scope_lookup_prefers_local_then_imported_then_parent :: proc(t: ^t
 
 @(test)
 root_semantic_checker_walks_file_declarations_routine_body_and_expressions :: proc(t: ^testing.T) {
-	source :=
-		"TYPES: BEGIN OF ty_line,\n" +
-		"         value TYPE i,\n" +
-		"       END OF ty_line.\n" +
-		"DATA gv TYPE i.\n" +
-		"FORM add USING iv TYPE i.\n" +
-		"  DATA lv TYPE i.\n" +
-		"  lv = iv + gv.\n" +
-		"ENDFORM.\n"
+	source := `TYPES: BEGIN OF ty_line,
+         value TYPE i,
+       END OF ty_line.
+DATA gv TYPE i.
+FORM add USING iv TYPE i.
+  DATA lv TYPE i.
+  lv = iv + gv.
+ENDFORM.`
 
 	parsed := parser.parse(source, "mem://zprog.abap", context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -571,26 +850,25 @@ root_semantic_checker_walks_file_declarations_routine_body_and_expressions :: pr
 
 @(test)
 root_semantic_scope_lookup_resolves_oop_aliases_and_qualified_methods :: proc(t: ^testing.T) {
-	source :=
-		"INTERFACE lif_object.\n" +
-		"  METHODS copy IMPORTING iv_value TYPE i.\n" +
-		"  METHODS rename.\n" +
-		"ENDINTERFACE.\n" +
-		"CLASS lcl DEFINITION.\n" +
-		"  PUBLIC SECTION.\n" +
-		"    INTERFACES lif_object.\n" +
-		"    ALIASES alias_copy FOR lif_object~copy.\n" +
-		"    CLASS-METHODS copy.\n" +
-		"    METHODS lif_object~copy REDEFINITION.\n" +
-		"ENDCLASS.\n" +
-		"CLASS lcl IMPLEMENTATION.\n" +
-		"  METHOD copy.\n" +
-		"  ENDMETHOD.\n" +
-		"  METHOD lif_object~copy.\n" +
-		"    DATA lv_value TYPE i.\n" +
-		"    lv_value = iv_value.\n" +
-		"  ENDMETHOD.\n" +
-		"ENDCLASS.\n"
+	source := `INTERFACE lif_object.
+  METHODS copy IMPORTING iv_value TYPE i.
+  METHODS rename.
+ENDINTERFACE.
+CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_object.
+    ALIASES alias_copy FOR lif_object~copy.
+    CLASS-METHODS copy.
+    METHODS lif_object~copy REDEFINITION.
+ENDCLASS.
+CLASS lcl IMPLEMENTATION.
+  METHOD copy.
+  ENDMETHOD.
+  METHOD lif_object~copy.
+    DATA lv_value TYPE i.
+    lv_value = iv_value.
+  ENDMETHOD.
+ENDCLASS.`
 
 	project := project_make()
 	defer project_destroy(&project)
@@ -645,29 +923,28 @@ root_semantic_scope_lookup_resolves_oop_aliases_and_qualified_methods :: proc(t:
 
 @(test)
 root_semantic_decl_split_collects_broadened_file_declarations :: proc(t: ^testing.T) {
-	source :=
-		"REPORT zdecl.\n" +
-		"INCLUDE zinc IF FOUND.\n" +
-		"DATA gv_value TYPE i.\n" +
-		"DATA(lv_inline) = 1.\n" +
-		"CONSTANTS gc_limit TYPE i VALUE 1.\n" +
-		"FIELD-SYMBOLS <fs_row> TYPE any.\n" +
-		"STATICS sv_count TYPE i.\n" +
-		"TABLES mara.\n" +
-		"RANGES r_matnr FOR mara-matnr.\n" +
-		"PARAMETERS p_count TYPE i DEFAULT 1.\n" +
-		"SELECT-OPTIONS s_matnr FOR mara-matnr DEFAULT 'A' TO 'Z'.\n" +
-		"CONTROLS tc_main TYPE tableview USING SCREEN 100.\n" +
-		"TYPES: BEGIN OF ty_line,\n" +
-		"         id TYPE i,\n" +
-		"       END OF ty_line.\n" +
-		"DATA: BEGIN OF gs_row,\n" +
-		"        id TYPE i,\n" +
-		"      END OF gs_row.\n" +
-		"CONSTANTS: BEGIN OF gc_pair,\n" +
-		"             a TYPE i VALUE 1,\n" +
-		"             b TYPE i VALUE 2,\n" +
-		"           END OF gc_pair.\n"
+	source := `REPORT zdecl.
+INCLUDE zinc IF FOUND.
+DATA gv_value TYPE i.
+DATA(lv_inline) = 1.
+CONSTANTS gc_limit TYPE i VALUE 1.
+FIELD-SYMBOLS <fs_row> TYPE any.
+STATICS sv_count TYPE i.
+TABLES mara.
+RANGES r_matnr FOR mara-matnr.
+PARAMETERS p_count TYPE i DEFAULT 1.
+SELECT-OPTIONS s_matnr FOR mara-matnr DEFAULT 'A' TO 'Z'.
+CONTROLS tc_main TYPE tableview USING SCREEN 100.
+TYPES: BEGIN OF ty_line,
+         id TYPE i,
+       END OF ty_line.
+DATA: BEGIN OF gs_row,
+        id TYPE i,
+      END OF gs_row.
+CONSTANTS: BEGIN OF gc_pair,
+             a TYPE i VALUE 1,
+             b TYPE i VALUE 2,
+           END OF gc_pair.`
 
 	project := project_make()
 	defer project_destroy(&project)
@@ -729,27 +1006,26 @@ root_semantic_decl_split_collects_broadened_file_declarations :: proc(t: ^testin
 
 @(test)
 root_semantic_decl_split_collects_class_interface_and_oop_members :: proc(t: ^testing.T) {
-	source :=
-		"INTERFACE lif_demo.\n" +
-		"  METHODS get_value RETURNING VALUE(rv_value) TYPE string.\n" +
-		"  EVENTS changed EXPORTING VALUE(ev_value) TYPE string.\n" +
-		"ENDINTERFACE.\n" +
-		"CLASS lcl_demo DEFINITION.\n" +
-		"  PUBLIC SECTION.\n" +
-		"    INTERFACES lif_demo.\n" +
-		"    ALIASES get_value FOR lif_demo~get_value.\n" +
-		"    DATA mv_value TYPE string READ-ONLY.\n" +
-		"    CLASS-DATA gv_count TYPE i.\n" +
-		"    METHODS run IMPORTING iv_value TYPE string.\n" +
-		"    CLASS-METHODS create RETURNING VALUE(ro_demo) TYPE REF TO lcl_demo.\n" +
-		"    EVENTS done EXPORTING VALUE(ev_value) TYPE string.\n" +
-		"ENDCLASS.\n" +
-		"CLASS lcl_demo IMPLEMENTATION.\n" +
-		"  METHOD run.\n" +
-		"    DATA lv_local TYPE string.\n" +
-		"    lv_local = iv_value.\n" +
-		"  ENDMETHOD.\n" +
-		"ENDCLASS.\n"
+	source := `INTERFACE lif_demo.
+  METHODS get_value RETURNING VALUE(rv_value) TYPE string.
+  EVENTS changed EXPORTING VALUE(ev_value) TYPE string.
+ENDINTERFACE.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_demo.
+    ALIASES get_value FOR lif_demo~get_value.
+    DATA mv_value TYPE string READ-ONLY.
+    CLASS-DATA gv_count TYPE i.
+    METHODS run IMPORTING iv_value TYPE string.
+    CLASS-METHODS create RETURNING VALUE(ro_demo) TYPE REF TO lcl_demo.
+    EVENTS done EXPORTING VALUE(ev_value) TYPE string.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_local TYPE string.
+    lv_local = iv_value.
+  ENDMETHOD.
+ENDCLASS.`
 
 	project := project_make()
 	defer project_destroy(&project)

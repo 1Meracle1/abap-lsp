@@ -11,6 +11,9 @@ Checker_Diagnostic_Kind :: enum {
 	Declaration_Cycle,
 	Missing_Declaration_Info,
 	Invalid_Context,
+	Invalid_Object_Type_Reference,
+	Invalid_Generic_Builtin_Type,
+	Invalid_Generic_Table_Type,
 }
 
 Checker_Diagnostic :: struct {
@@ -686,6 +689,10 @@ checker_check_expr :: proc(
 	case ^ast.Literal_Expr:
 		return checker_record_operand(ctx, node, .Constant, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Type_Ref_Expr:
+		if namespace == .Type {
+			typ, entity := checker_type_from_expr(ctx, expr, .Type)
+			return checker_record_operand(ctx, node, .Type, typ, entity, lhs)
+		}
 		name := n.base_name
 		if name == "" {
 			name = n.name

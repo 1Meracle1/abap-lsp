@@ -88,6 +88,8 @@ checker_collect_data_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Data_Decl, o
 			&decl.node.decl_base.stmt_base,
 			decl.type_clause,
 			decl.value_clause,
+			nil,
+			decl.occurs,
 		)
 		checker_note_variable_decl_flags(entity, read_only = decl.read_only)
 		checker_note_member_owner(entity, owner, .Attribute)
@@ -105,6 +107,10 @@ checker_collect_data_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Data_Decl, o
 		&decl.node.decl_base.stmt_base,
 		decl.type_clause,
 		decl.value_clause,
+		decl.occurs,
+		decl.include_ref,
+		decl.as_name,
+		decl.renaming_suffix,
 		.Variable,
 		owner,
 		decl.read_only,
@@ -124,6 +130,10 @@ checker_collect_data_chained_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Data
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
 			clause.value_clause,
+			clause.occurs,
+			clause.include_ref,
+			clause.as_name,
+			clause.renaming_suffix,
 			.Variable,
 			owner,
 			clause.read_only,
@@ -144,6 +154,10 @@ checker_collect_constants_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Constan
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
 			clause.value_clause,
+			clause.occurs,
+			clause.include_ref,
+			clause.as_name,
+			clause.renaming_suffix,
 			.Constant,
 			owner,
 		)
@@ -163,6 +177,10 @@ checker_collect_statics_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Statics_D
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
 			clause.value_clause,
+			clause.occurs,
+			clause.include_ref,
+			clause.as_name,
+			clause.renaming_suffix,
 			.Variable,
 			owner,
 		)
@@ -183,6 +201,10 @@ checker_collect_class_data_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
 			clause.value_clause,
+			clause.occurs,
+			clause.include_ref,
+			clause.as_name,
+			clause.renaming_suffix,
 			.Variable,
 			owner,
 			clause.read_only,
@@ -201,6 +223,10 @@ checker_collect_data_branch :: proc(
 	node: ^ast.Node,
 	type_clause: ^ast.Data_Type_Clause,
 	value_clause: ^ast.Value_Clause,
+	occurs: ^ast.Expr,
+	include_ref: ^ast.Expr,
+	as_name: string,
+	renaming_suffix: string,
 	entity_kind: Entity_Kind,
 	owner: ^Entity = nil,
 	read_only := false,
@@ -214,9 +240,9 @@ checker_collect_data_branch :: proc(
 		entity: ^Entity
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name, range, node, type_clause, value_clause)
+			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name, range, node, type_clause, value_clause, occurs)
 		} else {
-			entity = checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, range, node, type_clause, value_clause)
+			entity = checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, range, node, type_clause, value_clause, occurs = occurs)
 			checker_note_variable_decl_flags(entity, read_only = read_only)
 			checker_note_member_owner(entity, owner, .Attribute)
 		}
@@ -233,13 +259,29 @@ checker_collect_data_branch :: proc(
 	case .Normal:
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name, range, node, type_clause, value_clause)
+			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name, range, node, type_clause, value_clause, occurs)
 		}
-		entity := checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, range, node, type_clause, value_clause)
+		entity := checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, range, node, type_clause, value_clause, occurs = occurs)
 		checker_note_variable_decl_flags(entity, read_only = read_only)
 		checker_note_member_owner(entity, owner, .Attribute)
 		return entity
 	case .Include_Type, .Include_Structure:
+		if len(frames^) > 0 {
+			parent := &frames^[len(frames^) - 1]
+			return checker_collect_structure_include(
+				ctx,
+				parent.structure,
+				parent.scope,
+				parent.entity,
+				kind,
+				range,
+				node,
+				include_ref,
+				as_name,
+				renaming_suffix,
+				value_clause,
+			)
+		}
 		return nil
 	}
 	return nil
@@ -268,9 +310,9 @@ checker_collect_type_clause :: proc(
 		entity: ^Entity
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, range, node, clause.type_clause, nil)
+			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, range, node, clause.type_clause, nil, clause.occurs)
 		} else {
-			entity = checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause)
+			entity = checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause, clause.occurs)
 		}
 		if entity == nil {
 			return nil
@@ -285,10 +327,25 @@ checker_collect_type_clause :: proc(
 	case .Normal:
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, range, node, clause.type_clause, nil)
+			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, range, node, clause.type_clause, nil, clause.occurs)
 		}
-		return checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause)
+		return checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause, clause.occurs)
 	case .Include_Type, .Include_Structure:
+		if len(frames^) > 0 {
+			parent := &frames^[len(frames^) - 1]
+			return checker_collect_structure_include(
+				ctx,
+				parent.structure,
+				parent.scope,
+				parent.entity,
+				clause.kind,
+				range,
+				node,
+				clause.include_ref,
+				clause.as_name,
+				clause.renaming_suffix,
+			)
+		}
 		return nil
 	}
 	return nil
@@ -323,6 +380,7 @@ checker_collect_type_decl :: proc(
 	range: Range,
 	node: ^ast.Node,
 	type_clause: ^ast.Data_Type_Clause,
+	occurs: ^ast.Expr = nil,
 ) -> ^Entity {
 	if name == "" {
 		return nil
@@ -330,7 +388,7 @@ checker_collect_type_decl :: proc(
 	entity := project_new_entity(ctx.project, .Type_Def)
 	entity.node = node
 	interned := checker_intern_name(ctx.project, name)
-	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Type_Def, range, node, type_clause)
+	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Type_Def, range, node, type_clause, occurs)
 	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
 	return entity
 }
@@ -345,6 +403,7 @@ checker_collect_structure_field :: proc(
 	node: ^ast.Node,
 	type_clause: ^ast.Data_Type_Clause,
 	value_clause: ^ast.Value_Clause = nil,
+	occurs: ^ast.Expr = nil,
 ) -> ^Entity {
 	assert(structure != nil && scope != nil && owner != nil)
 	if name == "" {
@@ -355,7 +414,7 @@ checker_collect_structure_field :: proc(
 	entity.owner = owner
 	entity.source_file = ctx.file
 	interned := checker_intern_name(ctx.project, name)
-	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Field, range, node, type_clause, value_clause)
+	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Field, range, node, type_clause, occurs, value_clause)
 	payload, ok := entity.payload.(^Entity_Field_Payload)
 	if ok && payload != nil {
 		payload.owner_structure = structure
@@ -363,7 +422,7 @@ checker_collect_structure_field :: proc(
 		payload.decl_range = range
 		payload.field_index = i32(len(structure.fields))
 		payload.value_clause = value_clause
-		payload.type_clause_form = type_clause.form if type_clause != nil else ast.Data_Type_Form.Type
+		payload.type_clause_form = checker_type_form_with_occurs(type_clause.form, occurs) if type_clause != nil else ast.Data_Type_Form.Type
 		payload.has_type_clause_form = type_clause != nil
 		if type_clause != nil {
 			payload.flags += {.Has_Type_Ref}
@@ -371,6 +430,54 @@ checker_collect_structure_field :: proc(
 	}
 	append(&structure.fields, entity)
 	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	return entity
+}
+
+checker_collect_structure_include :: proc(
+	ctx: ^Checker_Context,
+	structure: ^Structure,
+	scope: ^Scope,
+	owner: ^Entity,
+	kind: ast.Decl_Clause_Kind,
+	range: Range,
+	node: ^ast.Node,
+	include_ref: ^ast.Expr,
+	as_name: string = "",
+	renaming_suffix: string = "",
+	value_clause: ^ast.Value_Clause = nil,
+) -> ^Entity {
+	assert(structure != nil && scope != nil && owner != nil)
+	assert(kind == .Include_Type || kind == .Include_Structure)
+	name := as_name
+	entity := project_new_entity(ctx.project, .Field)
+	entity.node = node
+	entity.owner = owner
+	entity.source_file = ctx.file
+	interned := checker_intern_name(ctx.project, name) if name != "" else string_interner.String(0)
+	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Field, range, node, value_clause = value_clause)
+	payload, ok := entity.payload.(^Entity_Field_Payload)
+	assert(ok && payload != nil)
+	payload.owner_structure = structure
+	payload.decl_unit = ctx.file
+	payload.decl_range = range
+	payload.field_index = i32(len(structure.fields))
+	payload.value_clause = value_clause
+	payload.type_ref = checker_type_ref_data_from_expr(
+		ctx,
+		include_ref,
+		.Type if kind == .Include_Type else .Value,
+	)
+	payload.type_clause_form = .Structure
+	payload.has_type_clause_form = true
+	payload.flags += {.Has_Type_Ref}
+	if name == "" {
+		payload.flags += {.Is_Include}
+		if renaming_suffix != "" {
+			payload.include_renaming_suffix = strings.clone(renaming_suffix, ctx.project.allocator)
+		}
+	}
+	append(&structure.fields, entity)
+	_ = checker_add_entity_and_decl_info(ctx, entity, decl, insert_in_scope = name != "")
 	return entity
 }
 
@@ -384,6 +491,7 @@ checker_collect_variable_decl :: proc(
 	type_clause: ^ast.Data_Type_Clause,
 	value_clause: ^ast.Value_Clause,
 	default_clause: ^ast.Default_Clause = nil,
+	occurs: ^ast.Expr = nil,
 ) -> ^Entity {
 	if name == "" {
 		return nil
@@ -391,7 +499,7 @@ checker_collect_variable_decl :: proc(
 	entity := project_new_entity(ctx.project, kind)
 	entity.node = node
 	interned := checker_intern_name(ctx.project, name)
-	decl := project_new_decl_info(ctx.project, entity, scope, interned, kind, range, node, type_clause, value_clause, default_clause)
+	decl := project_new_decl_info(ctx.project, entity, scope, interned, kind, range, node, type_clause, occurs, value_clause, default_clause)
 	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
 	checker_note_variable_decl_flags(entity, has_type = type_clause != nil)
 	return entity
@@ -1152,7 +1260,9 @@ checker_check_builtin_decl :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 }
 
 checker_check_variable_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
-	checker_check_type_clause(ctx, decl.type_clause)
+	if typ := checker_check_decl_type_clause(ctx, entity, decl.type_clause, decl.occurs); typ != nil {
+		entity.type = typ
+	}
 	checker_check_value_clause(ctx, decl.value_clause)
 	checker_check_default_clause(ctx, decl.default_clause)
 	if entity.type == nil {
@@ -1161,7 +1271,9 @@ checker_check_variable_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl
 }
 
 checker_check_constant_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
-	checker_check_type_clause(ctx, decl.type_clause)
+	if typ := checker_check_decl_type_clause(ctx, entity, decl.type_clause, decl.occurs); typ != nil {
+		entity.type = typ
+	}
 	checker_check_value_clause(ctx, decl.value_clause)
 	if entity.type == nil {
 		entity.type = project_type_unknown(ctx.project)
@@ -1174,12 +1286,22 @@ checker_check_type_decl :: proc(
 	decl: ^Decl_Info,
 	named_type: ^Type,
 ) {
-	checker_check_type_clause(ctx, decl.type_clause)
 	if named_type != nil {
 		entity.type = named_type
 		return
 	}
-	if entity.type == nil {
+	if decl.type_clause != nil {
+		base := checker_check_decl_type_clause(ctx, entity, decl.type_clause, decl.occurs)
+		if base == nil {
+			base = project_type_unknown(ctx.project)
+		}
+		entity.type = project_type_named(ctx.project, entity.name, entity, base)
+		if payload, ok := entity.payload.(^Entity_Type_Name_Payload); ok && payload != nil {
+			payload.is_alias = true
+			payload.underlying = base
+			payload.original_type = entity.type
+		}
+	} else if entity.type == nil {
 		entity.type = project_type_named(ctx.project, entity.name, entity, project_type_unknown(ctx.project))
 	}
 }
@@ -1233,20 +1355,18 @@ checker_check_object_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: 
 }
 
 checker_check_metadata_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
-	checker_check_type_clause(ctx, decl.type_clause)
+	if entity.kind == .Field {
+		if typ := checker_check_field_type(ctx, entity, decl); typ != nil {
+			entity.type = typ
+		}
+	} else if typ := checker_check_decl_type_clause(ctx, entity, decl.type_clause, decl.occurs); typ != nil {
+		entity.type = typ
+	}
 	checker_check_value_clause(ctx, decl.value_clause)
 	checker_check_default_clause(ctx, decl.default_clause)
 	if entity.type == nil {
 		entity.type = project_type_unknown(ctx.project)
 	}
-}
-
-checker_check_type_clause :: proc(ctx: ^Checker_Context, clause: ^ast.Data_Type_Clause) {
-	if clause == nil {
-		return
-	}
-	checker_check_expr(ctx, clause.type_ref, .Type)
-	checker_check_expr(ctx, clause.initial_size, .Value)
 }
 
 checker_check_value_clause :: proc(ctx: ^Checker_Context, clause: ^ast.Value_Clause) {
@@ -1414,46 +1534,4 @@ checker_expr_name :: proc(expr: ^ast.Expr) -> (string, Range, bool) {
 		return n.value, n.range, n.value != ""
 	}
 	return "", Range{}, false
-}
-
-checker_type_ref_data_from_expr :: proc(
-	ctx: ^Checker_Context,
-	expr: ^ast.Expr,
-	namespace: Namespace,
-) -> Field_Type_Ref_Data {
-	data := Field_Type_Ref_Data {
-		namespace       = namespace,
-		field_path      = make([dynamic]string_interner.String, 0, 2, ctx.project.allocator),
-		field_ranges    = make([dynamic]Range, 0, 2, ctx.project.allocator),
-		field_derefs    = make([dynamic]bool, 0, 2, ctx.project.allocator),
-		field_selectors = make([dynamic]ast.Selector_Op, 0, 2, ctx.project.allocator),
-	}
-	if expr == nil {
-		return data
-	}
-	#partial switch n in expr.derived_expr {
-	case ^ast.Type_Ref_Expr:
-		base := n.base_name
-		if base == "" {
-			base = n.name
-		}
-		if base != "" {
-			data.base_name = checker_intern_name(ctx.project, base)
-			data.base_range = n.base_range if n.base_range.end > n.base_range.start else n.range
-		}
-		data.is_ref = n.is_ref
-		for segment in n.path {
-			append(&data.field_path, checker_intern_name(ctx.project, segment.name))
-			append(&data.field_ranges, segment.range)
-			append(&data.field_derefs, segment.selector == .Arrow || segment.selector == .Fat_Arrow)
-			append(&data.field_selectors, segment.selector)
-		}
-	case ^ast.Ident_Expr:
-		data.base_name = checker_intern_name(ctx.project, n.name)
-		data.base_range = n.range
-	case ^ast.Literal_Expr:
-		data.base_name = checker_intern_name(ctx.project, n.value)
-		data.base_range = n.range
-	}
-	return data
 }

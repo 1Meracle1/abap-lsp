@@ -66,6 +66,7 @@ Decl_Info :: struct {
 	scope:          ^Scope,
 	decl_node:      ^ast.Node,
 	type_clause:    ^ast.Data_Type_Clause,
+	occurs:         ^ast.Expr,
 	value_clause:   ^ast.Value_Clause,
 	default_clause: ^ast.Default_Clause,
 	docs:           []ast.Ast_Trivia,
