@@ -1,5 +1,6 @@
 package abap_frontend_semantic
 
+import "src:ast"
 import "src:parser"
 import string_interner "src:string_interner"
 import "src:tokenizer"
@@ -27,13 +28,250 @@ root_semantic_checker_creates_builtin_and_file_scopes :: proc(t: ^testing.T) {
 
 @(test)
 root_semantic_entity_kind_namespace_occupancy :: proc(t: ^testing.T) {
-	testing.expect(t, entity_kind_occupies(.Builtin_Type, .Type))
-	testing.expect(t, !entity_kind_occupies(.Builtin_Type, .Value))
-	testing.expect(t, entity_kind_occupies(.Builtin_Routine, .Routine))
-	testing.expect(t, !entity_kind_occupies(.Builtin_Routine, .Type))
+	testing.expect(t, entity_kind_occupies(.Type_Def, .Type))
+	testing.expect(t, !entity_kind_occupies(.Type_Def, .Value))
+	testing.expect(t, entity_kind_occupies(.Builtin, .Routine))
+	testing.expect(t, !entity_kind_occupies(.Builtin, .Type))
+	testing.expect(t, entity_kind_occupies(.Field, .Value))
 	testing.expect(t, entity_kind_occupies(.Variable, .Value))
 	testing.expect(t, entity_kind_occupies(.Report, .Value))
 	testing.expect(t, entity_kind_occupies(.Method, .Routine))
+}
+
+@(test)
+root_semantic_builtin_registry_registers_project_owned_entities :: proc(t: ^testing.T) {
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker := checker_make(&project)
+
+	type_names := [?]string{"i", "%_c_pointer", "simple", "numeric", "any table", "abap_bool", "syst"}
+	for name in type_names {
+		entity, ok := checker_lookup_builtin_entity(&checker, .Type, name)
+		testing.expect(t, ok)
+		testing.expect(t, entity != nil)
+		if entity == nil {
+			continue
+		}
+		testing.expect_value(t, entity.kind, Entity_Kind.Type_Def)
+		testing.expect(t, .Builtin in entity.flags)
+		testing.expect(t, entity.source_file == nil)
+		testing.expect(t, entity.scope == checker.info.builtin_scope)
+		testing.expect_value(t, entity.state, Entity_State.Resolved)
+		testing.expect(t, entity.type != nil)
+		testing.expect(t, entity.decl_info != nil)
+		testing.expect_value(t, entity.decl_info.state, Decl_Info_State.Resolved)
+	}
+
+	abap_bool, abap_bool_ok := checker_lookup_builtin_entity(&checker, .Type, "abap_bool")
+	testing.expect(t, abap_bool_ok)
+	if abap_bool_ok {
+		testing.expect(t, abap_bool.type != nil)
+		if abap_bool.type != nil {
+			testing.expect_value(t, abap_bool.type.kind, Type_Kind.Named)
+			testing.expect(t, abap_bool.type.base != nil)
+			if abap_bool.type.base != nil {
+				testing.expect_value(t, string_interner.load(project.interner, abap_bool.type.base.name), "c")
+			}
+		}
+	}
+
+	abap_true, abap_true_ok := checker_lookup_builtin_entity(&checker, .Value, "abap_true")
+	testing.expect(t, abap_true_ok)
+	if abap_true_ok {
+		testing.expect_value(t, abap_true.kind, Entity_Kind.Constant)
+		testing.expect(t, .Builtin in abap_true.flags)
+		payload, payload_ok := abap_true.payload.(^Entity_Constant_Payload)
+		testing.expect(t, payload_ok)
+		if payload_ok {
+			value, value_ok := payload.constant_value.(^Constant_Text_Value)
+			testing.expect(t, value_ok)
+			if value_ok {
+				testing.expect_value(t, value.value, "X")
+			}
+		}
+		testing.expect(t, abap_true.type != nil)
+		if abap_true.type != nil {
+			testing.expect_value(t, string_interner.load(project.interner, abap_true.type.name), "abap_bool")
+		}
+	}
+
+	abap_func_exporting, abap_func_exporting_ok := checker_lookup_builtin_entity(&checker, .Value, "abap_func_exporting")
+	testing.expect(t, abap_func_exporting_ok)
+	if abap_func_exporting_ok {
+		testing.expect_value(t, abap_func_exporting.kind, Entity_Kind.Constant)
+		testing.expect(t, .Builtin in abap_func_exporting.flags)
+		payload, payload_ok := abap_func_exporting.payload.(^Entity_Constant_Payload)
+		testing.expect(t, payload_ok)
+		if payload_ok {
+			value, value_ok := payload.constant_value.(^Constant_Integer_Value)
+			testing.expect(t, value_ok)
+			if value_ok {
+				testing.expect_value(t, value.value, 10)
+			}
+		}
+		testing.expect(t, abap_func_exporting.type != nil)
+		if abap_func_exporting.type != nil {
+			testing.expect_value(t, string_interner.load(project.interner, abap_func_exporting.type.name), "i")
+		}
+	}
+
+	sy, sy_ok := checker_lookup_builtin_entity(&checker, .Value, "sy")
+	testing.expect(t, sy_ok)
+	if sy_ok {
+		testing.expect_value(t, sy.kind, Entity_Kind.Variable)
+		testing.expect(t, .Builtin in sy.flags)
+		payload, payload_ok := sy.payload.(^Entity_Variable_Payload)
+		testing.expect(t, payload_ok)
+		testing.expect(t, payload != nil)
+		testing.expect(t, sy.type != nil)
+	}
+
+	strlen, strlen_ok := checker_lookup_builtin_entity(&checker, .Routine, "strlen")
+	testing.expect(t, strlen_ok)
+	if strlen_ok {
+		testing.expect_value(t, strlen.kind, Entity_Kind.Builtin)
+		payload, payload_ok := strlen.payload.(^Entity_Builtin_Payload)
+		testing.expect(t, payload_ok)
+		if payload_ok {
+			testing.expect_value(t, Builtin_Proc_Id(payload.id), Builtin_Proc_Id.Strlen)
+			testing.expect_value(t, payload.docs, "Number of characters in a text value.")
+		}
+		testing.expect(t, strlen.type != nil)
+		testing.expect_value(t, strlen.type.kind, Type_Kind.Routine)
+		testing.expect(t, strlen.type.base != nil)
+		testing.expect_value(t, string_interner.load(project.interner, strlen.type.base.name), "i")
+	}
+
+	nmin, nmin_ok := checker_builtin_proc_metadata_by_name("nmin")
+	testing.expect(t, nmin_ok)
+	if nmin_ok {
+		testing.expect_value(t, len(nmin.params), 9)
+		testing.expect_value(t, nmin.params[0].name, "val1")
+		testing.expect(t, nmin.supports_named_args)
+	}
+}
+
+@(test)
+root_semantic_builtin_structures_create_project_owned_fields :: proc(t: ^testing.T) {
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker := checker_make(&project)
+	syst, syst_ok := checker_lookup_builtin_entity(&checker, .Type, "syst")
+	screen, screen_ok := checker_lookup_builtin_entity(&checker, .Type, "screen")
+	testing.expect(t, syst_ok)
+	testing.expect(t, screen_ok)
+
+	syst_payload: ^Entity_Type_Name_Payload
+	screen_payload: ^Entity_Type_Name_Payload
+	if syst_ok {
+		payload, payload_ok := syst.payload.(^Entity_Type_Name_Payload)
+		testing.expect(t, payload_ok)
+		if payload_ok {
+			syst_payload = payload
+		}
+	}
+	if screen_ok {
+		payload, payload_ok := screen.payload.(^Entity_Type_Name_Payload)
+		testing.expect(t, payload_ok)
+		if payload_ok {
+			screen_payload = payload
+		}
+	}
+	testing.expect(t, syst_payload != nil && syst_payload.structure != nil)
+	testing.expect(t, screen_payload != nil && screen_payload.structure != nil)
+	if syst_payload == nil || syst_payload.structure == nil || screen_payload == nil || screen_payload.structure == nil {
+		return
+	}
+
+	subrc_name := string_interner.insert(project.interner, "subrc")
+	subrc, subrc_ok := scope_lookup_declaration(syst_payload.structure.scope, .Value, subrc_name)
+	testing.expect(t, subrc_ok)
+	if subrc_ok {
+		testing.expect_value(t, subrc.kind, Entity_Kind.Field)
+		testing.expect(t, .Builtin in subrc.flags)
+		field, field_ok := subrc.payload.(^Entity_Field_Payload)
+		testing.expect(t, field_ok)
+		if field_ok {
+			testing.expect(t, .Has_Type_Ref in field.flags)
+			testing.expect_value(t, string_interner.load(project.interner, field.type_ref.base_name), "i")
+			testing.expect_value(t, checker_builtin_structure_field_description("syst", "subrc"), "Return code set by many ABAP statements; 0 usually indicates success for the documented statement.")
+		}
+	}
+
+	screen_name_key := string_interner.insert(project.interner, "name")
+	screen_name, screen_name_ok := scope_lookup_declaration(screen_payload.structure.scope, .Value, screen_name_key)
+	testing.expect(t, screen_name_ok)
+	if screen_name_ok {
+		testing.expect_value(t, screen_name.kind, Entity_Kind.Field)
+		testing.expect(t, .Builtin in screen_name.flags)
+		field, field_ok := screen_name.payload.(^Entity_Field_Payload)
+		testing.expect(t, field_ok)
+		if field_ok {
+			testing.expect_value(t, string_interner.load(project.interner, field.type_ref.base_name), "c")
+			testing.expect_value(t, checker_builtin_structure_field_description("screen", "name"), "Name of the current dynpro field or screen element.")
+		}
+	}
+}
+
+@(test)
+root_semantic_builtin_type_refs_and_calls_resolve_through_registered_entities :: proc(t: ^testing.T) {
+	source :=
+		"DATA gv_ptr TYPE %_C_POINTER.\n" +
+		"DATA gv_len TYPE i.\n" +
+		"FORM run.\n" +
+		"  gv_len = strlen( 'abc' ).\n" +
+		"ENDFORM.\n"
+
+	parsed := parser.parse(source, "mem://builtin_use.abap", context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker := checker_make(&project)
+	file := checker_add_file(&checker, parsed.path, parsed.root)
+	checker_check_file(&checker, file)
+
+	pointer, pointer_ok := checker_lookup_builtin_entity(&checker, .Type, "%_c_pointer")
+	testing.expect(t, pointer_ok)
+	if pointer_ok {
+		testing.expect(t, .Used in pointer.flags)
+	}
+
+	strlen, strlen_ok := checker_lookup_builtin_entity(&checker, .Routine, "strlen")
+	testing.expect(t, strlen_ok)
+	if strlen_ok {
+		testing.expect(t, .Used in strlen.flags)
+	}
+
+	form, form_ok := parsed.root.stmts[2].derived_stmt.(^ast.Form_Decl)
+	testing.expect(t, form_ok)
+	if !form_ok {
+		return
+	}
+	assign, assign_ok := form.body[0].derived_stmt.(^ast.Assign_Stmt)
+	testing.expect(t, assign_ok)
+	if !assign_ok {
+		return
+	}
+	_, call_ok := assign.rhs.derived_expr.(^ast.Call_Expr)
+	testing.expect(t, call_ok)
+
+	call_info_found := false
+	for record in checker.info.expr_infos {
+		if record.node != &assign.rhs.expr_base {
+			continue
+		}
+		call_info_found = true
+		testing.expect_value(t, record.info.mode, ast.Addressing_Mode.Value)
+		testing.expect(t, record.info.type != nil)
+		if record.info.type != nil {
+			testing.expect_value(t, string_interner.load(project.interner, record.info.type.name), "i")
+		}
+	}
+	testing.expect(t, call_info_found)
 }
 
 @(test)
@@ -71,6 +309,9 @@ root_semantic_checker_registers_checks_and_records_entity_uses :: proc(t: ^testi
 	checker := checker_make(&project)
 	file := checker_add_file(&checker, "ZPROG.abap")
 	ctx := checker_context_make(&checker, file)
+	definitions_before := len(checker.info.definitions)
+	queue_before := len(checker.info.entity_queue)
+	checked_before := len(checker.info.checked_entities)
 
 	name := string_interner.insert(project.interner, "gv_value")
 	entity := project_new_entity(&project, .Variable)
@@ -84,8 +325,8 @@ root_semantic_checker_registers_checks_and_records_entity_uses :: proc(t: ^testi
 	)
 
 	testing.expect(t, checker_add_entity_and_decl_info(&ctx, entity, decl))
-	testing.expect_value(t, len(checker.info.definitions), 1)
-	testing.expect_value(t, len(checker.info.entity_queue), 1)
+	testing.expect_value(t, len(checker.info.definitions), definitions_before + 1)
+	testing.expect_value(t, len(checker.info.entity_queue), queue_before + 1)
 
 	found_scope, found, found_ok := checker_lookup_declaration(&ctx, .Value, name)
 	testing.expect(t, found_ok)
@@ -94,7 +335,7 @@ root_semantic_checker_registers_checks_and_records_entity_uses :: proc(t: ^testi
 
 	checker_check_queued_entities(&ctx)
 	testing.expect_value(t, len(checker.info.entity_queue), 0)
-	testing.expect_value(t, len(checker.info.checked_entities), 1)
+	testing.expect_value(t, len(checker.info.checked_entities), checked_before + 1)
 	testing.expect_value(t, entity.state, Entity_State.Resolved)
 	testing.expect_value(t, decl.state, Decl_Info_State.Resolved)
 	testing.expect(t, entity.type == project_type_unknown(&project))

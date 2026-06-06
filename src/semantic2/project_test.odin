@@ -128,7 +128,7 @@ root_semantic_entity_kind_change_replaces_payload :: proc(t: ^testing.T) {
 	testing.expect_value(t, entity.kind, Entity_Kind.Method)
 	testing.expect_value(t, len(routine_payload.parameters), 0)
 
-	entity_set_kind(entity, .Builtin_Routine, project.allocator)
+	entity_set_kind(entity, .Builtin, project.allocator)
 	builtin_payload, builtin_ok := entity.payload.(^Entity_Builtin_Payload)
 	testing.expect(t, builtin_ok)
 	testing.expect(t, builtin_payload != nil)

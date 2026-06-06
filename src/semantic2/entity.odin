@@ -90,10 +90,7 @@ Entity :: struct {
 
 Entity_Kind :: enum {
 	Invalid,
-	Builtin_Type,
-	Builtin_Routine,
-	Builtin_Constant,
-	Builtin_Variable,
+	Builtin,
 	Variable,
 	Constant,
 	Enum_Member,
@@ -214,6 +211,7 @@ Entity_Constant_Flags :: bit_set[Entity_Constant_Flag]
 
 Entity_Constant_Payload :: struct {
 	value:             ast.Exact_Value_Id,
+	constant_value:    Constant_Value,
 	param_value:       Entity_Parameter_Value,
 	flags:             Entity_Constant_Flags,
 	field_group_index: i32,
@@ -286,9 +284,23 @@ Entity_Report_Payload :: struct {
 	provided_names: [dynamic]string_interner.String,
 }
 
+Constant_Value :: union #shared_nil {
+	^Constant_Integer_Value,
+	^Constant_Text_Value,
+}
+
+Constant_Integer_Value :: struct {
+	value: i64,
+}
+
+Constant_Text_Value :: struct {
+	value: string,
+}
+
 Entity_Builtin_Payload :: struct {
-	id:   i32,
-	docs: string,
+	id:                  i32,
+	docs:                string,
+	supports_named_args: bool,
 }
 
 Entity_Object_Kind :: enum {
@@ -320,25 +332,22 @@ Entity_Parameter_Passing :: enum {
 }
 
 entity_kind_is_builtin :: #force_inline proc(kind: Entity_Kind) -> bool {
-	return(
-		kind == .Builtin_Type ||
-		kind == .Builtin_Routine ||
-		kind == .Builtin_Constant ||
-		kind == .Builtin_Variable \
-	)
+	return kind == .Builtin
+}
+
+entity_is_builtin :: #force_inline proc(entity: ^Entity) -> bool {
+	return entity != nil && .Builtin in entity.flags
 }
 
 entity_kind_occupies :: proc(kind: Entity_Kind, namespace: Namespace) -> bool {
 	switch kind {
-	case .Builtin_Type, .Type_Def, .Class, .Interface:
+	case .Type_Def, .Class, .Interface:
 		return namespace == .Type
-	case .Builtin_Routine, .Form, .Method, .Module, .Event:
+	case .Builtin, .Form, .Method, .Module, .Event:
 		return namespace == .Routine
 	case .Alias:
 		return false
-	case .Builtin_Constant,
-	     .Builtin_Variable,
-	     .Variable,
+	case .Variable,
 	     .Constant,
 	     .Enum_Member,
 	     .Field_Symbol,
@@ -371,7 +380,7 @@ entity_parameter_value_invalid :: #force_inline proc() -> Entity_Parameter_Value
 
 entity_default_payload :: proc(kind: Entity_Kind, allocator: mem.Allocator) -> Entity_Payload {
 	switch kind {
-	case .Builtin_Type, .Builtin_Routine, .Builtin_Constant, .Builtin_Variable:
+	case .Builtin:
 		payload := new(Entity_Builtin_Payload, allocator)
 		return payload
 	case .Variable, .Field_Symbol, .Parameter, .Exception, .Control:

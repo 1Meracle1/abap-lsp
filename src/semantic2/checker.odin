@@ -101,6 +101,7 @@ checker_init :: proc(checker: ^Checker, project: ^Project) {
 	checker.info.builtin_scope = checker_ensure_builtin_scope(checker)
 	checker.builtin_context = checker_context_make(checker)
 	checker.builtin_context.scope = checker.info.builtin_scope
+	checker_register_builtins(checker)
 }
 
 checker_info_make :: proc(checker: ^Checker, project: ^Project) -> Checker_Info {
@@ -310,7 +311,7 @@ checker_add_entity_and_decl_info :: proc(
 	if entity.source_file == nil {
 		entity.source_file = ctx.file
 	}
-	assert(entity_kind_is_builtin(entity.kind) || entity.source_file != nil)
+	assert(entity_is_builtin(entity) || entity.source_file != nil)
 
 	if insert_in_scope {
 		if previous := scope_insert_declaration(scope, entity); previous != nil && previous != entity {
@@ -320,7 +321,7 @@ checker_add_entity_and_decl_info :: proc(
 	}
 
 	checker_add_definition(ctx.info, entity)
-	if !entity_kind_is_builtin(entity.kind) && entity.state == .Unresolved {
+	if !entity_is_builtin(entity) && entity.state == .Unresolved {
 		checker_enqueue_entity(ctx.info, entity)
 	}
 	return true
@@ -687,10 +688,8 @@ checker_check_entity_decl :: proc(
 	}
 
 	switch entity.kind {
-	case .Builtin_Type:
-		checker_check_builtin_type_decl(&local, entity)
-	case .Builtin_Routine, .Builtin_Constant, .Builtin_Variable:
-		checker_check_builtin_value_decl(&local, entity)
+	case .Builtin:
+		checker_check_builtin_decl(&local, entity)
 	case .Variable, .Field_Symbol, .Parameter, .Exception, .Control:
 		checker_check_variable_decl(&local, entity, current_decl)
 	case .Constant, .Enum_Member:
@@ -720,13 +719,7 @@ checker_check_entity_decl :: proc(
 	}
 }
 
-checker_check_builtin_type_decl :: proc(ctx: ^Checker_Context, entity: ^Entity) {
-	if entity.type == nil {
-		entity.type = project_type_builtin(ctx.project, entity.name, entity)
-	}
-}
-
-checker_check_builtin_value_decl :: proc(ctx: ^Checker_Context, entity: ^Entity) {
+checker_check_builtin_decl :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 	if entity.type == nil {
 		entity.type = project_type_unknown(ctx.project)
 	}
@@ -959,8 +952,11 @@ checker_check_expr :: proc(
 		checker_check_expr(ctx, n.member, .Value, lhs)
 		return checker_record_operand(ctx, node, .Field, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Call_Expr:
-		checker_check_expr(ctx, n.callee, .Routine)
+		callee := checker_check_expr(ctx, n.callee, .Routine)
 		checker_check_expr(ctx, n.args)
+		if callee.entity != nil && callee.entity.kind == .Builtin {
+			return checker_check_builtin_call(ctx, node, callee.entity, n, lhs)
+		}
 		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Call_Arg_List_Expr:
 		for arg in n.args {
@@ -1102,15 +1098,15 @@ checker_routine_body_from_decl :: proc(decl: ^Decl_Info) -> [dynamic]^ast.Stmt {
 
 checker_addressing_mode_for_entity :: proc(entity: ^Entity) -> ast.Addressing_Mode {
 	#partial switch entity.kind {
-	case .Type_Def, .Builtin_Type, .Class, .Interface:
+	case .Type_Def, .Class, .Interface:
 		return .Type
-	case .Form, .Method, .Module, .Event, .Builtin_Routine:
+	case .Form, .Method, .Module, .Event, .Builtin:
 		return .Routine
-	case .Constant, .Enum_Member, .Builtin_Constant:
+	case .Constant, .Enum_Member:
 		return .Constant
 	case .Field:
 		return .Field
-	case .Variable, .Field_Symbol, .Parameter, .Exception, .Control, .Builtin_Variable:
+	case .Variable, .Field_Symbol, .Parameter, .Exception, .Control:
 		return .Variable
 	}
 	return .Value
