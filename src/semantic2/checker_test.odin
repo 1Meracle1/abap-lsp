@@ -235,7 +235,7 @@ root_semantic_builtin_structures_create_project_owned_fields :: proc(t: ^testing
 	}
 
 	subrc_name := string_interner.insert(project.interner, "subrc")
-	subrc, subrc_ok := scope_lookup_declaration(syst_payload.structure.scope, .Value, subrc_name)
+	subrc, subrc_ok := checker_lookup_structure_field(syst_payload.structure, subrc_name)
 	testing.expect(t, subrc_ok)
 	if subrc_ok {
 		testing.expect_value(t, subrc.kind, Entity_Kind.Field)
@@ -250,7 +250,7 @@ root_semantic_builtin_structures_create_project_owned_fields :: proc(t: ^testing
 	}
 
 	screen_name_key := string_interner.insert(project.interner, "name")
-	screen_name, screen_name_ok := scope_lookup_declaration(screen_payload.structure.scope, .Value, screen_name_key)
+	screen_name, screen_name_ok := checker_lookup_structure_field(screen_payload.structure, screen_name_key)
 	testing.expect(t, screen_name_ok)
 	if screen_name_ok {
 		testing.expect_value(t, screen_name.kind, Entity_Kind.Field)
@@ -420,6 +420,91 @@ root_semantic_checker_reports_duplicate_declarations :: proc(t: ^testing.T) {
 }
 
 @(test)
+root_semantic_scope_lookup_keeps_namespaces_and_reports_shadowing :: proc(t: ^testing.T) {
+	source :=
+		"DATA shared TYPE i.\n" +
+		"TYPES shared TYPE i.\n" +
+		"FORM shared.\n" +
+		"ENDFORM.\n" +
+		"FORM run.\n" +
+		"  DATA shared TYPE i.\n" +
+		"  shared = 1.\n" +
+		"ENDFORM.\n"
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://scope_lookup.abap")
+
+	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "shared", .Variable)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Type, "shared", .Type_Def)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "shared", .Form)
+	run := checker_test_lookup(t, &project, file.root_scope, .Routine, "run", .Form)
+	testing.expect(t, run != nil)
+	if run == nil {
+		return
+	}
+	run_payload := run.payload.(^Entity_Routine_Payload)
+	name := string_interner.insert(project.interner, "shared")
+
+	_, local_value, value_ok := checker_lookup_declaration_from_scope(run_payload.body_scope, .Value, name)
+	testing.expect(t, value_ok)
+	if value_ok {
+		testing.expect_value(t, local_value.kind, Entity_Kind.Variable)
+		testing.expect(t, local_value.scope == run_payload.body_scope)
+	}
+	_, typ, type_ok := checker_lookup_declaration_from_scope(run_payload.body_scope, .Type, name)
+	testing.expect(t, type_ok)
+	if type_ok {
+		testing.expect_value(t, typ.kind, Entity_Kind.Type_Def)
+		testing.expect(t, typ.scope == file.root_scope)
+	}
+
+	shadow_count := 0
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Shadowed_Declaration {
+			shadow_count += 1
+			testing.expect(t, diagnostic.entity == local_value)
+		}
+		testing.expect(t, diagnostic.kind != .Duplicate_Declaration)
+	}
+	testing.expect_value(t, shadow_count, 1)
+}
+
+@(test)
+root_semantic_scope_lookup_prefers_local_then_imported_then_parent :: proc(t: ^testing.T) {
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker := checker_make(&project)
+	file := checker_add_file(&checker, "ZPROG.abap")
+	ctx := checker_context_make(&checker, file)
+
+	imported := checker_create_scope(&checker, checker.info.builtin_scope, .File)
+	append(&file.root_scope.imported, imported)
+
+	name := string_interner.insert(project.interner, "remote_value")
+	imported_entity := project_new_entity(&project, .Variable)
+	imported_decl := project_new_decl_info(&project, imported_entity, imported, name, .Variable)
+	imported_entity.source_file = file
+	testing.expect(t, checker_add_entity_and_decl_info(&ctx, imported_entity, imported_decl))
+
+	found_scope, found, found_ok := checker_lookup_declaration_from_scope(file.root_scope, .Value, name)
+	testing.expect(t, found_ok)
+	testing.expect(t, found_scope == imported)
+	testing.expect(t, found == imported_entity)
+
+	local_entity := project_new_entity(&project, .Variable)
+	local_decl := project_new_decl_info(&project, local_entity, file.root_scope, name, .Variable)
+	testing.expect(t, checker_add_entity_and_decl_info(&ctx, local_entity, local_decl))
+
+	found_scope, found, found_ok = checker_lookup_declaration_from_scope(file.root_scope, .Value, name)
+	testing.expect(t, found_ok)
+	testing.expect(t, found_scope == file.root_scope)
+	testing.expect(t, found == local_entity)
+}
+
+@(test)
 root_semantic_checker_walks_file_declarations_routine_body_and_expressions :: proc(t: ^testing.T) {
 	source :=
 		"TYPES: BEGIN OF ty_line,\n" +
@@ -482,6 +567,80 @@ root_semantic_checker_walks_file_declarations_routine_body_and_expressions :: pr
 	testing.expect(t, .Used in lv_entity.flags)
 	testing.expect(t, len(checker.info.uses) >= 3)
 	testing.expect(t, len(checker.info.expr_infos) >= 4)
+}
+
+@(test)
+root_semantic_scope_lookup_resolves_oop_aliases_and_qualified_methods :: proc(t: ^testing.T) {
+	source :=
+		"INTERFACE lif_object.\n" +
+		"  METHODS copy IMPORTING iv_value TYPE i.\n" +
+		"  METHODS rename.\n" +
+		"ENDINTERFACE.\n" +
+		"CLASS lcl DEFINITION.\n" +
+		"  PUBLIC SECTION.\n" +
+		"    INTERFACES lif_object.\n" +
+		"    ALIASES alias_copy FOR lif_object~copy.\n" +
+		"    CLASS-METHODS copy.\n" +
+		"    METHODS lif_object~copy REDEFINITION.\n" +
+		"ENDCLASS.\n" +
+		"CLASS lcl IMPLEMENTATION.\n" +
+		"  METHOD copy.\n" +
+		"  ENDMETHOD.\n" +
+		"  METHOD lif_object~copy.\n" +
+		"    DATA lv_value TYPE i.\n" +
+		"    lv_value = iv_value.\n" +
+		"  ENDMETHOD.\n" +
+		"ENDCLASS.\n"
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://oop_lookup.abap")
+
+	for diagnostic in checker.info.diagnostics {
+		testing.expect(t, diagnostic.kind != .Duplicate_Declaration)
+	}
+
+	iface := checker_test_lookup(t, &project, file.root_scope, .Type, "lif_object", .Interface)
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl", .Class)
+	testing.expect(t, iface != nil && class != nil)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	class_scope := class_payload.definition_scope
+
+	local_copy := checker_test_lookup(t, &project, class_scope, .Routine, "copy", .Method)
+	qualified_copy := checker_test_lookup(t, &project, class_scope, .Routine, "lif_object~copy", .Method)
+	testing.expect(t, local_copy != nil && qualified_copy != nil && local_copy != qualified_copy)
+	if local_copy != nil {
+		testing.expect(t, .Static in local_copy.flags)
+		local_payload := local_copy.payload.(^Entity_Routine_Payload)
+		testing.expect(t, local_payload.has_implementation)
+	}
+	if qualified_copy != nil {
+		testing.expect(t, !(.Static in qualified_copy.flags))
+		qualified_payload := qualified_copy.payload.(^Entity_Routine_Payload)
+		testing.expect(t, qualified_payload.has_implementation)
+		local := checker_test_lookup(t, &project, qualified_payload.body_scope, .Value, "lv_value", .Variable)
+		testing.expect(t, local != nil && .Used in local.flags)
+	}
+
+	alias_name := string_interner.insert(project.interner, "alias_copy")
+	alias_target, alias_ok := checker_lookup_object_member(class, .Routine, alias_name)
+	testing.expect(t, alias_ok)
+	if alias_ok {
+		testing.expect(t, alias_target.owner == iface)
+		testing.expect_value(t, string_interner.load(project.interner, alias_target.name), "copy")
+	}
+
+	rename_name := string_interner.insert(project.interner, "rename")
+	rename, rename_ok := checker_lookup_object_member(class, .Routine, rename_name)
+	testing.expect(t, rename_ok)
+	if rename_ok {
+		testing.expect(t, rename.owner == iface)
+		testing.expect_value(t, rename.kind, Entity_Kind.Method)
+	}
 }
 
 @(test)

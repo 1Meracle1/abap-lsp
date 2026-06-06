@@ -7,6 +7,7 @@ import "core:strings"
 
 Checker_Diagnostic_Kind :: enum {
 	Duplicate_Declaration,
+	Shadowed_Declaration,
 	Declaration_Cycle,
 	Missing_Declaration_Info,
 	Invalid_Context,
@@ -277,6 +278,29 @@ checker_lookup_declaration_from_scope :: proc(
 	^Entity,
 	bool,
 ) {
+	if found_scope, entity, ok := checker_lookup_lexical_declaration_from_scope(scope, namespace, name); ok {
+		return found_scope, entity, true
+	}
+
+	if owner := checker_enclosing_object_owner(scope); owner != nil {
+		if entity, ok := checker_lookup_object_member(owner, namespace, name); ok {
+			return entity.scope, entity, true
+		}
+	}
+
+	return nil, nil, false
+}
+
+checker_lookup_lexical_declaration_from_scope :: proc(
+	scope: ^Scope,
+	namespace: Namespace,
+	name: string_interner.String,
+) -> (
+	^Scope,
+	^Entity,
+	bool,
+) {
+	assert(scope != nil)
 	for current := scope; current != nil; current = current.parent {
 		if entity, ok := scope_lookup_declaration(current, namespace, name); ok {
 			return current, entity, true
@@ -288,6 +312,152 @@ checker_lookup_declaration_from_scope :: proc(
 		}
 	}
 	return nil, nil, false
+}
+
+checker_lookup_reference :: proc(
+	ctx: ^Checker_Context,
+	namespace: Namespace,
+	name: string_interner.String,
+) -> (
+	^Scope,
+	^Entity,
+	bool,
+) {
+	assert(ctx != nil && ctx.scope != nil)
+	if scope, entity, ok := checker_lookup_declaration(ctx, namespace, name); ok {
+		return scope, entity, true
+	}
+	if namespace == .Value {
+		return checker_lookup_declaration(ctx, .Type, name)
+	}
+	return nil, nil, false
+}
+
+checker_lookup_object_member :: proc(
+	owner: ^Entity,
+	namespace: Namespace,
+	name: string_interner.String,
+) -> (^Entity, bool) {
+	return checker_lookup_object_member_internal(owner, namespace, name, 0)
+}
+
+checker_lookup_structure_field :: proc(
+	structure: ^Structure,
+	name: string_interner.String,
+) -> (^Entity, bool) {
+	assert(structure != nil && structure.scope != nil)
+	return scope_lookup_declaration(structure.scope, .Value, name)
+}
+
+checker_lookup_object_member_internal :: proc(
+	owner: ^Entity,
+	namespace: Namespace,
+	name: string_interner.String,
+	depth: int,
+) -> (^Entity, bool) {
+	assert(owner != nil)
+	if depth > 64 {
+		return nil, false
+	}
+	payload, ok := owner.payload.(^Entity_Object_Payload)
+	assert(ok && payload != nil)
+	if payload.definition_scope == nil {
+		return nil, false
+	}
+	if entity, found := scope_lookup_declaration(payload.definition_scope, namespace, name); found {
+		return entity, true
+	}
+	if entity, found := checker_lookup_object_alias_member(owner, namespace, name, depth + 1); found {
+		return entity, true
+	}
+	if entity, found := checker_lookup_implemented_interface_member(owner, namespace, name, depth + 1); found {
+		return entity, true
+	}
+	if string_interner.is_valid(payload.superclass_name) {
+		if _, super, super_ok := checker_lookup_lexical_declaration_from_scope(owner.scope, .Type, payload.superclass_name);
+		   super_ok && super.kind == .Class {
+			if entity, found := checker_lookup_object_member_internal(super, namespace, name, depth + 1); found {
+				return entity, true
+			}
+		}
+	}
+	return nil, false
+}
+
+checker_lookup_object_alias_member :: proc(
+	owner: ^Entity,
+	namespace: Namespace,
+	name: string_interner.String,
+	depth: int,
+) -> (^Entity, bool) {
+	payload, ok := owner.payload.(^Entity_Object_Payload)
+	assert(ok && payload != nil)
+	if payload.definition_scope == nil {
+		return nil, false
+	}
+	for alias in payload.definition_scope.declarations {
+		if alias.kind != .Alias || alias.name != name {
+			continue
+		}
+		alias_payload, alias_ok := alias.payload.(^Entity_Alias_Payload)
+		assert(alias_ok && alias_payload != nil)
+		if !string_interner.is_valid(alias_payload.target_interface_name) {
+			continue
+		}
+		_, target_interface, interface_ok := checker_lookup_lexical_declaration_from_scope(
+			owner.scope,
+			.Type,
+			alias_payload.target_interface_name,
+		)
+		if !interface_ok || target_interface.kind != .Interface {
+			continue
+		}
+		target_name := alias_payload.target_member_name
+		if !string_interner.is_valid(target_name) {
+			target_name = name
+		}
+		if entity, found := checker_lookup_object_member_internal(target_interface, namespace, target_name, depth + 1); found {
+			return entity, true
+		}
+	}
+	return nil, false
+}
+
+checker_lookup_implemented_interface_member :: proc(
+	owner: ^Entity,
+	namespace: Namespace,
+	name: string_interner.String,
+	depth: int,
+) -> (^Entity, bool) {
+	payload, ok := owner.payload.(^Entity_Object_Payload)
+	assert(ok && payload != nil)
+	for interface_name in payload.implemented_interfaces {
+		if !string_interner.is_valid(interface_name) {
+			continue
+		}
+		_, interface_entity, interface_ok := checker_lookup_lexical_declaration_from_scope(
+			owner.scope,
+			.Type,
+			interface_name,
+		)
+		if !interface_ok || interface_entity.kind != .Interface {
+			continue
+		}
+		if entity, found := checker_lookup_object_member_internal(interface_entity, namespace, name, depth + 1); found {
+			return entity, true
+		}
+	}
+	return nil, false
+}
+
+checker_enclosing_object_owner :: proc(scope: ^Scope) -> ^Entity {
+	assert(scope != nil)
+	for current := scope; current != nil; current = current.parent {
+		if (current.kind == .Class || current.kind == .Interface) && current.owner != nil {
+			return current.owner
+		}
+	}
+	return nil
 }
 
 checker_add_entity_and_decl_info :: proc(
@@ -318,6 +488,9 @@ checker_add_entity_and_decl_info :: proc(
 			checker_add_diagnostic(ctx, .Duplicate_Declaration, entity.name_range, "duplicate declaration", entity, decl)
 			return false
 		}
+		if shadowed := checker_shadowed_declaration(scope, entity); shadowed != nil {
+			checker_add_diagnostic(ctx, .Shadowed_Declaration, entity.name_range, "declaration shadows outer symbol", entity, decl)
+		}
 	}
 
 	checker_add_definition(ctx.info, entity)
@@ -325,6 +498,25 @@ checker_add_entity_and_decl_info :: proc(
 		checker_enqueue_entity(ctx.info, entity)
 	}
 	return true
+}
+
+checker_shadowed_declaration :: proc(scope: ^Scope, entity: ^Entity) -> ^Entity {
+	assert(scope != nil && entity != nil)
+	if entity_is_builtin(entity) {
+		return nil
+	}
+	namespaces := [?]Namespace{.Value, .Type, .Routine}
+	for parent := scope.parent; parent != nil; parent = parent.parent {
+		for namespace in namespaces {
+			if !entity_kind_occupies(entity.kind, namespace) {
+				continue
+			}
+			if existing, ok := scope_lookup_declaration(parent, namespace, entity.name); ok && !entity_is_builtin(existing) {
+				return existing
+			}
+		}
+	}
+	return nil
 }
 
 checker_add_definition :: proc(info: ^Checker_Info, entity: ^Entity) {
@@ -601,10 +793,7 @@ checker_check_ident_name :: proc(
 	if !string_interner.is_valid(interned) {
 		return nil, false
 	}
-	_, entity, ok := checker_lookup_declaration(ctx, namespace, interned)
-	if !ok && namespace == .Value {
-		_, entity, ok = checker_lookup_declaration(ctx, .Type, interned)
-	}
+	_, entity, ok := checker_lookup_reference(ctx, namespace, interned)
 	if !ok {
 		return nil, false
 	}

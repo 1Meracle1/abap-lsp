@@ -854,8 +854,8 @@ checker_collect_oop_alias :: proc(
 }
 
 checker_collect_method_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Method_Decl) -> ^Entity {
-	name := decl.member_name
-	if name == "" {
+	name := decl.name
+	if decl.qualifier == "" {
 		name = checker_method_entity_name(decl.name)
 	}
 	entity := checker_find_routine_entity_in_scope(ctx, name, .Method)
