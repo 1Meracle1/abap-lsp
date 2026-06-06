@@ -36,14 +36,6 @@ Checker_Expr_Record :: struct {
 	info: Checker_Expr_Info,
 }
 
-Operand :: struct {
-	mode:   ast.Addressing_Mode,
-	type:   ^Type,
-	value:  ast.Exact_Value_Id,
-	expr:   ^ast.Node,
-	entity: ^Entity,
-}
-
 Checker_Dependency :: struct {
 	decl:   ^Decl_Info,
 	entity: ^Entity,
@@ -572,26 +564,6 @@ checker_add_dependency :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 	append(&ctx.info.dependencies, Checker_Dependency{decl = ctx.decl, entity = entity})
 }
 
-checker_record_expr_info :: proc(
-	ctx: ^Checker_Context,
-	node: ^ast.Node,
-	mode: ast.Addressing_Mode,
-	typ: ^Type,
-	value: ast.Exact_Value_Id = ast.INVALID_EXACT_VALUE_ID,
-	is_lhs := false,
-) -> Checker_Expr_Info {
-	info := Checker_Expr_Info {
-		mode   = mode,
-		is_lhs = is_lhs,
-		type   = typ,
-		value  = value,
-	}
-	if node != nil {
-		append(&ctx.info.expr_infos, Checker_Expr_Record{node = node, info = info})
-	}
-	return info
-}
-
 checker_check_file :: proc(checker: ^Checker, file: ^Project_File) {
 	checker_register_file(checker, file)
 	ctx := checker_context_make(checker, file)
@@ -636,13 +608,20 @@ checker_check_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 		checker_collect_stmt_entities(ctx, stmt)
 	case ^ast.Data_Inline_Decl:
 		checker_collect_stmt_entities(ctx, stmt)
-		checker_check_expr(ctx, n.expr)
+		rhs := checker_check_expr(ctx, n.expr)
+		checker_apply_inline_decl_type(ctx, n.name, rhs.type)
 	case ^ast.Assign_Stmt:
-		checker_check_expr(ctx, n.lhs, .Value, true)
-		checker_check_expr(ctx, n.rhs)
+		lhs := checker_check_expr(ctx, n.lhs, .Value, true)
+		rhs_ctx := ctx^
+		rhs_ctx.type_hint = lhs.type
+		rhs_ctx.type_hint_expr = n.lhs
+		checker_check_expr(&rhs_ctx, n.rhs)
 	case ^ast.Downcast_Assign_Stmt:
-		checker_check_expr(ctx, n.lhs, .Value, true)
-		checker_check_expr(ctx, n.rhs)
+		lhs := checker_check_expr(ctx, n.lhs, .Value, true)
+		rhs_ctx := ctx^
+		rhs_ctx.type_hint = lhs.type
+		rhs_ctx.type_hint_expr = n.lhs
+		checker_check_expr(&rhs_ctx, n.rhs)
 	case ^ast.Expr_Stmt:
 		checker_check_expr(ctx, n.expr)
 	case ^ast.If_Stmt:
@@ -671,175 +650,6 @@ checker_check_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 		checker_check_expr(ctx, n.group_target, .Value, true)
 		checker_check_stmt_list(ctx, n.body)
 	}
-}
-
-checker_check_expr :: proc(
-	ctx: ^Checker_Context,
-	expr: ^ast.Expr,
-	namespace: Namespace = .Value,
-	lhs := false,
-) -> Operand {
-	if expr == nil {
-		return Operand{mode = .Invalid, value = ast.INVALID_EXACT_VALUE_ID}
-	}
-	node := &expr.expr_base
-	#partial switch n in expr.derived_expr {
-	case ^ast.Ident_Expr:
-		return checker_check_ident_expr(ctx, node, n.name, namespace, lhs)
-	case ^ast.Literal_Expr:
-		return checker_record_operand(ctx, node, .Constant, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Type_Ref_Expr:
-		if namespace == .Type {
-			typ, entity := checker_type_from_expr(ctx, expr, .Type)
-			return checker_record_operand(ctx, node, .Type, typ, entity, lhs)
-		}
-		name := n.base_name
-		if name == "" {
-			name = n.name
-		}
-		operand := checker_check_ident_expr(ctx, node, name, .Type, lhs)
-		for raw_ref in n.raw_refs {
-			ref_namespace := Namespace.Type if raw_ref.type_base else Namespace.Value
-			checker_check_ident_name(ctx, node, raw_ref.name, ref_namespace, false)
-		}
-		return operand
-	case ^ast.Binary_Expr:
-		checker_check_expr(ctx, n.left)
-		checker_check_expr(ctx, n.right)
-		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Unary_Expr:
-		checker_check_expr(ctx, n.expr)
-		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Paren_Expr:
-		return checker_check_expr(ctx, n.expr, namespace, lhs)
-	case ^ast.Selector_Expr:
-		checker_check_expr(ctx, n.base, namespace, lhs)
-		checker_check_expr(ctx, n.field, .Value, lhs)
-		return checker_record_operand(ctx, node, .Field, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Interface_Qualified_Selector_Expr:
-		checker_check_expr(ctx, n.receiver, namespace, lhs)
-		checker_check_expr(ctx, n.interface, .Type)
-		checker_check_expr(ctx, n.member, .Value, lhs)
-		return checker_record_operand(ctx, node, .Field, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Call_Expr:
-		callee := checker_check_expr(ctx, n.callee, .Routine)
-		checker_check_expr(ctx, n.args)
-		if callee.entity != nil && callee.entity.kind == .Builtin {
-			return checker_check_builtin_call(ctx, node, callee.entity, n, lhs)
-		}
-		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Call_Arg_List_Expr:
-		for arg in n.args {
-			checker_check_expr(ctx, arg)
-		}
-		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Call_Arg_Section_Expr:
-		for arg in n.args {
-			checker_check_expr(ctx, arg)
-		}
-		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Call_Named_Arg_Expr:
-		checker_check_expr(ctx, n.value)
-		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Call_Positional_Arg_Expr:
-		checker_check_expr(ctx, n.value)
-		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Constructor_Expr:
-		checker_check_expr(ctx, n.type_ref, .Type)
-		for arg in n.args {
-			checker_check_expr(ctx, arg)
-		}
-		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Is_Predicate_Expr:
-		checker_check_expr(ctx, n.subject)
-		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Instance_Of_Predicate_Expr:
-		checker_check_expr(ctx, n.subject)
-		checker_check_expr(ctx, n.type_ref, .Type)
-		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Between_Expr:
-		checker_check_expr(ctx, n.subject)
-		checker_check_expr(ctx, n.low)
-		checker_check_expr(ctx, n.high)
-		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
-	case ^ast.Data_Inline_Name_Expr:
-		entity := checker_collect_variable_decl(ctx, ctx.scope, n.name, .Variable, n.range, node, nil, nil)
-		checker_check_entity_decl(ctx, entity)
-		return checker_record_operand(ctx, node, .Variable, entity.type, entity, lhs)
-	case ^ast.Field_Symbol_Inline_Name_Expr:
-		entity := checker_collect_variable_decl(ctx, ctx.scope, n.name, .Field_Symbol, n.range, node, nil, nil)
-		checker_check_entity_decl(ctx, entity)
-		return checker_record_operand(ctx, node, .Variable, entity.type, entity, lhs)
-	}
-	return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
-}
-
-checker_check_ident_expr :: proc(
-	ctx: ^Checker_Context,
-	node: ^ast.Node,
-	name: string,
-	namespace: Namespace,
-	lhs: bool,
-) -> Operand {
-	entity, ok := checker_check_ident_name(ctx, node, name, namespace, lhs)
-	if !ok {
-		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
-	}
-	mode := checker_addressing_mode_for_entity(entity)
-	return checker_record_operand(ctx, node, mode, entity.type if entity.type != nil else project_type_unknown(ctx.project), entity, lhs)
-}
-
-checker_check_ident_name :: proc(
-	ctx: ^Checker_Context,
-	node: ^ast.Node,
-	name: string,
-	namespace: Namespace,
-	lhs: bool,
-) -> (^Entity, bool) {
-	interned := checker_intern_name(ctx.project, name)
-	if !string_interner.is_valid(interned) {
-		return nil, false
-	}
-	_, entity, ok := checker_lookup_reference(ctx, namespace, interned)
-	if !ok {
-		return nil, false
-	}
-	checker_add_entity_use(ctx, node, entity)
-	return entity, true
-}
-
-checker_record_operand :: proc(
-	ctx: ^Checker_Context,
-	node: ^ast.Node,
-	mode: ast.Addressing_Mode,
-	typ: ^Type,
-	entity: ^Entity = nil,
-	lhs := false,
-) -> Operand {
-	info := checker_record_expr_info(ctx, node, mode, typ, is_lhs = lhs)
-	return Operand {
-		mode   = info.mode,
-		type   = info.type,
-		value  = info.value,
-		expr   = node,
-		entity = entity,
-	}
-}
-
-checker_addressing_mode_for_entity :: proc(entity: ^Entity) -> ast.Addressing_Mode {
-	#partial switch entity.kind {
-	case .Type_Def, .Class, .Interface:
-		return .Type
-	case .Form, .Method, .Module, .Event, .Builtin:
-		return .Routine
-	case .Constant, .Enum_Member:
-		return .Constant
-	case .Field:
-		return .Field
-	case .Variable, .Field_Symbol, .Parameter, .Exception, .Control:
-		return .Variable
-	}
-	return .Value
 }
 
 checker_intern_name :: proc(project: ^Project, name: string) -> string_interner.String {

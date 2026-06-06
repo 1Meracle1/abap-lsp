@@ -85,6 +85,20 @@ checker_test_diagnostic_count :: proc(checker: ^Checker, kind: Checker_Diagnosti
 	return count
 }
 
+checker_test_expr_info_for_node :: proc(
+	t: ^testing.T,
+	checker: ^Checker,
+	node: ^ast.Node,
+) -> (Checker_Expr_Info, bool) {
+	for record in checker.info.expr_infos {
+		if record.node == node {
+			return record.info, true
+		}
+	}
+	testing.expect(t, false)
+	return {}, false
+}
+
 @(test)
 root_semantic_checker_creates_builtin_and_file_scopes :: proc(t: ^testing.T) {
 	project := project_make()
@@ -1073,5 +1087,129 @@ ENDCLASS.`
 		payload := event.payload.(^Entity_Routine_Payload)
 		testing.expect_value(t, payload.member_kind, Class_Member_Kind.Event)
 		testing.expect_value(t, len(payload.parameters), 1)
+	}
+}
+
+@(test)
+root_semantic_expr_checker_resolves_structure_selectors_and_table_keys :: proc(t: ^testing.T) {
+	source := `FORM run.
+  TYPES: BEGIN OF ty_status,
+           exist_attp TYPE abap_bool,
+           text TYPE string,
+         END OF ty_status.
+  DATA lt_status TYPE STANDARD TABLE OF ty_status WITH DEFAULT KEY.
+  FIELD-SYMBOLS <ls_status> LIKE LINE OF lt_status.
+  DATA ls_status TYPE ty_status.
+  DATA lv_text TYPE string.
+  DATA lv_subrc TYPE i.
+
+  lv_text = ls_status-text.
+  lv_text = <ls_status>-text.
+  lv_subrc = sy-subrc.
+  IF line_exists( lt_status[ exist_attp = abap_undefined ] ).
+  ENDIF.
+ENDFORM.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://expr_selectors.abap")
+
+	run := checker_test_lookup(t, &project, file.root_scope, .Routine, "run", .Form)
+	testing.expect(t, run != nil)
+	if run == nil {
+		return
+	}
+	run_payload := run.payload.(^Entity_Routine_Payload)
+	ty_status := checker_test_lookup(t, &project, run_payload.body_scope, .Type, "ty_status", .Type_Def)
+	lv_text := checker_test_lookup(t, &project, run_payload.body_scope, .Value, "lv_text", .Variable)
+	testing.expect(t, ty_status != nil && lv_text != nil)
+	if ty_status == nil || lv_text == nil {
+		return
+	}
+	structure := checker_type_structure(ty_status.type)
+	testing.expect(t, structure != nil)
+	if structure == nil {
+		return
+	}
+	exist_attp := checker_test_structure_field(t, &project, structure, "exist_attp")
+	text := checker_test_structure_field(t, &project, structure, "text")
+	testing.expect(t, .Used in exist_attp.flags)
+	testing.expect(t, .Used in text.flags)
+
+	syst, syst_ok := checker_lookup_builtin_entity(&checker, .Type, "syst")
+	testing.expect(t, syst_ok)
+	if syst_ok {
+		payload := syst.payload.(^Entity_Type_Name_Payload)
+		subrc := checker_test_structure_field(t, &project, payload.structure, "subrc")
+		testing.expect(t, .Used in subrc.flags)
+	}
+
+	form_decl := run.decl_info.decl_node.derived.(^ast.Form_Decl)
+	assign_stmt := form_decl.body[6].derived_stmt.(^ast.Assign_Stmt)
+	selector_info, selector_ok := checker_test_expr_info_for_node(t, &checker, &assign_stmt.rhs.expr_base)
+	testing.expect(t, selector_ok)
+	if selector_ok {
+		testing.expect_value(t, selector_info.mode, ast.Addressing_Mode.Field)
+		testing.expect(t, checker_type_same(selector_info.type, lv_text.type))
+	}
+}
+
+@(test)
+root_semantic_expr_checker_records_call_inline_and_constructor_types :: proc(t: ^testing.T) {
+	source := `CLASS lcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_text RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+CLASS lcl_dep IMPLEMENTATION.
+  METHOD get_text.
+    rv_text = 'x'.
+  ENDMETHOD.
+ENDCLASS.
+FORM run.
+  DATA lo_dep TYPE REF TO lcl_dep.
+  DATA(lv_text) = lo_dep->get_text( ).
+  DATA lv_num TYPE i.
+  lv_num = VALUE #( ).
+ENDFORM.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://expr_call_inline.abap")
+
+	run := checker_test_lookup(t, &project, file.root_scope, .Routine, "run", .Form)
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_dep", .Class)
+	testing.expect(t, run != nil && class != nil)
+	if run == nil || class == nil {
+		return
+	}
+	run_payload := run.payload.(^Entity_Routine_Payload)
+	class_payload := class.payload.(^Entity_Object_Payload)
+	method := checker_test_lookup(t, &project, class_payload.definition_scope, .Routine, "get_text", .Method)
+	lv_text := checker_test_lookup(t, &project, run_payload.body_scope, .Value, "lv_text", .Variable)
+	lv_num := checker_test_lookup(t, &project, run_payload.body_scope, .Value, "lv_num", .Variable)
+	testing.expect(t, method != nil && lv_text != nil && lv_num != nil)
+	if method == nil || lv_text == nil || lv_num == nil {
+		return
+	}
+	testing.expect(t, .Used in method.flags)
+	testing.expect_value(t, checker_test_type_name(&project, lv_text.type), "string")
+	testing.expect_value(t, checker_test_type_name(&project, lv_num.type), "i")
+
+	form_decl := run.decl_info.decl_node.derived.(^ast.Form_Decl)
+	inline_stmt := form_decl.body[1].derived_stmt.(^ast.Data_Inline_Decl)
+	call_info, call_ok := checker_test_expr_info_for_node(t, &checker, &inline_stmt.expr.expr_base)
+	testing.expect(t, call_ok)
+	if call_ok {
+		testing.expect_value(t, call_info.mode, ast.Addressing_Mode.Value)
+		testing.expect_value(t, checker_test_type_name(&project, call_info.type), "string")
+	}
+	assign_stmt := form_decl.body[3].derived_stmt.(^ast.Assign_Stmt)
+	constructor_info, constructor_ok := checker_test_expr_info_for_node(t, &checker, &assign_stmt.rhs.expr_base)
+	testing.expect(t, constructor_ok)
+	if constructor_ok {
+		testing.expect_value(t, constructor_info.mode, ast.Addressing_Mode.Value)
+		testing.expect(t, checker_type_same(constructor_info.type, lv_num.type))
 	}
 }

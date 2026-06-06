@@ -1315,6 +1315,7 @@ checker_check_routine_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl:
 	}
 	entity.type.routine.parameters = payload.parameters
 	entity.type.routine.exceptions = payload.exceptions
+	entity.type.base = checker_routine_result_type(ctx, payload)
 	body := checker_routine_body_from_decl(decl)
 	if len(body) > 0 {
 		body_ctx := ctx^
@@ -1323,6 +1324,20 @@ checker_check_routine_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl:
 		body_ctx.current_signature = entity.type
 		checker_check_stmt_list(&body_ctx, body)
 	}
+}
+
+checker_routine_result_type :: proc(ctx: ^Checker_Context, payload: ^Entity_Routine_Payload) -> ^Type {
+	assert(payload != nil)
+	for param in payload.parameters {
+		param_payload, ok := param.payload.(^Entity_Variable_Payload)
+		assert(ok && param_payload != nil)
+		if param_payload.section != .Method_Returning && param_payload.section != .Method_Receiving {
+			continue
+		}
+		checker_check_entity_decl(ctx, param)
+		return param.type if param.type != nil else project_type_unknown(ctx.project)
+	}
+	return nil
 }
 
 checker_scope_kind_for_routine :: proc(kind: Entity_Kind) -> Scope_Kind {
