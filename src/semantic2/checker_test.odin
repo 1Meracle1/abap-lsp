@@ -1213,3 +1213,112 @@ ENDFORM.`
 		testing.expect(t, checker_type_same(constructor_info.type, lv_num.type))
 	}
 }
+
+@(test)
+root_semantic_stmt_checker_reports_assignment_conversion_failures :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         value TYPE c,
+       END OF ty_row.
+DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+DATA lr_i TYPE REF TO i.
+DATA lr_data TYPE REF TO data.
+DATA lr_row TYPE REF TO ty_row.
+
+lv_date = lv_time.
+lr_data = lr_row.
+lr_i = lr_data.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_assignment.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 2)
+}
+
+@(test)
+root_semantic_stmt_checker_reports_method_argument_failures :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING iv_index TYPE i.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+DATA lv_text TYPE string.
+lcl_demo=>run( lv_text ).
+lcl_demo=>run( ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_method_args.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Required_Parameter), 1)
+}
+
+@(test)
+root_semantic_stmt_checker_reports_call_function_exception_message_type :: proc(t: ^testing.T) {
+	source := `DATA lv_msg TYPE string.
+DATA lv_text TYPE c.
+CALL FUNCTION 'Z_DEMO'
+  EXCEPTIONS
+    system_failure = 1 MESSAGE lv_msg
+    communication_failure = 2 MESSAGE lv_text
+    failed = 3.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_func_exception_message.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 1)
+}
+
+@(test)
+root_semantic_stmt_checker_checks_internal_table_row_targets :: proc(t: ^testing.T) {
+	source := `TYPES ty_times TYPE STANDARD TABLE OF t WITH DEFAULT KEY.
+DATA lt_times TYPE ty_times.
+DATA lv_time TYPE t.
+FIELD-SYMBOLS <lv_time> TYPE t.
+FIELD-SYMBOLS <lv_date> TYPE d.
+
+LOOP AT lt_times INTO lv_time.
+ENDLOOP.
+READ TABLE lt_times ASSIGNING <lv_time> INDEX 1.
+LOOP AT lt_times ASSIGNING <lv_date>.
+ENDLOOP.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_table_rows.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 1)
+}
+
+@(test)
+root_semantic_stmt_checker_dispatches_control_and_write_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_count TYPE i.
+DATA lv_target TYPE string.
+
+DO lv_count TIMES.
+ENDDO.
+CASE lv_count.
+  WHEN lv_count.
+ENDCASE.
+WRITE lv_count TO lv_target.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://stmt_dispatch.abap")
+
+	lv_count := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_count", .Variable)
+	lv_target := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_target", .Variable)
+	testing.expect(t, lv_count != nil && .Used in lv_count.flags)
+	testing.expect(t, lv_target != nil && .Used in lv_target.flags)
+}

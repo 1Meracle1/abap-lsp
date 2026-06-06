@@ -14,6 +14,11 @@ Checker_Diagnostic_Kind :: enum {
 	Invalid_Object_Type_Reference,
 	Invalid_Generic_Builtin_Type,
 	Invalid_Generic_Table_Type,
+	Incompatible_Assignment_Type,
+	Incompatible_Argument_Type,
+	Unknown_Named_Parameter,
+	Missing_Required_Parameter,
+	Duplicate_Named_Parameter,
 }
 
 Checker_Diagnostic :: struct {
@@ -569,86 +574,8 @@ checker_check_file :: proc(checker: ^Checker, file: ^Project_File) {
 	ctx := checker_context_make(checker, file)
 	checker_collect_file_entities(&ctx, file)
 	checker_check_queued_entities(&ctx)
-}
-
-checker_check_stmt_list :: proc(ctx: ^Checker_Context, body: [dynamic]^ast.Stmt) {
-	for stmt in body {
-		checker_check_stmt(ctx, stmt)
-	}
-}
-
-checker_check_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
-	if stmt == nil {
-		return
-	}
-	#partial switch n in stmt.derived_stmt {
-	case ^ast.Data_Decl,
-	     ^ast.Data_Chained_Decl,
-	     ^ast.Types_Decl,
-	     ^ast.Constants_Decl,
-	     ^ast.Field_Symbols_Decl,
-	     ^ast.Statics_Decl,
-	     ^ast.Tables_Decl,
-	     ^ast.Ranges_Decl,
-	     ^ast.Parameters_Decl,
-	     ^ast.Select_Options_Decl,
-	     ^ast.Controls_Decl,
-	     ^ast.Class_Data_Decl,
-	     ^ast.Function_Pool_Decl,
-	     ^ast.Include_Stmt,
-	     ^ast.Report_Stmt,
-	     ^ast.Class_Decl,
-	     ^ast.Interface_Decl,
-	     ^ast.Method_Decl,
-	     ^ast.Form_Decl,
-	     ^ast.Function_Decl,
-	     ^ast.Module_Decl,
-	     ^ast.Event_Block_Stmt,
-	     ^ast.Oop_Simple_Stmt:
-		checker_collect_stmt_entities(ctx, stmt)
-	case ^ast.Data_Inline_Decl:
-		checker_collect_stmt_entities(ctx, stmt)
-		rhs := checker_check_expr(ctx, n.expr)
-		checker_apply_inline_decl_type(ctx, n.name, rhs.type)
-	case ^ast.Assign_Stmt:
-		lhs := checker_check_expr(ctx, n.lhs, .Value, true)
-		rhs_ctx := ctx^
-		rhs_ctx.type_hint = lhs.type
-		rhs_ctx.type_hint_expr = n.lhs
-		checker_check_expr(&rhs_ctx, n.rhs)
-	case ^ast.Downcast_Assign_Stmt:
-		lhs := checker_check_expr(ctx, n.lhs, .Value, true)
-		rhs_ctx := ctx^
-		rhs_ctx.type_hint = lhs.type
-		rhs_ctx.type_hint_expr = n.lhs
-		checker_check_expr(&rhs_ctx, n.rhs)
-	case ^ast.Expr_Stmt:
-		checker_check_expr(ctx, n.expr)
-	case ^ast.If_Stmt:
-		checker_check_expr(ctx, n.condition)
-		checker_check_stmt_list(ctx, n.body)
-		for clause in n.elseif_clauses {
-			checker_check_expr(ctx, clause.condition)
-			checker_check_stmt_list(ctx, clause.body)
-		}
-		if n.else_clause != nil {
-			checker_check_stmt_list(ctx, n.else_clause.body)
-		}
-	case ^ast.While_Stmt:
-		checker_check_expr(ctx, n.condition)
-		checker_check_stmt_list(ctx, n.body)
-	case ^ast.Do_Stmt:
-		checker_check_expr(ctx, n.count)
-		checker_check_stmt_list(ctx, n.body)
-	case ^ast.Loop_Stmt:
-		checker_check_expr(ctx, n.source)
-		checker_check_expr(ctx, n.target, .Value, true)
-		checker_check_expr(ctx, n.from)
-		checker_check_expr(ctx, n.to)
-		checker_check_expr(ctx, n.where_cond)
-		checker_check_expr(ctx, n.group_by)
-		checker_check_expr(ctx, n.group_target, .Value, true)
-		checker_check_stmt_list(ctx, n.body)
+	if file.root != nil {
+		checker_check_stmt_list(&ctx, file.root.stmts, collect_declarations = false)
 	}
 }
 

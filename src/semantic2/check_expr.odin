@@ -96,7 +96,7 @@ checker_check_expr :: proc(
 		return checker_record_operand(ctx, node, mode, base.type, base.entity, lhs = lhs)
 	case ^ast.Call_Expr:
 		callee := checker_check_expr(ctx, n.callee, .Routine)
-		checker_check_expr(ctx, n.args)
+		checker_check_call_expr_arguments(ctx, n, callee)
 		if callee.entity != nil && callee.entity.kind == .Builtin {
 			return checker_check_builtin_call(ctx, node, callee.entity, n, lhs)
 		}
