@@ -1293,6 +1293,9 @@ checker_check_entity_decl :: proc(
 	assert(current_decl.scope != nil)
 
 	local := ctx^
+	if entity.source_file != nil {
+		local.file = entity.source_file
+	}
 	local.scope = current_decl.scope
 	local.decl = current_decl
 	local.current_decl = current_decl
@@ -1406,6 +1409,9 @@ checker_check_routine_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl:
 	body := checker_routine_body_from_decl(decl)
 	if len(body) > 0 {
 		body_ctx := ctx^
+		if payload.implementation_unit != nil {
+			body_ctx.file = payload.implementation_unit
+		}
 		body_ctx.scope = payload.body_scope
 		body_ctx.current_routine = entity
 		body_ctx.current_signature = entity.type

@@ -104,6 +104,7 @@ analyze_inputs :: proc(
 	last := semantic2.semantic_graph_session_apply_update(&session, update)
 	remote_result := remote_deps.result_make(allocator)
 
+	frontier_flushed := false
 	for _ in 0 ..< REMOTE_DEPENDENCY_MAX_ITERATIONS {
 		if len(last.new_fetch_requests) == 0 {
 			semantic2.semantic_graph_update_result_destroy(&last)
@@ -111,6 +112,7 @@ analyze_inputs :: proc(
 				&session,
 				semantic2.Semantic_Graph_Update{external_frontier_stable = true},
 			)
+			frontier_flushed = true
 			break
 		}
 
@@ -149,6 +151,7 @@ analyze_inputs :: proc(
 					blocked_dependencies = blocked[:],
 				},
 			)
+			frontier_flushed = true
 			break
 		}
 		last = semantic2.semantic_graph_session_apply_update(
@@ -158,6 +161,13 @@ analyze_inputs :: proc(
 				fetched_external_sources = external_sources[:],
 				external_frontier_stable = false,
 			},
+		)
+	}
+	if !frontier_flushed {
+		semantic2.semantic_graph_update_result_destroy(&last)
+		last = semantic2.semantic_graph_session_apply_update(
+			&session,
+			semantic2.Semantic_Graph_Update{external_frontier_stable = true},
 		)
 	}
 

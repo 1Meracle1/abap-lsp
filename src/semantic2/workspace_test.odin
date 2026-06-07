@@ -942,3 +942,38 @@ semantic_workspace_resolves_external_function_modules_without_candidates :: proc
 		testing.expect_value(t, workspace_test_reverse_project_count(analysis.interner, analysis.external_index.dependents_by_object, .Function_Module, "z_remote_fm", record.id), 1)
 	}
 }
+
+@(test)
+semantic_workspace_reports_method_body_diagnostic_in_implementation_include :: proc(t: ^testing.T) {
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", `REPORT zmain.
+INCLUDE zmain_top.
+INCLUDE zmain_impl.`),
+		workspace_test_file(t, "mem://zmain_top.include.abap", `CLASS lcl_app DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.`),
+		workspace_test_file(t, "mem://zmain_impl.include.abap", `CLASS lcl_app IMPLEMENTATION.
+  METHOD run.
+    SELECT carrid FROM zmissing_table INTO @DATA(lv_carrid).
+  ENDMETHOD.
+ENDCLASS.`),
+	}
+
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:]})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	checker := analysis.project_results[0].checker
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Open_Sql_Source {
+			continue
+		}
+		found = true
+		testing.expect(t, diagnostic.file != nil)
+		if diagnostic.file != nil {
+			testing.expect_value(t, diagnostic.file.path, "mem://zmain_impl.include.abap")
+		}
+	}
+	testing.expect(t, found)
+}
