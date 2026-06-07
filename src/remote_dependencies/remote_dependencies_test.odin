@@ -279,6 +279,75 @@ remote_dependency_ddic_source_cache_entry_is_not_stale_and_converts :: proc(t: ^
 }
 
 @(test)
+remote_dependency_ddic_source_key_fields_convert_without_diagnostics :: proc(t: ^testing.T) {
+	source := `define type dd03p {
+  key tabname    : tabname
+    with foreign key [1..*,1] dd02l
+      where tabname = dd03p.tabname;
+  key fieldname  : fieldname;
+}`
+	artifact := Artifact {
+		request        = Request{name = "dd03p", kind = .Type},
+		source_kind    = .Cache,
+		object_kind    = "ddic-structure",
+		object_name    = "dd03p",
+		object_uri     = "/sap/bc/adt/ddic/structures/dd03p",
+		object_type    = "TABL/DS",
+		file_extension = "ddic",
+		source_text    = source,
+	}
+	result := result_make(context.allocator)
+	state := state_make(context.allocator)
+
+	added := result_add_artifact(&result, &artifact, &state, context.allocator)
+
+	testing.expect(t, added)
+	testing.expect_value(t, len(result.interfaces), 1)
+	testing.expect_value(t, len(result.diagnostics), 0)
+	testing.expect_value(t, result.interfaces[0].key.name, "dd03p")
+}
+
+@(test)
+remote_dependency_cache_resolves_artifact_provided_key :: proc(t: ^testing.T) {
+	path := remote_dependency_test_store_path("cache_resolves_artifact_provided_key.sqlite3")
+	store, store_err := dep_store.dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, store_err, dep_store.Store_Error.None)
+	profile := standalone_dependency_profile()
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "sdic",
+		object_kind    = "ddic-structure",
+		object_name    = "dd03p",
+		object_uri     = "/sap/bc/adt/ddic/structures/dd03p",
+		object_type    = "TABL/DS",
+		description    = "Structure",
+		file_extension = "ddic",
+		source_text    = `define type dd03p {
+  key tabname    : tabname
+    with foreign key [1..*,1] dd02l
+      where tabname = dd03p.tabname;
+  key fieldname  : fieldname;
+}`,
+		fetched_at     = "2026-06-07T00:00:00Z",
+	}
+	_, put_err := dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, put_err, dep_store.Store_Error.None)
+
+	config := Config{cache = &store, profile = &profile}
+	state := state_make(context.allocator)
+	requests := [?]Request {
+		{name = "dd03p", kind = .Symbol},
+		{name = "dd03p", kind = .Type},
+	}
+
+	result := resolve_requests(requests[:], &config, &state, nil, context.allocator)
+
+	testing.expect_value(t, len(result.interfaces), 1)
+	testing.expect_value(t, len(result.misses), 0)
+	testing.expect_value(t, len(result.diagnostics), 0)
+	testing.expect_value(t, result.interfaces[0].key, Remote_Dependency_Key{name = "dd03p", kind = .Type})
+}
+
+@(test)
 remote_dependency_typepool_cache_keeps_original_request_key :: proc(t: ^testing.T) {
 	path := remote_dependency_test_store_path("typepool_cache_keeps_original_request_key.sqlite3")
 	store, store_err := dep_store.dependency_store_from_override_path(path, context.allocator)

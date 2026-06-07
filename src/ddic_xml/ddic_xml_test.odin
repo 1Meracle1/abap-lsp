@@ -125,6 +125,29 @@ structure_dependency_source_strips_ddic_source_not_null :: proc(t: ^testing.T) {
 }
 
 @(test)
+structure_dependency_source_strips_ddic_source_key_modifier :: proc(t: ^testing.T) {
+	source := dependency_source(
+		"DD03P",
+		"ddic-structure",
+		`define type dd03p {
+  key tabname    : tabname
+    with foreign key [1..*,1] dd02l
+      where tabname = dd03p.tabname;
+  key fieldname  : fieldname;
+}`,
+		context.allocator,
+	)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "tabname type tabname")
+	expect_contains_fold(t, source, "fieldname type fieldname")
+	lower := strings.to_lower(source, context.allocator)
+	defer delete(lower, context.allocator)
+	testing.expect(t, !strings.contains(lower, "key tabname"))
+	testing.expect(t, !strings.contains(lower, "foreign key"))
+}
+
+@(test)
 structure_dependency_source_ignores_ddic_source_include_extensions :: proc(t: ^testing.T) {
 	source := dependency_source(
 		"SWD_SNODES",

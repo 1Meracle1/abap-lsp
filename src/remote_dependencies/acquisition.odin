@@ -71,8 +71,12 @@ resolve_requests :: proc(
 	resolved := make(map[Remote_Dependency_Key]bool, len(normalized), context.temp_allocator)
 	cache_artifacts := cache_artifacts(normalized[:], config, state, pool, allocator)
 	for &artifact in cache_artifacts {
-		if result_add_artifact(&result, &artifact, state, allocator) {
-			resolved[remote_dependency_key(artifact.request)] = true
+		before_interfaces := len(result.interfaces)
+		before_sources := len(result.sources)
+		added := result_add_artifact(&result, &artifact, state, allocator)
+		if added {
+			resolve_artifact_outputs(&result, &artifact, before_interfaces, before_sources, &resolved)
+			mark_artifact_seen_after_add(state, &artifact)
 		}
 	}
 
@@ -157,8 +161,12 @@ resolve_source_phase :: proc(
 		return
 	}
 	for &artifact in artifacts {
-		if result_add_artifact(result, &artifact, state, allocator) {
-			resolved^[remote_dependency_key(artifact.request)] = true
+		before_interfaces := len(result.interfaces)
+		before_sources := len(result.sources)
+		added := result_add_artifact(result, &artifact, state, allocator)
+		if added {
+			resolve_artifact_outputs(result, &artifact, before_interfaces, before_sources, resolved)
+			mark_artifact_seen_after_add(state, &artifact)
 		}
 	}
 }
@@ -173,10 +181,38 @@ resolve_typepool_phase :: proc(
 ) {
 	artifacts := typepool_artifacts(requests, config, state, allocator)
 	for &artifact in artifacts {
+		before_interfaces := len(result.interfaces)
+		before_sources := len(result.sources)
 		if result_add_artifact(result, &artifact, state, allocator) {
-			resolved^[remote_dependency_key(artifact.request)] = true
+			resolve_artifact_outputs(result, &artifact, before_interfaces, before_sources, resolved)
+			mark_artifact_seen_after_add(state, &artifact)
 		}
 	}
+}
+
+resolve_artifact_outputs :: proc(
+	result: ^Result,
+	artifact: ^Artifact,
+	before_interfaces: int,
+	before_sources: int,
+	resolved: ^map[Remote_Dependency_Key]bool,
+) {
+	assert(result != nil && artifact != nil && resolved != nil)
+	resolved^[remote_dependency_key(artifact.request)] = true
+	for i := before_interfaces; i < len(result.interfaces); i += 1 {
+		resolved^[result.interfaces[i].key] = true
+	}
+	for i := before_sources; i < len(result.sources); i += 1 {
+		resolved^[result.sources[i].key] = true
+	}
+}
+
+mark_artifact_seen_after_add :: proc(state: ^State, artifact: ^Artifact) {
+	assert(artifact != nil)
+	if state == nil || artifact.artifact_id == 0 {
+		return
+	}
+	state.seen_artifacts[artifact.artifact_id] = true
 }
 
 remaining_requests :: proc(
@@ -419,9 +455,6 @@ append_cache_lookup_result :: proc(
 			record.artifact_id,
 			record.file_extension,
 		)
-	}
-	if state != nil {
-		state.seen_artifacts[record.artifact_id] = true
 	}
 }
 

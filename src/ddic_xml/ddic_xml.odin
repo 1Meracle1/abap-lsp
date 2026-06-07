@@ -1,5 +1,7 @@
 package ddic_xml
 
+import ddic "src:ddic"
+import ddic_source "src:ddic_source"
 import xml_doc "core:encoding/xml"
 import "core:mem"
 import "core:strings"
@@ -25,7 +27,7 @@ dependency_source :: proc(
 	name, object_kind, source: string,
 	allocator: mem.Allocator,
 ) -> string {
-	if out := ddic_source_dependency_source(source, allocator); out != "" {
+	if out := ddic_source.dependency_source(source, allocator); out != "" {
 		return out
 	}
 
@@ -119,12 +121,12 @@ ddic_xml_type_alias_source :: proc(
 ) -> string {
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "TYPES ")
-	write_canonical_abap_name(&out, name)
+	ddic.write_abap_name(&out, name)
 	strings.write_string(&out, " TYPE ")
 	if type_ref.is_ref {
 		strings.write_string(&out, "REF TO ")
 	}
-	write_canonical_abap_name(&out, type_ref.name)
+	ddic.write_abap_name(&out, type_ref.name)
 	strings.write_string(&out, ".\n")
 	return strings.to_string(out)
 }
@@ -136,114 +138,14 @@ ddic_xml_table_type_source :: proc(
 ) -> string {
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "TYPES ")
-	write_canonical_abap_name(&out, name)
+	ddic.write_abap_name(&out, name)
 	strings.write_string(&out, " TYPE STANDARD TABLE OF ")
 	if line.is_ref {
 		strings.write_string(&out, "REF TO ")
 	}
-	write_canonical_abap_name(&out, line.name)
+	ddic.write_abap_name(&out, line.name)
 	strings.write_string(&out, " WITH DEFAULT KEY.\n")
 	return strings.to_string(out)
-}
-
-ddic_source_dependency_source :: proc(source: string, allocator: mem.Allocator) -> string {
-	define_pos := strings.index(source, "define type")
-	if define_pos < 0 {
-		return ""
-	}
-	name_start := define_pos + len("define type")
-	name_start = skip_ascii_space(source, name_start)
-	name_end := name_start
-	for name_end < len(source) && !ascii_space(source[name_end]) && source[name_end] != '{' {
-		name_end += 1
-	}
-	if name_start >= name_end {
-		return ""
-	}
-	body_start := strings.index_byte(source[name_end:], '{')
-	body_end := strings.last_index_byte(source, '}')
-	if body_start < 0 || body_end < name_end {
-		return ""
-	}
-	body_start += name_end + 1
-	out := strings.builder_make(allocator)
-	strings.write_string(&out, "TYPES: BEGIN OF ")
-	write_canonical_abap_name(&out, source[name_start:name_end])
-	strings.write_string(&out, ",\n")
-	body := source[body_start:body_end]
-	for raw_line in strings.split_lines_iterator(&body) {
-		line := strings.trim_space(raw_line)
-		if line == "" || strings.has_prefix(line, "@") {
-			continue
-		}
-		line = strings.trim_right(line, ";")
-		line = strings.trim_space(line)
-		if line == "" {
-			continue
-		}
-		strings.write_string(&out, "         ")
-		if strings.has_prefix(line, "include ") {
-			strings.write_string(&out, "INCLUDE TYPE ")
-			write_canonical_abap_name(&out, ddic_source_trim_not_null(line[len("include "):]))
-			strings.write_string(&out, ",\n")
-			continue
-		}
-		colon := strings.index_byte(line, ':')
-		if colon < 0 {
-			continue
-		}
-		field_name := strings.trim_space(line[:colon])
-		type_name := ddic_source_trim_not_null(line[colon + 1:])
-		if type_name == "" {
-			continue
-		}
-		if strings.has_prefix(type_name, "include ") {
-			strings.write_string(&out, "INCLUDE TYPE ")
-			write_canonical_abap_name(&out, ddic_source_trim_not_null(type_name[len("include "):]))
-			strings.write_string(&out, " AS ")
-			write_canonical_abap_name(&out, field_name)
-			strings.write_string(&out, ",\n")
-			continue
-		}
-		write_canonical_abap_name(&out, field_name)
-		strings.write_string(&out, " TYPE ")
-		ddic_source_write_type(&out, type_name)
-		strings.write_string(&out, ",\n")
-	}
-	strings.write_string(&out, "       END OF ")
-	write_canonical_abap_name(&out, source[name_start:name_end])
-	strings.write_string(&out, ".\n")
-	return strings.to_string(out)
-}
-
-ddic_source_write_type :: proc(out: ^strings.Builder, raw: string) {
-	text := ddic_source_trim_not_null(raw)
-	if strings.has_prefix(text, "reference to ") {
-		strings.write_string(out, "REF TO ")
-		write_canonical_abap_name(out, strings.trim_space(text[len("reference to "):]))
-		return
-	}
-	if strings.has_prefix(text, "abap.") {
-		start := len("abap.")
-		end := start
-		for end < len(text) && text[end] != '(' && !ascii_space(text[end]) {
-			end += 1
-		}
-		if builtin := ddic_builtin_type(text[start:end]); builtin != "" {
-			strings.write_string(out, builtin)
-			return
-		}
-	}
-	write_canonical_abap_name(out, text)
-}
-
-ddic_source_trim_not_null :: proc(raw: string) -> string {
-	text := strings.trim_space(raw)
-	suffix :: " not null"
-	if len(text) >= len(suffix) && strings.equal_fold(text[len(text) - len(suffix):], suffix) {
-		return strings.trim_space(text[:len(text) - len(suffix)])
-	}
-	return text
 }
 
 ddic_xml_structure_source :: proc(
@@ -253,25 +155,19 @@ ddic_xml_structure_source :: proc(
 ) -> string {
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "TYPES: BEGIN OF ")
-	write_canonical_abap_name(&out, name)
+	ddic.write_abap_name(&out, name)
 	strings.write_string(&out, ",\n")
 	for field in fields {
 		strings.write_string(&out, "         ")
-		write_canonical_abap_name(&out, field.name)
+		ddic.write_abap_name(&out, field.name)
 		strings.write_string(&out, " TYPE ")
-		write_canonical_abap_name(&out, field.type_name)
+		ddic.write_abap_name(&out, field.type_name)
 		strings.write_string(&out, ",\n")
 	}
 	strings.write_string(&out, "       END OF ")
-	write_canonical_abap_name(&out, name)
+	ddic.write_abap_name(&out, name)
 	strings.write_string(&out, ".\n")
 	return strings.to_string(out)
-}
-
-write_canonical_abap_name :: #force_inline proc(out: ^strings.Builder, name: string) {
-	for r in name {
-		strings.write_rune(out, r)
-	}
 }
 
 ddic_xml_fields :: proc(
@@ -318,7 +214,7 @@ ddic_xml_field_type :: proc(doc: ^xml_doc.Document, id: xml_doc.Element_ID) -> s
 		return data_element
 	}
 	data_type := ddic_xml_entry_text(doc, id, "ddicDataType")
-	if builtin := ddic_builtin_type(data_type); builtin != "" {
+	if builtin := ddic.builtin_type(data_type); builtin != "" {
 		return builtin
 	}
 	return data_type
@@ -370,7 +266,7 @@ ddic_xml_data_element_type :: proc(doc: ^xml_doc.Document) -> Ddic_Xml_Type_Ref 
 		}
 	}
 	return Ddic_Xml_Type_Ref {
-		name = ddic_builtin_type(ddic_xml_direct_child_text(doc, data_element_id, "dataType")),
+		name = ddic.builtin_type(ddic_xml_direct_child_text(doc, data_element_id, "dataType")),
 	}
 }
 
@@ -451,71 +347,6 @@ ddic_xml_attr_value :: proc(
 	return ""
 }
 
-ddic_builtin_type :: proc(raw: string) -> string {
-	switch {
-	case strings.equal_fold(raw, "CHAR") ||
-	     strings.equal_fold(raw, "CLNT") ||
-	     strings.equal_fold(raw, "LANG") ||
-	     strings.equal_fold(raw, "CUKY") ||
-	     strings.equal_fold(raw, "UNIT") ||
-	     strings.equal_fold(raw, "LCHR") ||
-	     strings.equal_fold(raw, "C"):
-		return "c"
-	case strings.equal_fold(raw, "NUMC") ||
-	     strings.equal_fold(raw, "ACCP") ||
-	     strings.equal_fold(raw, "N"):
-		return "n"
-	case strings.equal_fold(raw, "DATS") ||
-	     strings.equal_fold(raw, "DATE") ||
-	     strings.equal_fold(raw, "D"):
-		return "d"
-	case strings.equal_fold(raw, "TIMS") ||
-	     strings.equal_fold(raw, "TIME") ||
-	     strings.equal_fold(raw, "T"):
-		return "t"
-	case strings.equal_fold(raw, "INT1") || strings.equal_fold(raw, "B"):
-		return "int1"
-	case strings.equal_fold(raw, "INT2") || strings.equal_fold(raw, "S"):
-		return "int2"
-	case strings.equal_fold(raw, "INT4") ||
-	     strings.equal_fold(raw, "INT") ||
-	     strings.equal_fold(raw, "I"):
-		return "i"
-	case strings.equal_fold(raw, "INT8") || strings.equal_fold(raw, "8"):
-		return "int8"
-	case strings.equal_fold(raw, "DEC") ||
-	     strings.equal_fold(raw, "CURR") ||
-	     strings.equal_fold(raw, "QUAN") ||
-	     strings.equal_fold(raw, "PREC") ||
-	     strings.equal_fold(raw, "P"):
-		return "p"
-	case strings.equal_fold(raw, "FLTP") || strings.equal_fold(raw, "F"):
-		return "f"
-	case strings.equal_fold(raw, "RAW") || strings.equal_fold(raw, "X"):
-		return "x"
-	case strings.equal_fold(raw, "RAWSTRING") ||
-	     strings.equal_fold(raw, "LRAW") ||
-	     strings.equal_fold(raw, "XSTRING") ||
-	     strings.equal_fold(raw, "XSTR") ||
-	     strings.equal_fold(raw, "Y"):
-		return "xstring"
-	case strings.equal_fold(raw, "STRING") ||
-	     strings.equal_fold(raw, "SSTRING") ||
-	     strings.equal_fold(raw, "STRG") ||
-	     strings.equal_fold(raw, "G"):
-		return "string"
-	case strings.equal_fold(raw, "DF16_RAW") ||
-	     strings.equal_fold(raw, "DF16_DEC") ||
-	     strings.equal_fold(raw, "DECFLOAT16"):
-		return "decfloat16"
-	case strings.equal_fold(raw, "DF34_RAW") ||
-	     strings.equal_fold(raw, "DF34_DEC") ||
-	     strings.equal_fold(raw, "DECFLOAT34"):
-		return "decfloat34"
-	}
-	return ""
-}
-
 ddic_xml_name_equal :: proc(name, candidate: string) -> bool {
 	if strings.equal_fold(name, candidate) {
 		return true
@@ -525,16 +356,4 @@ ddic_xml_name_equal :: proc(name, candidate: string) -> bool {
 		return true
 	}
 	return false
-}
-
-skip_ascii_space :: proc(source: string, pos: int) -> int {
-	i := pos
-	for i < len(source) && ascii_space(source[i]) {
-		i += 1
-	}
-	return i
-}
-
-ascii_space :: proc(ch: u8) -> bool {
-	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
 }
