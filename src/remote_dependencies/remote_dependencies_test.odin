@@ -229,6 +229,42 @@ remote_dependency_cache_uses_pool_for_multiple_requests :: proc(t: ^testing.T) {
 }
 
 @(test)
+remote_dependency_cache_miss_is_seen_for_analysis_run :: proc(t: ^testing.T) {
+	path := remote_dependency_test_store_path("cache_miss_seen_for_run.sqlite3")
+	store, store_err := dep_store.dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, store_err, dep_store.Store_Error.None)
+	profile := standalone_dependency_profile()
+	config := Config{cache = &store, profile = &profile}
+	state := state_make(context.allocator)
+	request := Request{name = "zcl_cache_miss_seen", kind = .Class}
+
+	first := cache_artifacts({request}, &config, &state, nil, context.allocator)
+	testing.expect_value(t, len(first), 0)
+	testing.expect(t, remote_dependency_key(request) in state.seen_cache_requests)
+
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "zpkg",
+		object_kind    = "global-class",
+		object_name    = "zcl_cache_miss_seen",
+		object_uri     = "/sap/bc/adt/oo/classes/zcl_cache_miss_seen",
+		object_type    = "CLAS/OC",
+		description    = "Cache miss seen",
+		file_extension = "abap",
+		source_text    = "CLASS zcl_cache_miss_seen DEFINITION. ENDCLASS.",
+		fetched_at     = "2026-06-07T00:00:00Z",
+	}
+	_, put_err := dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, put_err, dep_store.Store_Error.None)
+
+	second := cache_artifacts({request}, &config, &state, nil, context.allocator)
+	testing.expect_value(t, len(second), 0)
+
+	fresh_state := state_make(context.allocator)
+	third := cache_artifacts({request}, &config, &fresh_state, nil, context.allocator)
+	testing.expect_value(t, len(third), 1)
+}
+
+@(test)
 remote_dependency_ddic_generated_abap_cache_entry_is_stale :: proc(t: ^testing.T) {
 	record := dep_store.Stored_Artifact_Record {
 		object_kind    = "ddic-table",

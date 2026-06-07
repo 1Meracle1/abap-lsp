@@ -63,6 +63,7 @@ Config :: struct {
 }
 
 State :: struct {
+	seen_cache_requests:      map[Remote_Dependency_Key]bool,
 	seen_artifacts:           map[i64]bool,
 	seen_local_requests:      map[Remote_Dependency_Key]bool,
 	seen_adt_requests:        map[Remote_Dependency_Key]bool,
@@ -132,6 +133,7 @@ Result :: struct {
 
 state_make :: proc(allocator: mem.Allocator) -> State {
 	return State {
+		seen_cache_requests    = make(map[Remote_Dependency_Key]bool, 64, allocator),
 		seen_artifacts         = make(map[i64]bool, 64, allocator),
 		seen_local_requests    = make(map[Remote_Dependency_Key]bool, 64, allocator),
 		seen_adt_requests      = make(map[Remote_Dependency_Key]bool, 64, allocator),

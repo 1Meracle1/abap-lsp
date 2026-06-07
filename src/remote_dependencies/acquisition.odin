@@ -240,7 +240,11 @@ cache_artifacts :: proc(
 	if config.cache == nil {
 		return out
 	}
-	candidates := unseen_requests(requests, nil, context.temp_allocator)
+	candidates := unseen_requests(
+		requests,
+		&state.seen_cache_requests if state != nil else nil,
+		context.temp_allocator,
+	)
 	if len(candidates) > 0 {
 		if pool != nil && len(candidates) > 1 {
 			append_cache_artifacts_parallel(&out, candidates[:], config, state, pool, allocator)
