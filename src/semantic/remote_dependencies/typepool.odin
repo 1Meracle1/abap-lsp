@@ -99,7 +99,7 @@ add_typepool_resolver_matches :: proc(
 	for task, i in owner_tasks {
 		result := execution.wait(task)
 		if result == nil || result.err != .None {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				candidate := owner_candidates[i]
 				trace_eprintf(
 					"[dep fetch] Type-pool owner lookup failed: %s %s: %v\n",
@@ -118,7 +118,7 @@ add_typepool_resolver_matches :: proc(
 		}
 		seen_pools[pool] = true
 		append(&pools, pool)
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf("[dep fetch] Type-pool owner: %s -> %s\n", result.candidate.name, pool)
 		}
 		mem.dynamic_arena_destroy(&result_arenas[i])
@@ -138,7 +138,7 @@ add_typepool_resolver_matches :: proc(
 				context.temp_allocator,
 		   ) {
 			added = true
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf("[dep fetch] Type-pool summary cache hit: %s\n", pool)
 			}
 			continue
@@ -159,7 +159,7 @@ add_typepool_resolver_matches :: proc(
 			dependency_summaries,
 		) {
 			added = true
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf("[dep fetch] Type-pool source cache hit: %s\n", pool)
 			}
 		}
@@ -196,7 +196,7 @@ add_typepool_resolver_matches :: proc(
 		result := execution.wait(task)
 		defer mem.dynamic_arena_destroy(&source_arenas[i])
 		if result == nil || result.err != .None {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] Type-pool source fetch failed: %s: %v\n",
 					remote_pools[i],
@@ -217,7 +217,7 @@ add_typepool_resolver_matches :: proc(
 			dependency_summaries,
 		) {
 			added = true
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf("[dep fetch] Type-pool source fetch ok: %s\n", result.pool)
 			}
 		}

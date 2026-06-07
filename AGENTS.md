@@ -43,7 +43,7 @@ Use the root Odin wrapper scripts on Windows.
 
 - `.\build.bat`: debug build for `cmd/abap_frontend` and `cmd/adt_cli`.
 - `.\build.bat release`: optimized Odin build.
-- `.\build.bat trace-adt-fetch`: build with ADT fetch tracing enabled.
+- `.\build.bat trace`: build with trace logging enabled.
 - `.\run.bat [debug|release] [abap_frontend|adt_cli] ...`: build and run a root Odin executable.
 - `.\test.bat`: check and test the Odin packages.
 - `.\test.bat --no-leak-warnings`: run tests with quieter leak logging.

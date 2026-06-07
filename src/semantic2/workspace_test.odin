@@ -448,6 +448,94 @@ semantic_graph_external_update_dirties_only_reverse_dependents :: proc(t: ^testi
 }
 
 @(test)
+semantic_graph_replaces_external_record_reverse_index_entries :: proc(t: ^testing.T) {
+	interner := string_interner.create()
+	defer string_interner.destroy(interner)
+
+	session := semantic_graph_session_make(interner)
+	defer semantic_graph_session_destroy(&session)
+
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. DATA lo_dep TYPE REF TO zcl_dep."),
+	}
+	initial := semantic_graph_session_apply_update(
+		&session,
+		Semantic_Graph_Update {
+			changed_files            = files[:],
+			external_frontier_stable = false,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&initial)
+
+	first := workspace_test_external_interface_input(
+		t,
+		interner,
+		.Class,
+		.Class,
+		"zcl_dep",
+		"adt://zcl_dep.class.abap",
+		`CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    DATA old_ref TYPE REF TO zcl_old_dep.
+ENDCLASS.`,
+		1,
+	)
+	first_inputs := [?]External_Interface_Input{first}
+	first_result := semantic_graph_session_apply_update(
+		&session,
+		Semantic_Graph_Update {
+			fetched_external_objects = first_inputs[:],
+			external_frontier_stable = false,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&first_result)
+
+	analysis := semantic_graph_session_current_analysis(&session)
+	testing.expect(t, analysis != nil)
+	if analysis != nil {
+		testing.expect_value(t, len(analysis.external_index.projects), 2)
+		testing.expect_value(t, workspace_test_reverse_total_count(interner, analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_old_dep"), 1)
+	}
+
+	second := workspace_test_external_interface_input(
+		t,
+		interner,
+		.Class,
+		.Class,
+		"zcl_dep",
+		"adt://zcl_dep.class.abap",
+		`CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    DATA new_ref TYPE REF TO zcl_new_dep.
+ENDCLASS.`,
+		2,
+	)
+	second_inputs := [?]External_Interface_Input{second}
+	second_result := semantic_graph_session_apply_update(
+		&session,
+		Semantic_Graph_Update {
+			fetched_external_objects = second_inputs[:],
+			external_frontier_stable = false,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&second_result)
+
+	analysis = semantic_graph_session_current_analysis(&session)
+	testing.expect(t, analysis != nil)
+	if analysis != nil {
+		key := Semantic_Object_Key{kind = .Class, name = string_interner.insert(interner, "zcl_dep")}
+		binding, provider_ok := analysis.external_index.providers[key]
+		testing.expect(t, provider_ok)
+		if provider_ok {
+			testing.expect_value(t, binding.generation, u64(2))
+		}
+		testing.expect_value(t, len(analysis.external_index.projects), 2)
+		testing.expect_value(t, workspace_test_reverse_total_count(interner, analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_old_dep"), 0)
+		testing.expect_value(t, workspace_test_reverse_total_count(interner, analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_new_dep"), 1)
+	}
+}
+
+@(test)
 semantic_graph_fetched_external_source_expands_include_and_unblocks_frontier :: proc(t: ^testing.T) {
 	interner := string_interner.create()
 	defer string_interner.destroy(interner)

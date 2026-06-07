@@ -6,13 +6,15 @@ import dep_store "src:dependency_store"
 import execution "src:execution"
 import analyze "src:semantic/analyze"
 import deps "src:semantic/dependencies"
+import trace "src:trace"
 import uri_key "src:uri_key"
 
-import "core:fmt"
 import "core:mem"
 import "core:strings"
 
-trace_eprintf :: fmt.eprintf
+TRACE :: trace.ENABLED
+
+trace_eprintf :: trace.eprintf
 
 @(private)
 dep_store_candidate_kind :: proc(

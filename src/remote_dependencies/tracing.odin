@@ -1,8 +1,10 @@
 package abap_frontend_remote_dependencies
 
-import "core:fmt"
+import trace "src:trace"
 
-trace_eprintf :: fmt.eprintf
+TRACE :: trace.ENABLED
+
+trace_eprintf :: trace.eprintf
 
 trace_request_kind_text :: proc(kind: Remote_Dependency_Kind) -> string {
 	switch kind {

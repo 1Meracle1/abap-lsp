@@ -31,8 +31,6 @@ Error :: enum u8 {
 	Missing_Csrf_Token,
 }
 
-DEPENDENCY_FETCH_TRACE :: #config(ABAP_FRONTEND_TRACE_ADT_FETCH, false)
-
 Connection_Overrides :: struct {
 	base_url:              string,
 	username:              string,

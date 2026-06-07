@@ -6,6 +6,7 @@ import "src:parser"
 import "src:semantic2"
 import stack_trace "src:stack_trace"
 import "src:tokenizer"
+import trace "src:trace"
 import workspace "src:workspace"
 
 import "base:runtime"
@@ -18,8 +19,6 @@ import "core:slice"
 import "core:strings"
 import "core:terminal"
 import ansi "core:terminal/ansi"
-
-DEPENDENCY_FETCH_TRACE :: #config(ABAP_FRONTEND_TRACE_ADT_FETCH, false)
 
 Node_Count :: struct {
 	name:  string,
@@ -158,7 +157,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	defer virtual.arena_temp_end(temp_arena)
 
 	context.allocator = allocator
-	when DEPENDENCY_FETCH_TRACE {
+	when trace.ENABLED {
 		tracker: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&tracker, allocator, allocator)
 		tracked_allocator := mem.tracking_allocator(&tracker)
@@ -214,13 +213,13 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		execution.pool_destroy(&pool)
 		os.exit(1)
 	}
-	when DEPENDENCY_FETCH_TRACE {
+	when trace.ENABLED {
 		print_analyze_counts(&result)
 	}
 	had_error := print_analyze_diagnostics(&result, warnings_as_errors)
 	workspace.analysis_result_destroy(&result, context.allocator)
 	execution.pool_destroy(&pool)
-	when DEPENDENCY_FETCH_TRACE {
+	when trace.ENABLED {
 		print_analyze_memory_report(&tracker)
 		mem.tracking_allocator_destroy(&tracker)
 	}

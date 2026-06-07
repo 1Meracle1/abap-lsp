@@ -27,8 +27,8 @@ if /I "%~1"=="debug" (
   set "APP=adt_cli"
   shift
   goto parse_prefix
-) else if /I "%~1"=="trace-adt-fetch" (
-  set "BUILD_ARGS=!BUILD_ARGS! trace-adt-fetch"
+) else if /I "%~1"=="trace" (
+  set "BUILD_ARGS=!BUILD_ARGS! trace"
   shift
   goto parse_prefix
 )

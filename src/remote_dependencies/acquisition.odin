@@ -65,7 +65,7 @@ resolve_requests :: proc(
 	}
 
 	normalized := normalize_requests(requests, context.temp_allocator)
-	when adt.DEPENDENCY_FETCH_TRACE {
+	when TRACE {
 		trace_eprintf("[dep fetch] Resolving %d remote dependency request(s)\n", len(normalized))
 	}
 	resolved := make(map[Remote_Dependency_Key]bool, len(normalized), context.temp_allocator)
@@ -360,7 +360,7 @@ append_cache_lookup_result :: proc(
 ) {
 	assert(result != nil)
 	if result.err != .None {
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf(
 				"[dep fetch] Cache lookup failed: %s %s: %v\n",
 				trace_request_kind_text(request.kind),
@@ -371,7 +371,7 @@ append_cache_lookup_result :: proc(
 		return
 	}
 	if !result.ok {
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf(
 				"[dep fetch] Cache miss: %s %s\n",
 				trace_request_kind_text(request.kind),
@@ -382,7 +382,7 @@ append_cache_lookup_result :: proc(
 	}
 	record := &result.record
 	if cached_artifact_is_stale(record, request) {
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf(
 				"[dep fetch] Cache entry is stale: %s %s -> %s %s (artifact id %d)\n",
 				trace_request_kind_text(request.kind),
@@ -395,7 +395,7 @@ append_cache_lookup_result :: proc(
 		return
 	}
 	if state != nil && record.artifact_id in state.seen_artifacts {
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf(
 				"[dep fetch] Cache hit already used: %s %s -> %s %s (artifact id %d)\n",
 				trace_request_kind_text(request.kind),
@@ -409,7 +409,7 @@ append_cache_lookup_result :: proc(
 	}
 	artifact := artifact_from_record(record, request, .Cache, allocator)
 	append(out, artifact)
-	when adt.DEPENDENCY_FETCH_TRACE {
+	when TRACE {
 		trace_eprintf(
 			"[dep fetch] Cache hit: %s %s -> %s %s (artifact id %d, ext=%s)\n",
 			trace_request_kind_text(request.kind),
@@ -462,13 +462,13 @@ append_typepool_cache_artifacts :: proc(
 		)
 	}
 	if err != .None {
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf("[dep fetch] Type-pool cache lookup failed: %v\n", err)
 		}
 		return
 	}
 	if len(records) == 0 {
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf(
 				"[dep fetch] Type-pool cache miss: %d symbol request(s)\n",
 				len(names),
@@ -478,7 +478,7 @@ append_typepool_cache_artifacts :: proc(
 	}
 	for &record in records {
 		if state != nil && record.artifact_id in state.seen_artifacts {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] Type-pool cache hit already used: %s (artifact id %d)\n",
 					record.object_name,
@@ -488,7 +488,7 @@ append_typepool_cache_artifacts :: proc(
 			continue
 		}
 		if typepool_source_has_pending_expansion(record.source_text, context.temp_allocator) {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] Type-pool cache entry needs refetch: %s (artifact id %d)\n",
 					record.object_name,
@@ -510,7 +510,7 @@ append_typepool_cache_artifacts :: proc(
 			artifact := artifact_from_record(&record, request, .Cache, allocator)
 			append(out, artifact)
 			appended = true
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] Type-pool cache hit: %s provides %s %s (artifact id %d)\n",
 					record.object_name,
@@ -586,7 +586,7 @@ local_artifacts :: proc(
 			allocator,
 		)
 		if ok {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] Local export hit: %s %s -> %s %s (%s)\n",
 					trace_request_kind_text(request.kind),
@@ -641,7 +641,7 @@ local_artifacts_parallel :: proc(
 		task_result := execution.wait(task)
 		if task_result.ok {
 			artifact := clone_artifact(&task_result.artifact, allocator)
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] Local export hit: %s %s -> %s %s (%s)\n",
 					trace_request_kind_text(artifact.request.kind),
@@ -793,7 +793,7 @@ adt_artifacts :: proc(
 	}
 	if config.adt_client.csrf_token == "" &&
 	   adt.ensure_session(config.adt_client, context.temp_allocator) != .None {
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			for request in filtered {
 				trace_eprintf(
 					"[dep fetch] ADT miss: %s %s (session setup failed)\n",
@@ -924,7 +924,7 @@ fetch_adt_request :: proc(
 		)
 	}
 	_ = fetch_adt_objects(client, request, selected[:], store, profile, &out, allocator)
-	when adt.DEPENDENCY_FETCH_TRACE {
+	when TRACE {
 		if len(out) == 0 {
 			trace_eprintf(
 				"[dep fetch] ADT miss: %s %s\n",
@@ -975,7 +975,7 @@ fetch_adt_objects :: proc(
 				)
 			}
 		}
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf(
 				"[dep fetch] ADT hit: %s %s -> %s %s (type=%s, ext=%s, bytes=%d, shared=%d)\n",
 				trace_request_kind_text(request.kind),
@@ -1002,7 +1002,7 @@ fetch_adt_objects :: proc(
 			),
 		)
 		for &shared in fetched.shared_dependencies {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] ADT hit: include %s -> %s %s (type=%s, ext=%s, bytes=%d, shared from %s)\n",
 					shared.object_ref.name,
@@ -1063,7 +1063,7 @@ typepool_artifacts :: proc(
 			context.temp_allocator,
 		)
 		if owner_err != .None {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] Type-pool owner lookup failed: %s %s: %v\n",
 					trace_request_kind_text(request.kind),
@@ -1075,7 +1075,7 @@ typepool_artifacts :: proc(
 		}
 		pool = strings.to_lower(strings.trim_space(pool), context.temp_allocator)
 		if pool == "" {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] Type-pool owner lookup returned no pool: %s %s\n",
 					trace_request_kind_text(request.kind),
@@ -1084,7 +1084,7 @@ typepool_artifacts :: proc(
 			}
 			continue
 		}
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf(
 				"[dep fetch] Type-pool owner: %s %s -> %s\n",
 				trace_request_kind_text(request.kind),
@@ -1099,7 +1099,7 @@ typepool_artifacts :: proc(
 			context.temp_allocator,
 		)
 		if !ok {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf("[dep fetch] Type-pool source cache miss: %s\n", pool)
 			}
 			raw, source_err := adt.fetch_typepool_source(
@@ -1108,7 +1108,7 @@ typepool_artifacts :: proc(
 				context.temp_allocator,
 			)
 			if source_err != .None {
-				when adt.DEPENDENCY_FETCH_TRACE {
+				when TRACE {
 					trace_eprintf(
 						"[dep fetch] Type-pool source fetch failed: %s: %v\n",
 						pool,
@@ -1122,7 +1122,7 @@ typepool_artifacts :: proc(
 				raw,
 				context.temp_allocator,
 			)
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] Type-pool source fetch ok: %s (bytes=%d)\n",
 					pool,
@@ -1131,7 +1131,7 @@ typepool_artifacts :: proc(
 			}
 			store_typepool_source(config.cache, config.profile, pool, source)
 		} else {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf("[dep fetch] Type-pool source cache hit: %s\n", pool)
 			}
 		}

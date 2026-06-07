@@ -1,6 +1,7 @@
 package abap_frontend_semantic2
 
 import string_interner "src:string_interner"
+import trace "src:trace"
 
 import "core:mem"
 import "core:strings"
@@ -154,6 +155,9 @@ semantic_graph_session_apply_update :: proc(
 	update: Semantic_Graph_Update,
 ) -> Semantic_Graph_Update_Result {
 	assert(session != nil && session.interner != nil)
+	when trace.ENABLED {
+		trace_start := trace.now()
+	}
 	session.generation += 1
 	result := semantic_graph_update_result_make(session.generation, session.allocator)
 
@@ -226,6 +230,23 @@ semantic_graph_session_apply_update :: proc(
 		update.blocked_dependencies,
 		&result,
 	)
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace] semantic graph update generation=%d changed_files=%d external_objects=%d external_sources=%d stable=%v dirty_editable=%d deferred_editable=%d rebuilt_editable=%d rebuilt_external=%d new_fetch=%d blocked=%d elapsed_ms=%.3f\n",
+			session.generation,
+			len(update.changed_files),
+			len(update.fetched_external_objects),
+			len(update.fetched_external_sources),
+			update.external_frontier_stable,
+			len(result.dirty_editable_projects),
+			len(result.deferred_editable_projects),
+			len(result.rebuilt_editable_projects),
+			len(result.rebuilt_external_projects),
+			len(result.new_fetch_requests),
+			len(result.blocked_unresolved_dependencies),
+			trace.duration_ms_since(trace_start),
+		)
+	}
 	return result
 }
 
@@ -324,6 +345,10 @@ semantic_graph_session_apply_external_updates :: proc(
 	inputs: []External_Interface_Input,
 	result: ^Semantic_Graph_Update_Result,
 ) {
+	when trace.ENABLED {
+		trace_start := trace.now()
+		reanalyze_ms := 0.0
+	}
 	queue := make([dynamic]Semantic_Object_Key, 0, len(inputs), context.temp_allocator)
 	processed := make([dynamic]Semantic_Object_Key, 0, len(inputs), context.temp_allocator)
 	for input in inputs {
@@ -338,7 +363,13 @@ semantic_graph_session_apply_external_updates :: proc(
 		semantic_graph_object_key_list_add(&processed, key)
 		semantic_graph_session_mark_waiters_for_provider(session, key, &queue, result)
 		if input, ok := semantic_graph_session_external_input_for_key(session, key); ok {
+			when trace.ENABLED {
+				reanalyze_start := trace.now()
+			}
 			semantic_graph_session_reanalyze_external_input(session, input, result)
+			when trace.ENABLED {
+				reanalyze_ms += trace.duration_ms_since(reanalyze_start)
+			}
 		}
 	}
 
@@ -351,6 +382,17 @@ semantic_graph_session_apply_external_updates :: proc(
 		}
 		semantic_graph_clear_unresolved_waiters_for_provider(&session.external.index, key)
 	}
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace] semantic graph external updates inputs=%d processed=%d queued=%d rebuilt_external=%d rebuild_external_ms=%.3f elapsed_ms=%.3f\n",
+			len(inputs),
+			len(processed),
+			len(queue),
+			len(result.rebuilt_external_projects),
+			reanalyze_ms,
+			trace.duration_ms_since(trace_start),
+		)
+	}
 }
 
 semantic_graph_session_apply_external_source_updates :: proc(
@@ -358,6 +400,10 @@ semantic_graph_session_apply_external_source_updates :: proc(
 	inputs: []External_Source_Input,
 	result: ^Semantic_Graph_Update_Result,
 ) {
+	when trace.ENABLED {
+		trace_start := trace.now()
+		reanalyze_ms := 0.0
+	}
 	queue := make([dynamic]Semantic_Object_Key, 0, len(inputs), context.temp_allocator)
 	processed := make([dynamic]Semantic_Object_Key, 0, len(inputs), context.temp_allocator)
 	for input in inputs {
@@ -381,7 +427,13 @@ semantic_graph_session_apply_external_source_updates :: proc(
 		semantic_graph_object_key_list_add(&processed, key)
 		semantic_graph_session_mark_waiters_for_provider(session, key, &queue, result)
 		if input, ok := semantic_graph_session_external_input_for_key(session, key); ok {
+			when trace.ENABLED {
+				reanalyze_start := trace.now()
+			}
 			semantic_graph_session_reanalyze_external_input(session, input, result)
+			when trace.ENABLED {
+				reanalyze_ms += trace.duration_ms_since(reanalyze_start)
+			}
 		}
 	}
 
@@ -393,6 +445,17 @@ semantic_graph_session_apply_external_source_updates :: proc(
 			)
 		}
 		semantic_graph_clear_unresolved_waiters_for_provider(&session.external.index, key)
+	}
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace] semantic graph external source updates inputs=%d processed=%d queued=%d rebuilt_external=%d rebuild_external_ms=%.3f elapsed_ms=%.3f\n",
+			len(inputs),
+			len(processed),
+			len(queue),
+			len(result.rebuilt_external_projects),
+			reanalyze_ms,
+			trace.duration_ms_since(trace_start),
+		)
 	}
 }
 
@@ -495,6 +558,9 @@ semantic_graph_session_mark_file_projects_dirty :: proc(
 }
 
 semantic_graph_session_rebuild_workspace :: proc(session: ^Semantic_Graph_Session) {
+	when trace.ENABLED {
+		trace_start := trace.now()
+	}
 	if session.has_analysis {
 		semantic_workspace_analysis_destroy(&session.analysis)
 		session.has_analysis = false
@@ -512,6 +578,16 @@ semantic_graph_session_rebuild_workspace :: proc(session: ^Semantic_Graph_Sessio
 	if session.external.index.next_project_id < session.analysis.external_index.next_project_id {
 		session.external.index.next_project_id = session.analysis.external_index.next_project_id
 	}
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace] semantic graph rebuild workspace editable_files=%d external_sources=%d external_records=%d analysis_projects=%d elapsed_ms=%.3f\n",
+			len(session.editable_files),
+			len(session.external_source_inputs),
+			len(session.external.index.projects),
+			len(session.analysis.projects),
+			trace.duration_ms_since(trace_start),
+		)
+	}
 }
 
 semantic_graph_collect_frontier :: proc(
@@ -520,11 +596,20 @@ semantic_graph_collect_frontier :: proc(
 	blocked: []Semantic_Object_Key,
 	result: ^Semantic_Graph_Update_Result,
 ) {
+	when trace.ENABLED {
+		trace_start := trace.now()
+		record_count := 0
+		candidate_count := 0
+	}
 	index := semantic_graph_session_current_index(session)
 	if index == nil {
 		return
 	}
 	for record in index.projects {
+		when trace.ENABLED {
+			record_count += 1
+			candidate_count += len(record.unresolved)
+		}
 		for candidate in record.unresolved {
 			if semantic_graph_candidate_resolved(session, index, candidate) {
 				continue
@@ -538,6 +623,17 @@ semantic_graph_collect_frontier :: proc(
 				semantic_graph_candidate_list_add(&result.new_fetch_requests, candidate)
 			}
 		}
+	}
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace] semantic graph collect frontier stable=%v records=%d candidates=%d new_fetch=%d blocked=%d elapsed_ms=%.3f\n",
+			frontier_stable,
+			record_count,
+			candidate_count,
+			len(result.new_fetch_requests),
+			len(result.blocked_unresolved_dependencies),
+			trace.duration_ms_since(trace_start),
+		)
 	}
 }
 

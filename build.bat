@@ -7,7 +7,6 @@ set "ODIN_LINKER_FLAGS=-extra-linker-flags:/STACK:4000000,2000000"
 set "ROOT=%~dp0"
 set "MODE=debug"
 set "ODIN_EXTRA_ARGS="
-set "ODIN_ADT_EXTRA_ARGS="
 set "ODIN_FRONTEND_EXTRA_ARGS="
 
 :parse
@@ -16,8 +15,8 @@ if /I "%~1"=="debug" (
   set "MODE=debug"
 ) else if /I "%~1"=="release" (
   set "MODE=release"
-) else if /I "%~1"=="trace-adt-fetch" (
-  set "ODIN_ADT_EXTRA_ARGS=!ODIN_ADT_EXTRA_ARGS! -define:ABAP_FRONTEND_TRACE_ADT_FETCH=true"
+) else if /I "%~1"=="trace" (
+  set "ODIN_FRONTEND_EXTRA_ARGS=!ODIN_FRONTEND_EXTRA_ARGS! -define:ABAP_FRONTEND_TRACE=true"
 ) else (
   set "ODIN_EXTRA_ARGS=!ODIN_EXTRA_ARGS! %~1"
 )
@@ -36,5 +35,5 @@ if /I "%MODE%"=="release" (
   set "MODE_FLAGS=-debug"
 )
 
-"%ODIN_EXE%" build "%ROOT%cmd\abap_frontend" -out:"%OUT_DIR%\abap_frontend.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% !ODIN_EXTRA_ARGS! !ODIN_ADT_EXTRA_ARGS! !ODIN_FRONTEND_EXTRA_ARGS! || exit /b %errorlevel%
-"%ODIN_EXE%" build "%ROOT%cmd\adt_cli" -out:"%OUT_DIR%\adt_cli.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% !ODIN_EXTRA_ARGS! !ODIN_ADT_EXTRA_ARGS! || exit /b %errorlevel%
+"%ODIN_EXE%" build "%ROOT%cmd\abap_frontend" -out:"%OUT_DIR%\abap_frontend.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% !ODIN_EXTRA_ARGS! !ODIN_FRONTEND_EXTRA_ARGS! || exit /b %errorlevel%
+"%ODIN_EXE%" build "%ROOT%cmd\adt_cli" -out:"%OUT_DIR%\adt_cli.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% !ODIN_EXTRA_ARGS! || exit /b %errorlevel%

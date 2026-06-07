@@ -1,6 +1,5 @@
 package abap_frontend_semantic_remote_dependencies
 
-import "src:adt"
 import dep_store "src:dependency_store"
 import execution "src:execution"
 import analyze "src:semantic/analyze"
@@ -260,7 +259,7 @@ add_typepool_cache_matches :: proc(
 		seen_artifacts^[record.artifact_id] = true
 		append_dependency_input(candidates, dependencies, input, candidate, record.object_name)
 		added = true
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf(
 				"[dep fetch] Cache hit from %s: type-pool %s\n",
 				trace_source,
@@ -513,7 +512,7 @@ add_dependency_store_task_result :: proc(
 		   ok {
 			append(dependency_summaries, summary_input)
 			seen_artifacts^[result.record.artifact_id] = true
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] Cache summary hit from %s: %s %s -> %s %s\n",
 					trace_source,
@@ -546,7 +545,7 @@ add_dependency_store_task_result :: proc(
 		input_candidate,
 		result.record.object_name,
 	)
-	when adt.DEPENDENCY_FETCH_TRACE {
+	when TRACE {
 		trace_eprintf(
 			"[dep fetch] Cache hit from %s: %s %s -> %s %s\n",
 			trace_source,

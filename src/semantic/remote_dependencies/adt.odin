@@ -72,7 +72,7 @@ add_adt_matches_with_client :: proc(
 
 	if client.csrf_token == "" {
 		if adt.ensure_session(client, context.temp_allocator) != .None {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				for candidate in adt_candidates {
 					trace_eprintf(
 						"[dep fetch] ADT miss: %s %s (session setup failed)\n",
@@ -172,7 +172,7 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 		temp_allocator,
 	)
 	if result == nil || len(result.fetched) == 0 {
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf(
 				"[dep fetch] ADT miss: %s %s\n",
 				remote_candidate_kind_text(payload.candidate.kind),
@@ -317,7 +317,7 @@ fetch_adt_objects :: proc(
 				)
 			}
 		}
-		when adt.DEPENDENCY_FETCH_TRACE {
+		when TRACE {
 			trace_eprintf(
 				"[dep fetch] ADT hit: %s %s -> %s %s (type=%s, ext=%s, bytes=%d, shared=%d)\n",
 				remote_candidate_kind_text(candidate.kind),
@@ -344,7 +344,7 @@ fetch_adt_objects :: proc(
 			prefer_summary,
 		)
 		for &shared in fetched.shared_dependencies {
-			when adt.DEPENDENCY_FETCH_TRACE {
+			when TRACE {
 				trace_eprintf(
 					"[dep fetch] ADT hit: include %s -> %s %s (type=%s, ext=%s, bytes=%d, shared from %s)\n",
 					shared.object_ref.name,

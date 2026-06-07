@@ -2,6 +2,7 @@ package abap_frontend_semantic2
 
 import "src:ast"
 import string_interner "src:string_interner"
+import trace "src:trace"
 
 import "core:mem"
 import "core:strings"
@@ -517,6 +518,40 @@ external_semantic_index_add_project_id :: proc(
 	waiters^[key] = projects
 }
 
+external_semantic_index_remove_project_id :: proc(
+	waiters: ^map[Semantic_Object_Key][dynamic]Semantic_Project_Id,
+	key: Semantic_Object_Key,
+	project_id: Semantic_Project_Id,
+) {
+	if waiters == nil ||
+	   !semantic_object_key_is_valid(key) ||
+	   !semantic_project_id_is_valid(project_id) {
+		return
+	}
+	projects, ok := waiters^[key]
+	if !ok {
+		return
+	}
+	write := 0
+	for existing in projects {
+		if existing == project_id {
+			continue
+		}
+		projects[write] = existing
+		write += 1
+	}
+	if write == len(projects) {
+		return
+	}
+	if write == 0 {
+		delete(projects)
+		delete_key(waiters, key)
+		return
+	}
+	resize(&projects, write)
+	waiters^[key] = projects
+}
+
 external_semantic_index_replace_project_record :: proc(
 	index: ^External_Semantic_Index,
 	record: Semantic_Project_Record,
@@ -528,7 +563,7 @@ external_semantic_index_replace_project_record :: proc(
 		_ = external_semantic_index_remove_project_record(index, record.id)
 	}
 	stored := external_semantic_index_add_project_record(index, record)
-	external_semantic_index_rebuild_maps(index)
+	external_semantic_index_add_project_record_contributions(index, stored)
 	return stored
 }
 
@@ -555,10 +590,12 @@ external_semantic_index_remove_project_record :: proc(
 		return false
 	}
 	removed := false
+	removed_record: Semantic_Project_Record
 	write := 0
 	for record in index.projects {
 		if record.id == id {
 			removed = true
+			removed_record = record
 			continue
 		}
 		index.projects[write] = record
@@ -566,7 +603,7 @@ external_semantic_index_remove_project_record :: proc(
 	}
 	if removed {
 		resize(&index.projects, write)
-		external_semantic_index_rebuild_maps(index)
+		external_semantic_index_remove_project_record_contributions(index, &removed_record)
 	}
 	return removed
 }
@@ -575,9 +612,19 @@ external_semantic_index_rebuild_maps :: proc(index: ^External_Semantic_Index) {
 	if index == nil {
 		return
 	}
+	when trace.ENABLED {
+		trace_start := trace.now()
+		project_count := len(index.projects)
+		resolved_count := 0
+		unresolved_count := 0
+	}
 	next_project_id := index.next_project_id
 	external_semantic_index_reset_maps(index)
 	for &record in index.projects {
+		when trace.ENABLED {
+			resolved_count += len(record.resolved_dependencies)
+			unresolved_count += len(record.unresolved_dependencies)
+		}
 		if semantic_object_key_is_valid(record.root_key) {
 			index.project_by_root_key[record.root_key] = record.id
 		}
@@ -596,6 +643,146 @@ external_semantic_index_rebuild_maps :: proc(index: ^External_Semantic_Index) {
 		}
 	}
 	index.next_project_id = next_project_id
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace] external index rebuild maps projects=%d resolved_edges=%d unresolved_edges=%d elapsed_ms=%.3f\n",
+			project_count,
+			resolved_count,
+			unresolved_count,
+			trace.duration_ms_since(trace_start),
+		)
+	}
+}
+
+external_semantic_index_add_project_record_contributions :: proc(
+	index: ^External_Semantic_Index,
+	record: ^Semantic_Project_Record,
+) {
+	assert(index != nil && record != nil)
+	for provided in record.provider_bindings {
+		index.providers[provided.key] = provided.binding
+		external_semantic_index_add_entity_lookup(index, provided.key, provided.binding.entity)
+	}
+	for edge in record.resolved_dependencies {
+		external_semantic_index_add_dependency(index, record.id, edge)
+	}
+	for edge in record.unresolved_dependencies {
+		external_semantic_index_add_dependency(index, record.id, edge)
+	}
+}
+
+external_semantic_index_remove_project_record_contributions :: proc(
+	index: ^External_Semantic_Index,
+	record: ^Semantic_Project_Record,
+) {
+	assert(index != nil && record != nil)
+	if semantic_object_key_is_valid(record.root_key) {
+		external_semantic_index_rebuild_root_key(index, record.root_key)
+	}
+	for edge in record.resolved_dependencies {
+		external_semantic_index_remove_project_id(
+			&index.dependents_by_object,
+			edge.key,
+			record.id,
+		)
+	}
+	for edge in record.unresolved_dependencies {
+		external_semantic_index_remove_project_id(
+			&index.unresolved_waiters_by_object,
+			edge.key,
+			record.id,
+		)
+	}
+	for provided in record.provider_bindings {
+		external_semantic_index_rebuild_provider_key(index, provided.key)
+		external_semantic_index_rebuild_entity_lookups(index, provided.binding.entity)
+	}
+}
+
+external_semantic_index_rebuild_root_key :: proc(
+	index: ^External_Semantic_Index,
+	root_key: Semantic_Object_Key,
+) {
+	assert(index != nil)
+	if !semantic_object_key_is_valid(root_key) {
+		return
+	}
+	project_id: Semantic_Project_Id
+	found := false
+	for record in index.projects {
+		if record.root_key == root_key {
+			project_id = record.id
+			found = true
+		}
+	}
+	if found {
+		index.project_by_root_key[root_key] = project_id
+	} else {
+		delete_key(&index.project_by_root_key, root_key)
+	}
+}
+
+external_semantic_index_rebuild_provider_key :: proc(
+	index: ^External_Semantic_Index,
+	key: Semantic_Object_Key,
+) {
+	assert(index != nil)
+	if !semantic_object_key_is_valid(key) {
+		return
+	}
+	binding: External_Binding
+	found := false
+	for record in index.projects {
+		for provided in record.provider_bindings {
+			if provided.key == key {
+				binding = provided.binding
+				found = true
+			}
+		}
+	}
+	if found {
+		index.providers[key] = binding
+	} else {
+		delete_key(&index.providers, key)
+	}
+}
+
+external_semantic_index_rebuild_entity_lookups :: proc(
+	index: ^External_Semantic_Index,
+	entity: ^Entity,
+) {
+	assert(index != nil)
+	if entity == nil {
+		return
+	}
+	namespaces := [?]Namespace{.Value, .Type, .Routine}
+	for namespace in namespaces {
+		if entity_kind_occupies(entity.kind, namespace) {
+			external_semantic_index_rebuild_lookup_key(
+				index,
+				External_Lookup_Key{namespace = namespace, name = entity.name},
+			)
+		}
+	}
+}
+
+external_semantic_index_rebuild_lookup_key :: proc(
+	index: ^External_Semantic_Index,
+	lookup_key: External_Lookup_Key,
+) {
+	assert(index != nil)
+	delete_key(&index.lookup, lookup_key)
+	for record in index.projects {
+		for provided in record.provider_bindings {
+			entity := provided.binding.entity
+			if entity != nil &&
+			   entity.name == lookup_key.name &&
+			   entity_kind_occupies(entity.kind, lookup_key.namespace) {
+				index.lookup[lookup_key] = provided.key
+				return
+			}
+		}
+	}
 }
 
 external_semantic_index_reset_maps :: proc(index: ^External_Semantic_Index) {
