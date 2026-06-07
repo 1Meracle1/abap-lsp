@@ -171,6 +171,64 @@ remote_dependency_local_export_uses_pool_for_multiple_requests :: proc(t: ^testi
 }
 
 @(test)
+remote_dependency_cache_uses_pool_for_multiple_requests :: proc(t: ^testing.T) {
+	path := remote_dependency_test_store_path("cache_pool.sqlite3")
+	store, store_err := dep_store.dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, store_err, dep_store.Store_Error.None)
+	profile := standalone_dependency_profile()
+	artifacts := [?]dep_store.Stored_Artifact_Input {
+		{
+			package_name   = "zcl_cache_pool_a",
+			object_kind    = "global-class",
+			object_name    = "zcl_cache_pool_a",
+			object_uri     = "/sap/bc/adt/oo/classes/zcl_cache_pool_a",
+			object_type    = "CLAS/OC",
+			description    = "Cache pool A",
+			file_extension = "abap",
+			source_text    = "CLASS zcl_cache_pool_a DEFINITION. PUBLIC SECTION. METHODS run. ENDCLASS.",
+			fetched_at     = "2026-06-07T00:00:00Z",
+		},
+		{
+			package_name   = "zcl_cache_pool_b",
+			object_kind    = "global-class",
+			object_name    = "zcl_cache_pool_b",
+			object_uri     = "/sap/bc/adt/oo/classes/zcl_cache_pool_b",
+			object_type    = "CLAS/OC",
+			description    = "Cache pool B",
+			file_extension = "abap",
+			source_text    = "CLASS zcl_cache_pool_b DEFINITION. PUBLIC SECTION. METHODS run. ENDCLASS.",
+			fetched_at     = "2026-06-07T00:00:00Z",
+		},
+	}
+	_, put_err := dep_store.put_artifacts(&store, &profile, artifacts[:], context.allocator)
+	testing.expect_value(t, put_err, dep_store.Store_Error.None)
+
+	pool: execution.Pool
+	execution.pool_init(
+		&pool,
+		execution.Options{worker_count = 2, task_capacity = 8, edge_capacity = 8},
+		context.allocator,
+	)
+	defer execution.pool_destroy(&pool)
+	execution.pool_start(&pool)
+
+	config := Config{cache = &store, profile = &profile}
+	state := state_make(context.allocator)
+	requests := [?]Request {
+		{name = "zcl_cache_pool_a", kind = .Class},
+		{name = "zcl_cache_pool_b", kind = .Class},
+	}
+	stats_before := execution.pool_stats(&pool)
+
+	result := resolve_requests(requests[:], &config, &state, &pool, context.allocator)
+
+	stats_after := execution.pool_stats(&pool)
+	testing.expect_value(t, len(result.interfaces), 2)
+	testing.expect_value(t, len(result.misses), 0)
+	testing.expect(t, stats_after.submitted > stats_before.submitted)
+}
+
+@(test)
 remote_dependency_ddic_generated_abap_cache_entry_is_stale :: proc(t: ^testing.T) {
 	record := dep_store.Stored_Artifact_Record {
 		object_kind    = "ddic-table",
@@ -208,7 +266,7 @@ remote_dependency_typepool_cache_keeps_original_request_key :: proc(t: ^testing.
 	config := Config{cache = &store, profile = &profile}
 	state := state_make(context.allocator)
 	request := Request{name = "ztp_cached_type", kind = .Type}
-	artifacts := cache_artifacts({request}, &config, &state, context.allocator)
+	artifacts := cache_artifacts({request}, &config, &state, nil, context.allocator)
 
 	testing.expect_value(t, len(artifacts), 1)
 	testing.expect_value(t, artifacts[0].request.name, "ztp_cached_type")

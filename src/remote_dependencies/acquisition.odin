@@ -19,6 +19,22 @@ ADT_Fetch_Task_Payload :: struct {
 	result_allocator: mem.Allocator,
 }
 
+Cache_Lookup_Result :: struct {
+	record: dep_store.Stored_Artifact_Record,
+	ok:     bool,
+	err:    dep_store.Store_Error,
+}
+
+Cache_Batch_Payload :: struct {
+	store:         dep_store.Dependency_Store,
+	profile:       ^dep_store.Dependency_Profile,
+	requests:      []Request,
+	any_profile:  bool,
+	result_arenas: []mem.Dynamic_Arena,
+	results:       []^Cache_Lookup_Result,
+	offset:        int,
+}
+
 Local_Task_Payload :: struct {
 	request:            Request,
 	local_export_roots: []string,
@@ -53,7 +69,7 @@ resolve_requests :: proc(
 		trace_eprintf("[dep fetch] Resolving %d remote dependency request(s)\n", len(normalized))
 	}
 	resolved := make(map[Remote_Dependency_Key]bool, len(normalized), context.temp_allocator)
-	cache_artifacts := cache_artifacts(normalized[:], config, state, allocator)
+	cache_artifacts := cache_artifacts(normalized[:], config, state, pool, allocator)
 	for &artifact in cache_artifacts {
 		if result_add_artifact(&result, &artifact, state, allocator) {
 			resolved[remote_dependency_key(artifact.request)] = true
@@ -181,98 +197,232 @@ cache_artifacts :: proc(
 	requests: []Request,
 	config: ^Config,
 	state: ^State,
+	pool: ^execution.Pool,
 	allocator: mem.Allocator,
 ) -> [dynamic]Artifact {
 	out := make([dynamic]Artifact, 0, len(requests), allocator)
 	if config.cache == nil {
 		return out
 	}
-	for request in unseen_requests(requests, nil, context.temp_allocator) {
-		record: dep_store.Stored_Artifact_Record
-		ok := false
-		err := dep_store.Store_Error.None
-		if config.cache_any_profile || config.profile == nil {
-			record, ok, err = dep_store.find_artifact_for_candidate_any_profile(
-				config.cache,
-				request.name,
-				store_candidate_kind(request.kind),
-				context.temp_allocator,
-			)
+	candidates := unseen_requests(requests, nil, context.temp_allocator)
+	if len(candidates) > 0 {
+		if pool != nil && len(candidates) > 1 {
+			append_cache_artifacts_parallel(&out, candidates[:], config, state, pool, allocator)
 		} else {
-			record, ok, err = dep_store.find_artifact_for_candidate(
-				config.cache,
-				config.profile,
-				request.name,
-				store_candidate_kind(request.kind),
-				context.temp_allocator,
+			append_cache_artifacts(&out, candidates[:], config, state, allocator)
+		}
+	}
+	append_typepool_cache_artifacts(&out, candidates[:], config, state, allocator)
+	return out
+}
+
+append_cache_artifacts :: proc(
+	out: ^[dynamic]Artifact,
+	requests: []Request,
+	config: ^Config,
+	state: ^State,
+	allocator: mem.Allocator,
+) {
+	reader, reader_err := dep_store.reader(config.cache, context.temp_allocator)
+	if reader_err != .None {
+		for request in requests {
+			result := Cache_Lookup_Result{err = reader_err}
+			append_cache_lookup_result(out, request, &result, state, allocator)
+		}
+		return
+	}
+	defer dep_store.reader_destroy(&reader)
+
+	any_profile := config.cache_any_profile || config.profile == nil
+	for request in requests {
+		result := cache_lookup_result(
+			&reader,
+			request,
+			config.profile,
+			any_profile,
+			context.temp_allocator,
+		)
+		append_cache_lookup_result(out, request, result, state, allocator)
+	}
+}
+
+append_cache_artifacts_parallel :: proc(
+	out: ^[dynamic]Artifact,
+	requests: []Request,
+	config: ^Config,
+	state: ^State,
+	pool: ^execution.Pool,
+	allocator: mem.Allocator,
+) {
+	task_count := min(max(pool.options.worker_count, 1), len(requests))
+	batch_size := (len(requests) + task_count - 1) / task_count
+	result_backing := base_runtime.heap_allocator()
+	result_arenas := make([]mem.Dynamic_Arena, len(requests), context.temp_allocator)
+	results := make([]^Cache_Lookup_Result, len(requests), context.temp_allocator)
+	for &result_arena in result_arenas {
+		mem.dynamic_arena_init(&result_arena, result_backing, result_backing, alignment = 64)
+	}
+
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, context.temp_allocator)
+	any_profile := config.cache_any_profile || config.profile == nil
+	for start := 0; start < len(requests); start += batch_size {
+		end := min(start + batch_size, len(requests))
+		payload := Cache_Batch_Payload {
+			store         = config.cache^,
+			profile       = config.profile,
+			requests      = requests[start:end],
+			any_profile  = any_profile,
+			result_arenas = result_arenas,
+			results       = results,
+			offset        = start,
+		}
+		_ = execution.submit_value(
+			&graph,
+			execution.worker_executor(pool),
+			payload,
+			cache_lookup_batch_task,
+		)
+	}
+	execution.graph_start(&graph)
+	execution.graph_wait(&graph)
+	for request, i in requests {
+		append_cache_lookup_result(out, request, results[i], state, allocator)
+		mem.dynamic_arena_destroy(&result_arenas[i])
+	}
+	execution.graph_destroy(&graph)
+}
+
+cache_lookup_batch_task :: proc(payload: Cache_Batch_Payload) -> execution.No_Result {
+	store := payload.store
+	reader, reader_err := dep_store.reader(&store, context.temp_allocator)
+	if reader_err != .None {
+		for _, i in payload.requests {
+			index := payload.offset + i
+			result := new(
+				Cache_Lookup_Result,
+				mem.dynamic_arena_allocator(&payload.result_arenas[index]),
 			)
+			result.err = reader_err
+			payload.results[index] = result
 		}
-		if err != .None {
-			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf(
-					"[dep fetch] Cache lookup failed: %s %s: %v\n",
-					trace_request_kind_text(request.kind),
-					request.name,
-					err,
-				)
-			}
-			continue
-		}
-		if !ok {
-			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf(
-					"[dep fetch] Cache miss: %s %s\n",
-					trace_request_kind_text(request.kind),
-					request.name,
-				)
-			}
-			continue
-		}
-		if cached_artifact_is_stale(&record, request) {
-			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf(
-					"[dep fetch] Cache entry is stale: %s %s -> %s %s (artifact id %d)\n",
-					trace_request_kind_text(request.kind),
-					request.name,
-					record.object_kind,
-					record.object_name,
-					record.artifact_id,
-				)
-			}
-			continue
-		}
-		if state != nil && record.artifact_id in state.seen_artifacts {
-			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf(
-					"[dep fetch] Cache hit already used: %s %s -> %s %s (artifact id %d)\n",
-					trace_request_kind_text(request.kind),
-					request.name,
-					record.object_kind,
-					record.object_name,
-					record.artifact_id,
-				)
-			}
-			continue
-		}
-		artifact := artifact_from_record(&record, request, .Cache, allocator)
-		append(&out, artifact)
+		return execution.No_Result{}
+	}
+	defer dep_store.reader_destroy(&reader)
+
+	for request, i in payload.requests {
+		index := payload.offset + i
+		payload.results[index] = cache_lookup_result(
+			&reader,
+			request,
+			payload.profile,
+			payload.any_profile,
+			mem.dynamic_arena_allocator(&payload.result_arenas[index]),
+		)
+	}
+	return execution.No_Result{}
+}
+
+cache_lookup_result :: proc(
+	reader: ^dep_store.Dependency_Store_Reader,
+	request: Request,
+	profile: ^dep_store.Dependency_Profile,
+	any_profile: bool,
+	allocator: mem.Allocator,
+) -> ^Cache_Lookup_Result {
+	result := new(Cache_Lookup_Result, allocator)
+	if any_profile {
+		result.record, result.ok, result.err = dep_store.reader_find_artifact_for_candidate_any_profile(
+			reader,
+			request.name,
+			store_candidate_kind(request.kind),
+			allocator,
+		)
+	} else {
+		assert(profile != nil)
+		result.record, result.ok, result.err = dep_store.reader_find_artifact_for_candidate(
+			reader,
+			profile,
+			request.name,
+			store_candidate_kind(request.kind),
+			allocator,
+		)
+	}
+	return result
+}
+
+append_cache_lookup_result :: proc(
+	out: ^[dynamic]Artifact,
+	request: Request,
+	result: ^Cache_Lookup_Result,
+	state: ^State,
+	allocator: mem.Allocator,
+) {
+	assert(result != nil)
+	if result.err != .None {
 		when adt.DEPENDENCY_FETCH_TRACE {
 			trace_eprintf(
-				"[dep fetch] Cache hit: %s %s -> %s %s (artifact id %d, ext=%s)\n",
+				"[dep fetch] Cache lookup failed: %s %s: %v\n",
+				trace_request_kind_text(request.kind),
+				request.name,
+				result.err,
+			)
+		}
+		return
+	}
+	if !result.ok {
+		when adt.DEPENDENCY_FETCH_TRACE {
+			trace_eprintf(
+				"[dep fetch] Cache miss: %s %s\n",
+				trace_request_kind_text(request.kind),
+				request.name,
+			)
+		}
+		return
+	}
+	record := &result.record
+	if cached_artifact_is_stale(record, request) {
+		when adt.DEPENDENCY_FETCH_TRACE {
+			trace_eprintf(
+				"[dep fetch] Cache entry is stale: %s %s -> %s %s (artifact id %d)\n",
 				trace_request_kind_text(request.kind),
 				request.name,
 				record.object_kind,
 				record.object_name,
 				record.artifact_id,
-				record.file_extension,
 			)
 		}
-		if state != nil {
-			state.seen_artifacts[record.artifact_id] = true
-		}
+		return
 	}
-	append_typepool_cache_artifacts(&out, requests, config, state, allocator)
-	return out
+	if state != nil && record.artifact_id in state.seen_artifacts {
+		when adt.DEPENDENCY_FETCH_TRACE {
+			trace_eprintf(
+				"[dep fetch] Cache hit already used: %s %s -> %s %s (artifact id %d)\n",
+				trace_request_kind_text(request.kind),
+				request.name,
+				record.object_kind,
+				record.object_name,
+				record.artifact_id,
+			)
+		}
+		return
+	}
+	artifact := artifact_from_record(record, request, .Cache, allocator)
+	append(out, artifact)
+	when adt.DEPENDENCY_FETCH_TRACE {
+		trace_eprintf(
+			"[dep fetch] Cache hit: %s %s -> %s %s (artifact id %d, ext=%s)\n",
+			trace_request_kind_text(request.kind),
+			request.name,
+			record.object_kind,
+			record.object_name,
+			record.artifact_id,
+			record.file_extension,
+		)
+	}
+	if state != nil {
+		state.seen_artifacts[record.artifact_id] = true
+	}
 }
 
 append_typepool_cache_artifacts :: proc(
