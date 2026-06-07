@@ -4,7 +4,7 @@ import adt "src:adt"
 import execution "src:execution"
 import "src:parser"
 import remote_deps "src:remote_dependencies"
-import "src:semantic2"
+import "src:semantic"
 import string_interner "src:string_interner"
 
 import "core:mem"
@@ -14,8 +14,8 @@ import "core:strings"
 REMOTE_DEPENDENCY_MAX_ITERATIONS :: 32
 
 Analysis_Result :: struct {
-	session:       semantic2.Semantic_Graph_Session,
-	last_update:   semantic2.Semantic_Graph_Update_Result,
+	session:       semantic.Semantic_Graph_Session,
+	last_update:   semantic.Semantic_Graph_Update_Result,
 	remote_state:  remote_deps.State,
 	remote_result: remote_deps.Result,
 	ok:            bool,
@@ -40,7 +40,7 @@ analyze_workspace :: proc(
 			append(&paths, abs_path)
 		}
 	}
-	files := make([dynamic]semantic2.Workspace_File_Input, 0, len(paths), allocator)
+	files := make([dynamic]semantic.Workspace_File_Input, 0, len(paths), allocator)
 	for path in paths {
 		input, ok := workspace_file_input_from_path(path, allocator)
 		if !ok {
@@ -67,7 +67,7 @@ analyze_path :: proc(
 	if !target_ok {
 		return Analysis_Result{ok = false, error = "invalid target path"}
 	}
-	files := make([dynamic]semantic2.Workspace_File_Input, 0, 1 + len(include_paths), allocator)
+	files := make([dynamic]semantic.Workspace_File_Input, 0, 1 + len(include_paths), allocator)
 	target, ok := workspace_file_input_from_path(target_abs, allocator)
 	if !ok {
 		return Analysis_Result{ok = false, error = "failed to read target file"}
@@ -90,27 +90,27 @@ analyze_path :: proc(
 
 analyze_inputs :: proc(
 	workspace: ^Workspace,
-	files: []semantic2.Workspace_File_Input,
+	files: []semantic.Workspace_File_Input,
 	pool: ^execution.Pool,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
 	remote_config := remote_dependency_config_from_workspace(workspace)
 	remote_state := remote_deps.state_make(allocator)
-	session := semantic2.semantic_graph_session_make(nil, allocator)
-	update := semantic2.Semantic_Graph_Update {
+	session := semantic.semantic_graph_session_make(nil, allocator)
+	update := semantic.Semantic_Graph_Update {
 		changed_files            = files,
 		external_frontier_stable = false,
 	}
-	last := semantic2.semantic_graph_session_apply_update(&session, update)
+	last := semantic.semantic_graph_session_apply_update(&session, update)
 	remote_result := remote_deps.result_make(allocator)
 
 	frontier_flushed := false
 	for _ in 0 ..< REMOTE_DEPENDENCY_MAX_ITERATIONS {
 		if len(last.new_fetch_requests) == 0 {
-			semantic2.semantic_graph_update_result_destroy(&last)
-			last = semantic2.semantic_graph_session_apply_update(
+			semantic.semantic_graph_update_result_destroy(&last)
+			last = semantic.semantic_graph_session_apply_update(
 				&session,
-				semantic2.Semantic_Graph_Update{external_frontier_stable = true},
+				semantic.Semantic_Graph_Update{external_frontier_stable = true},
 			)
 			frontier_flushed = true
 			break
@@ -137,16 +137,16 @@ analyze_inputs :: proc(
 			remote_result.sources[:],
 			context.temp_allocator,
 		)
-		semantic2.semantic_graph_update_result_destroy(&last)
+		semantic.semantic_graph_update_result_destroy(&last)
 		if len(external_interfaces) == 0 && len(external_sources) == 0 {
 			blocked := blocked_keys_from_requests(
 				session.interner,
 				requests[:],
 				context.temp_allocator,
 			)
-			last = semantic2.semantic_graph_session_apply_update(
+			last = semantic.semantic_graph_session_apply_update(
 				&session,
-				semantic2.Semantic_Graph_Update {
+				semantic.Semantic_Graph_Update {
 					external_frontier_stable = true,
 					blocked_dependencies = blocked[:],
 				},
@@ -154,9 +154,9 @@ analyze_inputs :: proc(
 			frontier_flushed = true
 			break
 		}
-		last = semantic2.semantic_graph_session_apply_update(
+		last = semantic.semantic_graph_session_apply_update(
 			&session,
-			semantic2.Semantic_Graph_Update {
+			semantic.Semantic_Graph_Update {
 				fetched_external_objects = external_interfaces[:],
 				fetched_external_sources = external_sources[:],
 				external_frontier_stable = false,
@@ -164,10 +164,10 @@ analyze_inputs :: proc(
 		)
 	}
 	if !frontier_flushed {
-		semantic2.semantic_graph_update_result_destroy(&last)
-		last = semantic2.semantic_graph_session_apply_update(
+		semantic.semantic_graph_update_result_destroy(&last)
+		last = semantic.semantic_graph_session_apply_update(
 			&session,
-			semantic2.Semantic_Graph_Update{external_frontier_stable = true},
+			semantic.Semantic_Graph_Update{external_frontier_stable = true},
 		)
 	}
 
@@ -182,8 +182,8 @@ analyze_inputs :: proc(
 
 analysis_result_destroy :: proc(result: ^Analysis_Result, allocator: mem.Allocator) {
 	_ = allocator
-	semantic2.semantic_graph_update_result_destroy(&result.last_update)
-	semantic2.semantic_graph_session_destroy(&result.session)
+	semantic.semantic_graph_update_result_destroy(&result.last_update)
+	semantic.semantic_graph_session_destroy(&result.session)
 	result^ = {}
 }
 
@@ -191,7 +191,7 @@ workspace_file_input_from_path :: proc(
 	path: string,
 	allocator: mem.Allocator,
 ) -> (
-	semantic2.Workspace_File_Input,
+	semantic.Workspace_File_Input,
 	bool,
 ) {
 	source, source_ok := read_text_file(path, allocator)
@@ -199,7 +199,7 @@ workspace_file_input_from_path :: proc(
 		return {}, false
 	}
 	parsed := parser.parse(source, path, allocator)
-	return semantic2.Workspace_File_Input {
+	return semantic.Workspace_File_Input {
 			path = strings.clone(path, allocator),
 			root = parsed.root,
 			kind = .Unknown,
@@ -232,7 +232,7 @@ remote_dependency_config_from_workspace :: proc(workspace: ^Workspace) -> remote
 
 remote_requests_from_unresolved_candidates :: proc(
 	interner: ^string_interner.Interner,
-	candidates: []semantic2.Checker_Unresolved_Candidate,
+	candidates: []semantic.Checker_Unresolved_Candidate,
 	allocator: mem.Allocator,
 ) -> [dynamic]remote_deps.Request {
 	out := make([dynamic]remote_deps.Request, 0, len(candidates), allocator)
@@ -248,7 +248,7 @@ remote_requests_from_unresolved_candidates :: proc(
 }
 
 remote_request_from_candidate :: proc(
-	candidate: semantic2.Checker_Unresolved_Candidate,
+	candidate: semantic.Checker_Unresolved_Candidate,
 	name: string,
 ) -> (
 	remote_deps.Request,
@@ -292,8 +292,8 @@ external_interface_inputs_from_remote :: proc(
 	interner: ^string_interner.Interner,
 	inputs: []remote_deps.Interface_AST,
 	allocator: mem.Allocator,
-) -> [dynamic]semantic2.External_Interface_Input {
-	out := make([dynamic]semantic2.External_Interface_Input, 0, len(inputs), allocator)
+) -> [dynamic]semantic.External_Interface_Input {
+	out := make([dynamic]semantic.External_Interface_Input, 0, len(inputs), allocator)
 	for input in inputs {
 		name := string_interner.insert(interner, input.key.name)
 		if !string_interner.is_valid(name) {
@@ -301,8 +301,8 @@ external_interface_inputs_from_remote :: proc(
 		}
 		append(
 			&out,
-			semantic2.External_Interface_Input {
-				key = semantic2.Semantic_Object_Key {
+			semantic.External_Interface_Input {
+				key = semantic.Semantic_Object_Key {
 					kind = external_kind_from_remote(input),
 					name = name,
 				},
@@ -320,12 +320,12 @@ external_interface_inputs_from_remote :: proc(
 external_source_inputs_from_remote :: proc(
 	inputs: []remote_deps.Source_AST,
 	allocator: mem.Allocator,
-) -> [dynamic]semantic2.External_Source_Input {
-	out := make([dynamic]semantic2.External_Source_Input, 0, len(inputs), allocator)
+) -> [dynamic]semantic.External_Source_Input {
+	out := make([dynamic]semantic.External_Source_Input, 0, len(inputs), allocator)
 	for input in inputs {
 		append(
 			&out,
-			semantic2.External_Source_Input {
+			semantic.External_Source_Input {
 				path = input.path,
 				root = input.root,
 				provided_names = input.provided_names[:],
@@ -341,8 +341,8 @@ blocked_keys_from_requests :: proc(
 	interner: ^string_interner.Interner,
 	requests: []remote_deps.Request,
 	allocator: mem.Allocator,
-) -> [dynamic]semantic2.Semantic_Object_Key {
-	out := make([dynamic]semantic2.Semantic_Object_Key, 0, len(requests), allocator)
+) -> [dynamic]semantic.Semantic_Object_Key {
+	out := make([dynamic]semantic.Semantic_Object_Key, 0, len(requests), allocator)
 	for request in requests {
 		name := string_interner.insert(interner, request.name)
 		if !string_interner.is_valid(name) {
@@ -350,7 +350,7 @@ blocked_keys_from_requests :: proc(
 		}
 		append(
 			&out,
-			semantic2.Semantic_Object_Key {
+			semantic.Semantic_Object_Key {
 				kind = external_kind_from_remote_key(remote_deps.remote_dependency_key(request)),
 				name = name,
 			},
@@ -361,14 +361,14 @@ blocked_keys_from_requests :: proc(
 
 external_kind_from_remote :: proc(
 	input: remote_deps.Interface_AST,
-) -> semantic2.External_Candidate_Kind {
+) -> semantic.External_Candidate_Kind {
 	return external_kind_from_remote_role_and_key(input.role, input.key)
 }
 
 external_kind_from_remote_role_and_key :: proc(
 	role: remote_deps.Remote_Dependency_Object_Role,
 	key: remote_deps.Remote_Dependency_Key,
-) -> semantic2.External_Candidate_Kind {
+) -> semantic.External_Candidate_Kind {
 	switch role {
 	case .Report:
 		return .Report
@@ -391,7 +391,7 @@ external_kind_from_remote_role_and_key :: proc(
 
 external_kind_from_remote_key :: proc(
 	key: remote_deps.Remote_Dependency_Key,
-) -> semantic2.External_Candidate_Kind {
+) -> semantic.External_Candidate_Kind {
 	switch key.kind {
 	case .Include:
 		return .Include_Source
@@ -415,7 +415,7 @@ external_kind_from_remote_key :: proc(
 
 external_role_from_remote :: proc(
 	role: remote_deps.Remote_Dependency_Object_Role,
-) -> semantic2.External_Interface_Object_Role {
+) -> semantic.External_Interface_Object_Role {
 	switch role {
 	case .Report:
 		return .Report

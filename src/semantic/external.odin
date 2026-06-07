@@ -669,7 +669,7 @@ external_semantic_index_rebuild_maps :: proc(index: ^External_Semantic_Index) {
 	index.next_project_id = next_project_id
 	when trace.ENABLED {
 		trace.eprintf(
-			"[trace - semantic2] external index rebuild maps projects=%d resolved_edges=%d unresolved_edges=%d elapsed_ms=%.3f\n",
+			"[trace - semantic] external index rebuild maps projects=%d resolved_edges=%d unresolved_edges=%d elapsed_ms=%.3f\n",
 			project_count,
 			resolved_count,
 			unresolved_count,

@@ -3,7 +3,7 @@ package abap_frontend_workspace
 import execution "src:execution"
 import "src:parser"
 import remote_deps "src:remote_dependencies"
-import semantic2 "src:semantic2"
+import "src:semantic"
 
 import "core:mem"
 import "core:strings"
@@ -41,7 +41,7 @@ Workspace_Source_Input :: struct {
 	text:        string,
 	revision:    u64,
 	open:        bool,
-	kind:        semantic2.Workspace_File_Kind,
+	kind:        semantic.Workspace_File_Kind,
 	object_name: string,
 }
 
@@ -57,8 +57,8 @@ Project_Snapshot :: struct {
 	revision:            u64,
 	source_inputs:       [dynamic]Workspace_Source_Input,
 	opened_dependencies: [dynamic]Workspace_Opened_Dependency,
-	session:             semantic2.Semantic_Graph_Session,
-	last_update:         semantic2.Semantic_Graph_Update_Result,
+	session:             semantic.Semantic_Graph_Session,
+	last_update:         semantic.Semantic_Graph_Update_Result,
 }
 
 Project_Slot :: struct {
@@ -222,7 +222,7 @@ project_builder_build :: proc(
 		append(&snapshot.opened_dependencies, workspace_opened_dependency_clone(entry, allocator))
 	}
 	files := make(
-		[dynamic]semantic2.Workspace_File_Input,
+		[dynamic]semantic.Workspace_File_Input,
 		0,
 		len(builder.inputs) + len(builder.opened),
 		context.temp_allocator,
@@ -421,8 +421,8 @@ project_snapshot_destroy :: proc(snapshot: ^Project_Snapshot, allocator: mem.All
 		return
 	}
 	_ = allocator
-	semantic2.semantic_graph_update_result_destroy(&snapshot.last_update)
-	semantic2.semantic_graph_session_destroy(&snapshot.session)
+	semantic.semantic_graph_update_result_destroy(&snapshot.last_update)
+	semantic.semantic_graph_session_destroy(&snapshot.session)
 	snapshot^ = {}
 }
 
@@ -619,9 +619,9 @@ workspace_dependency_object_kind_text :: proc(kind: Dependency_Object_Kind) -> s
 workspace_file_input_from_source :: proc(
 	input: Workspace_Source_Input,
 	allocator: mem.Allocator,
-) -> semantic2.Workspace_File_Input {
+) -> semantic.Workspace_File_Input {
 	parsed := parser.parse(input.text, input.uri, allocator)
-	return semantic2.Workspace_File_Input {
+	return semantic.Workspace_File_Input {
 		path        = strings.clone(input.uri, allocator),
 		root        = parsed.root,
 		kind        = input.kind,
@@ -630,7 +630,7 @@ workspace_file_input_from_source :: proc(
 }
 
 @(private)
-workspace_file_kind_for_dependency :: proc(key: Dependency_Object_Key) -> semantic2.Workspace_File_Kind {
+workspace_file_kind_for_dependency :: proc(key: Dependency_Object_Key) -> semantic.Workspace_File_Kind {
 	#partial switch key.object_kind {
 	case .Report:
 		return .Report

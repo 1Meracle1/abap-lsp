@@ -1,7 +1,7 @@
 package abap_frontend_semantic2
 
 /*
-semantic2 is the project-snapshot semantic checker for parsed ABAP source.
+semantic is the project-snapshot semantic checker for parsed ABAP source.
 
 The package consumes parser ASTs and produces semantic projects, diagnostics,
 entity uses, expression/type information, include-expansion results, and
@@ -74,7 +74,7 @@ Top-level usage:
 
 4. External dependencies.
 
-   External dependencies enter semantic2 only after the caller has fetched and
+   External dependencies enter semantic only after the caller has fetched and
    parsed or summarized them:
 
    - `External_Semantics` stores caller-supplied external summaries and parsed
@@ -177,5 +177,5 @@ Important invariants:
 - Impossible internal states should be asserted, not hidden behind defensive
   branches.
 - Old `src/semantic/analyze` remains parallel until consumers are explicitly
-  migrated to semantic2.
+  migrated to semantic.
 */

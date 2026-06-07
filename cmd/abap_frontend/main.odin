@@ -3,7 +3,7 @@ package main
 import "src:ast"
 import execution "src:execution"
 import "src:parser"
-import "src:semantic2"
+import "src:semantic"
 import stack_trace "src:stack_trace"
 import "src:tokenizer"
 import trace "src:trace"
@@ -336,7 +336,7 @@ allocation_location_total_less :: proc(a, b: Allocation_Location_Total) -> bool 
 }
 
 print_analyze_counts :: proc(result: ^workspace.Analysis_Result) {
-	analysis := semantic2.semantic_graph_session_current_analysis(&result.session)
+	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
 	if analysis == nil {
 		fmt.println(
 			"[trace - main] Analysis summary: projects=0, files=0, symbols=0, scopes=0, uses=0, diagnostics=0, unresolved=0, external requests=0",
@@ -462,7 +462,7 @@ print_analyze_diagnostics :: proc(
 ) -> bool {
 	had_error := false
 	use_color := terminal.color_enabled && terminal.is_terminal(os.stdout)
-	analysis := semantic2.semantic_graph_session_current_analysis(&result.session)
+	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
 	if analysis == nil {
 		return false
 	}
@@ -487,7 +487,7 @@ print_analyze_diagnostics :: proc(
 }
 
 print_semantic_diagnostic :: proc(
-	diagnostic: semantic2.Checker_Diagnostic,
+	diagnostic: semantic.Checker_Diagnostic,
 	fallback_path: string,
 	warnings_as_errors: bool,
 	use_color: bool,
