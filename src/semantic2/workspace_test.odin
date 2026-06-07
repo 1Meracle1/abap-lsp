@@ -705,6 +705,40 @@ SELECT SINGLE raw_value FROM zunknown INTO @DATA(lv_raw).`),
 }
 
 @(test)
+semantic_workspace_resolves_like_clause_against_external_ddic_table :: proc(t: ^testing.T) {
+	interner := string_interner.create()
+	defer string_interner.destroy(interner)
+
+	external_inputs := [?]External_Interface_Input {
+		workspace_test_external_interface_input(
+			t,
+			interner,
+			.DDIC_Table,
+			.DDIC_Table,
+			"ztab",
+			"adt://ztab.ddic.abap",
+			`TYPES: BEGIN OF ztab,
+         field TYPE string,
+       END OF ztab.`,
+			5,
+		),
+	}
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. DATA lv_field LIKE ztab-field."),
+	}
+
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external_interfaces = external_inputs[:], interner = interner})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	testing.expect_value(t, workspace_test_candidate_count(&analysis, .Global_Symbol, "ztab"), 0)
+	lv_field := workspace_test_lookup(t, &analysis, analysis.project_results[0].files[0].root_scope, .Value, "lv_field", .Variable)
+	testing.expect(t, lv_field != nil && lv_field.type != nil)
+	if lv_field != nil && lv_field.type != nil {
+		testing.expect_value(t, string_interner.load(analysis.interner, lv_field.type.name), "string")
+	}
+}
+
+@(test)
 semantic_workspace_builds_per_root_projects_and_indexes_shared_include :: proc(t: ^testing.T) {
 	files := [?]Workspace_File_Input {
 		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. INCLUDE zshared. FORM run. gv_shared = 1. ENDFORM."),

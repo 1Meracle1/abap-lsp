@@ -101,6 +101,23 @@ checker_test_unresolved_candidate_count :: proc(
 	return count
 }
 
+checker_test_unresolved_candidate_namespace_count :: proc(
+	checker: ^Checker,
+	project: ^Project,
+	kind: External_Candidate_Kind,
+	namespace: Namespace,
+	name: string,
+) -> int {
+	interned := checker_intern_name(project, name)
+	count := 0
+	for candidate in checker.info.unresolved {
+		if candidate.kind == kind && candidate.namespace == namespace && candidate.name == interned {
+			count += 1
+		}
+	}
+	return count
+}
+
 checker_test_expr_info_for_node :: proc(
 	t: ^testing.T,
 	checker: ^Checker,
@@ -635,6 +652,39 @@ DATA lr_item TYPE REF TO lif_demo=>ty_line.`
 	testing.expect(t, sy_ok && .Used in sy.flags)
 	lif_demo := checker_test_lookup(t, &project, file.root_scope, .Type, "lif_demo", .Interface)
 	testing.expect(t, lif_demo != nil && .Used in lif_demo.flags)
+}
+
+@(test)
+root_semantic_like_clause_adds_type_fallback_candidate :: proc(t: ^testing.T) {
+	source := `DATA lv_field LIKE zmissing_table-field.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://like_type_fallback.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Global_Symbol,
+			.Type,
+			"zmissing_table",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Global_Symbol,
+			.Value,
+			"zmissing_table",
+		),
+		1,
+	)
 }
 
 @(test)

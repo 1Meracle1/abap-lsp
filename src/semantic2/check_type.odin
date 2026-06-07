@@ -135,6 +135,21 @@ checker_type_from_ref_data :: proc(
 		return project_type_unknown(ctx.project), nil
 	}
 	_, entity, ok := checker_lookup_reference(ctx, type_ref.namespace, type_ref.base_name)
+	if !ok && type_ref.namespace == .Value && type_ref.allow_type_lookup {
+		_, entity, ok = checker_lookup_reference(ctx, .Type, type_ref.base_name)
+		if !ok {
+			checker_add_unresolved_candidate(
+				ctx,
+				type_ref.base_name,
+				.Type,
+				.Global_Symbol,
+				.Type_Reference,
+				.Unresolved_Type,
+				type_ref.base_range,
+				node,
+			)
+		}
+	}
 	if !ok {
 		kind := External_Candidate_Kind.Global_Symbol
 		reason := External_Candidate_Reason.Unresolved_Reference
@@ -261,13 +276,27 @@ checker_type_ref_data_from_clause :: proc(
 	     .Like_Hashed_Table:
 		namespace = .Value
 	}
-	return checker_type_ref_data_from_expr(
-			ctx,
-			clause.type_ref,
-			namespace,
-			clause.form == .Ref_To || checker_type_ref_expr_is_ref(clause.type_ref),
-		),
-		true
+	type_ref := checker_type_ref_data_from_expr(
+		ctx,
+		clause.type_ref,
+		namespace,
+		clause.form == .Ref_To || checker_type_ref_expr_is_ref(clause.type_ref),
+	)
+	type_ref.allow_type_lookup = checker_type_clause_form_allows_like_type_lookup(clause.form)
+	return type_ref, true
+}
+
+checker_type_clause_form_allows_like_type_lookup :: proc(form: ast.Data_Type_Form) -> bool {
+	#partial switch form {
+	case .Like,
+	     .Like_Line_Of,
+	     .Like_Table,
+	     .Like_Standard_Table,
+	     .Like_Sorted_Table,
+	     .Like_Hashed_Table:
+		return true
+	}
+	return false
 }
 
 checker_type_ref_expr_is_ref :: proc(expr: ^ast.Expr) -> bool {

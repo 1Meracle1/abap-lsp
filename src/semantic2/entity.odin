@@ -169,14 +169,15 @@ Class_Member_Kind :: enum {
 }
 
 Field_Type_Ref_Data :: struct {
-	namespace:       Namespace,
-	is_ref:          bool,
-	base_name:       string_interner.String,
-	base_range:      Range,
-	field_path:      [dynamic]string_interner.String,
-	field_ranges:    [dynamic]Range,
-	field_derefs:    [dynamic]bool,
-	field_selectors: [dynamic]ast.Selector_Op,
+	namespace:                Namespace,
+	is_ref:                   bool,
+	allow_type_lookup:        bool,
+	base_name:                string_interner.String,
+	base_range:               Range,
+	field_path:               [dynamic]string_interner.String,
+	field_ranges:             [dynamic]Range,
+	field_derefs:             [dynamic]bool,
+	field_selectors:          [dynamic]ast.Selector_Op,
 }
 
 Entity_Parameter_Value_Kind :: enum {
