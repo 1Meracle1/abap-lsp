@@ -72,6 +72,15 @@ add_adt_matches_with_client :: proc(
 
 	if client.csrf_token == "" {
 		if adt.ensure_session(client, context.temp_allocator) != .None {
+			when adt.DEPENDENCY_FETCH_TRACE {
+				for candidate in adt_candidates {
+					trace_eprintf(
+						"[dep fetch] ADT miss: %s %s (session setup failed)\n",
+						remote_candidate_kind_text(candidate.kind),
+						candidate.name,
+					)
+				}
+			}
 			return false
 		}
 	}
@@ -163,6 +172,13 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 		temp_allocator,
 	)
 	if result == nil || len(result.fetched) == 0 {
+		when adt.DEPENDENCY_FETCH_TRACE {
+			trace_eprintf(
+				"[dep fetch] ADT miss: %s %s\n",
+				remote_candidate_kind_text(payload.candidate.kind),
+				payload.candidate.name,
+			)
+		}
 		record_adt_negative_lookup(
 			payload.store,
 			payload.profile,
@@ -208,38 +224,14 @@ fetch_adt_candidate :: proc(
 			return result
 		}
 	}
-	when adt.DEPENDENCY_FETCH_TRACE {
-		trace_eprintf(
-			"adt_fetch\tadt\tsearch\t%s\t%s\n",
-			remote_candidate_kind_text(candidate.kind),
-			candidate.name,
-		)
-	}
 
 	objects, err := adt.search_repository_objects(client, candidate.name, 50, temp_allocator)
 	if err != .None {
-		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf(
-				"adt_fetch\tadt\tsearch_err\t%s\t%s\t%v\n",
-				remote_candidate_kind_text(candidate.kind),
-				candidate.name,
-				err,
-			)
-		}
 		objects = adt.direct_dependency_object_refs(
 			candidate.name,
 			remote_candidate_kind_text(candidate.kind),
 			temp_allocator,
 		)
-	} else {
-		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf(
-				"adt_fetch\tadt\tsearch_ok\t%s\t%s\t%d\n",
-				remote_candidate_kind_text(candidate.kind),
-				candidate.name,
-				len(objects),
-			)
-		}
 	}
 
 	selected := adt.select_dependency_objects(
@@ -253,14 +245,6 @@ fetch_adt_candidate :: proc(
 			candidate.name,
 			remote_candidate_kind_text(candidate.kind),
 			temp_allocator,
-		)
-	}
-	when adt.DEPENDENCY_FETCH_TRACE {
-		trace_eprintf(
-			"adt_fetch\tadt\tselected\t%s\t%s\t%d\n",
-			remote_candidate_kind_text(candidate.kind),
-			candidate.name,
-			len(selected),
 		)
 	}
 
@@ -318,27 +302,8 @@ fetch_adt_objects :: proc(
 ) -> int {
 	fetched_count := 0
 	for &object_ref in objects {
-		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf(
-				"adt_fetch\tadt\tfetch\t%s\t%s\t%s\t%s\n",
-				remote_candidate_kind_text(candidate.kind),
-				candidate.name,
-				object_ref.object_type,
-				object_ref.name,
-			)
-		}
 		fetched, fetch_err := adt.fetch_dependency_object(client, &object_ref, temp_allocator)
 		if fetch_err != .None {
-			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf(
-					"adt_fetch\tadt\tfetch_err\t%s\t%s\t%s\t%s\t%v\n",
-					remote_candidate_kind_text(candidate.kind),
-					candidate.name,
-					object_ref.object_type,
-					object_ref.name,
-					fetch_err,
-				)
-			}
 			continue
 		}
 		if adt.is_direct_ddic_elementinfo_object(&object_ref) {
@@ -354,15 +319,16 @@ fetch_adt_objects :: proc(
 		}
 		when adt.DEPENDENCY_FETCH_TRACE {
 			trace_eprintf(
-				"adt_fetch\tadt\tfetch_ok\t%s\t%s\t%s\t%s\t%s\t%d\n",
+				"[dep fetch] ADT hit: %s %s -> %s %s (type=%s, ext=%s, bytes=%d, shared=%d)\n",
 				remote_candidate_kind_text(candidate.kind),
 				candidate.name,
-				object_ref.object_type,
-				object_ref.name,
 				fetched.manifest_kind,
+				object_ref.name,
+				object_ref.object_type,
+				fetched.file_extension,
+				len(fetched.body),
 				len(fetched.shared_dependencies),
 			)
-			adt.trace_dependency_fetch(&object_ref, fetched.manifest_kind, fetched.file_extension)
 		}
 		store_adt_dependency_fetch(store, profile, &object_ref, &fetched, temp_allocator)
 		append_prepared_adt_input(
@@ -378,6 +344,18 @@ fetch_adt_objects :: proc(
 			prefer_summary,
 		)
 		for &shared in fetched.shared_dependencies {
+			when adt.DEPENDENCY_FETCH_TRACE {
+				trace_eprintf(
+					"[dep fetch] ADT hit: include %s -> %s %s (type=%s, ext=%s, bytes=%d, shared from %s)\n",
+					shared.object_ref.name,
+					shared.manifest_kind,
+					shared.object_ref.name,
+					shared.object_ref.object_type,
+					shared.file_extension,
+					len(shared.body),
+					object_ref.name,
+				)
+			}
 			append_prepared_adt_input(
 				result,
 				deps.Remote_Dependency_Candidate {
@@ -444,25 +422,6 @@ add_adt_fetch_task_result :: proc(
 				entry.object_name,
 				uri_keys,
 			)
-		}
-		when adt.DEPENDENCY_FETCH_TRACE {
-			status := "added" if input_added else "skipped"
-			if entry.shared {
-				trace_eprintf(
-					"adt_fetch\tadt\tshared_input\t%s\t%s\t%s\n",
-					status,
-					entry.object_type,
-					entry.object_name,
-				)
-			} else {
-				trace_eprintf(
-					"adt_fetch\tadt\tinput\t%s\t%s\t%s\t%s\n",
-					status,
-					remote_candidate_kind_text(candidate.kind),
-					entry.object_type,
-					entry.object_name,
-				)
-			}
 		}
 		if input_added {
 			added = true
@@ -536,13 +495,6 @@ store_adt_dependency_fetch :: proc(
 	temp_allocator: mem.Allocator,
 ) {
 	if store == nil || profile == nil {
-		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf(
-				"adt_fetch\tadt\tcache\tskipped\t%s\t%s\n",
-				object_ref.object_type,
-				object_ref.name,
-			)
-		}
 		return
 	}
 	artifacts := make(
@@ -576,26 +528,7 @@ store_adt_dependency_fetch :: proc(
 			),
 		)
 	}
-	_, err := dep_store.put_artifacts(store, profile, artifacts[:], temp_allocator)
-	when adt.DEPENDENCY_FETCH_TRACE {
-		if err == .None {
-			trace_eprintf(
-				"adt_fetch\tadt\tcache\tok\t%s\t%s\t%d\n",
-				object_ref.object_type,
-				object_ref.name,
-				len(artifacts),
-			)
-		} else {
-			trace_eprintf(
-				"adt_fetch\tadt\tcache_err\t%s\t%s\t%v\n",
-				object_ref.object_type,
-				object_ref.name,
-				err,
-			)
-		}
-	} else {
-		_ = err
-	}
+	_, _ = dep_store.put_artifacts(store, profile, artifacts[:], temp_allocator)
 }
 
 dependency_artifact_from_adt :: proc(

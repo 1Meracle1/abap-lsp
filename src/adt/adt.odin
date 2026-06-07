@@ -3,14 +3,11 @@ package adt
 import http "src:http"
 
 import base64 "core:encoding/base64"
-import "core:fmt"
 import "core:mem"
 import "core:os"
 import filepath "core:path/filepath"
 import "core:strings"
 import "core:time"
-
-trace_eprintf :: fmt.eprintf
 
 SESSION_BOOTSTRAP_ACCEPT :: "application/atom+xml;type=feed, application/xml"
 
@@ -145,19 +142,6 @@ clone_dependency_artifact :: proc(
 		body           = strings.clone(artifact.body, allocator),
 		file_extension = strings.clone(artifact.file_extension, allocator),
 		manifest_kind  = strings.clone(artifact.manifest_kind, allocator),
-	}
-}
-
-trace_dependency_fetch :: proc(object_ref: ^Object_Ref, manifest_kind, file_extension: string) {
-	when DEPENDENCY_FETCH_TRACE {
-		trace_eprintf(
-			"adt_fetch\t%s\t%s\t%s\t%s\t%s\n",
-			manifest_kind,
-			object_ref.name,
-			object_ref.object_type,
-			file_extension,
-			object_ref.uri,
-		)
 	}
 }
 

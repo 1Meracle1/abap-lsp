@@ -262,7 +262,7 @@ add_typepool_cache_matches :: proc(
 		added = true
 		when adt.DEPENDENCY_FETCH_TRACE {
 			trace_eprintf(
-				"adt_fetch\t%s\tadd\ttypepool\t%s\n",
+				"[dep fetch] Cache hit from %s: type-pool %s\n",
 				trace_source,
 				record.object_name,
 			)
@@ -515,7 +515,7 @@ add_dependency_store_task_result :: proc(
 			seen_artifacts^[result.record.artifact_id] = true
 			when adt.DEPENDENCY_FETCH_TRACE {
 				trace_eprintf(
-					"adt_fetch\t%s\tadd_summary\t%s\t%s\t%s\t%s\n",
+					"[dep fetch] Cache summary hit from %s: %s %s -> %s %s\n",
 					trace_source,
 					remote_candidate_kind_text(candidate.kind),
 					candidate.name,
@@ -548,7 +548,7 @@ add_dependency_store_task_result :: proc(
 	)
 	when adt.DEPENDENCY_FETCH_TRACE {
 		trace_eprintf(
-			"adt_fetch\t%s\tadd\t%s\t%s\t%s\t%s\n",
+			"[dep fetch] Cache hit from %s: %s %s -> %s %s\n",
 			trace_source,
 			remote_candidate_kind_text(candidate.kind),
 			candidate.name,

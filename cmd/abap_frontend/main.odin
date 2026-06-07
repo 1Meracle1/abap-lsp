@@ -292,7 +292,7 @@ print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
 	slice.sort_by(totals[:], allocation_location_total_less)
 
 	fmt.printf(
-		"memory\tused: %d KB\tpeak: %d KB\ttotal_allocated: %d KB\tallocations\t%d\tlocations\t%d\n",
+		"[dep fetch] Memory summary: used=%d KB, peak=%d KB, total allocated=%d KB, allocations=%d, locations=%d\n",
 		tracker.current_memory_allocated / mem.Kilobyte,
 		tracker.peak_memory_allocated / mem.Kilobyte,
 		tracker.total_memory_allocated / mem.Kilobyte,
@@ -301,7 +301,7 @@ print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
 	)
 	for total in totals {
 		fmt.printf(
-			"memory_location\t%d KB\tallocations: %d\t%s(%d:%d)\tproc: %s\n",
+			"[dep fetch] Memory location: %d KB in %d allocation(s) at %s(%d:%d), proc=%s\n",
 			total.bytes / mem.Kilobyte,
 			total.count,
 			total.location.file_path,
@@ -328,7 +328,7 @@ allocation_location_total_less :: proc(a, b: Allocation_Location_Total) -> bool 
 print_analyze_counts :: proc(result: ^workspace.Analysis_Result) {
 	analysis := semantic2.semantic_graph_session_current_analysis(&result.session)
 	if analysis == nil {
-		fmt.println("counts\tprojects\t0\tfiles\t0\tsymbols\t0\tscopes\t0\tuses\t0\tdiagnostics\t0\tunresolved\t0\texternal_requests\t0")
+		fmt.println("[dep fetch] Analysis summary: projects=0, files=0, symbols=0, scopes=0, uses=0, diagnostics=0, unresolved=0, external requests=0")
 		return
 	}
 	files, symbols, scopes, uses, diagnostics: int
@@ -344,7 +344,7 @@ print_analyze_counts :: proc(result: ^workspace.Analysis_Result) {
 		}
 	}
 	fmt.printf(
-		"counts\tprojects\t%d\tfiles\t%d\tsymbols\t%d\tscopes\t%d\tuses\t%d\tdiagnostics\t%d\tunresolved\t%d\texternal_requests\t%d\n",
+		"[dep fetch] Analysis summary: projects=%d, files=%d, symbols=%d, scopes=%d, uses=%d, diagnostics=%d, unresolved=%d, external requests=%d\n",
 		len(analysis.project_results),
 		files,
 		symbols,

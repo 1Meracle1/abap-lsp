@@ -102,7 +102,7 @@ add_typepool_resolver_matches :: proc(
 			when adt.DEPENDENCY_FETCH_TRACE {
 				candidate := owner_candidates[i]
 				trace_eprintf(
-					"adt_fetch\ttypepool\towner_miss\t%s\t%s\t%v\n",
+					"[dep fetch] Type-pool owner lookup failed: %s %s: %v\n",
 					remote_candidate_kind_text(candidate.kind),
 					candidate.name,
 					result.err if result != nil else adt.Error.Http,
@@ -119,7 +119,7 @@ add_typepool_resolver_matches :: proc(
 		seen_pools[pool] = true
 		append(&pools, pool)
 		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\ttypepool\towner\t%s\t%s\n", result.candidate.name, pool)
+			trace_eprintf("[dep fetch] Type-pool owner: %s -> %s\n", result.candidate.name, pool)
 		}
 		mem.dynamic_arena_destroy(&result_arenas[i])
 	}
@@ -139,7 +139,7 @@ add_typepool_resolver_matches :: proc(
 		   ) {
 			added = true
 			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf("adt_fetch\ttypepool\tadd_summary\tcache\t%s\n", pool)
+				trace_eprintf("[dep fetch] Type-pool summary cache hit: %s\n", pool)
 			}
 			continue
 		}
@@ -160,7 +160,7 @@ add_typepool_resolver_matches :: proc(
 		) {
 			added = true
 			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf("adt_fetch\ttypepool\tadd\tcache\t%s\n", pool)
+				trace_eprintf("[dep fetch] Type-pool source cache hit: %s\n", pool)
 			}
 		}
 	}
@@ -198,7 +198,7 @@ add_typepool_resolver_matches :: proc(
 		if result == nil || result.err != .None {
 			when adt.DEPENDENCY_FETCH_TRACE {
 				trace_eprintf(
-					"adt_fetch\ttypepool\tsource_miss\t%s\t%v\n",
+					"[dep fetch] Type-pool source fetch failed: %s: %v\n",
 					remote_pools[i],
 					result.err if result != nil else adt.Error.Http,
 				)
@@ -218,7 +218,7 @@ add_typepool_resolver_matches :: proc(
 		) {
 			added = true
 			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf("adt_fetch\ttypepool\tadd\tremote\t%s\n", result.pool)
+				trace_eprintf("[dep fetch] Type-pool source fetch ok: %s\n", result.pool)
 			}
 		}
 	}
