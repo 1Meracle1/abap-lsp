@@ -242,6 +242,25 @@ remote_dependency_ddic_generated_abap_cache_entry_is_stale :: proc(t: ^testing.T
 }
 
 @(test)
+remote_dependency_ddic_xml_with_include_cache_entry_is_not_stale :: proc(t: ^testing.T) {
+	record := dep_store.Stored_Artifact_Record {
+		object_kind    = "ddic-table",
+		object_name    = "/sttp/rep_evt",
+		file_extension = "xml",
+		source_text    = `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="/sttp/rep_evt" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name=".include">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicIncludeName">/sttp/s_rep_evt_att</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`,
+	}
+	request := Request{name = "/sttp/rep_evt", kind = .Type}
+
+	testing.expect(t, !cached_artifact_is_stale(&record, request))
+}
+
+@(test)
 remote_dependency_ddic_source_cache_entry_is_not_stale_and_converts :: proc(t: ^testing.T) {
 	source := `define type zrow {
   value : abap.int4;

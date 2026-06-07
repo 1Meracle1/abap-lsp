@@ -14282,24 +14282,6 @@ adt_fetched_ddic_table_preserves_xml_in_cache :: proc(t: ^testing.T) {
 }
 
 @(test)
-cached_ddic_table_with_include_is_stale :: proc(t: ^testing.T) {
-	record := dep_store.Stored_Artifact_Record {
-		object_kind    = "ddic-table",
-		file_extension = "xml",
-		source_text    = `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="/sttp/rep_evt" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
-  <abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name=".include">
-    <abapsource:properties>
-      <abapsource:entry abapsource:key="ddicIncludeName">/sttp/s_rep_evt_att</abapsource:entry>
-    </abapsource:properties>
-  </abapsource:elementInfo>
-</abapsource:elementInfo>`,
-	}
-	candidate := deps.Remote_Dependency_Candidate{name = "/sttp/rep_evt", kind = .Type}
-
-	testing.expect(t, remote_deps.cached_dependency_record_is_stale(&record, candidate))
-}
-
-@(test)
 manifest_unlisted_reachable_include_joins_root_and_selects_owner :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("unlisted-include")
 	manifest_test_file(

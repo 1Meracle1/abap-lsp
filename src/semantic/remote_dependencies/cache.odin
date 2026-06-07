@@ -359,11 +359,7 @@ dependency_store_find :: proc(
 		result.ok = ok
 		result.err = err
 		if ok && err == .None {
-			if cached_dependency_record_is_stale(&record, candidate) {
-				result.ok = false
-			} else {
-				dependency_store_prepare_record_result(result, &record, candidate, prefer_summary, reader, result_allocator)
-			}
+			dependency_store_prepare_record_result(result, &record, candidate, prefer_summary, reader, result_allocator)
 		}
 	} else if profile != nil {
 		status, err := dep_store.reader_find_cached_candidate(
@@ -388,11 +384,7 @@ dependency_store_find :: proc(
 			result.ok = ok
 			result.err = lookup_err
 			if ok && lookup_err == .None {
-				if cached_dependency_record_is_stale(&record, candidate) {
-					result.ok = false
-				} else {
-					dependency_store_prepare_record_result(result, &record, candidate, prefer_summary, reader, result_allocator)
-				}
+				dependency_store_prepare_record_result(result, &record, candidate, prefer_summary, reader, result_allocator)
 			}
 		}
 	}
@@ -448,16 +440,6 @@ dependency_store_prepare_record_result :: proc(
 		result_allocator,
 	)
 	result.has_input = true
-}
-
-cached_dependency_record_is_stale :: proc(
-	record: ^dep_store.Stored_Artifact_Record,
-	candidate: deps.Remote_Dependency_Candidate,
-) -> bool {
-	return candidate.kind == .Type &&
-	       dependency_object_kind_is_ddic(record.object_kind) &&
-	       dependency_source_is_xml(record.object_kind, record.file_extension, record.source_text) &&
-	       strings.contains(record.source_text, "ddicIncludeName")
 }
 
 clone_dependency_record :: proc(
