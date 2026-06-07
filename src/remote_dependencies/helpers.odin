@@ -215,6 +215,11 @@ remote_dependency_file_extension_is_abap :: proc(file_extension: string) -> bool
 	return strings.equal_fold(ext, "abap")
 }
 
+remote_dependency_file_extension_is_ddic :: proc(file_extension: string) -> bool {
+	ext := strings.trim_prefix(file_extension, ".")
+	return strings.equal_fold(ext, "ddic")
+}
+
 candidate_for_object :: proc(
 	object_kind, object_name: string,
 ) -> (Request, bool) {

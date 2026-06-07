@@ -242,6 +242,43 @@ remote_dependency_ddic_generated_abap_cache_entry_is_stale :: proc(t: ^testing.T
 }
 
 @(test)
+remote_dependency_ddic_source_cache_entry_is_not_stale_and_converts :: proc(t: ^testing.T) {
+	source := `define type zrow {
+  value : abap.int4;
+}`
+	record := dep_store.Stored_Artifact_Record {
+		object_kind    = "ddic-structure",
+		object_name    = "zrow",
+		file_extension = "ddic",
+		source_text     = source,
+	}
+	request := Request{name = "zrow", kind = .Type}
+
+	testing.expect(t, !cached_artifact_is_stale(&record, request))
+
+	artifact := Artifact {
+		request        = request,
+		source_kind    = .Cache,
+		object_kind    = record.object_kind,
+		object_name    = record.object_name,
+		object_uri     = "/sap/bc/adt/ddic/structures/zrow",
+		object_type    = "TABL/DS",
+		file_extension = record.file_extension,
+		source_text    = record.source_text,
+	}
+	result := result_make(context.allocator)
+	state := state_make(context.allocator)
+
+	added := result_add_artifact(&result, &artifact, &state, context.allocator)
+
+	testing.expect(t, added)
+	testing.expect_value(t, len(result.interfaces), 1)
+	testing.expect_value(t, len(result.misses), 0)
+	testing.expect_value(t, len(result.diagnostics), 0)
+	testing.expect_value(t, result.interfaces[0].key.name, "zrow")
+}
+
+@(test)
 remote_dependency_typepool_cache_keeps_original_request_key :: proc(t: ^testing.T) {
 	path := remote_dependency_test_store_path("typepool_cache_keeps_original_request_key.sqlite3")
 	store, store_err := dep_store.dependency_store_from_override_path(path, context.allocator)

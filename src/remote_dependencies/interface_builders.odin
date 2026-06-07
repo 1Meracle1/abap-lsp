@@ -88,11 +88,17 @@ interface_source :: proc(
 	   artifact.file_extension,
 	   artifact.source_text,
 	   )
-	if object_kind_is_ddic(artifact.object_kind) && !source_is_xml {
-		return "", false
+	if object_kind_is_ddic(artifact.object_kind) {
+		source := ddic_xml.dependency_source(
+			artifact.object_name if artifact.object_name != "" else artifact.request.name,
+			artifact.object_kind,
+			artifact.source_text,
+			allocator,
+		)
+		return source, source != ""
 	}
 	if source_is_xml {
-		if object_kind_is_ddic(artifact.object_kind) || artifact.request.kind == .Type {
+		if artifact.request.kind == .Type {
 			source := ddic_xml.dependency_source(
 				artifact.object_name if artifact.object_name != "" else artifact.request.name,
 				artifact.object_kind,
@@ -291,11 +297,17 @@ full_source :: proc(
 	   artifact.file_extension,
 	   artifact.source_text,
 	   )
-	if object_kind_is_ddic(artifact.object_kind) && !source_is_xml {
-		return "", false
+	if object_kind_is_ddic(artifact.object_kind) {
+		source := ddic_xml.dependency_source(
+			artifact.object_name if artifact.object_name != "" else artifact.request.name,
+			artifact.object_kind,
+			artifact.source_text,
+			allocator,
+		)
+		return source, source != ""
 	}
 	if source_is_xml {
-		if object_kind_is_ddic(artifact.object_kind) || artifact.request.kind == .Type {
+		if artifact.request.kind == .Type {
 			source := ddic_xml.dependency_source(
 				artifact.object_name if artifact.object_name != "" else artifact.request.name,
 				artifact.object_kind,

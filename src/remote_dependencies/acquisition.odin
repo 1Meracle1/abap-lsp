@@ -1350,7 +1350,7 @@ cached_artifact_is_stale :: proc(
 ) -> bool {
 	if object_kind_is_ddic(record.object_kind) &&
 	   !source_is_xml(record.object_kind, record.file_extension, record.source_text) {
-		return true
+		return !remote_dependency_file_extension_is_ddic(record.file_extension)
 	}
 	return(
 		request.kind == .Type &&

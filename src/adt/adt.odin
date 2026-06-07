@@ -729,22 +729,53 @@ fetch_ddic_object :: proc(
 	case strings.equal_fold(strings.trim_space(kind), "ddic-view"):
 		ddic_kind = .View
 	}
-	if ddic_kind == .Structure {
-		fetched, err := fetch_source_by_path(
-			client,
-			source_path("/ddic/structures/", name, temp_allocator),
-			"ddic-structure",
-			temp_allocator,
-		)
-		if err == .None {
-			return fetched.body, .None
-		}
+	if source, source_err := fetch_ddic_source_object(client, kind, name, temp_allocator);
+	   source_err == .None {
+		return source, .None
 	}
 	fetched, err := fetch_ddic(client, ddic_kind, name, temp_allocator)
 	if err != .None {
 		return "", err
 	}
 	return format_ddic_xml(fetched.body, temp_allocator), .None
+}
+
+fetch_ddic_source_object :: proc(
+	client: ^Client,
+	kind, name: string,
+	temp_allocator: mem.Allocator,
+) -> (
+	string,
+	Error,
+) {
+	object_type := ddic_source_object_type_for_manifest_kind(kind)
+	if object_type == "" {
+		return "", .Invalid_Url
+	}
+	object_uri := ddic_dependency_uri_for_object_type(name, object_type, temp_allocator)
+	fetched, err := fetch_source_by_path(client, object_uri, kind, temp_allocator)
+	if err != .None {
+		return "", err
+	}
+	return fetched.body, .None
+}
+
+ddic_source_object_type_for_manifest_kind :: proc(kind: string) -> string {
+	switch {
+	case strings.equal_fold(strings.trim_space(kind), "ddic-structure"):
+		return "TABL/DS"
+	case strings.equal_fold(strings.trim_space(kind), "ddic-table"):
+		return "TABL/DT"
+	case strings.equal_fold(strings.trim_space(kind), "ddic-table-type"):
+		return "TTYP/DA"
+	case strings.equal_fold(strings.trim_space(kind), "ddic-view"):
+		return "VIEW/DV"
+	}
+	return ""
+}
+
+ddic_dependency_body_file_extension :: proc(body: string) -> string {
+	return "xml" if strings.has_prefix(strings.trim_left_space(body), "<") else "ddic"
 }
 
 fetch_message_class :: proc(
@@ -857,17 +888,15 @@ fetch_dependency_object :: proc(
 			return {}, .Bad_Status
 		}
 		manifest_kind := infer_ddic_manifest_kind_from_object_type(object_type)
-		if strings.equal_fold(manifest_kind, "ddic-structure") {
-			if source, source_err := fetch_ddic_object(client, manifest_kind, object_ref.name, temp_allocator);
-			   source_err == .None {
-				return Dependency_Fetch_Result {
-						body = source,
-						file_extension = "ddic",
-						manifest_kind = manifest_kind,
-						shared_dependencies = make([dynamic]Dependency_Artifact, temp_allocator),
-					},
-					.None
-			}
+		if source, source_err := fetch_ddic_source_object(client, manifest_kind, object_ref.name, temp_allocator);
+		   source_err == .None {
+			return Dependency_Fetch_Result {
+					body = source,
+					file_extension = "ddic",
+					manifest_kind = manifest_kind,
+					shared_dependencies = make([dynamic]Dependency_Artifact, temp_allocator),
+				},
+				.None
 		}
 		return Dependency_Fetch_Result {
 				body = format_ddic_xml(fetched.body, temp_allocator),
@@ -885,7 +914,7 @@ fetch_dependency_object :: proc(
 		}
 		return Dependency_Fetch_Result {
 				body = body,
-				file_extension = "ddic" if strings.equal_fold(kind, "ddic-structure") else "xml",
+				file_extension = ddic_dependency_body_file_extension(body),
 				manifest_kind = kind,
 				shared_dependencies = make([dynamic]Dependency_Artifact, temp_allocator),
 			},
