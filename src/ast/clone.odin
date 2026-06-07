@@ -1354,6 +1354,8 @@ clone_oop_members :: proc(list: [dynamic]Oop_Member_Clause, allocator: mem.Alloc
 		next := clause
 		clone_string_fields(&next, &next, allocator)
 		next.signatures = clone_oop_signatures(clause.signatures, allocator)
+		next.event_handler.event_name = strings.clone(clause.event_handler.event_name, allocator)
+		next.event_handler.source_type = clone(clause.event_handler.source_type, allocator)
 		append(&res, next)
 	}
 	return res

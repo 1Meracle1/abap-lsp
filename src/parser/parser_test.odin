@@ -841,6 +841,26 @@ ENDFUNCTION.`
 }
 
 @(test)
+cloned_oop_event_handler_survives_parse_arena_destroy :: proc(t: ^testing.T) {
+	root := clone_parse_after_source_overwrite(
+		t,
+		`CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS on_changed FOR EVENT changed OF lcl_source IMPORTING ev_object.
+ENDCLASS.`,
+	)
+
+	class_decl := root.stmts[0].derived_stmt.(^ast.Class_Decl)
+	methods := class_decl.body[1].derived_stmt.(^ast.Oop_Simple_Stmt)
+	handler := methods.members[0].event_handler
+
+	testing.expect_value(t, handler.event_name, "changed")
+	testing.expect(t, handler.source_type != nil)
+	source_ref := handler.source_type.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, source_ref.base_name, "lcl_source")
+}
+
+@(test)
 parsed_call_submit_message_strings_survive_source_overwrite :: proc(t: ^testing.T) {
 	source := `CALL FUNCTION 'Z_FM'
   EXPORTING iv_input = lv_value

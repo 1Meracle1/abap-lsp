@@ -130,6 +130,7 @@ remote_dependency_local_export_uses_pool_for_multiple_requests :: proc(t: ^testi
 	testing.expect(t, os.make_directory_all(root) == nil)
 	first_path, _ := filepath.join({root, "zcl_pool_a.abap"}, context.allocator)
 	second_path, _ := filepath.join({root, "zcl_pool_b.abap"}, context.allocator)
+	include_path, _ := filepath.join({root, "zinc_pool.abap"}, context.allocator)
 	testing.expect(
 		t,
 		os.write_entire_file(
@@ -142,6 +143,13 @@ remote_dependency_local_export_uses_pool_for_multiple_requests :: proc(t: ^testi
 		os.write_entire_file(
 			second_path,
 			"CLASS zcl_pool_b DEFINITION. PUBLIC SECTION. METHODS run. ENDCLASS.",
+		) == nil,
+	)
+	testing.expect(
+		t,
+		os.write_entire_file(
+			include_path,
+			"DATA gv_pool TYPE i.",
 		) == nil,
 	)
 
@@ -162,12 +170,23 @@ remote_dependency_local_export_uses_pool_for_multiple_requests :: proc(t: ^testi
 	requests := [?]Request {
 		{name = "zcl_pool_a", kind = .Class},
 		{name = "zcl_pool_b", kind = .Class},
+		{name = "zinc_pool", kind = .Include},
 	}
 
 	result := resolve_requests(requests[:], &config, &state, &pool, context.allocator)
 
 	testing.expect_value(t, len(result.interfaces), 2)
+	testing.expect_value(t, len(result.sources), 1)
 	testing.expect_value(t, len(result.misses), 0)
+	for input in result.interfaces {
+		testing.expect(t, input.path != "")
+		testing.expect(t, input.root != nil)
+		testing.expect_value(t, len(input.root.stmts), 1)
+	}
+	testing.expect(t, result.sources[0].path != "")
+	testing.expect(t, result.sources[0].root != nil)
+	testing.expect_value(t, len(result.sources[0].root.stmts), 1)
+	testing.expect_value(t, result.sources[0].provided_names[0], "zinc_pool")
 }
 
 @(test)
@@ -199,6 +218,17 @@ remote_dependency_cache_uses_pool_for_multiple_requests :: proc(t: ^testing.T) {
 			source_text    = "CLASS zcl_cache_pool_b DEFINITION. PUBLIC SECTION. METHODS run. ENDCLASS.",
 			fetched_at     = "2026-06-07T00:00:00Z",
 		},
+		{
+			package_name   = "zcache_pool_row",
+			object_kind    = "ddic-structure",
+			object_name    = "zcache_pool_row",
+			object_uri     = "/sap/bc/adt/ddic/structures/zcache_pool_row",
+			object_type    = "TABL/DS",
+			description    = "Cache pool DDIC row",
+			file_extension = "ddic",
+			source_text    = "define type zcache_pool_row { value : abap.int4; }",
+			fetched_at     = "2026-06-07T00:00:00Z",
+		},
 	}
 	_, put_err := dep_store.put_artifacts(&store, &profile, artifacts[:], context.allocator)
 	testing.expect_value(t, put_err, dep_store.Store_Error.None)
@@ -217,14 +247,20 @@ remote_dependency_cache_uses_pool_for_multiple_requests :: proc(t: ^testing.T) {
 	requests := [?]Request {
 		{name = "zcl_cache_pool_a", kind = .Class},
 		{name = "zcl_cache_pool_b", kind = .Class},
+		{name = "zcache_pool_row", kind = .Type},
 	}
 	stats_before := execution.pool_stats(&pool)
 
 	result := resolve_requests(requests[:], &config, &state, &pool, context.allocator)
 
 	stats_after := execution.pool_stats(&pool)
-	testing.expect_value(t, len(result.interfaces), 2)
+	testing.expect_value(t, len(result.interfaces), 3)
 	testing.expect_value(t, len(result.misses), 0)
+	for input in result.interfaces {
+		testing.expect(t, input.path != "")
+		testing.expect(t, input.root != nil)
+		testing.expect_value(t, len(input.root.stmts), 1)
+	}
 	testing.expect(t, stats_after.submitted > stats_before.submitted)
 }
 

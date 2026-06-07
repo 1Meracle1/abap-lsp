@@ -6,6 +6,7 @@ import execution "src:execution"
 
 import base_runtime "base:runtime"
 import "core:mem"
+import "core:mem/virtual"
 import filepath "core:path/filepath"
 import "core:slice"
 import "core:strings"
@@ -35,6 +36,30 @@ Cache_Batch_Payload :: struct {
 	offset:        int,
 }
 
+Cache_Prepare_Status :: enum {
+	None,
+	Error,
+	Miss,
+	Stale,
+	Hit,
+}
+
+Cache_Prepare_Task_Payload :: struct {
+	store:            dep_store.Dependency_Store,
+	profile:          ^dep_store.Dependency_Profile,
+	request:          Request,
+	any_profile:     bool,
+	result_allocator: mem.Allocator,
+}
+
+Cache_Prepare_Result :: struct {
+	request:  Request,
+	status:   Cache_Prepare_Status,
+	err:      dep_store.Store_Error,
+	record:   dep_store.Stored_Artifact_Record,
+	prepared: Prepared_Artifact,
+}
+
 Local_Task_Payload :: struct {
 	request:            Request,
 	local_export_roots: []string,
@@ -43,6 +68,11 @@ Local_Task_Payload :: struct {
 
 Local_Task_Result :: struct {
 	artifact: Artifact,
+	ok:       bool,
+}
+
+Local_Prepare_Task_Result :: struct {
+	prepared: Prepared_Artifact,
 	ok:       bool,
 }
 
@@ -69,16 +99,7 @@ resolve_requests :: proc(
 		trace_eprintf("[trace - remote_dependencies] Resolving %d remote dependency request(s)\n", len(normalized))
 	}
 	resolved := make(map[Remote_Dependency_Key]bool, len(normalized), context.temp_allocator)
-	cache_artifacts := cache_artifacts(normalized[:], config, state, pool, allocator)
-	for &artifact in cache_artifacts {
-		before_interfaces := len(result.interfaces)
-		before_sources := len(result.sources)
-		added := result_add_artifact(&result, &artifact, state, allocator)
-		if added {
-			resolve_artifact_outputs(&result, &artifact, before_interfaces, before_sources, &resolved)
-			mark_artifact_seen_after_add(state, &artifact)
-		}
-	}
+	resolve_cache_phase(&result, normalized[:], config, state, pool, &resolved, allocator)
 
 	remaining := remaining_requests(normalized[:], resolved, context.temp_allocator)
 	if config.source_order == .Local_First {
@@ -151,23 +172,13 @@ resolve_source_phase :: proc(
 	resolved: ^map[Remote_Dependency_Key]bool,
 	allocator: mem.Allocator,
 ) {
-	artifacts: [dynamic]Artifact
 	#partial switch phase {
 	case .Local_Export:
-		artifacts = local_artifacts(requests, config, state, pool, allocator)
+		resolve_local_source_phase(result, requests, config, state, pool, resolved, allocator)
 	case .ADT:
-		artifacts = adt_artifacts(requests, config, state, pool, allocator)
+		resolve_adt_source_phase(result, requests, config, state, pool, resolved, allocator)
 	case:
 		return
-	}
-	for &artifact in artifacts {
-		before_interfaces := len(result.interfaces)
-		before_sources := len(result.sources)
-		added := result_add_artifact(result, &artifact, state, allocator)
-		if added {
-			resolve_artifact_outputs(result, &artifact, before_interfaces, before_sources, resolved)
-			mark_artifact_seen_after_add(state, &artifact)
-		}
 	}
 }
 
@@ -181,13 +192,48 @@ resolve_typepool_phase :: proc(
 ) {
 	artifacts := typepool_artifacts(requests, config, state, allocator)
 	for &artifact in artifacts {
-		before_interfaces := len(result.interfaces)
-		before_sources := len(result.sources)
-		if result_add_artifact(result, &artifact, state, allocator) {
-			resolve_artifact_outputs(result, &artifact, before_interfaces, before_sources, resolved)
-			mark_artifact_seen_after_add(state, &artifact)
-		}
+		resolve_artifact(result, &artifact, state, resolved, allocator)
 	}
+}
+
+resolve_artifact :: proc(
+	result: ^Result,
+	artifact: ^Artifact,
+	state: ^State,
+	resolved: ^map[Remote_Dependency_Key]bool,
+	allocator: mem.Allocator,
+) -> bool {
+	before_interfaces := len(result.interfaces)
+	before_sources := len(result.sources)
+	added := result_add_artifact(result, artifact, state, allocator)
+	if added {
+		resolve_artifact_outputs(result, artifact, before_interfaces, before_sources, resolved)
+		mark_artifact_seen_after_add(state, artifact)
+	}
+	return added
+}
+
+resolve_prepared_artifact :: proc(
+	result: ^Result,
+	prepared: ^Prepared_Artifact,
+	state: ^State,
+	resolved: ^map[Remote_Dependency_Key]bool,
+	allocator: mem.Allocator,
+) -> bool {
+	before_interfaces := len(result.interfaces)
+	before_sources := len(result.sources)
+	added := result_add_prepared_artifact(result, prepared, state, allocator)
+	if added {
+		resolve_artifact_outputs(
+			result,
+			&prepared.artifact,
+			before_interfaces,
+			before_sources,
+			resolved,
+		)
+		mark_artifact_seen_after_add(state, &prepared.artifact)
+	}
+	return added
 }
 
 resolve_artifact_outputs :: proc(
@@ -198,12 +244,24 @@ resolve_artifact_outputs :: proc(
 	resolved: ^map[Remote_Dependency_Key]bool,
 ) {
 	assert(result != nil && artifact != nil && resolved != nil)
-	resolved^[remote_dependency_key(artifact.request)] = true
+	request_key := remote_dependency_key(artifact.request)
+	resolved^[Remote_Dependency_Key {
+		name = strings.clone(request_key.name, resolved.allocator),
+		kind = request_key.kind,
+	}] = true
 	for i := before_interfaces; i < len(result.interfaces); i += 1 {
-		resolved^[result.interfaces[i].key] = true
+		key := result.interfaces[i].key
+		resolved^[Remote_Dependency_Key {
+			name = strings.clone(key.name, resolved.allocator),
+			kind = key.kind,
+		}] = true
 	}
 	for i := before_sources; i < len(result.sources); i += 1 {
-		resolved^[result.sources[i].key] = true
+		key := result.sources[i].key
+		resolved^[Remote_Dependency_Key {
+			name = strings.clone(key.name, resolved.allocator),
+			kind = key.kind,
+		}] = true
 	}
 }
 
@@ -227,6 +285,114 @@ remaining_requests :: proc(
 		}
 	}
 	return out
+}
+
+resolve_cache_phase :: proc(
+	result: ^Result,
+	requests: []Request,
+	config: ^Config,
+	state: ^State,
+	pool: ^execution.Pool,
+	resolved: ^map[Remote_Dependency_Key]bool,
+	allocator: mem.Allocator,
+) {
+	if config.cache == nil {
+		return
+	}
+	candidates := unseen_requests(
+		requests,
+		&state.seen_cache_requests if state != nil else nil,
+		context.temp_allocator,
+	)
+	if len(candidates) > 0 {
+		if pool != nil && len(candidates) > 1 {
+			resolve_cache_candidates_parallel(
+				result,
+				candidates[:],
+				config,
+				state,
+				pool,
+				resolved,
+				allocator,
+			)
+		} else {
+			artifacts := make([dynamic]Artifact, 0, len(candidates), allocator)
+			append_cache_artifacts(&artifacts, candidates[:], config, state, allocator)
+			for &artifact in artifacts {
+				resolve_artifact(result, &artifact, state, resolved, allocator)
+			}
+		}
+	}
+
+	typepool_artifacts := make([dynamic]Artifact, 0, len(candidates), allocator)
+	append_typepool_cache_artifacts(&typepool_artifacts, candidates[:], config, state, allocator)
+	for &artifact in typepool_artifacts {
+		resolve_artifact(result, &artifact, state, resolved, allocator)
+	}
+}
+
+resolve_cache_candidates_parallel :: proc(
+	result: ^Result,
+	requests: []Request,
+	config: ^Config,
+	state: ^State,
+	pool: ^execution.Pool,
+	resolved: ^map[Remote_Dependency_Key]bool,
+	allocator: mem.Allocator,
+) {
+	seen_artifacts := make(map[i64]bool, len(state.seen_artifacts) if state != nil else 0, context.temp_allocator)
+	if state != nil {
+		for artifact_id, seen in state.seen_artifacts {
+			if seen {
+				seen_artifacts[artifact_id] = true
+			}
+		}
+	}
+
+	result_arenas := make([]virtual.Arena, len(requests), context.temp_allocator)
+	tasks := make(
+		[dynamic]execution.Task(Cache_Prepare_Result),
+		0,
+		len(requests),
+		context.temp_allocator,
+	)
+
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, context.temp_allocator)
+	any_profile := config.cache_any_profile || config.profile == nil
+	for request, i in requests {
+		arena_err := virtual.arena_init_growing(&result_arenas[i])
+		assert(arena_err == .None)
+		payload := Cache_Prepare_Task_Payload {
+			store            = config.cache^,
+			profile          = config.profile,
+			request          = request,
+			any_profile     = any_profile,
+			result_allocator = virtual.arena_allocator(&result_arenas[i]),
+		}
+		task := execution.submit_value(
+			&graph,
+			execution.worker_executor(pool),
+			payload,
+			cache_prepare_task,
+		)
+		append(&tasks, task)
+	}
+	execution.graph_start(&graph)
+	for task, i in tasks {
+		cache_result := execution.wait(task)
+		resolve_cache_prepare_result(
+			result,
+			&cache_result,
+			seen_artifacts,
+			state,
+			resolved,
+			allocator,
+		)
+		virtual.arena_destroy(&result_arenas[i])
+	}
+	execution.graph_wait(&graph)
+	execution.graph_destroy(&graph)
 }
 
 cache_artifacts :: proc(
@@ -361,6 +527,126 @@ cache_lookup_batch_task :: proc(payload: Cache_Batch_Payload) -> execution.No_Re
 		)
 	}
 	return execution.No_Result{}
+}
+
+cache_prepare_task :: proc(payload: Cache_Prepare_Task_Payload) -> Cache_Prepare_Result {
+	result := Cache_Prepare_Result {
+		request = payload.request,
+	}
+	store := payload.store
+	reader, reader_err := dep_store.reader(&store, context.temp_allocator)
+	if reader_err != .None {
+		result.status = .Error
+		result.err = reader_err
+		return result
+	}
+	defer dep_store.reader_destroy(&reader)
+
+	lookup := cache_lookup_result(
+		&reader,
+		payload.request,
+		payload.profile,
+		payload.any_profile,
+		payload.result_allocator,
+	)
+	if lookup.err != .None {
+		result.status = .Error
+		result.err = lookup.err
+		return result
+	}
+	if !lookup.ok {
+		result.status = .Miss
+		return result
+	}
+
+	result.record = lookup.record
+	if cached_artifact_is_stale(&result.record, payload.request) {
+		result.status = .Stale
+		return result
+	}
+	artifact := artifact_from_record(
+		&result.record,
+		payload.request,
+		.Cache,
+		payload.result_allocator,
+	)
+	result.prepared = prepare_artifact(&artifact, payload.result_allocator)
+	result.status = .Hit
+	return result
+}
+
+resolve_cache_prepare_result :: proc(
+	result: ^Result,
+	cache_result: ^Cache_Prepare_Result,
+	seen_artifacts: map[i64]bool,
+	state: ^State,
+	resolved: ^map[Remote_Dependency_Key]bool,
+	allocator: mem.Allocator,
+) {
+	switch cache_result.status {
+	case .Error:
+		when TRACE {
+			trace_eprintf(
+				"[trace - remote_dependencies] Cache lookup failed: %s %s: %v\n",
+				trace_request_kind_text(cache_result.request.kind),
+				cache_result.request.name,
+				cache_result.err,
+			)
+		}
+		return
+	case .Miss:
+		when TRACE {
+			trace_eprintf(
+				"[trace - remote_dependencies] Cache miss: %s %s\n",
+				trace_request_kind_text(cache_result.request.kind),
+				cache_result.request.name,
+			)
+		}
+		return
+	case .Stale:
+		when TRACE {
+			record := &cache_result.record
+			trace_eprintf(
+				"[trace - remote_dependencies] Cache entry is stale: %s %s -> %s %s (artifact id %d)\n",
+				trace_request_kind_text(cache_result.request.kind),
+				cache_result.request.name,
+				record.object_kind,
+				record.object_name,
+				record.artifact_id,
+			)
+		}
+		return
+	case .Hit:
+		record := &cache_result.record
+		if record.artifact_id in seen_artifacts {
+			when TRACE {
+				trace_eprintf(
+					"[trace - remote_dependencies] Cache hit already used: %s %s -> %s %s (artifact id %d)\n",
+					trace_request_kind_text(cache_result.request.kind),
+					cache_result.request.name,
+					record.object_kind,
+					record.object_name,
+					record.artifact_id,
+				)
+			}
+			return
+		}
+		when TRACE {
+			trace_eprintf(
+				"[trace - remote_dependencies] Cache hit: %s %s -> %s %s (artifact id %d, ext=%s)\n",
+				trace_request_kind_text(cache_result.request.kind),
+				cache_result.request.name,
+				record.object_kind,
+				record.object_name,
+				record.artifact_id,
+				record.file_extension,
+			)
+		}
+		resolve_prepared_artifact(result, &cache_result.prepared, state, resolved, allocator)
+		return
+	case .None:
+		assert(false)
+	}
 }
 
 cache_lookup_result :: proc(
@@ -597,6 +883,117 @@ backfill_typepool_symbol_cache :: proc(
 	}
 }
 
+resolve_local_source_phase :: proc(
+	result: ^Result,
+	requests: []Request,
+	config: ^Config,
+	state: ^State,
+	pool: ^execution.Pool,
+	resolved: ^map[Remote_Dependency_Key]bool,
+	allocator: mem.Allocator,
+) {
+	if len(config.local_export_roots) == 0 {
+		return
+	}
+	candidates := unseen_requests(
+		requests,
+		&state.seen_local_requests if state != nil else nil,
+		context.temp_allocator,
+	)
+	if pool != nil && len(candidates) > 1 {
+		resolve_local_source_phase_parallel(
+			result,
+			candidates[:],
+			config,
+			state,
+			pool,
+			resolved,
+			allocator,
+		)
+		return
+	}
+	for request in candidates {
+		artifact, ok := local_export_artifact_for_request(
+			request,
+			config.local_export_roots,
+			allocator,
+		)
+		if ok {
+			when TRACE {
+				trace_eprintf(
+					"[trace - remote_dependencies] Local export hit: %s %s -> %s %s (%s)\n",
+					trace_request_kind_text(request.kind),
+					request.name,
+					artifact.object_kind,
+					artifact.object_name,
+					artifact.object_uri,
+				)
+			}
+			store_local_export_artifact(config, &artifact)
+			resolve_artifact(result, &artifact, state, resolved, allocator)
+		}
+	}
+}
+
+resolve_local_source_phase_parallel :: proc(
+	result: ^Result,
+	requests: []Request,
+	config: ^Config,
+	state: ^State,
+	pool: ^execution.Pool,
+	resolved: ^map[Remote_Dependency_Key]bool,
+	allocator: mem.Allocator,
+) {
+	result_backing := base_runtime.heap_allocator()
+	result_arenas := make([]mem.Dynamic_Arena, len(requests), context.temp_allocator)
+	tasks := make(
+		[dynamic]execution.Task(Local_Prepare_Task_Result),
+		0,
+		len(requests),
+		context.temp_allocator,
+	)
+
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, context.temp_allocator)
+	for request, i in requests {
+		mem.dynamic_arena_init(&result_arenas[i], result_backing, result_backing, alignment = 64)
+		payload := Local_Task_Payload {
+			request            = request,
+			local_export_roots = config.local_export_roots,
+			result_allocator   = mem.dynamic_arena_allocator(&result_arenas[i]),
+		}
+		task := execution.submit_value(
+			&graph,
+			execution.worker_executor(pool),
+			payload,
+			local_export_prepare_task,
+		)
+		append(&tasks, task)
+	}
+	execution.graph_start(&graph)
+	for task, i in tasks {
+		task_result := execution.wait(task)
+		if task_result.ok {
+			artifact := &task_result.prepared.artifact
+			when TRACE {
+				trace_eprintf(
+					"[trace - remote_dependencies] Local export hit: %s %s -> %s %s (%s)\n",
+					trace_request_kind_text(artifact.request.kind),
+					artifact.request.name,
+					artifact.object_kind,
+					artifact.object_name,
+					artifact.object_uri,
+				)
+			}
+			store_local_export_artifact(config, artifact)
+			resolve_prepared_artifact(result, &task_result.prepared, state, resolved, allocator)
+		}
+		mem.dynamic_arena_destroy(&result_arenas[i])
+	}
+	execution.graph_wait(&graph)
+	execution.graph_destroy(&graph)
+}
+
 local_artifacts :: proc(
 	requests: []Request,
 	config: ^Config,
@@ -707,6 +1104,19 @@ local_export_artifact_task :: proc(payload: Local_Task_Payload) -> Local_Task_Re
 	return Local_Task_Result{artifact = artifact, ok = ok}
 }
 
+local_export_prepare_task :: proc(payload: Local_Task_Payload) -> Local_Prepare_Task_Result {
+	artifact, ok := local_export_artifact_for_request(
+		payload.request,
+		payload.local_export_roots,
+		payload.result_allocator,
+	)
+	if !ok {
+		return {}
+	}
+	prepared := prepare_artifact(&artifact, payload.result_allocator)
+	return Local_Prepare_Task_Result{prepared = prepared, ok = true}
+}
+
 local_export_artifact_for_request :: proc(
 	request: Request,
 	local_export_roots: []string,
@@ -801,6 +1211,122 @@ store_local_export_dependency :: proc(
 		typepool_symbols = symbols[:],
 	}
 	_, _ = dep_store.put_artifact(store, profile, &artifact, store_allocator)
+}
+
+resolve_adt_source_phase :: proc(
+	result: ^Result,
+	requests: []Request,
+	config: ^Config,
+	state: ^State,
+	pool: ^execution.Pool,
+	resolved: ^map[Remote_Dependency_Key]bool,
+	allocator: mem.Allocator,
+) {
+	if config.adt_client == nil {
+		return
+	}
+	candidates := unseen_requests(
+		requests,
+		&state.seen_adt_requests if state != nil else nil,
+		context.temp_allocator,
+	)
+	filtered := make([dynamic]Request, 0, len(candidates), context.temp_allocator)
+	for request in candidates {
+		if request.kind != .Symbol {
+			append(&filtered, request)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	if config.adt_client.csrf_token == "" &&
+	   adt.ensure_session(config.adt_client, context.temp_allocator) != .None {
+		when TRACE {
+			for request in filtered {
+				trace_eprintf(
+					"[trace - remote_dependencies] ADT miss: %s %s (session setup failed)\n",
+					trace_request_kind_text(request.kind),
+					request.name,
+				)
+			}
+		}
+		return
+	}
+	if pool != nil && len(filtered) > 1 {
+		resolve_adt_source_phase_parallel(
+			result,
+			filtered[:],
+			config,
+			state,
+			pool,
+			resolved,
+			allocator,
+		)
+		return
+	}
+	for request in filtered {
+		fetched := fetch_adt_request(
+			config.adt_client,
+			request,
+			config.cache if config.cache != nil && config.profile != nil else nil,
+			config.profile if config.cache != nil && config.profile != nil else nil,
+			allocator,
+		)
+		for &artifact in fetched {
+			resolve_artifact(result, &artifact, state, resolved, allocator)
+		}
+	}
+}
+
+resolve_adt_source_phase_parallel :: proc(
+	result: ^Result,
+	requests: []Request,
+	config: ^Config,
+	state: ^State,
+	pool: ^execution.Pool,
+	resolved: ^map[Remote_Dependency_Key]bool,
+	allocator: mem.Allocator,
+) {
+	result_arenas := make([]virtual.Arena, len(requests), context.temp_allocator)
+	tasks := make(
+		[dynamic]execution.Task([dynamic]Prepared_Artifact),
+		0,
+		len(requests),
+		context.temp_allocator,
+	)
+
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, context.temp_allocator)
+	store := config.cache if config.cache != nil && config.profile != nil else nil
+	profile := config.profile if config.cache != nil && config.profile != nil else nil
+	for request, i in requests {
+		arena_err := virtual.arena_init_growing(&result_arenas[i])
+		assert(arena_err == .None)
+		payload := ADT_Fetch_Task_Payload {
+			client           = config.adt_client,
+			request          = request,
+			store            = store,
+			profile          = profile,
+			result_allocator = virtual.arena_allocator(&result_arenas[i]),
+		}
+		task := execution.submit_value(
+			&graph,
+			execution.worker_executor(pool),
+			payload,
+			adt_fetch_prepare_task,
+		)
+		append(&tasks, task)
+	}
+	execution.graph_start(&graph)
+	for task, i in tasks {
+		prepared_artifacts := execution.wait(task)
+		for &prepared in prepared_artifacts {
+			resolve_prepared_artifact(result, &prepared, state, resolved, allocator)
+		}
+		virtual.arena_destroy(&result_arenas[i])
+	}
+	execution.graph_wait(&graph)
+	execution.graph_destroy(&graph)
 }
 
 adt_artifacts :: proc(
@@ -917,6 +1443,21 @@ adt_fetch_task :: proc(payload: ADT_Fetch_Task_Payload) -> [dynamic]Artifact {
 		payload.profile,
 		payload.result_allocator,
 	)
+}
+
+adt_fetch_prepare_task :: proc(payload: ADT_Fetch_Task_Payload) -> [dynamic]Prepared_Artifact {
+	artifacts := fetch_adt_request(
+		payload.client,
+		payload.request,
+		payload.store,
+		payload.profile,
+		payload.result_allocator,
+	)
+	out := make([dynamic]Prepared_Artifact, 0, len(artifacts), payload.result_allocator)
+	for &artifact in artifacts {
+		append(&out, prepare_artifact(&artifact, payload.result_allocator))
+	}
+	return out
 }
 
 fetch_adt_request :: proc(

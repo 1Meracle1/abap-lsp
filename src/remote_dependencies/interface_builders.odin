@@ -8,6 +8,25 @@ import "src:parser"
 import "core:mem"
 import "core:strings"
 
+Prepared_Artifact_Output :: enum {
+	None,
+	Interface,
+	Source,
+}
+
+Prepared_Artifact :: struct {
+	artifact:       Artifact,
+	ok:             bool,
+	output:         Prepared_Artifact_Output,
+	path:           string,
+	key:            Remote_Dependency_Key,
+	role:           Remote_Dependency_Object_Role,
+	root:           ^ast.File,
+	provided_names: [dynamic]string,
+	source_hash:    u64,
+	diagnostics:    [dynamic]string,
+}
+
 result_add_artifact :: proc(
 	result: ^Result,
 	artifact: ^Artifact,
@@ -28,55 +47,178 @@ result_add_artifact :: proc(
 	if !result_uri_add_if_missing(state, path) {
 		return true
 	}
+
+	prepared := prepare_artifact_source(artifact, source, path, allocator)
+	return result_add_prepared_artifact_outputs(result, &prepared, allocator, false)
+}
+
+prepare_artifact :: proc(
+	artifact: ^Artifact,
+	allocator: mem.Allocator,
+) -> Prepared_Artifact {
+	prepared := Prepared_Artifact {
+		artifact    = artifact^,
+		diagnostics = make([dynamic]string, 0, 4, allocator),
+	}
+	source, source_ok := interface_source(artifact, allocator)
+	if !source_ok {
+		append(
+			&prepared.diagnostics,
+			"dependency artifact cannot be converted to ABAP source",
+		)
+		return prepared
+	}
+	path := artifact_path(artifact, allocator)
+	return prepare_artifact_source(artifact, source, path, allocator)
+}
+
+prepare_artifact_source :: proc(
+	artifact: ^Artifact,
+	source: string,
+	path: string,
+	allocator: mem.Allocator,
+) -> Prepared_Artifact {
+	prepared := Prepared_Artifact {
+		artifact    = artifact^,
+		diagnostics = make([dynamic]string, 0, 4, allocator),
+	}
+	prepared.path = path
+	prepared.source_hash = source_hash(source)
 	parse_policy := parser.Parse_Diagnostic_Policy.Include_Fragment if artifact_is_full_source(artifact) else .Strict
 	parsed := parser.parse_with_diagnostic_policy(source, path, allocator, parse_policy)
 	if parsed.root == nil {
-		result_add_diagnostic(
-			result,
-			artifact.request,
-			artifact.source_kind,
-			"dependency artifact parse failed",
-		)
-		return false
+		append(&prepared.diagnostics, "dependency artifact parse failed")
+		return prepared
 	}
 	for err in parsed.errors {
-		result_add_diagnostic(
-			result,
-			artifact.request,
-			artifact.source_kind,
-			err.message,
-		)
+		append(&prepared.diagnostics, err.message)
 	}
 
 	if artifact_is_full_source(artifact) {
-		names := artifact_provided_names(artifact, allocator)
-		append(
-			&result.sources,
-			Source_AST {
-				key            = remote_dependency_key(artifact.request),
-				path           = path,
-				root           = parsed.root,
-				provided_names = names,
-				source_hash    = source_hash(source),
-			},
-		)
-		return true
+		prepared.ok = true
+		prepared.output = .Source
+		prepared.key = remote_dependency_key(artifact.request)
+		prepared.root = parsed.root
+		prepared.provided_names = artifact_provided_names(artifact, allocator)
+		return prepared
 	}
 
 	role := object_role(artifact.object_kind, artifact.object_type)
-	interface_root := interface_root(parsed.root, role, allocator)
-	key := interface_key(artifact, role, allocator)
-	append(
-		&result.interfaces,
-		Interface_AST {
-			key         = key,
-			role        = role,
-			path        = path,
-			root        = interface_root,
-			source_hash = source_hash(source),
-		},
-	)
-	return true
+	prepared.ok = true
+	prepared.output = .Interface
+	prepared.key = interface_key(artifact, role, allocator)
+	prepared.role = role
+	prepared.root = interface_root(parsed.root, role, allocator)
+	return prepared
+}
+
+result_add_prepared_artifact :: proc(
+	result: ^Result,
+	prepared: ^Prepared_Artifact,
+	state: ^State,
+	allocator: mem.Allocator,
+) -> bool {
+	if !prepared.ok {
+		for message in prepared.diagnostics {
+			result_add_diagnostic(
+				result,
+				prepared.artifact.request,
+				prepared.artifact.source_kind,
+				message,
+			)
+		}
+		return false
+	}
+	if !result_uri_add_if_missing(state, prepared.path) {
+		return true
+	}
+	return result_add_prepared_artifact_outputs(result, prepared, allocator, true)
+}
+
+result_add_prepared_artifact_outputs :: proc(
+	result: ^Result,
+	prepared: ^Prepared_Artifact,
+	allocator: mem.Allocator,
+	clone_payload: bool,
+) -> bool {
+	if !prepared.ok {
+		for message in prepared.diagnostics {
+			result_add_diagnostic(
+				result,
+				prepared.artifact.request,
+				prepared.artifact.source_kind,
+				message,
+			)
+		}
+		return false
+	}
+	for message in prepared.diagnostics {
+		result_add_diagnostic(
+			result,
+			prepared.artifact.request,
+			prepared.artifact.source_kind,
+			message,
+		)
+	}
+
+	switch prepared.output {
+	case .Source:
+		key := prepared.key
+		path := prepared.path
+		root := prepared.root
+		provided_names := prepared.provided_names
+		if clone_payload {
+			key = Remote_Dependency_Key {
+				name = strings.clone(prepared.key.name, allocator),
+				kind = prepared.key.kind,
+			}
+			path = strings.clone(prepared.path, allocator)
+			assert(prepared.root != nil)
+			root = ast.clone_node(prepared.root, allocator).derived.(^ast.File)
+			provided_names = make([dynamic]string, 0, len(prepared.provided_names), allocator)
+			for name in prepared.provided_names {
+				append(&provided_names, strings.clone(name, allocator))
+			}
+		}
+		append(
+			&result.sources,
+			Source_AST {
+				key            = key,
+				path           = path,
+				root           = root,
+				provided_names = provided_names,
+				source_hash    = prepared.source_hash,
+			},
+		)
+		return true
+	case .Interface:
+		key := prepared.key
+		path := prepared.path
+		root := prepared.root
+		if clone_payload {
+			key = Remote_Dependency_Key {
+				name = strings.clone(prepared.key.name, allocator),
+				kind = prepared.key.kind,
+			}
+			path = strings.clone(prepared.path, allocator)
+			assert(prepared.root != nil)
+			root = ast.clone_node(prepared.root, allocator).derived.(^ast.File)
+		}
+		append(
+			&result.interfaces,
+			Interface_AST {
+				key         = key,
+				role        = prepared.role,
+				path        = path,
+				root        = root,
+				source_hash = prepared.source_hash,
+			},
+		)
+		return true
+	case .None:
+		assert(false)
+	}
+	return false
 }
 
 interface_source :: proc(
