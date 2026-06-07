@@ -48,6 +48,12 @@ Checker_Scalar_Group :: enum {
 	Generic_Simple,
 }
 
+Checker_Table_Component_Segment :: struct {
+	name:  string,
+	range: Range,
+	node:  ^ast.Node,
+}
+
 checker_check_stmt_list :: proc(
 	ctx: ^Checker_Context,
 	body: [dynamic]^ast.Stmt,
@@ -378,8 +384,13 @@ checker_check_stmt :: proc(
 	case ^ast.Modify_Stmt:
 		checker_check_modify_stmt(ctx, n)
 	case ^ast.Sort_Stmt:
-		checker_check_expr(ctx, n.target, .Value, true)
+		target := checker_check_expr(ctx, n.target, .Value, true)
+		row_type := checker_type_row(ctx, target.type)
+		row_structure := checker_type_structure(row_type)
 		for field in n.fields {
+			if _, ok := checker_check_table_component_expr(ctx, field.expr, row_type, row_structure, false); ok {
+				continue
+			}
 			checker_check_expr(ctx, field.expr)
 		}
 	case ^ast.Update_Stmt:
@@ -477,11 +488,12 @@ checker_check_table_line_target :: proc(
 checker_check_loop_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Loop_Stmt) {
 	source := checker_check_expr(ctx, stmt.source)
 	row_type := checker_type_row(ctx, source.type)
+	row_structure := checker_type_structure(row_type)
 	checker_check_table_line_target(ctx, stmt.target, row_type, stmt.target_kind)
 	checker_check_expr(ctx, stmt.from)
 	checker_check_expr(ctx, stmt.to)
 	checker_check_table_key_selector(ctx, stmt.using_key)
-	checker_check_expr(ctx, stmt.where_cond)
+	checker_check_internal_table_where_expr(ctx, stmt.where_cond, row_type, row_structure)
 	checker_check_expr(ctx, stmt.group_by)
 	checker_check_table_line_target(ctx, stmt.group_target, row_type, stmt.group_target_kind)
 	checker_check_stmt_list(ctx, stmt.body)
@@ -577,14 +589,15 @@ checker_check_modify_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt)
 		return
 	}
 	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	row_type := checker_type_row(ctx, target.type)
+	row_structure := checker_type_structure(row_type)
 	if stmt.source != nil {
 		source := checker_check_expr(ctx, stmt.source)
-		row_type := checker_type_row(ctx, target.type)
 		expected := row_type if !checker_type_is_unknown(row_type) else target.type
 		checker_check_assignment_compatibility(ctx, source.type, expected, checker_expr_range(stmt.source))
 	}
 	checker_check_expr(ctx, stmt.index)
-	checker_check_expr(ctx, stmt.where_cond)
+	checker_check_internal_table_where_expr(ctx, stmt.where_cond, row_type, row_structure)
 }
 
 checker_modify_stmt_uses_db_source :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt) -> bool {
@@ -611,18 +624,235 @@ checker_check_delete_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Delete_Stmt)
 		checker_check_sql_delete_stmt(ctx, stmt)
 		return
 	}
-	checker_check_expr(ctx, stmt.target, .Value, true)
+	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	row_type := checker_type_row(ctx, target.type)
+	row_structure := checker_type_structure(row_type)
 	checker_check_expr(ctx, stmt.source)
 	checker_check_expr(ctx, stmt.index)
-	checker_check_expr(ctx, stmt.where_cond)
+	checker_check_internal_table_where_expr(ctx, stmt.where_cond, row_type, row_structure)
 	checker_check_table_key_selector(ctx, stmt.using_key)
 	for comparing in stmt.comparing {
+		if comparing.all_fields {
+			continue
+		}
+		if _, ok := checker_check_table_component_expr(ctx, comparing.expr, row_type, row_structure, false); ok {
+			continue
+		}
 		checker_check_expr(ctx, comparing.expr)
 	}
 }
 
 checker_check_table_key_selector :: proc(ctx: ^Checker_Context, selector: ast.Table_Key_Selector) {
 	checker_check_expr(ctx, selector.dynamic_name)
+}
+
+checker_check_internal_table_where_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	row_type: ^Type,
+	row_structure: ^Structure,
+) -> Operand {
+	if expr == nil {
+		return checker_invalid_operand()
+	}
+	if operand, ok := checker_check_table_component_expr(ctx, expr, row_type, row_structure, true); ok {
+		return operand
+	}
+	node := &expr.expr_base
+	#partial switch n in expr.derived_expr {
+	case ^ast.Binary_Expr:
+		left := checker_check_internal_table_where_expr(ctx, n.left, row_type, row_structure)
+		right := checker_check_internal_table_where_expr(ctx, n.right, row_type, row_structure)
+		return checker_record_operand(ctx, node, .Value, checker_binary_result_type(ctx, n.op, left, right))
+	case ^ast.Unary_Expr:
+		operand := checker_check_internal_table_where_expr(ctx, n.expr, row_type, row_structure)
+		return checker_record_operand(ctx, node, .Value, operand.type)
+	case ^ast.Paren_Expr:
+		operand := checker_check_internal_table_where_expr(ctx, n.expr, row_type, row_structure)
+		return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity)
+	case ^ast.Substring_Expr:
+		base := checker_check_internal_table_where_expr(ctx, n.base, row_type, row_structure)
+		checker_check_expr(ctx, n.offset)
+		checker_check_expr(ctx, n.length)
+		return checker_record_operand(ctx, node, .Value, base.type, base.entity)
+	case ^ast.Between_Expr:
+		checker_check_internal_table_where_expr(ctx, n.subject, row_type, row_structure)
+		checker_check_internal_table_where_expr(ctx, n.low, row_type, row_structure)
+		checker_check_internal_table_where_expr(ctx, n.high, row_type, row_structure)
+		return checker_record_operand(ctx, node, .Value, checker_builtin_type_from_name(ctx.checker, "abap_bool"))
+	case ^ast.Is_Predicate_Expr:
+		checker_check_internal_table_where_expr(ctx, n.subject, row_type, row_structure)
+		return checker_record_operand(ctx, node, .Value, checker_builtin_type_from_name(ctx.checker, "abap_bool"))
+	}
+	return checker_check_expr(ctx, expr)
+}
+
+checker_check_table_component_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	row_type: ^Type,
+	row_structure: ^Structure,
+	allow_local_value: bool,
+) -> (Operand, bool) {
+	if expr == nil {
+		return checker_invalid_operand(), false
+	}
+	segments := make([dynamic]Checker_Table_Component_Segment, 0, 2, context.temp_allocator)
+	if !checker_collect_table_component_segments(expr, &segments) || len(segments) == 0 {
+		return checker_invalid_operand(), false
+	}
+	first := segments[0]
+	if allow_local_value && !checker_table_component_is_table_line(first.name) {
+		first_name := checker_intern_name(ctx.project, first.name)
+		if string_interner.is_valid(first_name) {
+			if _, _, ok := checker_lookup_declaration(ctx, .Value, first_name); ok {
+				return checker_invalid_operand(), false
+			}
+		}
+	}
+	if row_structure == nil {
+		mode := ast.Addressing_Mode.Table_Line if len(segments) == 1 && checker_table_component_is_table_line(first.name) else ast.Addressing_Mode.Value
+		typ := row_type if mode == .Table_Line else project_type_unknown(ctx.project)
+		return checker_record_operand(ctx, &expr.expr_base, mode, typ), true
+	}
+	current_type := row_type
+	current_structure := row_structure
+	final_field: ^Entity
+	for i in 0 ..< len(segments) {
+		segment := segments[i]
+		if checker_table_component_is_table_line(segment.name) {
+			if i == 0 {
+				current_structure = checker_type_structure(current_type)
+				continue
+			}
+		}
+		if current_structure == nil {
+			return checker_record_operand(ctx, &expr.expr_base, .Value, project_type_unknown(ctx.project)), true
+		}
+		name := checker_intern_name(ctx.project, segment.name)
+		if !string_interner.is_valid(name) {
+			return checker_record_operand(ctx, &expr.expr_base, .Value, project_type_unknown(ctx.project)), true
+		}
+		field, ok := checker_lookup_structure_field(current_structure, name)
+		if !ok {
+			checker_add_diagnostic(ctx, .Unknown_Field, segment.range, checker_table_component_message(ctx, "unknown internal table field ", name))
+			return checker_record_operand(ctx, &expr.expr_base, .Value, project_type_unknown(ctx.project)), true
+		}
+		checker_add_entity_use(ctx, segment.node, field)
+		final_field = field
+		current_type = field.type if field.type != nil else project_type_unknown(ctx.project)
+		current_structure = checker_type_structure(current_type)
+	}
+	if final_field != nil {
+		return checker_record_operand(ctx, &expr.expr_base, .Field, current_type, final_field), true
+	}
+	if len(segments) == 1 && checker_table_component_is_table_line(first.name) {
+		return checker_record_operand(ctx, &expr.expr_base, .Table_Line, row_type), true
+	}
+	return checker_record_operand(ctx, &expr.expr_base, .Value, project_type_unknown(ctx.project)), true
+}
+
+checker_collect_table_component_segments :: proc(
+	expr: ^ast.Expr,
+	segments: ^[dynamic]Checker_Table_Component_Segment,
+) -> bool {
+	if expr == nil {
+		return false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return checker_append_table_component_segment(segments, n.name, n.range, &expr.expr_base)
+	case ^ast.Type_Ref_Expr:
+		if n.raw_operand {
+			return false
+		}
+		base_name := n.base_name
+		base_range := n.base_range
+		if base_name == "" {
+			base_name = n.name
+			base_range = n.range
+		}
+		if !checker_append_table_component_segment(segments, base_name, base_range, &expr.expr_base) {
+			return false
+		}
+		for segment in n.path {
+			if segment.selector != .Dash {
+				return false
+			}
+			if !checker_append_table_component_segment(segments, segment.name, segment.range, &expr.expr_base) {
+				return false
+			}
+		}
+		return true
+	case ^ast.Sql_Column_Expr:
+		if n.qualifier != "" {
+			return false
+		}
+		return checker_append_table_component_segment(segments, n.name, n.name_range, &expr.expr_base)
+	case ^ast.Selector_Expr:
+		if n.op != .Dash {
+			return false
+		}
+		if !checker_collect_table_component_segments(n.base, segments) {
+			return false
+		}
+		return checker_append_table_component_leaf_segment(n.field, segments)
+	}
+	return false
+}
+
+checker_append_table_component_leaf_segment :: proc(
+	expr: ^ast.Expr,
+	segments: ^[dynamic]Checker_Table_Component_Segment,
+) -> bool {
+	if expr == nil {
+		return false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return checker_append_table_component_segment(segments, n.name, n.range, &expr.expr_base)
+	case ^ast.Type_Ref_Expr:
+		if n.raw_operand || len(n.path) > 0 {
+			return false
+		}
+		name := n.base_name if n.base_name != "" else n.name
+		range := n.base_range if n.base_name != "" else n.range
+		return checker_append_table_component_segment(segments, name, range, &expr.expr_base)
+	case ^ast.Sql_Column_Expr:
+		if n.qualifier != "" {
+			return false
+		}
+		return checker_append_table_component_segment(segments, n.name, n.name_range, &expr.expr_base)
+	}
+	return false
+}
+
+checker_append_table_component_segment :: proc(
+	segments: ^[dynamic]Checker_Table_Component_Segment,
+	name: string,
+	range: Range,
+	node: ^ast.Node,
+) -> bool {
+	if name == "" {
+		return false
+	}
+	append(segments, Checker_Table_Component_Segment{name = name, range = range, node = node})
+	return true
+}
+
+checker_table_component_is_table_line :: proc(name: string) -> bool {
+	return strings.equal_fold(name, "table_line")
+}
+
+checker_table_component_message :: proc(
+	ctx: ^Checker_Context,
+	prefix: string,
+	name: string_interner.String,
+) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, prefix)
+	strings.write_string(&builder, string_interner.load(ctx.project.interner, name))
+	return strings.to_string(builder)
 }
 
 checker_check_call_expr_arguments :: proc(

@@ -85,6 +85,22 @@ checker_test_diagnostic_count :: proc(checker: ^Checker, kind: Checker_Diagnosti
 	return count
 }
 
+checker_test_unresolved_candidate_count :: proc(
+	checker: ^Checker,
+	project: ^Project,
+	kind: External_Candidate_Kind,
+	name: string,
+) -> int {
+	interned := checker_intern_name(project, name)
+	count := 0
+	for candidate in checker.info.unresolved {
+		if candidate.kind == kind && candidate.name == interned {
+			count += 1
+		}
+	}
+	return count
+}
+
 checker_test_expr_info_for_node :: proc(
 	t: ^testing.T,
 	checker: ^Checker,
@@ -1865,6 +1881,91 @@ DELETE zdelete_tab FROM TABLE lt_delete.`
 	testing.expect(t, lv_status != nil && .Used in lv_status.flags)
 	testing.expect(t, lv_id != nil && .Used in lv_id.flags)
 	testing.expect(t, lt_delete != nil && .Used in lt_delete.flags)
+}
+
+@(test)
+root_semantic_internal_table_components_do_not_emit_symbol_candidates :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_nested,
+         part TYPE string,
+       END OF ty_nested.
+TYPES: BEGIN OF ty_row,
+         trnid TYPE string,
+         evttime TYPE string,
+         evtid TYPE string,
+         docpos TYPE string,
+         item_ref TYPE string,
+         s4_status TYPE string,
+         docnum TYPE string,
+         nested TYPE ty_nested,
+       END OF ty_row.
+DATA mt_event TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lv_trnid TYPE string.
+
+SORT mt_event BY trnid evttime DESCENDING evtid docpos nested-part.
+LOOP AT mt_event INTO DATA(ls_event) WHERE trnid = lv_trnid AND item_ref IS INITIAL.
+ENDLOOP.
+DELETE mt_event WHERE s4_status IS INITIAL.
+DELETE ADJACENT DUPLICATES FROM mt_event COMPARING docnum nested-part.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://internal_table_components.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	component_names := [?]string{"trnid", "evttime", "evtid", "docpos", "item_ref", "s4_status", "docnum", "nested"}
+	for name in component_names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+	mt_event := checker_test_lookup(t, &project, file.root_scope, .Value, "mt_event", .Variable)
+	lv_trnid := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_trnid", .Variable)
+	testing.expect(t, mt_event != nil && .Used in mt_event.flags)
+	testing.expect(t, lv_trnid != nil && .Used in lv_trnid.flags)
+}
+
+@(test)
+root_semantic_unknown_internal_table_row_components_stay_local :: proc(t: ^testing.T) {
+	source := `DATA mt_event TYPE STANDARD TABLE OF zmissing_row WITH EMPTY KEY.
+
+SORT mt_event BY trnid evttime evtid docpos.
+LOOP AT mt_event WHERE item_ref IS INITIAL.
+ENDLOOP.
+DELETE ADJACENT DUPLICATES FROM mt_event COMPARING docpos.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://unknown_internal_table_row_components.abap")
+
+	component_names := [?]string{"trnid", "evttime", "evtid", "docpos", "item_ref"}
+	for name in component_names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+}
+
+@(test)
+root_semantic_missing_internal_table_components_diagnose_without_symbol_candidates :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE string,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lv_id TYPE string.
+
+SORT lt_rows BY absent.
+DELETE lt_rows WHERE missing = lv_id.
+DELETE ADJACENT DUPLICATES FROM lt_rows COMPARING gone.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://missing_internal_table_components.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 3)
+	missing_names := [?]string{"absent", "missing", "gone"}
+	for name in missing_names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "lv_id"), 0)
 }
 
 @(test)
