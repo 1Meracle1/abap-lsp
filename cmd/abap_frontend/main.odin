@@ -44,8 +44,8 @@ Tree_State :: struct {
 	index: int,
 }
 
-SGR_RESET  :: ansi.CSI + ansi.RESET + ansi.SGR
-SGR_RED    :: ansi.CSI + ansi.FG_RED + ansi.SGR
+SGR_RESET :: ansi.CSI + ansi.RESET + ansi.SGR
+SGR_RED :: ansi.CSI + ansi.FG_RED + ansi.SGR
 SGR_YELLOW :: ansi.CSI + ansi.FG_YELLOW + ansi.SGR
 
 main :: proc() {
@@ -104,7 +104,9 @@ print_usage :: proc() {
 	fmt.println("usage: abap_frontend --help")
 	fmt.println("       abap_frontend parse <file>")
 	fmt.println("       abap_frontend tree <file>")
-	fmt.println("       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors] [--enable-dependency-diagnostics]")
+	fmt.println(
+		"       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors] [--enable-dependency-diagnostics]",
+	)
 }
 
 read_source :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
@@ -152,7 +154,10 @@ run_parse :: proc(path: string, dump_tree: bool, allocator: mem.Allocator) {
 }
 
 run_analyze :: proc(args: []string, allocator: mem.Allocator) {
-	assert(context.temp_allocator.procedure == virtual.arena_allocator_proc && context.temp_allocator.data != nil)
+	assert(
+		context.temp_allocator.procedure == virtual.arena_allocator_proc &&
+		context.temp_allocator.data != nil,
+	)
 	temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
 	defer virtual.arena_temp_end(temp_arena)
 
@@ -162,6 +167,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		mem.tracking_allocator_init(&tracker, allocator, allocator)
 		tracked_allocator := mem.tracking_allocator(&tracker)
 		context.allocator = tracked_allocator
+		trace_start := trace.now()
 	}
 
 	target_path := args[2]
@@ -203,9 +209,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		target_path,
 		include_paths[:],
 		&pool,
-		workspace.Options {
-			flags = workspace_flags,
-		},
+		workspace.Options{flags = workspace_flags},
 		context.allocator,
 	)
 	if !result.ok {
@@ -220,6 +224,10 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	workspace.analysis_result_destroy(&result, context.allocator)
 	execution.pool_destroy(&pool)
 	when trace.ENABLED {
+		trace.eprintf(
+			"[trace - main] run_analyze - elapsed_ms=%.3f\n",
+			trace.duration_ms_since(trace_start),
+		)
 		print_analyze_memory_report(&tracker)
 		mem.tracking_allocator_destroy(&tracker)
 	}
@@ -269,7 +277,10 @@ analyze_cli_path :: proc(
 }
 
 print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
-	assert(context.temp_allocator.procedure == virtual.arena_allocator_proc && context.temp_allocator.data != nil)
+	assert(
+		context.temp_allocator.procedure == virtual.arena_allocator_proc &&
+		context.temp_allocator.data != nil,
+	)
 	temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
 	defer virtual.arena_temp_end(temp_arena)
 
@@ -291,7 +302,7 @@ print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
 	slice.sort_by(totals[:], allocation_location_total_less)
 
 	fmt.printf(
-		"[dep fetch] Memory summary: used=%d KB, peak=%d KB, total allocated=%d KB, allocations=%d, locations=%d\n",
+		"[trace - main] Memory summary: used=%d KB, peak=%d KB, total allocated=%d KB, allocations=%d, locations=%d\n",
 		tracker.current_memory_allocated / mem.Kilobyte,
 		tracker.peak_memory_allocated / mem.Kilobyte,
 		tracker.total_memory_allocated / mem.Kilobyte,
@@ -300,7 +311,7 @@ print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
 	)
 	for total in totals {
 		fmt.printf(
-			"[dep fetch] Memory location: %d KB in %d allocation(s) at %s(%d:%d), proc=%s\n",
+			"[trace - main] Memory location: %d KB in %d allocation(s) at %s(%d:%d), proc=%s\n",
 			total.bytes / mem.Kilobyte,
 			total.count,
 			total.location.file_path,
@@ -327,7 +338,9 @@ allocation_location_total_less :: proc(a, b: Allocation_Location_Total) -> bool 
 print_analyze_counts :: proc(result: ^workspace.Analysis_Result) {
 	analysis := semantic2.semantic_graph_session_current_analysis(&result.session)
 	if analysis == nil {
-		fmt.println("[dep fetch] Analysis summary: projects=0, files=0, symbols=0, scopes=0, uses=0, diagnostics=0, unresolved=0, external requests=0")
+		fmt.println(
+			"[trace - main] Analysis summary: projects=0, files=0, symbols=0, scopes=0, uses=0, diagnostics=0, unresolved=0, external requests=0",
+		)
 		return
 	}
 	files, symbols, scopes, uses, diagnostics: int
@@ -343,7 +356,7 @@ print_analyze_counts :: proc(result: ^workspace.Analysis_Result) {
 		}
 	}
 	fmt.printf(
-		"[dep fetch] Analysis summary: projects=%d, files=%d, symbols=%d, scopes=%d, uses=%d, diagnostics=%d, unresolved=%d, external requests=%d\n",
+		"[trace - main] Analysis summary: projects=%d, files=%d, symbols=%d, scopes=%d, uses=%d, diagnostics=%d, unresolved=%d, external requests=%d\n",
 		len(analysis.project_results),
 		files,
 		symbols,

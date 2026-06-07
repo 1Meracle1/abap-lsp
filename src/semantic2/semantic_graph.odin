@@ -232,7 +232,7 @@ semantic_graph_session_apply_update :: proc(
 	)
 	when trace.ENABLED {
 		trace.eprintf(
-			"[trace] semantic graph update generation=%d changed_files=%d external_objects=%d external_sources=%d stable=%v dirty_editable=%d deferred_editable=%d rebuilt_editable=%d rebuilt_external=%d new_fetch=%d blocked=%d elapsed_ms=%.3f\n",
+			"[trace - semantic2] semantic graph update generation=%d changed_files=%d external_objects=%d external_sources=%d stable=%v dirty_editable=%d deferred_editable=%d rebuilt_editable=%d rebuilt_external=%d new_fetch=%d blocked=%d elapsed_ms=%.3f\n",
 			session.generation,
 			len(update.changed_files),
 			len(update.fetched_external_objects),
@@ -384,7 +384,7 @@ semantic_graph_session_apply_external_updates :: proc(
 	}
 	when trace.ENABLED {
 		trace.eprintf(
-			"[trace] semantic graph external updates inputs=%d processed=%d queued=%d rebuilt_external=%d rebuild_external_ms=%.3f elapsed_ms=%.3f\n",
+			"[trace - semantic2] semantic graph external updates inputs=%d processed=%d queued=%d rebuilt_external=%d rebuild_external_ms=%.3f elapsed_ms=%.3f\n",
 			len(inputs),
 			len(processed),
 			len(queue),
@@ -448,7 +448,7 @@ semantic_graph_session_apply_external_source_updates :: proc(
 	}
 	when trace.ENABLED {
 		trace.eprintf(
-			"[trace] semantic graph external source updates inputs=%d processed=%d queued=%d rebuilt_external=%d rebuild_external_ms=%.3f elapsed_ms=%.3f\n",
+			"[trace - semantic2] semantic graph external source updates inputs=%d processed=%d queued=%d rebuilt_external=%d rebuild_external_ms=%.3f elapsed_ms=%.3f\n",
 			len(inputs),
 			len(processed),
 			len(queue),
@@ -580,7 +580,7 @@ semantic_graph_session_rebuild_workspace :: proc(session: ^Semantic_Graph_Sessio
 	}
 	when trace.ENABLED {
 		trace.eprintf(
-			"[trace] semantic graph rebuild workspace editable_files=%d external_sources=%d external_records=%d analysis_projects=%d elapsed_ms=%.3f\n",
+			"[trace - semantic2] semantic graph rebuild workspace editable_files=%d external_sources=%d external_records=%d analysis_projects=%d elapsed_ms=%.3f\n",
 			len(session.editable_files),
 			len(session.external_source_inputs),
 			len(session.external.index.projects),
@@ -626,7 +626,7 @@ semantic_graph_collect_frontier :: proc(
 	}
 	when trace.ENABLED {
 		trace.eprintf(
-			"[trace] semantic graph collect frontier stable=%v records=%d candidates=%d new_fetch=%d blocked=%d elapsed_ms=%.3f\n",
+			"[trace - semantic2] semantic graph collect frontier stable=%v records=%d candidates=%d new_fetch=%d blocked=%d elapsed_ms=%.3f\n",
 			frontier_stable,
 			record_count,
 			candidate_count,
