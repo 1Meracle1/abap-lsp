@@ -756,8 +756,8 @@ external_semantic_index_rebuild_provider_key :: proc(
 	}
 	binding: External_Binding
 	found := false
-	for record in index.projects {
-		for provided in record.provider_bindings {
+	for &record in index.projects {
+		for &provided in record.provider_bindings {
 			if provided.key == key {
 				binding = provided.binding
 				found = true
@@ -796,8 +796,8 @@ external_semantic_index_rebuild_lookup_key :: proc(
 ) {
 	assert(index != nil)
 	delete_key(&index.lookup, lookup_key)
-	for record in index.projects {
-		for provided in record.provider_bindings {
+	for &record in index.projects {
+		for &provided in record.provider_bindings {
 			entity := provided.binding.entity
 			if entity != nil &&
 			   entity.name == lookup_key.name &&
