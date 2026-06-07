@@ -117,14 +117,30 @@ checker_make :: proc(project: ^Project, external: ^External_Semantics = nil) -> 
 }
 
 checker_init :: proc(checker: ^Checker, project: ^Project, external: ^External_Semantics = nil) {
+	checker_init_with_builtins(checker, project, external)
+}
+
+checker_init_with_builtins :: proc(
+	checker: ^Checker,
+	project: ^Project,
+	external: ^External_Semantics = nil,
+	shared_builtin_scope: ^Scope = nil,
+) {
 	assert(project != nil)
 	checker^ = {}
 	checker.project = project
 	checker.info = checker_info_make(checker, project, external)
 	checker.info.builtin_scope = checker_ensure_builtin_scope(checker)
+	if shared_builtin_scope != nil {
+		assert(shared_builtin_scope.kind == .Builtin)
+		assert(shared_builtin_scope != checker.info.builtin_scope)
+		append(&checker.info.builtin_scope.imported, shared_builtin_scope)
+	}
 	checker.builtin_context = checker_context_make(checker)
 	checker.builtin_context.scope = checker.info.builtin_scope
-	checker_register_builtins(checker)
+	if shared_builtin_scope == nil {
+		checker_register_builtins(checker)
+	}
 }
 
 checker_info_make :: proc(

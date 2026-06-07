@@ -345,16 +345,14 @@ semantic_completion_items_at_offset :: proc(
 	scope := semantic_query_scope_at_offset(q.project, q.file, offset)
 	for current := scope; current != nil; current = current.parent {
 		source := Semantic_Completion_Item_Source.Builtin_Scope if current.kind == .Builtin else Semantic_Completion_Item_Source.Lexical_Scope
-		for entity in current.declarations {
-			semantic_completion_append_entity(
-				q.project,
-				entity,
-				source,
-				canonical_prefix,
-				&seen,
-				&out,
-			)
-		}
+		semantic_completion_append_scope_entities(
+			q.project,
+			current,
+			source,
+			canonical_prefix,
+			&seen,
+			&out,
+		)
 	}
 	return out
 }
@@ -552,6 +550,35 @@ semantic_completion_append_entity :: proc(
 				source    = source,
 				range     = entity.name_range,
 			},
+		)
+	}
+}
+
+semantic_completion_append_scope_entities :: proc(
+	project: ^Project,
+	scope: ^Scope,
+	source: Semantic_Completion_Item_Source,
+	prefix: string,
+	seen: ^map[Semantic_Completion_Item_Key]bool,
+	out: ^[dynamic]Semantic_Completion_Item,
+	depth := 0,
+) {
+	if scope == nil {
+		return
+	}
+	assert(depth < 16)
+	for entity in scope.declarations {
+		semantic_completion_append_entity(project, entity, source, prefix, seen, out)
+	}
+	for imported in scope.imported {
+		semantic_completion_append_scope_entities(
+			project,
+			imported,
+			source,
+			prefix,
+			seen,
+			out,
+			depth + 1,
 		)
 	}
 }

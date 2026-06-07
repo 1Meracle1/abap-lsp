@@ -608,6 +608,60 @@ semantic_external_summaries_publish_project_backed_provider_bindings :: proc(t: 
 }
 
 @(test)
+semantic_external_interface_checkers_share_imported_builtin_scope :: proc(t: ^testing.T) {
+	interner := string_interner.create()
+	defer string_interner.destroy(interner)
+
+	external := external_semantics_make(interner)
+	defer external_semantics_destroy(&external)
+
+	first := workspace_test_external_interface_input(
+		t,
+		interner,
+		.Class,
+		.Class,
+		"zcl_first",
+		"adt://zcl_first.class.abap",
+		"CLASS zcl_first DEFINITION. PUBLIC SECTION. DATA value TYPE string. ENDCLASS.",
+		1,
+	)
+	second := workspace_test_external_interface_input(
+		t,
+		interner,
+		.Class,
+		.Class,
+		"zcl_second",
+		"adt://zcl_second.class.abap",
+		"CLASS zcl_second DEFINITION. PUBLIC SECTION. DATA value TYPE string. ENDCLASS.",
+		2,
+	)
+
+	first_record := external_semantics_analyze_interface_input(&external, first)
+	second_record := external_semantics_analyze_interface_input(&external, second)
+
+	testing.expect(t, external.builtin_checker != nil)
+	testing.expect(t, first_record != nil && first_record.checker != nil)
+	testing.expect(t, second_record != nil && second_record.checker != nil)
+	if external.builtin_checker == nil || first_record == nil || second_record == nil {
+		return
+	}
+
+	shared_scope := external.builtin_checker.info.builtin_scope
+	testing.expect(t, shared_scope != nil)
+	testing.expect(t, first_record.checker.info.builtin_scope != shared_scope)
+	testing.expect(t, second_record.checker.info.builtin_scope != shared_scope)
+	testing.expect_value(t, len(first_record.checker.info.builtin_scope.imported), 1)
+	testing.expect_value(t, len(second_record.checker.info.builtin_scope.imported), 1)
+	testing.expect_value(t, first_record.checker.info.builtin_scope.imported[0], shared_scope)
+	testing.expect_value(t, second_record.checker.info.builtin_scope.imported[0], shared_scope)
+
+	first_string, first_ok := checker_lookup_builtin_entity(first_record.checker, .Type, "string")
+	second_string, second_ok := checker_lookup_builtin_entity(second_record.checker, .Type, "string")
+	testing.expect(t, first_ok && second_ok)
+	testing.expect(t, first_string != nil && first_string == second_string)
+}
+
+@(test)
 semantic_workspace_analyzes_external_class_interface_for_transitive_type_candidates :: proc(t: ^testing.T) {
 	interner := string_interner.create()
 	defer string_interner.destroy(interner)

@@ -715,7 +715,12 @@ checker_lookup_builtin_entity :: proc(
 	if !string_interner.is_valid(interned) {
 		return nil, false
 	}
-	return scope_lookup_declaration(checker.info.builtin_scope, namespace, interned)
+	_, entity, ok := checker_lookup_lexical_declaration_from_scope(
+		checker.info.builtin_scope,
+		namespace,
+		interned,
+	)
+	return entity, ok
 }
 
 checker_builtin_structure_by_name :: proc(checker: ^Checker, name: string) -> ^Structure {

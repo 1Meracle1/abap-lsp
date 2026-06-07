@@ -171,6 +171,8 @@ External_Semantics :: struct {
 	source_files:       [dynamic]External_Source_File,
 	interface_projects: [dynamic]^Project,
 	interface_checkers: [dynamic]^Checker,
+	builtin_project:    ^Project,
+	builtin_checker:    ^Checker,
 	compat_project:     ^Project,
 	compat_checker:     ^Checker,
 	compat_root_file:   ^Project_File,
@@ -214,7 +216,29 @@ external_semantics_destroy :: proc(external: ^External_Semantics) {
 	if external.compat_checker != nil {
 		free(external.compat_checker, external.allocator)
 	}
+	if external.builtin_project != nil {
+		project_destroy(external.builtin_project)
+		free(external.builtin_project, external.allocator)
+	}
+	if external.builtin_checker != nil {
+		free(external.builtin_checker, external.allocator)
+	}
 	external^ = {}
+}
+
+external_semantics_builtin_scope :: proc(external: ^External_Semantics) -> ^Scope {
+	assert(external != nil)
+	if external.builtin_checker == nil {
+		external.builtin_project = new(Project, external.allocator)
+		assert(external.builtin_project != nil)
+		external.builtin_project^ = project_make_with_interner(external.interner)
+
+		external.builtin_checker = new(Checker, external.allocator)
+		assert(external.builtin_checker != nil)
+		checker_init(external.builtin_checker, external.builtin_project, nil)
+	}
+	assert(external.builtin_checker.info.builtin_scope != nil)
+	return external.builtin_checker.info.builtin_scope
 }
 
 external_semantic_index_make :: proc(
@@ -830,7 +854,7 @@ external_semantics_analyze_interface_input :: proc(
 
 	checker := new(Checker, external.allocator)
 	assert(checker != nil)
-	checker_init(checker, project, external)
+	checker_init_with_builtins(checker, project, external, external_semantics_builtin_scope(external))
 	append(&external.interface_checkers, checker)
 
 	file := checker_add_file(checker, input.path, input.root)
@@ -1126,7 +1150,12 @@ external_semantics_ensure_compat_project :: proc(
 
 		external.compat_checker = new(Checker, external.allocator)
 		assert(external.compat_checker != nil)
-		checker_init(external.compat_checker, external.compat_project, nil)
+		checker_init_with_builtins(
+			external.compat_checker,
+			external.compat_project,
+			nil,
+			external_semantics_builtin_scope(external),
+		)
 		external.compat_root_file = checker_add_file(
 			external.compat_checker,
 			"external://semantic-summary",

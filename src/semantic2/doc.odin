@@ -52,6 +52,9 @@ Top-level usage:
    structures, fields, and builtin procedures in the builtin scope. Builtins are
    therefore resolved through normal scope/entity lookup rather than through
    separate string checks.
+   External semantic contexts use `checker_init_with_builtins` to import one
+   shared builtin scope into each parsed external project, avoiding repeated
+   builtin graph construction while keeping file scopes project-owned.
 
 3. Query API.
 
@@ -76,6 +79,8 @@ Top-level usage:
 
    - `External_Semantics` stores caller-supplied external summaries and parsed
      external-interface projects.
+   - It owns a lazily built builtin project/checker used by external interface
+     and summary checkers.
    - External lookup returns project-owned provider bindings through
      `External_Semantic_Index`.
    - Resolved and unresolved relationships are recorded as

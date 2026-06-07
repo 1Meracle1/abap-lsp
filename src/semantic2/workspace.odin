@@ -204,7 +204,12 @@ semantic_workspace_build_project :: proc(
 
 	checker := new(Checker, analysis.allocator)
 	assert(checker != nil)
-	checker_init(checker, project, external)
+	checker_init_with_builtins(
+		checker,
+		project,
+		external,
+		external_semantics_builtin_scope(external) if external != nil else nil,
+	)
 
 	root_facts := &analysis.discovery.facts[plan.root_index]
 	root_file := checker_add_file(checker, root_facts.path, root_facts.root)
