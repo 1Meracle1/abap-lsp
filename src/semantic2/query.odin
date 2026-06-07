@@ -318,7 +318,13 @@ semantic_diagnostic_copies :: proc(
 		return out
 	}
 	for diagnostic in q.checker.info.diagnostics {
-		if q.file != nil && diagnostic.entity != nil && !semantic_query_entity_matches_file(diagnostic.entity, q.file) {
+		if q.file != nil && diagnostic.file != nil && diagnostic.file != q.file {
+			continue
+		}
+		if q.file != nil &&
+		   diagnostic.file == nil &&
+		   diagnostic.entity != nil &&
+		   !semantic_query_entity_matches_file(diagnostic.entity, q.file) {
 			continue
 		}
 		append(&out, diagnostic)

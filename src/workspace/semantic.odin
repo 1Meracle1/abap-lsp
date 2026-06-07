@@ -1,34 +1,35 @@
 package abap_frontend_workspace
 
+import adt "src:adt"
 import execution "src:execution"
 import "src:parser"
-import remote_deps2 "src:remote_dependencies"
-import analyze "src:semantic/analyze"
-import semantic2 "src:semantic2"
+import remote_deps "src:remote_dependencies"
+import "src:semantic2"
 import string_interner "src:string_interner"
 
 import "core:mem"
+import "core:os"
 import "core:strings"
 
-SEMANTIC2_REMOTE_DEPENDENCY_MAX_ITERATIONS :: 32
+REMOTE_DEPENDENCY_MAX_ITERATIONS :: 32
 
-Semantic2_Analysis_Result :: struct {
-	session:      semantic2.Semantic_Graph_Session,
-	last_update:  semantic2.Semantic_Graph_Update_Result,
-	remote_state: remote_deps2.State,
-	remote_result: remote_deps2.Result,
-	ok:           bool,
+Analysis_Result :: struct {
+	session:       semantic2.Semantic_Graph_Session,
+	last_update:   semantic2.Semantic_Graph_Update_Result,
+	remote_state:  remote_deps.State,
+	remote_result: remote_deps.Result,
+	ok:            bool,
 	used_manifest: bool,
-	error:        string,
+	error:         string,
 }
 
-analyze_workspace_semantic2 :: proc(
+analyze_workspace :: proc(
 	workspace: ^Workspace,
 	include_paths: []string,
 	pool: ^execution.Pool,
 	options: Options,
 	allocator: mem.Allocator,
-) -> Semantic2_Analysis_Result {
+) -> Analysis_Result {
 	_ = options
 	assert(pool != nil)
 	paths := make([dynamic]string, 0, 32, context.temp_allocator)
@@ -41,35 +42,35 @@ analyze_workspace_semantic2 :: proc(
 	}
 	files := make([dynamic]semantic2.Workspace_File_Input, 0, len(paths), allocator)
 	for path in paths {
-		input, ok := semantic2_workspace_file_input_from_path(path, allocator)
+		input, ok := workspace_file_input_from_path(path, allocator)
 		if !ok {
-			return Semantic2_Analysis_Result{ok = false, error = "failed to read workspace file"}
+			return Analysis_Result{ok = false, error = "failed to read workspace file"}
 		}
 		append(&files, input)
 	}
-	result := workspace_semantic2_analyze_inputs(workspace, files[:], pool, allocator)
+	result := analyze_inputs(workspace, files[:], pool, allocator)
 	result.used_manifest = workspace.has_manifest
 	return result
 }
 
-analyze_path_semantic2 :: proc(
+analyze_path :: proc(
 	workspace: ^Workspace,
 	target_path: string,
 	include_paths: []string,
 	pool: ^execution.Pool,
 	options: Options,
 	allocator: mem.Allocator,
-) -> Semantic2_Analysis_Result {
+) -> Analysis_Result {
 	_ = options
 	assert(pool != nil)
 	target_abs, target_ok := absolute_clean_path(target_path, allocator)
 	if !target_ok {
-		return Semantic2_Analysis_Result{ok = false, error = "invalid target path"}
+		return Analysis_Result{ok = false, error = "invalid target path"}
 	}
 	files := make([dynamic]semantic2.Workspace_File_Input, 0, 1 + len(include_paths), allocator)
-	target, ok := semantic2_workspace_file_input_from_path(target_abs, allocator)
+	target, ok := workspace_file_input_from_path(target_abs, allocator)
 	if !ok {
-		return Semantic2_Analysis_Result{ok = false, error = "failed to read target file"}
+		return Analysis_Result{ok = false, error = "failed to read target file"}
 	}
 	append(&files, target)
 	for include_path in include_paths {
@@ -77,68 +78,66 @@ analyze_path_semantic2 :: proc(
 		if !abs_ok {
 			continue
 		}
-		include, include_ok := semantic2_workspace_file_input_from_path(abs_path, allocator)
+		include, include_ok := workspace_file_input_from_path(abs_path, allocator)
 		if include_ok {
 			append(&files, include)
 		}
 	}
-	result := workspace_semantic2_analyze_inputs(workspace, files[:], pool, allocator)
+	result := analyze_inputs(workspace, files[:], pool, allocator)
 	result.used_manifest = workspace.has_manifest
 	return result
 }
 
-workspace_semantic2_analyze_inputs :: proc(
+analyze_inputs :: proc(
 	workspace: ^Workspace,
 	files: []semantic2.Workspace_File_Input,
 	pool: ^execution.Pool,
 	allocator: mem.Allocator,
-) -> Semantic2_Analysis_Result {
+) -> Analysis_Result {
 	remote_config := remote_dependency_config_from_workspace(workspace)
-	remote_state := remote_deps2.state_make(allocator)
+	remote_state := remote_deps.state_make(allocator)
 	session := semantic2.semantic_graph_session_make(nil, allocator)
 	update := semantic2.Semantic_Graph_Update {
 		changed_files            = files,
 		external_frontier_stable = false,
 	}
 	last := semantic2.semantic_graph_session_apply_update(&session, update)
-	remote_result := remote_deps2.result_make(allocator)
+	remote_result := remote_deps.result_make(allocator)
 
-	for _ in 0 ..< SEMANTIC2_REMOTE_DEPENDENCY_MAX_ITERATIONS {
+	for _ in 0 ..< REMOTE_DEPENDENCY_MAX_ITERATIONS {
 		if len(last.new_fetch_requests) == 0 {
 			semantic2.semantic_graph_update_result_destroy(&last)
 			last = semantic2.semantic_graph_session_apply_update(
 				&session,
-				semantic2.Semantic_Graph_Update {
-					external_frontier_stable = true,
-				},
+				semantic2.Semantic_Graph_Update{external_frontier_stable = true},
 			)
 			break
 		}
 
-		requests := workspace_semantic2_remote_requests(
+		requests := remote_requests_from_unresolved_candidates(
 			session.interner,
 			last.new_fetch_requests[:],
 			context.temp_allocator,
 		)
-		remote_result = remote_deps2.resolve_requests(
+		remote_result = remote_deps.resolve_requests(
 			requests[:],
 			&remote_config,
 			&remote_state,
 			pool,
 			allocator,
 		)
-		external_interfaces := workspace_semantic2_external_interface_inputs(
+		external_interfaces := external_interface_inputs_from_remote(
 			session.interner,
 			remote_result.interfaces[:],
 			context.temp_allocator,
 		)
-		external_sources := workspace_semantic2_external_source_inputs(
+		external_sources := external_source_inputs_from_remote(
 			remote_result.sources[:],
 			context.temp_allocator,
 		)
 		semantic2.semantic_graph_update_result_destroy(&last)
 		if len(external_interfaces) == 0 && len(external_sources) == 0 {
-			blocked := workspace_semantic2_blocked_keys(
+			blocked := blocked_keys_from_requests(
 				session.interner,
 				requests[:],
 				context.temp_allocator,
@@ -162,45 +161,44 @@ workspace_semantic2_analyze_inputs :: proc(
 		)
 	}
 
-	return Semantic2_Analysis_Result {
-		session       = session,
-		last_update   = last,
-		remote_state  = remote_state,
+	return Analysis_Result {
+		session = session,
+		last_update = last,
+		remote_state = remote_state,
 		remote_result = remote_result,
-		ok            = true,
+		ok = true,
 	}
 }
 
-semantic2_analysis_result_destroy :: proc(
-	result: ^Semantic2_Analysis_Result,
-	allocator: mem.Allocator,
-) {
+analysis_result_destroy :: proc(result: ^Analysis_Result, allocator: mem.Allocator) {
 	_ = allocator
 	semantic2.semantic_graph_update_result_destroy(&result.last_update)
 	semantic2.semantic_graph_session_destroy(&result.session)
 	result^ = {}
 }
 
-semantic2_workspace_file_input_from_path :: proc(
+workspace_file_input_from_path :: proc(
 	path: string,
 	allocator: mem.Allocator,
-) -> (semantic2.Workspace_File_Input, bool) {
+) -> (
+	semantic2.Workspace_File_Input,
+	bool,
+) {
 	source, source_ok := read_text_file(path, allocator)
 	if !source_ok {
 		return {}, false
 	}
 	parsed := parser.parse(source, path, allocator)
 	return semantic2.Workspace_File_Input {
-		path = strings.clone(path, allocator),
-		root = parsed.root,
-		kind = .Unknown,
-	}, true
+			path = strings.clone(path, allocator),
+			root = parsed.root,
+			kind = .Unknown,
+		},
+		true
 }
 
-remote_dependency_config_from_workspace :: proc(
-	workspace: ^Workspace,
-) -> remote_deps2.Config {
-	config := remote_deps2.Config {
+remote_dependency_config_from_workspace :: proc(workspace: ^Workspace) -> remote_deps.Config {
+	config := remote_deps.Config {
 		local_export_roots = workspace.local_export_roots[:],
 		cache_any_profile  = !workspace.has_manifest,
 		source_order       = .Local_First,
@@ -222,31 +220,36 @@ remote_dependency_config_from_workspace :: proc(
 	return config
 }
 
-workspace_semantic2_remote_requests :: proc(
+remote_requests_from_unresolved_candidates :: proc(
 	interner: ^string_interner.Interner,
 	candidates: []semantic2.Checker_Unresolved_Candidate,
 	allocator: mem.Allocator,
-) -> [dynamic]remote_deps2.Request {
-	out := make([dynamic]remote_deps2.Request, 0, len(candidates), allocator)
+) -> [dynamic]remote_deps.Request {
+	out := make([dynamic]remote_deps.Request, 0, len(candidates), allocator)
 	for candidate in candidates {
 		name := string_interner.load(interner, candidate.name)
-		request, ok := workspace_semantic2_remote_request_from_candidate(candidate, name)
+		request, ok := remote_request_from_candidate(candidate, name)
 		if !ok {
 			continue
 		}
 		append(&out, request)
 	}
-	return remote_deps2.normalize_requests(out[:], allocator)
+	return remote_deps.normalize_requests(out[:], allocator)
 }
 
-workspace_semantic2_remote_request_from_candidate :: proc(
+remote_request_from_candidate :: proc(
 	candidate: semantic2.Checker_Unresolved_Candidate,
 	name: string,
-) -> (remote_deps2.Request, bool) {
+) -> (
+	remote_deps.Request,
+	bool,
+) {
 	if strings.trim_space(name) == "" {
 		return {}, false
 	}
-	request := remote_deps2.Request{name = name}
+	request := remote_deps.Request {
+		name = name,
+	}
 	switch candidate.kind {
 	case .Include_Source:
 		request.kind = .Include
@@ -275,9 +278,9 @@ workspace_semantic2_remote_request_from_candidate :: proc(
 	return request, true
 }
 
-workspace_semantic2_external_interface_inputs :: proc(
+external_interface_inputs_from_remote :: proc(
 	interner: ^string_interner.Interner,
-	inputs: []remote_deps2.Interface_AST,
+	inputs: []remote_deps.Interface_AST,
 	allocator: mem.Allocator,
 ) -> [dynamic]semantic2.External_Interface_Input {
 	out := make([dynamic]semantic2.External_Interface_Input, 0, len(inputs), allocator)
@@ -290,22 +293,22 @@ workspace_semantic2_external_interface_inputs :: proc(
 			&out,
 			semantic2.External_Interface_Input {
 				key = semantic2.Semantic_Object_Key {
-					kind = workspace_semantic2_external_kind_from_remote(input),
+					kind = external_kind_from_remote(input),
 					name = name,
 				},
-				path        = input.path,
-				root        = input.root,
+				path = input.path,
+				root = input.root,
 				source_hash = input.source_hash,
-				generation  = input.generation,
-				role        = workspace_semantic2_external_role_from_remote(input.role),
+				generation = input.generation,
+				role = external_role_from_remote(input.role),
 			},
 		)
 	}
 	return out
 }
 
-workspace_semantic2_external_source_inputs :: proc(
-	inputs: []remote_deps2.Source_AST,
+external_source_inputs_from_remote :: proc(
+	inputs: []remote_deps.Source_AST,
 	allocator: mem.Allocator,
 ) -> [dynamic]semantic2.External_Source_Input {
 	out := make([dynamic]semantic2.External_Source_Input, 0, len(inputs), allocator)
@@ -313,20 +316,20 @@ workspace_semantic2_external_source_inputs :: proc(
 		append(
 			&out,
 			semantic2.External_Source_Input {
-				path           = input.path,
-				root           = input.root,
+				path = input.path,
+				root = input.root,
 				provided_names = input.provided_names[:],
-				source_hash    = input.source_hash,
-				generation     = input.generation,
+				source_hash = input.source_hash,
+				generation = input.generation,
 			},
 		)
 	}
 	return out
 }
 
-workspace_semantic2_blocked_keys :: proc(
+blocked_keys_from_requests :: proc(
 	interner: ^string_interner.Interner,
-	requests: []remote_deps2.Request,
+	requests: []remote_deps.Request,
 	allocator: mem.Allocator,
 ) -> [dynamic]semantic2.Semantic_Object_Key {
 	out := make([dynamic]semantic2.Semantic_Object_Key, 0, len(requests), allocator)
@@ -338,7 +341,7 @@ workspace_semantic2_blocked_keys :: proc(
 		append(
 			&out,
 			semantic2.Semantic_Object_Key {
-				kind = workspace_semantic2_kind_from_remote_key(remote_deps2.remote_dependency_key(request)),
+				kind = external_kind_from_remote_key(remote_deps.remote_dependency_key(request)),
 				name = name,
 			},
 		)
@@ -346,15 +349,15 @@ workspace_semantic2_blocked_keys :: proc(
 	return out
 }
 
-workspace_semantic2_external_kind_from_remote :: proc(
-	input: remote_deps2.Interface_AST,
+external_kind_from_remote :: proc(
+	input: remote_deps.Interface_AST,
 ) -> semantic2.External_Candidate_Kind {
-	return workspace_semantic2_kind_from_remote_role_and_key(input.role, input.key)
+	return external_kind_from_remote_role_and_key(input.role, input.key)
 }
 
-workspace_semantic2_kind_from_remote_role_and_key :: proc(
-	role: remote_deps2.Remote_Dependency_Object_Role,
-	key: remote_deps2.Remote_Dependency_Key,
+external_kind_from_remote_role_and_key :: proc(
+	role: remote_deps.Remote_Dependency_Object_Role,
+	key: remote_deps.Remote_Dependency_Key,
 ) -> semantic2.External_Candidate_Kind {
 	switch role {
 	case .Report:
@@ -373,11 +376,11 @@ workspace_semantic2_kind_from_remote_role_and_key :: proc(
 		return .Type_Pool
 	case .Unknown:
 	}
-	return workspace_semantic2_kind_from_remote_key(key)
+	return external_kind_from_remote_key(key)
 }
 
-workspace_semantic2_kind_from_remote_key :: proc(
-	key: remote_deps2.Remote_Dependency_Key,
+external_kind_from_remote_key :: proc(
+	key: remote_deps.Remote_Dependency_Key,
 ) -> semantic2.External_Candidate_Kind {
 	switch key.kind {
 	case .Include:
@@ -400,8 +403,8 @@ workspace_semantic2_kind_from_remote_key :: proc(
 	return .Global_Symbol
 }
 
-workspace_semantic2_external_role_from_remote :: proc(
-	role: remote_deps2.Remote_Dependency_Object_Role,
+external_role_from_remote :: proc(
+	role: remote_deps.Remote_Dependency_Object_Role,
 ) -> semantic2.External_Interface_Object_Role {
 	switch role {
 	case .Report:
@@ -423,14 +426,59 @@ workspace_semantic2_external_role_from_remote :: proc(
 	return .Unknown
 }
 
-workspace_semantic2_source_input_from_open_source :: proc(
-	source: remote_deps2.Open_Source,
-	allocator: mem.Allocator,
-) -> Workspace_Source_Input {
-	return Workspace_Source_Input {
-		uri      = strings.clone(source.path, allocator),
-		text     = strings.clone(source.source_text, allocator),
-		role     = analyze.Source_Input_Role.Full_Source,
-		open     = true,
+
+read_text_file :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
+	data, err := os.read_entire_file(path, allocator)
+	if err != nil {
+		return "", false
 	}
+	return string(data), true
+}
+
+workspace_local_export_roots :: proc(
+	manifest: ^Workspace_Manifest,
+	allocator: mem.Allocator,
+) -> [dynamic]string {
+	roots := make([dynamic]string, 0, len(manifest.local_export_roots), allocator)
+	if strings.equal_fold(manifest.dependency_source, "adt-first") {
+		return roots
+	}
+	for root in manifest.local_export_roots {
+		path, ok := manifest_absolute_path(manifest.root_path, root, allocator)
+		if ok {
+			append(&roots, path)
+		}
+	}
+	return roots
+}
+
+default_workspace_manifest :: proc(
+	root_path: string,
+	allocator: mem.Allocator,
+) -> Workspace_Manifest {
+	return Workspace_Manifest {
+		root_path = strings.clone(root_path, allocator),
+		connection = "default",
+		dependency_source = "local-first",
+		local_export_roots = make([dynamic]string, 0, 2, allocator),
+		units = make([dynamic]Manifest_Unit, 0, 4, allocator),
+	}
+}
+
+init_workspace_adt :: proc(workspace: ^Workspace, allocator: mem.Allocator) {
+	dotenv, dotenv_err := adt.load_dotenv_defaults(workspace.root_path, allocator)
+	if dotenv_err != .None {
+		return
+	}
+	defer adt.dotenv_defaults_destroy(&dotenv, allocator)
+	workspace.has_dotenv = len(dotenv.values) > 0
+
+	overrides := adt.Connection_Overrides{}
+	config, config_err := adt.connection_config_from_sources(&overrides, &dotenv, allocator)
+	if config_err != .None {
+		return
+	}
+	workspace.adt_config = config
+	adt.client_init(&workspace.adt_client, workspace.adt_config, allocator)
+	workspace.has_adt = true
 }

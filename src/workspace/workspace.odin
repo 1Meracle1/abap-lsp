@@ -2,9 +2,7 @@ package abap_frontend_workspace
 
 import adt "src:adt"
 import dep_store "src:dependency_store"
-import execution "src:execution"
-import analyze "src:semantic/analyze"
-import remote_deps "src:semantic/remote_dependencies"
+import remote_deps "src:remote_dependencies"
 
 import "core:mem"
 import "core:os"
@@ -19,13 +17,6 @@ Option_Flags :: bit_set[Option_Flag]
 Options :: struct {
 	dependency_store_path: string,
 	flags:                 Option_Flags,
-}
-
-Analysis_Result :: struct {
-	project:       analyze.Project_Analysis,
-	ok:            bool,
-	used_manifest: bool,
-	error:         string,
 }
 
 Workspace :: struct {
@@ -154,135 +145,4 @@ workspace_destroy :: proc(workspace: ^Workspace, allocator: mem.Allocator) {
 		adt.connection_config_destroy(&workspace.adt_config, allocator)
 	}
 	workspace^ = {}
-}
-
-analyze_workspace :: proc(
-	workspace: ^Workspace,
-	include_paths: []string,
-	pool: ^execution.Pool,
-	options: Options,
-	allocator: mem.Allocator,
-) -> Analysis_Result {
-	assert(pool != nil)
-	result: Analysis_Result
-	if workspace.has_manifest && len(workspace.manifest.units) > 0 {
-		result = analyze_manifest_workspace(workspace, include_paths, pool, options, allocator)
-	} else {
-		result = analyze_workspace_files(workspace, include_paths, pool, options, allocator)
-	}
-	finish_workspace_analysis_result(&result, options)
-	return result
-}
-
-analyze_path :: proc(
-	workspace: ^Workspace,
-	target_path: string,
-	include_paths: []string,
-	pool: ^execution.Pool,
-	options: Options,
-	allocator: mem.Allocator,
-) -> Analysis_Result {
-	assert(pool != nil)
-	target_abs, target_ok := absolute_clean_path(target_path, allocator)
-	if !target_ok {
-		return analysis_error("invalid target path")
-	}
-
-	if !workspace.has_manifest {
-		result := analyze_standalone_path(workspace, target_abs, include_paths, pool, options, allocator)
-		finish_workspace_analysis_result(&result, options)
-		return result
-	}
-
-	target_key := normalized_uri_path_key(target_abs, allocator)
-	root_keys := manifest_root_keys(&workspace.manifest, allocator)
-	if selected, ok := manifest_root_unit_by_key(&workspace.manifest, root_keys[:], target_key);
-	   ok {
-		result := analyze_manifest_unit(
-			workspace,
-			selected,
-			root_keys[:],
-			include_paths,
-			pool,
-			options,
-			allocator,
-		)
-		finish_workspace_analysis_result(&result, options)
-		return result
-	}
-	if selected, ok := manifest_member_owner_by_key(&workspace.manifest, target_key, allocator);
-	   ok {
-		result := analyze_manifest_unit(
-			workspace,
-			selected,
-			root_keys[:],
-			include_paths,
-			pool,
-			options,
-			allocator,
-		)
-		finish_workspace_analysis_result(&result, options)
-		return result
-	}
-
-	workspace_files := make([dynamic]string, 0, 32, allocator)
-	collect_workspace_abap_files(workspace.root_path, &workspace_files, allocator)
-	if selected, ok := manifest_reachable_owner_by_key(
-		&workspace.manifest,
-		target_key,
-		workspace_files[:],
-		root_keys[:],
-		pool,
-		options,
-		allocator,
-	); ok {
-		result := analyze_manifest_unit_with_workspace_files(
-			workspace,
-			selected,
-			root_keys[:],
-			workspace_files[:],
-			include_paths,
-			pool,
-			options,
-			allocator,
-		)
-		finish_workspace_analysis_result(&result, options)
-		return result
-	}
-
-	result := analyze_standalone_path(workspace, target_abs, include_paths, pool, options, allocator)
-	finish_workspace_analysis_result(&result, options)
-	return result
-}
-
-@(private)
-finish_workspace_analysis_result :: proc(
-	result: ^Analysis_Result,
-	options: Options,
-) {
-	if !result.ok {
-		return
-	}
-	if !(.Enable_Dependency_Diagnostics in options.flags) {
-		analyze.filter_dependency_diagnostics(&result.project)
-	}
-}
-
-dependency_config_from_workspace :: proc(workspace: ^Workspace) -> remote_deps.Dependency_Config {
-	config := remote_deps.Dependency_Config {
-		local_export_roots = workspace.local_export_roots[:],
-		cache_any_profile  = !workspace.has_manifest,
-	}
-	if workspace.has_store {
-		config.cache = &workspace.store
-		if workspace.has_manifest && workspace.manifest.has_dependency_store {
-			config.profile = &workspace.manifest.dependency_store
-		} else if !workspace.has_manifest {
-			config.profile = &workspace.standalone_profile
-		}
-	}
-	if workspace.has_adt {
-		config.adt_client = &workspace.adt_client
-	}
-	return config
 }

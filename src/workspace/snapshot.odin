@@ -1,9 +1,9 @@
 package abap_frontend_workspace
 
-import analyze "src:semantic/analyze"
-import session "src:semantic/session"
 import execution "src:execution"
-import remote_deps2 "src:remote_dependencies"
+import "src:parser"
+import remote_deps "src:remote_dependencies"
+import semantic2 "src:semantic2"
 
 import "core:mem"
 import "core:strings"
@@ -37,11 +37,12 @@ Dependency_Object_Key :: struct {
 }
 
 Workspace_Source_Input :: struct {
-	uri:      string,
-	text:     string,
-	revision: u64,
-	open:     bool,
-	role:     analyze.Source_Input_Role,
+	uri:         string,
+	text:        string,
+	revision:    u64,
+	open:        bool,
+	kind:        semantic2.Workspace_File_Kind,
+	object_name: string,
 }
 
 Workspace_Opened_Dependency :: struct {
@@ -56,8 +57,8 @@ Project_Snapshot :: struct {
 	revision:            u64,
 	source_inputs:       [dynamic]Workspace_Source_Input,
 	opened_dependencies: [dynamic]Workspace_Opened_Dependency,
-	project:             analyze.Project_Analysis,
-	session:             session.Analysis_Session,
+	session:             semantic2.Semantic_Graph_Session,
+	last_update:         semantic2.Semantic_Graph_Update_Result,
 }
 
 Project_Slot :: struct {
@@ -220,62 +221,26 @@ project_builder_build :: proc(
 	for entry in builder.opened {
 		append(&snapshot.opened_dependencies, workspace_opened_dependency_clone(entry, allocator))
 	}
-	snapshot.session = session.analysis_session_make(
-		dependency_config_from_workspace(builder.workspace),
-		pool,
-		analyze_options_from_workspace_options(builder.options),
-		allocator,
-	)
-	if builder.base != nil {
-		session.analysis_session_seed_dependency_summaries(
-			&snapshot.session,
-			builder.base.project.providers.summaries,
-		)
-	}
-
-	changes := make(
-		[dynamic]session.Input_Change,
+	files := make(
+		[dynamic]semantic2.Workspace_File_Input,
 		0,
 		len(builder.inputs) + len(builder.opened),
 		context.temp_allocator,
 	)
 	for input in builder.inputs {
-		append(
-			&changes,
-			session.Input_Change {
-				kind = .Upsert,
-				role = .Target,
-				input = analyze.Source_Input {
-					uri    = input.uri,
-					source = input.text,
-					role = input.role,
-				},
-			},
-		)
+		append(&files, workspace_file_input_from_source(input, context.temp_allocator))
 	}
 	for opened in builder.opened {
-		input := opened.input
-		input.role = .Full_Source
-		append(
-			&changes,
-			session.Input_Change {
-				kind = .Upsert,
-				role = workspace_input_role_for_dependency(opened.key),
-				input = analyze.Source_Input {
-					uri    = input.uri,
-					source = input.text,
-					role = input.role,
-				},
-				object_name = opened.key.object_name,
-				immutable = true,
-			},
-		)
+		append(&files, workspace_file_input_from_source(opened.input, context.temp_allocator))
 	}
-	result := session.analysis_session_apply_changes(&snapshot.session, changes[:])
-	snapshot.project = result.project
-	if !(.Enable_Dependency_Diagnostics in builder.options.flags) {
-		analyze.filter_dependency_diagnostics(&snapshot.project)
+	result := analyze_inputs(builder.workspace, files[:], pool, allocator)
+	if !result.ok {
+		project_snapshot_destroy(snapshot, allocator)
+		free(snapshot, allocator)
+		return nil, false, result.error
 	}
+	snapshot.session = result.session
+	snapshot.last_update = result.last_update
 	builder.next = snapshot
 	return snapshot, true, ""
 }
@@ -321,7 +286,7 @@ workspace_open_remote_dependency_object :: proc(
 		return nil, false, "unsupported dependency object kind"
 	}
 	config := remote_dependency_config_from_workspace(workspace)
-	source_input, source_ok, source_error := remote_deps2.open_source(
+	source_input, source_ok, source_error := remote_deps.open_source(
 		&config,
 		object_kind,
 		key.object_name,
@@ -333,11 +298,12 @@ workspace_open_remote_dependency_object :: proc(
 	opened := Workspace_Opened_Dependency {
 		key = dependency_object_key_clone(key, allocator),
 		input = Workspace_Source_Input {
-			uri      = strings.clone(source_input.path, allocator),
-			text     = strings.clone(source_input.source_text, allocator),
-			revision = current.revision + 1,
-			open     = true,
-			role = .Full_Source,
+			uri         = strings.clone(source_input.path, allocator),
+			text        = strings.clone(source_input.source_text, allocator),
+			revision    = current.revision + 1,
+			open        = true,
+			kind        = workspace_file_kind_for_dependency(key),
+			object_name = strings.clone(key.object_name, allocator),
 		},
 	}
 	return workspace_rebuild_project_snapshot_with_opened_dependencies(
@@ -455,7 +421,8 @@ project_snapshot_destroy :: proc(snapshot: ^Project_Snapshot, allocator: mem.All
 		return
 	}
 	_ = allocator
-	session.analysis_session_destroy(&snapshot.session)
+	semantic2.semantic_graph_update_result_destroy(&snapshot.last_update)
+	semantic2.semantic_graph_session_destroy(&snapshot.session)
 	snapshot^ = {}
 }
 
@@ -570,11 +537,12 @@ workspace_source_input_clone :: proc(
 	allocator: mem.Allocator,
 ) -> Workspace_Source_Input {
 	return Workspace_Source_Input {
-		uri      = strings.clone(input.uri, allocator),
-		text     = strings.clone(input.text, allocator),
-		revision = input.revision,
-		open     = input.open,
-		role = input.role,
+		uri         = strings.clone(input.uri, allocator),
+		text        = strings.clone(input.text, allocator),
+		revision    = input.revision,
+		open        = input.open,
+		kind        = input.kind,
+		object_name = strings.clone(input.object_name, allocator) if input.object_name != "" else "",
 	}
 }
 
@@ -614,14 +582,6 @@ workspace_dependency_object_key_equal :: proc(left, right: Dependency_Object_Key
 }
 
 @(private)
-workspace_input_role_for_dependency :: proc(key: Dependency_Object_Key) -> session.Input_Role {
-	if key.object_kind == .Include {
-		return .Candidate
-	}
-	return .Dependency
-}
-
-@(private)
 workspace_dependency_object_kind_text :: proc(kind: Dependency_Object_Kind) -> string {
 	switch kind {
 	case .Report:
@@ -637,7 +597,7 @@ workspace_dependency_object_kind_text :: proc(kind: Dependency_Object_Kind) -> s
 	case .Function_Module:
 		return "function-module"
 	case .Type_Pool:
-		return remote_deps2.TYPEPOOL_OBJECT_KIND
+		return remote_deps.TYPEPOOL_OBJECT_KIND
 	case .Message_Class:
 		return "message-class"
 	case .DDIC_Data_Element:
@@ -653,4 +613,37 @@ workspace_dependency_object_kind_text :: proc(kind: Dependency_Object_Kind) -> s
 	case .Unknown:
 	}
 	return ""
+}
+
+@(private)
+workspace_file_input_from_source :: proc(
+	input: Workspace_Source_Input,
+	allocator: mem.Allocator,
+) -> semantic2.Workspace_File_Input {
+	parsed := parser.parse(input.text, input.uri, allocator)
+	return semantic2.Workspace_File_Input {
+		path        = strings.clone(input.uri, allocator),
+		root        = parsed.root,
+		kind        = input.kind,
+		object_name = strings.clone(input.object_name, allocator) if input.object_name != "" else "",
+	}
+}
+
+@(private)
+workspace_file_kind_for_dependency :: proc(key: Dependency_Object_Key) -> semantic2.Workspace_File_Kind {
+	#partial switch key.object_kind {
+	case .Report:
+		return .Report
+	case .Include:
+		return .Include
+	case .Class:
+		return .Class
+	case .Interface:
+		return .Interface
+	case .Function_Group, .Function_Module:
+		return .Function_Group
+	case .Type_Pool:
+		return .Type_Pool
+	}
+	return .Unknown
 }

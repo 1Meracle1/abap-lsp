@@ -40,6 +40,7 @@ Checker_Diagnostic :: struct {
 	severity: Checker_Diagnostic_Severity,
 	range:    Range,
 	message:  string,
+	file:     ^Project_File,
 	entity:   ^Entity,
 	decl:     ^Decl_Info,
 }
@@ -644,6 +645,7 @@ checker_add_diagnostic :: proc(
 			severity = severity,
 			range    = range,
 			message  = strings.clone(message, ctx.project.allocator) if message != "" else "",
+			file     = ctx.file,
 			entity   = entity,
 			decl     = decl,
 		},

@@ -106,8 +106,9 @@ resolve_requests :: proc(
 		)
 	}
 
-	remaining = remaining_requests(normalized[:], resolved, context.temp_allocator)
-	resolve_typepool_phase(&result, remaining[:], config, state, &resolved, allocator)
+	// TODO enable when the integration is able to determine that the object is indeed a part of a typepool
+	// remaining = remaining_requests(normalized[:], resolved, context.temp_allocator)
+	// resolve_typepool_phase(&result, remaining[:], config, state, &resolved, allocator)
 
 	for request in normalized {
 		if !(remote_dependency_key(request) in resolved) {
