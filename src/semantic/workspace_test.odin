@@ -662,6 +662,66 @@ semantic_external_interface_checkers_share_imported_builtin_scope :: proc(t: ^te
 }
 
 @(test)
+semantic_external_index_remove_project_promotes_lookup_contribution :: proc(t: ^testing.T) {
+	interner := string_interner.create()
+	defer string_interner.destroy(interner)
+
+	external := external_semantics_make(interner)
+	defer external_semantics_destroy(&external)
+
+	class_input := workspace_test_external_interface_input(
+		t,
+		interner,
+		.Class,
+		.Class,
+		"zdup",
+		"adt://zdup.class.abap",
+		"CLASS zdup DEFINITION. PUBLIC SECTION. ENDCLASS.",
+		1,
+	)
+	type_input := workspace_test_external_interface_input(
+		t,
+		interner,
+		.DDIC_Type,
+		.DDIC_Type,
+		"zdup",
+		"adt://zdup.ddic_type.abap",
+		"TYPES zdup TYPE string.",
+		2,
+	)
+
+	class_record := external_semantics_analyze_interface_input(&external, class_input)
+	type_record := external_semantics_analyze_interface_input(&external, type_input)
+	testing.expect(t, class_record != nil && type_record != nil)
+	if class_record == nil || type_record == nil {
+		return
+	}
+
+	name := string_interner.insert(interner, "zdup")
+	key, _, ok := external_semantic_index_lookup(
+		&external.index,
+		.Type,
+		name,
+		.Global_Symbol,
+	)
+	testing.expect(t, ok)
+	testing.expect_value(t, key.kind, External_Candidate_Kind.Class)
+
+	removed := external_semantic_index_remove_project_record(&external.index, class_record.id)
+	testing.expect(t, removed)
+
+	next_key, binding, next_ok := external_semantic_index_lookup(
+		&external.index,
+		.Type,
+		name,
+		.Global_Symbol,
+	)
+	testing.expect(t, next_ok)
+	testing.expect_value(t, next_key.kind, External_Candidate_Kind.DDIC_Type)
+	testing.expect_value(t, binding.project_id, type_record.id)
+}
+
+@(test)
 semantic_workspace_analyzes_external_class_interface_for_transitive_type_candidates :: proc(t: ^testing.T) {
 	interner := string_interner.create()
 	defer string_interner.destroy(interner)

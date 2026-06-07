@@ -147,16 +147,23 @@ External_Lookup_Key :: struct {
 	name:      string_interner.String,
 }
 
+External_Lookup_Contribution :: struct {
+	key:        Semantic_Object_Key,
+	project_id: Semantic_Project_Id,
+}
+
 External_Semantic_Index :: struct {
 	allocator:                    mem.Allocator,
 	interner:                     ^string_interner.Interner,
 	next_project_id:              u32,
 	projects:                     [dynamic]Semantic_Project_Record,
 	providers:                    map[Semantic_Object_Key]External_Binding,
+	provider_contributions:       map[Semantic_Object_Key][dynamic]External_Binding,
 	project_by_root_key:          map[Semantic_Object_Key]Semantic_Project_Id,
 	dependents_by_object:         map[Semantic_Object_Key][dynamic]Semantic_Project_Id,
 	unresolved_waiters_by_object: map[Semantic_Object_Key][dynamic]Semantic_Project_Id,
 	lookup:                       map[External_Lookup_Key]Semantic_Object_Key,
+	lookup_contributions:         map[External_Lookup_Key][dynamic]External_Lookup_Contribution,
 }
 
 External_Field_Summary :: struct {
@@ -252,6 +259,11 @@ external_semantic_index_make :: proc(
 		next_project_id = 1,
 		projects = make([dynamic]Semantic_Project_Record, 0, 4, allocator),
 		providers = make(map[Semantic_Object_Key]External_Binding, 0, allocator),
+		provider_contributions = make(
+			map[Semantic_Object_Key][dynamic]External_Binding,
+			0,
+			allocator,
+		),
 		project_by_root_key = make(map[Semantic_Object_Key]Semantic_Project_Id, 0, allocator),
 		dependents_by_object = make(
 			map[Semantic_Object_Key][dynamic]Semantic_Project_Id,
@@ -264,6 +276,11 @@ external_semantic_index_make :: proc(
 			allocator,
 		),
 		lookup = make(map[External_Lookup_Key]Semantic_Object_Key, 0, allocator),
+		lookup_contributions = make(
+			map[External_Lookup_Key][dynamic]External_Lookup_Contribution,
+			0,
+			allocator,
+		),
 	}
 }
 
@@ -280,8 +297,27 @@ external_semantic_index_import_providers :: proc(
 			index.next_project_id = raw + 1
 		}
 	}
+	for key, contributions in source.provider_contributions {
+		copied := make([dynamic]External_Binding, 0, len(contributions), index.allocator)
+		for contribution in contributions {
+			append(&copied, contribution)
+		}
+		index.provider_contributions[key] = copied
+	}
 	for lookup_key, object_key in source.lookup {
 		index.lookup[lookup_key] = object_key
+	}
+	for lookup_key, contributions in source.lookup_contributions {
+		copied := make(
+			[dynamic]External_Lookup_Contribution,
+			0,
+			len(contributions),
+			index.allocator,
+		)
+		for contribution in contributions {
+			append(&copied, contribution)
+		}
+		index.lookup_contributions[lookup_key] = copied
 	}
 	for root_key, project_id in source.project_by_root_key {
 		index.project_by_root_key[root_key] = project_id
@@ -388,10 +424,9 @@ external_semantic_index_publish_provider :: proc(
 		quality    = quality,
 		generation = generation,
 	}
-	index.providers[key] = binding
 	semantic_project_record_add_provide(record, key)
 	semantic_project_record_add_provider_binding(record, key, binding)
-	external_semantic_index_add_entity_lookup(index, key, entity)
+	external_semantic_index_add_provider_contribution(index, key, binding)
 	return binding
 }
 
@@ -499,11 +534,40 @@ semantic_project_record_add_dependency :: proc(
 	}
 }
 
+external_semantic_index_add_provider_contribution :: proc(
+	index: ^External_Semantic_Index,
+	key: Semantic_Object_Key,
+	binding: External_Binding,
+) {
+	if index == nil || !semantic_object_key_is_valid(key) || binding.entity == nil {
+		return
+	}
+	if contributions, ok := index.provider_contributions[key]; ok {
+		for &existing in contributions {
+			if existing.project_id == binding.project_id {
+				existing = binding
+				index.provider_contributions[key] = contributions
+				index.providers[key] = contributions[len(contributions) - 1]
+				return
+			}
+		}
+		append(&contributions, binding)
+		index.provider_contributions[key] = contributions
+	} else {
+		new_contributions := make([dynamic]External_Binding, 0, 1, index.allocator)
+		append(&new_contributions, binding)
+		index.provider_contributions[key] = new_contributions
+	}
+	index.providers[key] = binding
+	external_semantic_index_add_entity_lookup(index, key, binding)
+}
+
 external_semantic_index_add_entity_lookup :: proc(
 	index: ^External_Semantic_Index,
 	key: Semantic_Object_Key,
-	entity: ^Entity,
+	binding: External_Binding,
 ) {
+	entity := binding.entity
 	if index == nil || entity == nil {
 		return
 	}
@@ -513,6 +577,32 @@ external_semantic_index_add_entity_lookup :: proc(
 			lookup_key := External_Lookup_Key {
 				namespace = namespace,
 				name      = entity.name,
+			}
+			contribution := External_Lookup_Contribution {
+				key        = key,
+				project_id = binding.project_id,
+			}
+			if contributions, ok := index.lookup_contributions[lookup_key]; ok {
+				exists := false
+				for existing in contributions {
+					if existing == contribution {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					append(&contributions, contribution)
+					index.lookup_contributions[lookup_key] = contributions
+				}
+			} else {
+				new_contributions := make(
+					[dynamic]External_Lookup_Contribution,
+					0,
+					1,
+					index.allocator,
+				)
+				append(&new_contributions, contribution)
+				index.lookup_contributions[lookup_key] = new_contributions
 			}
 			if _, exists := index.lookup[lookup_key]; !exists {
 				index.lookup[lookup_key] = key
@@ -568,8 +658,8 @@ external_semantic_index_remove_project_id :: proc(
 		return
 	}
 	if write == 0 {
-		delete(projects)
-		delete_key(waiters, key)
+		clear(&projects)
+		waiters^[key] = projects
 		return
 	}
 	resize(&projects, write)
@@ -598,10 +688,8 @@ external_semantic_index_remove_project_record_by_root_key :: proc(
 	if index == nil || !semantic_object_key_is_valid(root_key) {
 		return false
 	}
-	for record in index.projects {
-		if record.root_key == root_key {
-			return external_semantic_index_remove_project_record(index, record.id)
-		}
+	if id, ok := index.project_by_root_key[root_key]; ok {
+		return external_semantic_index_remove_project_record(index, id)
 	}
 	return false
 }
@@ -656,8 +744,7 @@ external_semantic_index_rebuild_maps :: proc(index: ^External_Semantic_Index) {
 			next_project_id = raw + 1
 		}
 		for provided in record.provider_bindings {
-			index.providers[provided.key] = provided.binding
-			external_semantic_index_add_entity_lookup(index, provided.key, provided.binding.entity)
+			external_semantic_index_add_provider_contribution(index, provided.key, provided.binding)
 		}
 		for edge in record.resolved_dependencies {
 			external_semantic_index_add_dependency(index, record.id, edge)
@@ -684,8 +771,7 @@ external_semantic_index_add_project_record_contributions :: proc(
 ) {
 	assert(index != nil && record != nil)
 	for provided in record.provider_bindings {
-		index.providers[provided.key] = provided.binding
-		external_semantic_index_add_entity_lookup(index, provided.key, provided.binding.entity)
+		external_semantic_index_add_provider_contribution(index, provided.key, provided.binding)
 	}
 	for edge in record.resolved_dependencies {
 		external_semantic_index_add_dependency(index, record.id, edge)
@@ -701,7 +787,7 @@ external_semantic_index_remove_project_record_contributions :: proc(
 ) {
 	assert(index != nil && record != nil)
 	if semantic_object_key_is_valid(record.root_key) {
-		external_semantic_index_rebuild_root_key(index, record.root_key)
+		external_semantic_index_remove_root_key(index, record.root_key, record.id)
 	}
 	for edge in record.resolved_dependencies {
 		external_semantic_index_remove_project_id(
@@ -718,110 +804,142 @@ external_semantic_index_remove_project_record_contributions :: proc(
 		)
 	}
 	for provided in record.provider_bindings {
-		external_semantic_index_rebuild_provider_key(index, provided.key)
-		external_semantic_index_rebuild_entity_lookups(index, provided.binding.entity)
+		external_semantic_index_remove_provider_contribution(index, provided.key, provided.binding)
+		external_semantic_index_remove_entity_lookup(index, provided.key, provided.binding)
 	}
 }
 
-external_semantic_index_rebuild_root_key :: proc(
+external_semantic_index_remove_root_key :: proc(
 	index: ^External_Semantic_Index,
 	root_key: Semantic_Object_Key,
+	project_id: Semantic_Project_Id,
 ) {
 	assert(index != nil)
 	if !semantic_object_key_is_valid(root_key) {
 		return
 	}
-	project_id: Semantic_Project_Id
-	found := false
-	for record in index.projects {
-		if record.root_key == root_key {
-			project_id = record.id
-			found = true
-		}
-	}
-	if found {
-		index.project_by_root_key[root_key] = project_id
-	} else {
+	if current, ok := index.project_by_root_key[root_key]; ok && current == project_id {
 		delete_key(&index.project_by_root_key, root_key)
 	}
 }
 
-external_semantic_index_rebuild_provider_key :: proc(
+external_semantic_index_remove_provider_contribution :: proc(
 	index: ^External_Semantic_Index,
 	key: Semantic_Object_Key,
+	binding: External_Binding,
 ) {
 	assert(index != nil)
 	if !semantic_object_key_is_valid(key) {
 		return
 	}
-	binding: External_Binding
-	found := false
-	for &record in index.projects {
-		for &provided in record.provider_bindings {
-			if provided.key == key {
-				binding = provided.binding
-				found = true
-			}
-		}
+	contributions, ok := index.provider_contributions[key]
+	if !ok {
+		return
 	}
-	if found {
-		index.providers[key] = binding
-	} else {
-		delete_key(&index.providers, key)
+	write := 0
+	for existing in contributions {
+		if existing.project_id == binding.project_id {
+			continue
+		}
+		contributions[write] = existing
+		write += 1
+	}
+	if write == len(contributions) {
+		return
+	}
+	if write == 0 {
+		clear(&contributions)
+		index.provider_contributions[key] = contributions
+		if current, current_ok := index.providers[key]; current_ok &&
+		   current.project_id == binding.project_id {
+			delete_key(&index.providers, key)
+		}
+		return
+	}
+	resize(&contributions, write)
+	index.provider_contributions[key] = contributions
+	if current, current_ok := index.providers[key]; current_ok &&
+	   current.project_id == binding.project_id {
+		index.providers[key] = contributions[write - 1]
 	}
 }
 
-external_semantic_index_rebuild_entity_lookups :: proc(
+external_semantic_index_remove_entity_lookup :: proc(
 	index: ^External_Semantic_Index,
-	entity: ^Entity,
+	key: Semantic_Object_Key,
+	binding: External_Binding,
 ) {
 	assert(index != nil)
+	entity := binding.entity
 	if entity == nil {
 		return
 	}
 	namespaces := [?]Namespace{.Value, .Type, .Routine}
 	for namespace in namespaces {
 		if entity_kind_occupies(entity.kind, namespace) {
-			external_semantic_index_rebuild_lookup_key(
+			external_semantic_index_remove_lookup_contribution(
 				index,
 				External_Lookup_Key{namespace = namespace, name = entity.name},
+				External_Lookup_Contribution{key = key, project_id = binding.project_id},
 			)
 		}
 	}
 }
 
-external_semantic_index_rebuild_lookup_key :: proc(
+external_semantic_index_remove_lookup_contribution :: proc(
 	index: ^External_Semantic_Index,
 	lookup_key: External_Lookup_Key,
+	contribution: External_Lookup_Contribution,
 ) {
 	assert(index != nil)
-	delete_key(&index.lookup, lookup_key)
-	for &record in index.projects {
-		for &provided in record.provider_bindings {
-			entity := provided.binding.entity
-			if entity != nil &&
-			   entity.name == lookup_key.name &&
-			   entity_kind_occupies(entity.kind, lookup_key.namespace) {
-				index.lookup[lookup_key] = provided.key
-				return
-			}
+	contributions, ok := index.lookup_contributions[lookup_key]
+	if !ok {
+		return
+	}
+	write := 0
+	for existing in contributions {
+		if existing == contribution {
+			continue
 		}
+		contributions[write] = existing
+		write += 1
+	}
+	if write == len(contributions) {
+		return
+	}
+	if write == 0 {
+		clear(&contributions)
+		index.lookup_contributions[lookup_key] = contributions
+		if current, current_ok := index.lookup[lookup_key]; current_ok &&
+		   current == contribution.key {
+			delete_key(&index.lookup, lookup_key)
+		}
+		return
+	}
+	resize(&contributions, write)
+	index.lookup_contributions[lookup_key] = contributions
+	if current, current_ok := index.lookup[lookup_key]; current_ok && current == contribution.key {
+		index.lookup[lookup_key] = contributions[0].key
 	}
 }
 
 external_semantic_index_reset_maps :: proc(index: ^External_Semantic_Index) {
 	assert(index != nil)
 	clear(&index.providers)
+	for _, &contributions in index.provider_contributions {
+		clear(&contributions)
+	}
 	clear(&index.project_by_root_key)
-	for _, projects in index.dependents_by_object {
-		delete(projects)
+	for _, &projects in index.dependents_by_object {
+		clear(&projects)
 	}
-	clear(&index.dependents_by_object)
-	for _, projects in index.unresolved_waiters_by_object {
-		delete(projects)
+	for _, &projects in index.unresolved_waiters_by_object {
+		clear(&projects)
 	}
-	clear(&index.unresolved_waiters_by_object)
 	clear(&index.lookup)
+	for _, &contributions in index.lookup_contributions {
+		clear(&contributions)
+	}
 }
 
 external_binding_occupies_namespace :: proc(
