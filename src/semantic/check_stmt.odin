@@ -661,30 +661,93 @@ checker_check_internal_table_where_expr :: proc(
 	node := &expr.expr_base
 	#partial switch n in expr.derived_expr {
 	case ^ast.Binary_Expr:
-		left := checker_check_internal_table_where_expr(ctx, n.left, row_type, row_structure)
-		right := checker_check_internal_table_where_expr(ctx, n.right, row_type, row_structure)
+		left, right: Operand
+		if n.op == .And || n.op == .Or {
+			left = checker_check_internal_table_where_expr(ctx, n.left, row_type, row_structure)
+			right = checker_check_internal_table_where_expr(ctx, n.right, row_type, row_structure)
+		} else if checker_internal_table_where_component_binary_op(n.op) {
+			left = checker_check_internal_table_where_component_expr(ctx, n.left, row_type, row_structure)
+			right = checker_check_expr(ctx, n.right)
+		} else {
+			left = checker_check_expr(ctx, n.left)
+			right = checker_check_expr(ctx, n.right)
+		}
 		return checker_record_operand(ctx, node, .Value, checker_binary_result_type(ctx, n.op, left, right))
 	case ^ast.Unary_Expr:
-		operand := checker_check_internal_table_where_expr(ctx, n.expr, row_type, row_structure)
+		operand := checker_check_internal_table_where_expr(ctx, n.expr, row_type, row_structure) if n.op == .Not else checker_check_expr(ctx, n.expr)
 		return checker_record_operand(ctx, node, .Value, operand.type)
 	case ^ast.Paren_Expr:
 		operand := checker_check_internal_table_where_expr(ctx, n.expr, row_type, row_structure)
 		return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity)
 	case ^ast.Substring_Expr:
-		base := checker_check_internal_table_where_expr(ctx, n.base, row_type, row_structure)
+		base := checker_check_internal_table_where_component_expr(ctx, n.base, row_type, row_structure)
 		checker_check_expr(ctx, n.offset)
 		checker_check_expr(ctx, n.length)
 		return checker_record_operand(ctx, node, .Value, base.type, base.entity)
 	case ^ast.Between_Expr:
-		checker_check_internal_table_where_expr(ctx, n.subject, row_type, row_structure)
-		checker_check_internal_table_where_expr(ctx, n.low, row_type, row_structure)
-		checker_check_internal_table_where_expr(ctx, n.high, row_type, row_structure)
+		checker_check_internal_table_where_component_expr(ctx, n.subject, row_type, row_structure)
+		checker_check_expr(ctx, n.low)
+		checker_check_expr(ctx, n.high)
 		return checker_record_operand(ctx, node, .Value, checker_builtin_type_from_name(ctx.checker, "abap_bool"))
 	case ^ast.Is_Predicate_Expr:
-		checker_check_internal_table_where_expr(ctx, n.subject, row_type, row_structure)
+		checker_check_internal_table_where_component_expr(ctx, n.subject, row_type, row_structure)
 		return checker_record_operand(ctx, node, .Value, checker_builtin_type_from_name(ctx.checker, "abap_bool"))
 	}
 	return checker_check_expr(ctx, expr)
+}
+
+checker_check_internal_table_where_component_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	row_type: ^Type,
+	row_structure: ^Structure,
+) -> Operand {
+	if expr == nil {
+		return checker_invalid_operand()
+	}
+	if operand, ok := checker_check_table_component_expr(ctx, expr, row_type, row_structure, true); ok {
+		return operand
+	}
+	node := &expr.expr_base
+	#partial switch n in expr.derived_expr {
+	case ^ast.Paren_Expr:
+		operand := checker_check_internal_table_where_component_expr(ctx, n.expr, row_type, row_structure)
+		return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity)
+	case ^ast.Substring_Expr:
+		base := checker_check_internal_table_where_component_expr(ctx, n.base, row_type, row_structure)
+		checker_check_expr(ctx, n.offset)
+		checker_check_expr(ctx, n.length)
+		return checker_record_operand(ctx, node, .Value, base.type, base.entity)
+	}
+	return checker_check_expr(ctx, expr)
+}
+
+checker_internal_table_where_component_binary_op :: proc(op: ast.Binary_Op) -> bool {
+	#partial switch op {
+	case .Equal,
+	     .Not_Equal,
+	     .Less,
+	     .Less_Equal,
+	     .Greater,
+	     .Greater_Equal,
+	     .Contains_Only,
+	     .Contains_Not_Only,
+	     .Contains_Any,
+	     .Contains_Not_Any,
+	     .Contains_String,
+	     .Contains_No_String,
+	     .Covers_Pattern,
+	     .Covers_No_Pattern,
+	     .In,
+	     .Not_In,
+	     .Like,
+	     .Not_Like,
+	     .Bit_O,
+	     .Bit_Z,
+	     .Bit_M:
+		return true
+	}
+	return false
 }
 
 checker_check_table_component_expr :: proc(

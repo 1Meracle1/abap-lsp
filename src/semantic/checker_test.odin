@@ -2299,6 +2299,35 @@ DELETE ADJACENT DUPLICATES FROM mt_event COMPARING docnum nested-part.`
 }
 
 @(test)
+root_semantic_internal_table_where_rhs_uses_value_resolution :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_component,
+         cmptype TYPE string,
+         descript TYPE string,
+       END OF ty_component.
+DATA is_components TYPE STANDARD TABLE OF ty_component WITH EMPTY KEY.
+CONSTANTS seoo_cmptype_method TYPE string VALUE '1'.
+
+LOOP AT is_components ASSIGNING FIELD-SYMBOL(<lo_attribute>)
+  WHERE cmptype = seoo_cmptype_attribute AND descript IS NOT INITIAL.
+ENDLOOP.
+LOOP AT is_components ASSIGNING FIELD-SYMBOL(<ls_component>)
+  WHERE cmptype = seoo_cmptype_method.
+ENDLOOP.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://internal_table_where_rhs.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "seoo_cmptype_attribute"), 1)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "cmptype"), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "descript"), 0)
+	seoo_cmptype_method := checker_test_lookup(t, &project, file.root_scope, .Value, "seoo_cmptype_method", .Constant)
+	testing.expect(t, seoo_cmptype_method != nil && .Used in seoo_cmptype_method.flags)
+}
+
+@(test)
 root_semantic_unknown_internal_table_row_components_stay_local :: proc(t: ^testing.T) {
 	source := `DATA mt_event TYPE STANDARD TABLE OF zmissing_row WITH EMPTY KEY.
 
