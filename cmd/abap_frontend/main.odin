@@ -461,6 +461,32 @@ print_caret_line :: proc(start_column, width: int, color: string) {
 	fmt.println()
 }
 
+print_source_highlight :: proc(source: string, starts: []int, start, end: Source_Position, color: string) {
+	range_end := end
+	if range_end.line > start.line && range_end.column == 1 {
+		range_end.line -= 1
+		range_end.column = len(source_line_text(source, starts, range_end.line)) + 1
+	}
+	if range_end.line < start.line ||
+	   (range_end.line == start.line && range_end.column < start.column) {
+		range_end = start
+	}
+
+	for line := start.line; line <= range_end.line; line += 1 {
+		line_text := source_line_text(source, starts, line)
+		caret_start := 1
+		caret_end := len(line_text) + 1
+		if line == start.line {
+			caret_start = start.column
+		}
+		if line == range_end.line {
+			caret_end = range_end.column
+		}
+		fmt.printf("    %s\n", line_text)
+		print_caret_line(caret_start, caret_end - caret_start, color)
+	}
+}
+
 print_analyze_diagnostics :: proc(
 	result: ^workspace.Analysis_Result,
 	warnings_as_errors: bool,
@@ -554,11 +580,6 @@ print_semantic_diagnostic :: proc(
 	}
 	start := source_position(source, line_starts[:], diagnostic.range.start)
 	end := source_position(source, line_starts[:], diagnostic.range.end)
-	line_text := source_line_text(source, line_starts[:], start.line)
-	width := end.column - start.column
-	if end.line != start.line {
-		width = len(line_text) - start.column + 2
-	}
 	fmt.printf("%s(%d:%d) ", uri, start.line, start.column)
 	if color != "" {
 		fmt.print(color)
@@ -568,8 +589,7 @@ print_semantic_diagnostic :: proc(
 		fmt.print(SGR_RESET)
 	}
 	fmt.printf(" %v: %s\n", diagnostic.kind, diagnostic.message)
-	fmt.printf("    %s\n", line_text)
-	print_caret_line(start.column, width, color)
+	print_source_highlight(source, line_starts[:], start, end, color)
 	fmt.println()
 	return had_error
 }
@@ -614,11 +634,6 @@ print_parse_errors :: proc(path, source: string, errors: []parser.Parse_Error) -
 	for err in errors {
 		start := source_position(source, line_starts[:], err.range.start)
 		end := source_position(source, line_starts[:], err.range.end)
-		line_text := source_line_text(source, line_starts[:], start.line)
-		width := end.column - start.column
-		if end.line != start.line {
-			width = len(line_text) - start.column + 2
-		}
 		fmt.printf("%s(%d:%d) ", uri, start.line, start.column)
 		if color != "" {
 			fmt.print(color)
@@ -628,8 +643,7 @@ print_parse_errors :: proc(path, source: string, errors: []parser.Parse_Error) -
 			fmt.print(SGR_RESET)
 		}
 		fmt.printf(" Syntax_Error: %s\n", err.message)
-		fmt.printf("    %s\n", line_text)
-		print_caret_line(start.column, width, color)
+		print_source_highlight(source, line_starts[:], start, end, color)
 		fmt.println()
 	}
 	return true
