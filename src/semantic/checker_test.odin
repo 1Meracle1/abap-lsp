@@ -688,6 +688,73 @@ root_semantic_like_clause_adds_type_fallback_candidate :: proc(t: ^testing.T) {
 }
 
 @(test)
+root_semantic_like_clause_skips_current_parameter_for_shadowed_member :: proc(t: ^testing.T) {
+	source := `CLASS lcl_base DEFINITION.
+  PUBLIC SECTION.
+    DATA previous TYPE REF TO lcl_base.
+ENDCLASS.
+CLASS lcl_child DEFINITION INHERITING FROM lcl_base.
+  PUBLIC SECTION.
+    METHODS constructor IMPORTING previous LIKE previous.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://like_shadowed_parameter.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Declaration_Cycle), 0)
+	child := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_child", .Class)
+	testing.expect(t, child != nil)
+	if child == nil {
+		return
+	}
+	child_payload := child.payload.(^Entity_Object_Payload)
+	constructor := checker_test_lookup(t, &project, child_payload.definition_scope, .Routine, "constructor", .Method)
+	constructor_payload := constructor.payload.(^Entity_Routine_Payload)
+	param := checker_test_lookup(t, &project, constructor_payload.signature_scope, .Value, "previous", .Parameter)
+	testing.expect_value(t, param.type.kind, Type_Kind.Ref)
+	if param.type.base != nil {
+		testing.expect_value(t, checker_test_type_name(&project, param.type.base), "lcl_base")
+	}
+}
+
+@(test)
+root_semantic_like_clause_skips_current_structure_field_for_outer_member :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    DATA a1 TYPE string.
+    TYPES: BEGIN OF ty_message_parts,
+             a1 LIKE a1,
+             a2 LIKE a1,
+           END OF ty_message_parts.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://like_shadowed_field.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Declaration_Cycle), 0)
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_demo", .Class)
+	testing.expect(t, class != nil)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	row := checker_test_lookup(t, &project, class_payload.definition_scope, .Type, "ty_message_parts", .Type_Def)
+	structure := checker_type_structure(row.type)
+	testing.expect(t, structure != nil)
+	if structure == nil {
+		return
+	}
+	a1 := checker_test_structure_field(t, &project, structure, "a1")
+	a2 := checker_test_structure_field(t, &project, structure, "a2")
+	testing.expect_value(t, checker_test_type_name(&project, a1.type), "string")
+	testing.expect_value(t, checker_test_type_name(&project, a2.type), "string")
+}
+
+@(test)
 root_semantic_type_checker_validates_generic_builtin_contexts :: proc(t: ^testing.T) {
 	source := `FIELD-SYMBOLS <value> TYPE simple.
 FORM demo USING iv_number TYPE numeric CHANGING cv_data TYPE data.

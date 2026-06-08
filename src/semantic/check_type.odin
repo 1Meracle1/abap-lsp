@@ -17,7 +17,7 @@ checker_check_decl_type_clause :: proc(
 	type_ref, has_ref := checker_type_ref_data_from_clause(ctx, clause)
 	node := &clause.type_ref.expr_base if clause.type_ref != nil else nil
 	form := checker_type_form_with_occurs(clause.form, occurs)
-	typ := checker_type_from_ref_data_with_form(ctx, type_ref, has_ref, form, true, node)
+	typ := checker_type_from_ref_data_with_form(ctx, type_ref, has_ref, form, true, node, entity)
 	if has_ref {
 		checker_record_type_ref_raw_uses(ctx, clause.type_ref)
 		checker_record_type_expr_info(ctx, clause.type_ref, typ)
@@ -45,7 +45,7 @@ checker_check_field_type :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^
 			payload.flags += {.Has_Type_Ref}
 		}
 		node := &decl.type_clause.type_ref.expr_base if decl.type_clause.type_ref != nil else nil
-		typ = checker_type_from_ref_data_with_form(ctx, type_ref, has_ref, payload.type_clause_form, true, node)
+		typ = checker_type_from_ref_data_with_form(ctx, type_ref, has_ref, payload.type_clause_form, true, node, entity)
 		if has_ref {
 			checker_record_type_ref_raw_uses(ctx, decl.type_clause.type_ref)
 			checker_record_type_expr_info(ctx, decl.type_clause.type_ref, typ)
@@ -59,6 +59,7 @@ checker_check_field_type :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^
 			payload.type_clause_form,
 			payload.has_type_clause_form,
 			entity.node,
+			entity,
 		)
 		checker_validate_decl_type_ref(ctx, entity, payload.type_ref)
 	}
@@ -97,10 +98,11 @@ checker_type_from_ref_data_with_form :: proc(
 	form: ast.Data_Type_Form,
 	has_form: bool,
 	node: ^ast.Node,
+	current_decl_entity: ^Entity = nil,
 ) -> ^Type {
 	base: ^Type
 	if has_ref {
-		base, _ = checker_type_from_ref_data(ctx, type_ref, node)
+		base, _ = checker_type_from_ref_data(ctx, type_ref, node, current_decl_entity)
 	} else {
 		base = project_type_unknown(ctx.project)
 	}
@@ -130,11 +132,19 @@ checker_type_from_ref_data :: proc(
 	ctx: ^Checker_Context,
 	type_ref: Field_Type_Ref_Data,
 	node: ^ast.Node = nil,
+	current_decl_entity: ^Entity = nil,
 ) -> (^Type, ^Entity) {
 	if !string_interner.is_valid(type_ref.base_name) {
 		return project_type_unknown(ctx.project), nil
 	}
-	_, entity, ok := checker_lookup_reference(ctx, type_ref.namespace, type_ref.base_name)
+	skip_current := checker_type_ref_should_skip_current_decl(type_ref, current_decl_entity)
+	entity: ^Entity
+	ok: bool
+	if skip_current {
+		_, entity, ok = checker_lookup_reference(ctx, type_ref.namespace, type_ref.base_name, excluded = current_decl_entity)
+	} else {
+		_, entity, ok = checker_lookup_reference(ctx, type_ref.namespace, type_ref.base_name)
+	}
 	if !ok && type_ref.namespace == .Value && type_ref.allow_type_lookup {
 		_, entity, ok = checker_lookup_reference(ctx, .Type, type_ref.base_name)
 		if !ok {
@@ -239,6 +249,15 @@ checker_type_from_ref_data :: proc(
 		current = project_type_ref(ctx.project, current)
 	}
 	return current, current_entity
+}
+
+checker_type_ref_should_skip_current_decl :: proc(
+	type_ref: Field_Type_Ref_Data,
+	entity: ^Entity,
+) -> bool {
+	return entity != nil &&
+	       type_ref.namespace == .Value &&
+	       entity_kind_occupies(entity.kind, .Value)
 }
 
 checker_type_from_entity :: proc(ctx: ^Checker_Context, entity: ^Entity, node: ^ast.Node = nil) -> ^Type {

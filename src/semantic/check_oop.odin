@@ -342,8 +342,9 @@ checker_lookup_object_member_from_scope :: proc(
 	owner: ^Entity,
 	namespace: Namespace,
 	name: string_interner.String,
+	excluded: ^Entity = nil,
 ) -> (^Entity, bool) {
-	if member, ok := checker_lookup_object_member(owner, namespace, name); ok {
+	if member, ok := checker_lookup_object_member(owner, namespace, name, excluded); ok {
 		if checker_member_visible_from_scope(scope, member) {
 			return member, true
 		}

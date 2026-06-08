@@ -319,17 +319,18 @@ checker_lookup_declaration_from_scope :: proc(
 	scope: ^Scope,
 	namespace: Namespace,
 	name: string_interner.String,
+	excluded: ^Entity = nil,
 ) -> (
 	^Scope,
 	^Entity,
 	bool,
 ) {
-	if found_scope, entity, ok := checker_lookup_lexical_declaration_from_scope(scope, namespace, name); ok {
+	if found_scope, entity, ok := checker_lookup_lexical_declaration_from_scope(scope, namespace, name, excluded); ok {
 		return found_scope, entity, true
 	}
 
 	if owner := checker_enclosing_object_owner(scope); owner != nil {
-		if entity, ok := checker_lookup_object_member_from_scope(scope, owner, namespace, name); ok {
+		if entity, ok := checker_lookup_object_member_from_scope(scope, owner, namespace, name, excluded); ok {
 			return entity.scope, entity, true
 		}
 	}
@@ -341,6 +342,7 @@ checker_lookup_lexical_declaration_from_scope :: proc(
 	scope: ^Scope,
 	namespace: Namespace,
 	name: string_interner.String,
+	excluded: ^Entity = nil,
 ) -> (
 	^Scope,
 	^Entity,
@@ -348,11 +350,11 @@ checker_lookup_lexical_declaration_from_scope :: proc(
 ) {
 	assert(scope != nil)
 	for current := scope; current != nil; current = current.parent {
-		if entity, ok := scope_lookup_declaration(current, namespace, name); ok {
+		if entity, ok := scope_lookup_declaration(current, namespace, name); ok && entity != excluded {
 			return current, entity, true
 		}
 		for imported in current.imported {
-			if entity, ok := scope_lookup_declaration(imported, namespace, name); ok {
+			if entity, ok := scope_lookup_declaration(imported, namespace, name); ok && entity != excluded {
 				return imported, entity, true
 			}
 		}
@@ -365,16 +367,18 @@ checker_lookup_reference :: proc(
 	namespace: Namespace,
 	name: string_interner.String,
 	preferred_external_kind: External_Candidate_Kind = .Global_Symbol,
+	excluded: ^Entity = nil,
 ) -> (
 	^Scope,
 	^Entity,
 	bool,
 ) {
-	if scope, entity, ok := checker_lookup_declaration(ctx, namespace, name); ok {
+	assert(ctx != nil && ctx.scope != nil)
+	if scope, entity, ok := checker_lookup_declaration_from_scope(ctx.scope, namespace, name, excluded); ok {
 		return scope, entity, true
 	}
 	if namespace == .Value {
-		if scope, entity, ok := checker_lookup_declaration(ctx, .Type, name); ok {
+		if scope, entity, ok := checker_lookup_declaration_from_scope(ctx.scope, .Type, name, excluded); ok {
 			return scope, entity, true
 		}
 	}
@@ -397,8 +401,9 @@ checker_lookup_object_member :: proc(
 	owner: ^Entity,
 	namespace: Namespace,
 	name: string_interner.String,
+	excluded: ^Entity = nil,
 ) -> (^Entity, bool) {
-	return checker_lookup_object_member_internal(owner, namespace, name, 0)
+	return checker_lookup_object_member_internal(owner, namespace, name, 0, excluded)
 }
 
 checker_lookup_structure_field :: proc(
@@ -414,6 +419,7 @@ checker_lookup_object_member_internal :: proc(
 	namespace: Namespace,
 	name: string_interner.String,
 	depth: int,
+	excluded: ^Entity = nil,
 ) -> (^Entity, bool) {
 	assert(owner != nil)
 	if depth > 64 {
@@ -424,19 +430,19 @@ checker_lookup_object_member_internal :: proc(
 	if payload.definition_scope == nil {
 		return nil, false
 	}
-	if entity, found := scope_lookup_declaration(payload.definition_scope, namespace, name); found {
+	if entity, found := scope_lookup_declaration(payload.definition_scope, namespace, name); found && entity != excluded {
 		return entity, true
 	}
-	if entity, found := checker_lookup_object_alias_member(owner, namespace, name, depth + 1); found {
+	if entity, found := checker_lookup_object_alias_member(owner, namespace, name, depth + 1, excluded); found {
 		return entity, true
 	}
-	if entity, found := checker_lookup_implemented_interface_member(owner, namespace, name, depth + 1); found {
+	if entity, found := checker_lookup_implemented_interface_member(owner, namespace, name, depth + 1, excluded); found {
 		return entity, true
 	}
 	if string_interner.is_valid(payload.superclass_name) {
 		if _, super, super_ok := checker_lookup_lexical_declaration_from_scope(owner.scope, .Type, payload.superclass_name);
 		   super_ok && super.kind == .Class {
-			if entity, found := checker_lookup_object_member_internal(super, namespace, name, depth + 1); found {
+			if entity, found := checker_lookup_object_member_internal(super, namespace, name, depth + 1, excluded); found {
 				return entity, true
 			}
 		}
@@ -449,6 +455,7 @@ checker_lookup_object_alias_member :: proc(
 	namespace: Namespace,
 	name: string_interner.String,
 	depth: int,
+	excluded: ^Entity = nil,
 ) -> (^Entity, bool) {
 	payload, ok := owner.payload.(^Entity_Object_Payload)
 	assert(ok && payload != nil)
@@ -456,7 +463,7 @@ checker_lookup_object_alias_member :: proc(
 		return nil, false
 	}
 	for alias in payload.definition_scope.declarations {
-		if alias.kind != .Alias || alias.name != name {
+		if alias == excluded || alias.kind != .Alias || alias.name != name {
 			continue
 		}
 		alias_payload, alias_ok := alias.payload.(^Entity_Alias_Payload)
@@ -476,7 +483,7 @@ checker_lookup_object_alias_member :: proc(
 		if !string_interner.is_valid(target_name) {
 			target_name = name
 		}
-		if entity, found := checker_lookup_object_member_internal(target_interface, namespace, target_name, depth + 1); found {
+		if entity, found := checker_lookup_object_member_internal(target_interface, namespace, target_name, depth + 1, excluded); found {
 			return entity, true
 		}
 	}
@@ -488,6 +495,7 @@ checker_lookup_implemented_interface_member :: proc(
 	namespace: Namespace,
 	name: string_interner.String,
 	depth: int,
+	excluded: ^Entity = nil,
 ) -> (^Entity, bool) {
 	payload, ok := owner.payload.(^Entity_Object_Payload)
 	assert(ok && payload != nil)
@@ -503,7 +511,7 @@ checker_lookup_implemented_interface_member :: proc(
 		if !interface_ok || interface_entity.kind != .Interface {
 			continue
 		}
-		if entity, found := checker_lookup_object_member_internal(interface_entity, namespace, name, depth + 1); found {
+		if entity, found := checker_lookup_object_member_internal(interface_entity, namespace, name, depth + 1, excluded); found {
 			return entity, true
 		}
 	}
