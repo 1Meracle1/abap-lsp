@@ -268,6 +268,7 @@ module.exports = grammar({
     [$.unary_expression, $.binary_expression, $.selector_expression],
     [$.qualified_name, $.selector_expression],
     [$.binary_expression, $.selector_expression],
+    [$.parenthesized_expression, $._raw_token],
   ],
 
   rules: {
@@ -442,7 +443,7 @@ module.exports = grammar({
     argument_list: ($) =>
       seq(
         "(",
-        repeat(choice($.named_argument, $._expression, keywordChoice($, EXPRESSION_KEYWORDS), $.operator, $.punctuation)),
+        repeat(choice($.constructor_row, $.named_argument, $._expression, keywordChoice($, EXPRESSION_KEYWORDS), $.operator, $.punctuation)),
         ")",
       ),
 
@@ -578,7 +579,7 @@ module.exports = grammar({
       seq(keyword($, "WHILE"), field("condition", $._statement_tail), ".", field("body", repeat($._statement)), keyword($, "ENDWHILE"), "."),
 
     do_statement: ($) =>
-      seq(keyword($, "DO"), $._statement_tail, ".", field("body", repeat($._statement)), keyword($, "ENDDO"), "."),
+      seq(keyword($, "DO"), optional($._statement_tail), ".", field("body", repeat($._statement)), keyword($, "ENDDO"), "."),
 
     loop_statement: ($) =>
       seq(keyword($, "LOOP"), $._statement_tail, ".", field("body", repeat($._statement)), keyword($, "ENDLOOP"), "."),
@@ -721,5 +722,15 @@ module.exports = grammar({
       token(choice("->", "=>", "?=", "<=", ">=", "<>", "&&", "=", "+", "-", "*", "/", "<", ">", "~", "@", "#", "&")),
 
     punctuation: (_) => token(choice(",", ":", "(", ")", "[", "]")),
+
+    constructor_row: ($) =>
+      prec(
+        1,
+        seq(
+          "(",
+          repeat1(choice($.constructor_row, $.named_argument, $._raw_token)),
+          ")",
+        ),
+      ),
   },
 });

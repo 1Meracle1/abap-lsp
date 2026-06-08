@@ -244,6 +244,10 @@
           "named": true
         },
         {
+          "type": "constructor_row",
+          "named": true
+        },
+        {
           "type": "keyword",
           "named": true
         },
@@ -838,6 +842,45 @@
           }
         ]
       }
+    }
+  },
+  {
+    "type": "constructor_row",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        },
+        {
+          "type": "constructor_row",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "named_argument",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "string_template",
+          "named": true
+        }
+      ]
     }
   },
   {

@@ -3151,6 +3151,10 @@
             "members": [
               {
                 "type": "SYMBOL",
+                "name": "constructor_row"
+              },
+              {
+                "type": "SYMBOL",
                 "name": "named_argument"
               },
               {
@@ -10325,8 +10329,16 @@
           "value": "keyword"
         },
         {
-          "type": "SYMBOL",
-          "name": "_statement_tail"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "_statement_tail"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         },
         {
           "type": "STRING",
@@ -14884,6 +14896,43 @@
           }
         ]
       }
+    },
+    "constructor_row": {
+      "type": "PREC",
+      "value": 1,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "("
+          },
+          {
+            "type": "REPEAT1",
+            "content": {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SYMBOL",
+                  "name": "constructor_row"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "named_argument"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "_raw_token"
+                }
+              ]
+            }
+          },
+          {
+            "type": "STRING",
+            "value": ")"
+          }
+        ]
+      }
     }
   },
   "extras": [
@@ -14913,6 +14962,10 @@
     [
       "binary_expression",
       "selector_expression"
+    ],
+    [
+      "parenthesized_expression",
+      "_raw_token"
     ]
   ],
   "precedences": [],

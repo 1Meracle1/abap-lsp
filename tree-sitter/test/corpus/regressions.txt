@@ -1,0 +1,66 @@
+==================
+Inline constructor rows and bare DO
+==================
+
+DATA rt_ifname TYPE range of string.
+rt_ifname = VALUE #(
+  ( sign = 'I' option = 'EQ' low = c_if_epcis )
+  ( sign = 'I' option = 'EQ' low = c_if_pml )
+).
+
+DO.
+  EXIT.
+ENDDO.
+
+---
+
+(source_file
+  (data_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (assignment_statement
+    (qualified_name
+      (identifier))
+    (constructor_expression
+      (keyword)
+      (argument_list
+        (constructor_row
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (string))
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (string))
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (qualified_name
+              (identifier))))
+        (constructor_row
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (string))
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (string))
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (qualified_name
+              (identifier)))))))
+  (do_statement
+    (keyword)
+    (simple_statement
+      (keyword))
+    (keyword)))
