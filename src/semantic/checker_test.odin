@@ -1913,6 +1913,30 @@ CALL FUNCTION 'Z_DEMO'
 }
 
 @(test)
+root_semantic_stmt_checker_skips_required_function_parameters_for_parameter_table :: proc(t: ^testing.T) {
+	source := `FUNCTION z_required
+  IMPORTING iv_required TYPE i
+  CHANGING cv_required TYPE i.
+ENDFUNCTION.
+DATA lt_params TYPE STANDARD TABLE OF string.
+DATA lt_exceptions TYPE STANDARD TABLE OF string.
+CALL FUNCTION 'Z_REQUIRED'
+  PARAMETER-TABLE lt_params
+  EXCEPTION-TABLE lt_exceptions.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_func_parameter_table.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Required_Parameter), 0)
+	lt_params := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_params", .Variable)
+	lt_exceptions := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_exceptions", .Variable)
+	testing.expect(t, .Used in lt_params.flags)
+	testing.expect(t, .Used in lt_exceptions.flags)
+}
+
+@(test)
 root_semantic_stmt_checker_checks_internal_table_row_targets :: proc(t: ^testing.T) {
 	source := `TYPES ty_times TYPE STANDARD TABLE OF t WITH DEFAULT KEY.
 DATA lt_times TYPE ty_times.

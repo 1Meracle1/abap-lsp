@@ -1514,6 +1514,8 @@ Call_Stmt :: struct {
 	function_end_task_handler_kind: Call_Function_End_Task_Handler_Kind,
 	function_end_task_handler:      ^Expr,
 	function_as_separate_unit:      bool,
+	function_parameter_table:       ^Expr,
+	function_exception_table:       ^Expr,
 	arg_sections:                   [dynamic]Call_Stmt_Arg_Section,
 	named_args:                     [dynamic]Call_Stmt_Named_Arg,
 	transaction_operands:           [dynamic]^Expr,

@@ -361,6 +361,8 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.function_destination)
 		walk(next, n.function_task)
 		walk(next, n.function_end_task_handler)
+		walk(next, n.function_parameter_table)
+		walk(next, n.function_exception_table)
 		for arg in n.named_args {
 			walk(next, arg.value)
 			walk(next, arg.message)

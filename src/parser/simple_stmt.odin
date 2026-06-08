@@ -3776,6 +3776,7 @@ CALL_FUNCTION_TARGET_STOP_KEYWORDS :: []string {
 	"RECEIVING",
 	"EXCEPTIONS",
 	"PARAMETER-TABLE",
+	"EXCEPTION-TABLE",
 }
 
 CALL_FUNCTION_HANDLER_STOP_KEYWORDS :: []string {
@@ -3793,6 +3794,18 @@ CALL_FUNCTION_HANDLER_STOP_KEYWORDS :: []string {
 	"RECEIVING",
 	"EXCEPTIONS",
 	"PARAMETER-TABLE",
+	"EXCEPTION-TABLE",
+}
+
+CALL_FUNCTION_DYNAMIC_TABLE_STOP_KEYWORDS :: []string {
+	"EXPORTING",
+	"IMPORTING",
+	"TABLES",
+	"CHANGING",
+	"RECEIVING",
+	"EXCEPTIONS",
+	"PARAMETER-TABLE",
+	"EXCEPTION-TABLE",
 }
 
 CALL_TRANSFORMATION_CLAUSE_KEYWORDS :: []string {
@@ -3950,6 +3963,7 @@ parse_call_function_end_task_handler :: proc(
 
 call_function_parameter_list_starts :: proc(p: ^Parser) -> bool {
 	return at_keyword_phrase(p, "PARAMETER-TABLE") ||
+	       at_keyword_phrase(p, "EXCEPTION-TABLE") ||
 	       call_argument_section_starts(p) ||
 	       call_stmt_named_arg_starts(p, p.index)
 }
@@ -3961,7 +3975,11 @@ parse_call_function_parameter_list :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
 	last_rank := -1
 	for !raw_period_done(p) {
 		if at_keyword_phrase(p, "PARAMETER-TABLE") {
-			parse_invalid_call_function_parameter_table(p)
+			parse_call_function_parameter_table(p, stmt)
+			continue
+		}
+		if at_keyword_phrase(p, "EXCEPTION-TABLE") {
+			parse_call_function_exception_table(p, stmt)
 			continue
 		}
 		if call_argument_section_starts(p) {
@@ -4027,6 +4045,7 @@ parse_call_function_section_args :: proc(
 	seen_names := make(map[string]bool, 4, context.temp_allocator)
 	for !raw_period_done(p) &&
 	    !at_keyword_phrase(p, "PARAMETER-TABLE") &&
+	    !at_keyword_phrase(p, "EXCEPTION-TABLE") &&
 	    !call_argument_section_starts(p) {
 		if !call_function_named_arg_starts(p, p.index) {
 			if call_stmt_named_arg_starts(p, p.index) {
@@ -4157,6 +4176,7 @@ call_function_arg_value_end :: proc(
 			   tok.kind == .Eof ||
 			   tok.kind == .RParen ||
 			   keyword_phrase_at(p, i, "PARAMETER-TABLE") ||
+			   keyword_phrase_at(p, i, "EXCEPTION-TABLE") ||
 			   call_argument_section_starts_at(p, i) ||
 			   (i > start && call_stmt_named_arg_starts(p, i)) ||
 			   (section == .Exceptions && i > start && token_is_keyword(p, tok, "MESSAGE")) {
@@ -4199,6 +4219,7 @@ call_function_message_value_end :: proc(p: ^Parser, start: int) -> int {
 			   tok.kind == .Eof ||
 			   tok.kind == .RParen ||
 			   keyword_phrase_at(p, i, "PARAMETER-TABLE") ||
+			   keyword_phrase_at(p, i, "EXCEPTION-TABLE") ||
 			   call_argument_section_starts_at(p, i) ||
 			   (i > start && call_stmt_named_arg_starts(p, i)) {
 				break
@@ -4234,9 +4255,40 @@ call_function_exception_accepts_message :: proc(name: string) -> bool {
 	       strings.equal_fold(name, "communication_failure")
 }
 
+parse_call_function_parameter_table :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
+	keyword := expect_keyword_phrase(p, "PARAMETER-TABLE")
+	if stmt.function_parameter_table != nil {
+		error(p, keyword.range, "syntax error: duplicate PARAMETER-TABLE in CALL FUNCTION")
+	}
+	value := parse_raw_operand_to_period(p, CALL_FUNCTION_DYNAMIC_TABLE_STOP_KEYWORDS)
+	if value == nil {
+		error_current(p, "syntax error: expected parameter table after PARAMETER-TABLE")
+		return
+	}
+	if stmt.function_parameter_table == nil {
+		stmt.function_parameter_table = value
+	}
+}
+
+parse_call_function_exception_table :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
+	keyword := expect_keyword_phrase(p, "EXCEPTION-TABLE")
+	if stmt.function_exception_table != nil {
+		error(p, keyword.range, "syntax error: duplicate EXCEPTION-TABLE in CALL FUNCTION")
+	}
+	value := parse_raw_operand_to_period(p, CALL_FUNCTION_DYNAMIC_TABLE_STOP_KEYWORDS)
+	if value == nil {
+		error_current(p, "syntax error: expected exception table after EXCEPTION-TABLE")
+		return
+	}
+	if stmt.function_exception_table == nil {
+		stmt.function_exception_table = value
+	}
+}
+
 skip_call_function_invalid_section :: proc(p: ^Parser) {
 	for !raw_period_done(p) &&
 	    !at_keyword_phrase(p, "PARAMETER-TABLE") &&
+	    !at_keyword_phrase(p, "EXCEPTION-TABLE") &&
 	    !call_argument_section_starts(p) {
 		bump_token(p)
 	}
@@ -4810,7 +4862,13 @@ parse_raw_call_arguments :: proc(
 	has_section := false
 	for !raw_period_done(p) {
 		if call_kind == .Function && at_keyword_phrase(p, "PARAMETER-TABLE") {
-			parse_invalid_call_function_parameter_table(p)
+			expect_keyword_phrase(p, "PARAMETER-TABLE")
+			_ = parse_raw_operand_to_period(p, CALL_FUNCTION_DYNAMIC_TABLE_STOP_KEYWORDS, false, false, false)
+			continue
+		}
+		if call_kind == .Function && at_keyword_phrase(p, "EXCEPTION-TABLE") {
+			expect_keyword_phrase(p, "EXCEPTION-TABLE")
+			_ = parse_raw_operand_to_period(p, CALL_FUNCTION_DYNAMIC_TABLE_STOP_KEYWORDS, false, false, false)
 			continue
 		}
 		if call_argument_section_starts(p) {
@@ -4857,27 +4915,6 @@ parse_raw_call_arguments :: proc(
 			bump_token(p)
 		}
 	}
-}
-
-parse_invalid_call_function_parameter_table :: proc(p: ^Parser) {
-	start := current_token(p)
-	end := start.range.end
-	if p.index + 2 < len(p.tokens) {
-		end = p.tokens[p.index + 2].range.end
-	}
-	error(
-		p,
-		tokenizer.text_range(start.range.start, end),
-		"syntax error: PARAMETER-TABLE is not allowed in CALL FUNCTION parameter list",
-	)
-	expect_keyword_phrase(p, "PARAMETER-TABLE")
-	_ = parse_raw_operand_to_period(
-		p,
-		CALL_FUNCTION_TARGET_STOP_KEYWORDS,
-		false,
-		false,
-		false,
-	)
 }
 
 call_stmt_named_arg_starts :: proc(p: ^Parser, index: int) -> bool {

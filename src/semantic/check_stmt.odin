@@ -926,7 +926,9 @@ checker_check_call_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Call_Stmt) {
 		checker_check_expr(ctx, stmt.function_destination)
 		checker_check_expr(ctx, stmt.function_task)
 		checker_check_expr(ctx, stmt.function_end_task_handler, .Routine)
-		checker_check_call_stmt_args(ctx, stmt.named_args[:], routine, stmt.range)
+		checker_check_expr(ctx, stmt.function_parameter_table)
+		checker_check_expr(ctx, stmt.function_exception_table)
+		checker_check_call_stmt_args(ctx, stmt.named_args[:], routine, stmt.range, stmt.function_parameter_table != nil)
 	case .Method:
 		target := checker_check_expr(ctx, stmt.target, .Routine)
 		checker_check_call_stmt_args(ctx, stmt.named_args[:], target.entity, stmt.range)
@@ -947,6 +949,7 @@ checker_check_call_stmt_args :: proc(
 	named_args: []ast.Call_Stmt_Named_Arg,
 	routine: ^Entity,
 	call_range: Range,
+	has_parameter_table := false,
 ) {
 	args := make([dynamic]Checker_Call_Argument, 0, len(named_args), context.temp_allocator)
 	for named in named_args {
@@ -966,7 +969,7 @@ checker_check_call_stmt_args :: proc(
 		append(&args, arg)
 	}
 	if routine != nil {
-		checker_check_routine_call_arguments(ctx, routine, args[:], call_range)
+		checker_check_routine_call_arguments(ctx, routine, args[:], call_range, has_parameter_table)
 		return
 	}
 	for arg in args {
@@ -1077,6 +1080,7 @@ checker_check_routine_call_arguments :: proc(
 	routine: ^Entity,
 	args: []Checker_Call_Argument,
 	call_range: Range,
+	has_parameter_table := false,
 ) {
 	if routine == nil || routine.kind == .Builtin {
 		for arg in args {
@@ -1155,7 +1159,7 @@ checker_check_routine_call_arguments :: proc(
 		}
 	}
 
-	if required_mapping_ok {
+	if required_mapping_ok && !has_parameter_table {
 		checker_check_missing_required_parameters(ctx, routine, payload.parameters[:], supplied[:], call_range)
 	}
 }

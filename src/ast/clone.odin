@@ -464,6 +464,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.function_destination = clone(n.function_destination, allocator)
 		r.function_task = clone(n.function_task, allocator)
 		r.function_end_task_handler = clone(n.function_end_task_handler, allocator)
+		r.function_parameter_table = clone(n.function_parameter_table, allocator)
+		r.function_exception_table = clone(n.function_exception_table, allocator)
 		r.arg_sections = clone_call_stmt_arg_sections(n.arg_sections, allocator)
 		r.named_args = clone_call_stmt_named_args(n.named_args, allocator)
 		r.transaction_operands = clone_expr_list(n.transaction_operands, allocator)

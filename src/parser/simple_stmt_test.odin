@@ -1208,24 +1208,20 @@ CALL METHOD lo->run
 }
 
 @(test)
-call_function_rejects_parameter_table_clause :: proc(t: ^testing.T) {
+call_function_accepts_parameter_and_exception_tables :: proc(t: ^testing.T) {
 	source := `CALL FUNCTION lv_func DESTINATION c_dest
   PARAMETER-TABLE lt_params
-  EXCEPTIONS failed = 1.`
+  EXCEPTION-TABLE lt_exceptions.`
 	parsed := parse(source, "call_function_parameter_table.abap", context.allocator)
 
-	testing.expect_value(t, len(parsed.errors), 1)
-	testing.expect_value(
-		t,
-		parsed.errors[0].message,
-		"syntax error: PARAMETER-TABLE is not allowed in CALL FUNCTION parameter list",
-	)
+	testing.expect_value(t, len(parsed.errors), 0)
 	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
-	testing.expect_value(t, len(stmt.arg_sections), 1)
-	testing.expect_value(t, stmt.arg_sections[0].kind, ast.Call_Arg_Section_Kind.Exceptions)
-	testing.expect_value(t, len(stmt.named_args), 1)
-	testing.expect_value(t, stmt.named_args[0].section, ast.Call_Arg_Section_Kind.Exceptions)
-	testing.expect_value(t, stmt.named_args[0].name, "failed")
+	param_table := stmt.function_parameter_table.derived_expr.(^ast.Type_Ref_Expr)
+	exception_table := stmt.function_exception_table.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, param_table.text, "lt_params")
+	testing.expect_value(t, exception_table.text, "lt_exceptions")
+	testing.expect_value(t, len(stmt.arg_sections), 0)
+	testing.expect_value(t, len(stmt.named_args), 0)
 }
 
 @(test)
