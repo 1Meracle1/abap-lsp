@@ -75,6 +75,12 @@ scan_next_token :: proc(lexer: ^Lexer) -> Token {
 	start := lexer.offset
 	ch := lexer.ch
 
+	if ch == '!' && is_escaped_identifier_start(lexer) {
+		advance_rune(lexer)
+		scan_identifier(lexer)
+		return token_new(.Ident, text_range(start, lexer.offset))
+	}
+
 	if ch == '/' {
 		if is_namespace_start(lexer) {
 			scan_identifier(lexer)
@@ -487,6 +493,14 @@ peek_byte :: proc(lexer: ^Lexer, offset := 0) -> byte {
 
 is_namespace_start :: proc(lexer: ^Lexer) -> bool {
 	return lexer.ch == '/' && is_ascii_alpha(peek_byte(lexer))
+}
+
+is_escaped_identifier_start :: proc(lexer: ^Lexer) -> bool {
+	if lexer.read_offset >= len(lexer.src) {
+		return false
+	}
+	r, _ := utf8.decode_rune_in_string(lexer.src[lexer.read_offset:])
+	return is_letter(r)
 }
 
 is_field_symbol_identifier_start :: proc(lexer: ^Lexer) -> bool {

@@ -33,6 +33,26 @@ table_dependency_source_uses_observed_element_info_fields :: proc(t: ^testing.T)
 }
 
 @(test)
+table_dependency_source_escapes_include_field_name :: proc(t: ^testing.T) {
+	xml := `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="d010inc" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="master">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">master</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="include">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">include</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`
+	source := dependency_source("D010INC", "ddic-table", xml, context.allocator)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "!include type include")
+}
+
+@(test)
 structure_dependency_source_uses_observed_element_info_fields :: proc(t: ^testing.T) {
 	xml := `<abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name="zstr" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
   <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="id">

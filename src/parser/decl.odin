@@ -1063,6 +1063,7 @@ parse_decl_name :: proc(
 		tail := bump_token(p)
 		tok.range.end = tail.range.end
 	}
+	tok.range = parser_token_name_range(p, tok)
 	validate_token_name_length(p, tok, max_length, limit_message)
 	return tok, index, true
 }

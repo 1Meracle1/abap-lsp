@@ -134,7 +134,23 @@ parser_intern_name :: proc(p: ^Parser, name: string) -> string {
 }
 
 parser_intern_token_name :: proc(p: ^Parser, token: Token) -> string {
-	return parser_intern_name(p, tokenizer.token_lexeme(token, p.source))
+	return parser_intern_name(p, parser_token_name_text(p, token))
+}
+
+parser_token_name_text :: proc(p: ^Parser, token: Token) -> string {
+	text := tokenizer.token_lexeme(token, p.source)
+	if len(text) > 0 && text[0] == '!' {
+		return text[1:]
+	}
+	return text
+}
+
+parser_token_name_range :: proc(p: ^Parser, token: Token) -> tokenizer.Range {
+	range := token.range
+	if range.start < range.end && p.source[range.start] == '!' {
+		range.start += 1
+	}
+	return range
 }
 
 parse_top_level :: proc(p: ^Parser) {
@@ -2192,7 +2208,7 @@ validate_token_name_length :: proc(
 	max_length: int,
 	message: string,
 ) {
-	validate_name_length(p, tokenizer.token_lexeme(tok, p.source), tok.range, max_length, message)
+	validate_name_length(p, parser_token_name_text(p, tok), tok.range, max_length, message)
 }
 
 validate_abap_name_length :: proc(

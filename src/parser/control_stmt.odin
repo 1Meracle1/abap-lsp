@@ -1370,25 +1370,18 @@ parse_header_param_name :: proc(
 		if i < period_index && p.tokens[i].kind == .RParen {
 			i += 1
 		}
-		return parser_intern_name(p, strip_header_bang(tokenizer.token_lexeme(tok, p.source))), tok.range, passing, i, true
+		return parser_intern_token_name(p, tok), parser_token_name_range(p, tok), passing, i, true
 	}
 	if i >= period_index || !header_name_token_like(p.tokens[i]) {
 		return "", tokenizer.Range{}, passing, i, false
 	}
 	tok := p.tokens[i]
-	name := parser_intern_name(p, strip_header_bang(tokenizer.token_lexeme(tok, p.source)))
-	return name, tok.range, passing, i + 1, name != ""
+	name := parser_intern_token_name(p, tok)
+	return name, parser_token_name_range(p, tok), passing, i + 1, name != ""
 }
 
 header_name_token_like :: proc(token: tokenizer.Token) -> bool {
 	return token.kind == .Ident || token.kind == .Number
-}
-
-strip_header_bang :: proc(text: string) -> string {
-	if len(text) > 0 && text[0] == '!' {
-		return text[1:]
-	}
-	return text
 }
 
 header_type_clause_starts :: proc(p: ^Parser, index, period_index: int) -> bool {

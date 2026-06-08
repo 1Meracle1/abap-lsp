@@ -72,3 +72,10 @@ write_abap_name :: #force_inline proc(out: ^strings.Builder, name: string) {
 		strings.write_rune(out, r)
 	}
 }
+
+write_abap_decl_name :: proc(out: ^strings.Builder, name: string) {
+	if strings.equal_fold(name, "include") {
+		strings.write_byte(out, '!')
+	}
+	write_abap_name(out, name)
+}

@@ -159,7 +159,7 @@ ddic_xml_structure_source :: proc(
 	strings.write_string(&out, ",\n")
 	for field in fields {
 		strings.write_string(&out, "         ")
-		ddic.write_abap_name(&out, field.name)
+		ddic.write_abap_decl_name(&out, field.name)
 		strings.write_string(&out, " TYPE ")
 		ddic.write_abap_name(&out, field.type_name)
 		strings.write_string(&out, ",\n")

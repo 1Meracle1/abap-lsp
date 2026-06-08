@@ -201,6 +201,18 @@ CONSTANTS: BEGIN OF c_pair, a TYPE c VALUE IS INITIAL, END OF c_pair.`
 }
 
 @(test)
+structured_declaration_escaped_keyword_name_is_normal_field :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF d010inc, !include TYPE string, END OF d010inc.`
+	parsed := parse(source, "escaped_keyword_field.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	testing.expect_value(t, types.types[1].kind, ast.Decl_Clause_Kind.Normal)
+	testing.expect_value(t, types.types[1].name, "include")
+	testing.expect_value(t, types.types[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name, "string")
+}
+
+@(test)
 structured_type_components_allow_begin_and_end_names :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_code_range,
   begin TYPE i,
