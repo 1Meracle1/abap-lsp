@@ -364,13 +364,38 @@ checker_lookup_object_member_visible :: proc(
 	name: string_interner.String,
 	range: Range = {},
 ) -> (^Entity, bool) {
-	if member, ok := checker_lookup_object_member(owner, namespace, name); ok {
-		if checker_member_visible_from_scope(ctx.scope, member) {
+	if member, ok := checker_lookup_object_member_checked(ctx, owner, namespace, name); ok {
+		if checker_member_visible_from_context(ctx, member) {
 			return member, true
 		}
 		checker_add_diagnostic(ctx, .Inaccessible_Member, range, "member is not visible", member, member.decl_info)
 	}
 	return nil, false
+}
+
+checker_member_visible_from_context :: proc(ctx: ^Checker_Context, member: ^Entity) -> bool {
+	assert(ctx != nil && ctx.scope != nil)
+	if member == nil || member.owner == nil {
+		return true
+	}
+	visibility := checker_member_visibility(member)
+	if visibility == .Public {
+		return true
+	}
+	accessor := checker_enclosing_object_owner(ctx.scope)
+	if accessor == nil {
+		return false
+	}
+	if accessor == member.owner {
+		return true
+	}
+	if visibility == .Private {
+		return checker_object_has_friend(member.owner, accessor)
+	}
+	if visibility == .Protected {
+		return checker_class_entity_is_or_inherits_from_context(ctx, accessor, member.owner.name)
+	}
+	return false
 }
 
 checker_member_visible_from_scope :: proc(scope: ^Scope, member: ^Entity) -> bool {
@@ -448,6 +473,29 @@ checker_class_entity_is_or_inherits_from :: proc(
 	if _, super, super_ok := checker_lookup_lexical_declaration_from_scope(class_entity.scope, .Type, payload.superclass_name);
 	   super_ok && super.kind == .Class {
 		return checker_class_entity_is_or_inherits_from(super, target_name, depth + 1)
+	}
+	return false
+}
+
+checker_class_entity_is_or_inherits_from_context :: proc(
+	ctx: ^Checker_Context,
+	class_entity: ^Entity,
+	target_name: string_interner.String,
+	depth := 0,
+) -> bool {
+	if depth > 32 || class_entity == nil || class_entity.kind != .Class {
+		return false
+	}
+	if class_entity.name == target_name {
+		return true
+	}
+	payload, ok := class_entity.payload.(^Entity_Object_Payload)
+	assert(ok && payload != nil)
+	if !string_interner.is_valid(payload.superclass_name) {
+		return false
+	}
+	if super, super_ok := checker_lookup_object_type_from_scope(ctx, class_entity.scope, payload.superclass_name, .Class); super_ok {
+		return checker_class_entity_is_or_inherits_from_context(ctx, super, target_name, depth + 1)
 	}
 	return false
 }

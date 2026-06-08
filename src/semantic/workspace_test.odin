@@ -290,6 +290,32 @@ workspace_test_add_external_class_method_with_param :: proc(
 	return method
 }
 
+workspace_test_add_external_class_attribute :: proc(
+	external: ^External_Semantics,
+	class: ^Entity,
+	name: string,
+	type_name: string,
+	visibility: Visibility = .Protected,
+) -> ^Entity {
+	assert(external != nil && class != nil && class.kind == .Class)
+	_, _, file, _, _ := external_semantics_ensure_compat_project(external)
+	class_payload, class_ok := class.payload.(^Entity_Object_Payload)
+	assert(class_ok && class_payload != nil && class_payload.definition_scope != nil)
+
+	attr := external_new_entity(external, .Variable)
+	attr.name = external_intern_name(external, name)
+	attr.state = .Resolved
+	attr.scope = class_payload.definition_scope
+	attr.owner = class
+	attr.source_file = file
+	attr.type = external_builtin_type(external, type_name)
+	attr.member_kind = .Attribute
+	attr.visibility = visibility
+	attr.flags += {.Has_Declared_Type}
+	_ = scope_insert_declaration(class_payload.definition_scope, attr)
+	return attr
+}
+
 @(test)
 semantic_graph_fetches_external_chain_before_rebuilding_editable_waiters :: proc(t: ^testing.T) {
 	interner := string_interner.create()
@@ -933,6 +959,55 @@ zcl_dep=>run( EXPORTING iv_value = lv_num ).`),
 	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Unknown_Named_Parameter), 0)
 	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Missing_Required_Parameter), 0)
 	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Incompatible_Argument_Type), 0)
+}
+
+@(test)
+semantic_workspace_resolves_writable_inherited_external_attributes :: proc(t: ^testing.T) {
+	interner := string_interner.create()
+	defer string_interner.destroy(interner)
+
+	external := external_semantics_make(interner)
+	defer external_semantics_destroy(&external)
+	grand := external_semantics_add_class_summary(&external, "zcl_grand")
+	object_attr := workspace_test_add_external_class_attribute(&external, grand, "inherited_object", "string")
+	document_attr := workspace_test_add_external_class_attribute(&external, grand, "inherited_document", "string")
+	parent := external_semantics_add_class_summary(&external, "zcl_parent")
+	parent_payload := parent.payload.(^Entity_Object_Payload)
+	parent_payload.superclass_name = external_intern_name(&external, "zcl_grand")
+
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", `REPORT zmain.
+CLASS lcl_writer DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS fill EXPORTING ev_object TYPE string.
+    CLASS-METHODS change CHANGING cv_document TYPE string.
+ENDCLASS.
+CLASS lcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_writer IMPLEMENTATION.
+  METHOD fill.
+  ENDMETHOD.
+  METHOD change.
+  ENDMETHOD.
+ENDCLASS.
+CLASS lcl_child IMPLEMENTATION.
+  METHOD run.
+    lcl_writer=>fill( IMPORTING ev_object = inherited_object ).
+    lcl_writer=>change( CHANGING cv_document = inherited_document ).
+  ENDMETHOD.
+ENDCLASS.`),
+	}
+
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external, interner = interner})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	checker := analysis.project_results[0].checker
+	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Incompatible_Argument_Type), 0)
+	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Inaccessible_Member), 0)
+	testing.expect(t, .Used in object_attr.flags)
+	testing.expect(t, .Used in document_attr.flags)
 }
 
 @(test)

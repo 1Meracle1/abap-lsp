@@ -377,6 +377,11 @@ checker_lookup_reference :: proc(
 	if scope, entity, ok := checker_lookup_declaration_from_scope(ctx.scope, namespace, name, excluded); ok {
 		return scope, entity, true
 	}
+	if owner := checker_enclosing_object_owner(ctx.scope); owner != nil {
+		if entity, ok := checker_lookup_object_member_visible(ctx, owner, namespace, name); ok {
+			return entity.scope, entity, true
+		}
+	}
 	if namespace == .Value {
 		if scope, entity, ok := checker_lookup_declaration_from_scope(ctx.scope, .Type, name, excluded); ok {
 			return scope, entity, true
@@ -406,6 +411,16 @@ checker_lookup_object_member :: proc(
 	return checker_lookup_object_member_internal(owner, namespace, name, 0, excluded)
 }
 
+checker_lookup_object_member_checked :: proc(
+	ctx: ^Checker_Context,
+	owner: ^Entity,
+	namespace: Namespace,
+	name: string_interner.String,
+	excluded: ^Entity = nil,
+) -> (^Entity, bool) {
+	return checker_lookup_object_member_internal(owner, namespace, name, 0, excluded, ctx)
+}
+
 checker_lookup_structure_field :: proc(
 	structure: ^Structure,
 	name: string_interner.String,
@@ -420,6 +435,7 @@ checker_lookup_object_member_internal :: proc(
 	name: string_interner.String,
 	depth: int,
 	excluded: ^Entity = nil,
+	ctx: ^Checker_Context = nil,
 ) -> (^Entity, bool) {
 	assert(owner != nil)
 	if depth > 64 {
@@ -433,16 +449,15 @@ checker_lookup_object_member_internal :: proc(
 	if entity, found := scope_lookup_declaration(payload.definition_scope, namespace, name); found && entity != excluded {
 		return entity, true
 	}
-	if entity, found := checker_lookup_object_alias_member(owner, namespace, name, depth + 1, excluded); found {
+	if entity, found := checker_lookup_object_alias_member(owner, namespace, name, depth + 1, excluded, ctx); found {
 		return entity, true
 	}
-	if entity, found := checker_lookup_implemented_interface_member(owner, namespace, name, depth + 1, excluded); found {
+	if entity, found := checker_lookup_implemented_interface_member(owner, namespace, name, depth + 1, excluded, ctx); found {
 		return entity, true
 	}
 	if string_interner.is_valid(payload.superclass_name) {
-		if _, super, super_ok := checker_lookup_lexical_declaration_from_scope(owner.scope, .Type, payload.superclass_name);
-		   super_ok && super.kind == .Class {
-			if entity, found := checker_lookup_object_member_internal(super, namespace, name, depth + 1, excluded); found {
+		if super, super_ok := checker_lookup_object_type_from_scope(ctx, owner.scope, payload.superclass_name, .Class); super_ok {
+			if entity, found := checker_lookup_object_member_internal(super, namespace, name, depth + 1, excluded, ctx); found {
 				return entity, true
 			}
 		}
@@ -456,6 +471,7 @@ checker_lookup_object_alias_member :: proc(
 	name: string_interner.String,
 	depth: int,
 	excluded: ^Entity = nil,
+	ctx: ^Checker_Context = nil,
 ) -> (^Entity, bool) {
 	payload, ok := owner.payload.(^Entity_Object_Payload)
 	assert(ok && payload != nil)
@@ -471,19 +487,15 @@ checker_lookup_object_alias_member :: proc(
 		if !string_interner.is_valid(alias_payload.target_interface_name) {
 			continue
 		}
-		_, target_interface, interface_ok := checker_lookup_lexical_declaration_from_scope(
-			owner.scope,
-			.Type,
-			alias_payload.target_interface_name,
-		)
-		if !interface_ok || target_interface.kind != .Interface {
+		target_interface, interface_ok := checker_lookup_object_type_from_scope(ctx, owner.scope, alias_payload.target_interface_name, .Interface)
+		if !interface_ok {
 			continue
 		}
 		target_name := alias_payload.target_member_name
 		if !string_interner.is_valid(target_name) {
 			target_name = name
 		}
-		if entity, found := checker_lookup_object_member_internal(target_interface, namespace, target_name, depth + 1, excluded); found {
+		if entity, found := checker_lookup_object_member_internal(target_interface, namespace, target_name, depth + 1, excluded, ctx); found {
 			return entity, true
 		}
 	}
@@ -496,6 +508,7 @@ checker_lookup_implemented_interface_member :: proc(
 	name: string_interner.String,
 	depth: int,
 	excluded: ^Entity = nil,
+	ctx: ^Checker_Context = nil,
 ) -> (^Entity, bool) {
 	payload, ok := owner.payload.(^Entity_Object_Payload)
 	assert(ok && payload != nil)
@@ -503,17 +516,36 @@ checker_lookup_implemented_interface_member :: proc(
 		if !string_interner.is_valid(interface_name) {
 			continue
 		}
-		_, interface_entity, interface_ok := checker_lookup_lexical_declaration_from_scope(
-			owner.scope,
-			.Type,
-			interface_name,
-		)
-		if !interface_ok || interface_entity.kind != .Interface {
+		interface_entity, interface_ok := checker_lookup_object_type_from_scope(ctx, owner.scope, interface_name, .Interface)
+		if !interface_ok {
 			continue
 		}
-		if entity, found := checker_lookup_object_member_internal(interface_entity, namespace, name, depth + 1, excluded); found {
+		if entity, found := checker_lookup_object_member_internal(interface_entity, namespace, name, depth + 1, excluded, ctx); found {
 			return entity, true
 		}
+	}
+	return nil, false
+}
+
+checker_lookup_object_type_from_scope :: proc(
+	ctx: ^Checker_Context,
+	scope: ^Scope,
+	name: string_interner.String,
+	kind: Entity_Kind,
+) -> (^Entity, bool) {
+	assert(kind == .Class || kind == .Interface)
+	if scope == nil || !string_interner.is_valid(name) {
+		return nil, false
+	}
+	if ctx != nil {
+		preferred := External_Candidate_Kind.Class if kind == .Class else External_Candidate_Kind.Interface
+		if entity, ok := checker_lookup_type_name_from_scope(ctx, scope, name, preferred); ok && entity.kind == kind {
+			return entity, true
+		}
+		return nil, false
+	}
+	if _, entity, ok := checker_lookup_lexical_declaration_from_scope(scope, .Type, name); ok && entity.kind == kind {
+		return entity, true
 	}
 	return nil, false
 }
