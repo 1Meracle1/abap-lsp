@@ -2108,6 +2108,9 @@ call_argument_section_starts_at :: proc(p: ^Parser, index: int) -> bool {
 	if index >= len(p.tokens) {
 		return false
 	}
+	if type_ref_selector_field_at(p, index) {
+		return false
+	}
 	if p.tokens[index].kind == .Ident && index + 1 < len(p.tokens) && p.tokens[index + 1].kind == .Eq {
 		return false
 	}

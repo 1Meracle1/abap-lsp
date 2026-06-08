@@ -513,22 +513,64 @@ checker_check_raw_operand_expr :: proc(
 	expr: ^ast.Type_Ref_Expr,
 	lhs: bool,
 ) -> Operand {
-	for decl in expr.raw_decls {
+	operand := checker_check_raw_operand_facts(ctx, expr.raw_decls[:], expr.raw_refs[:], ctx.type_hint, lhs, node)
+	return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity, lhs = lhs)
+}
+
+checker_check_raw_operand_facts :: proc(
+	ctx: ^Checker_Context,
+	raw_decls: []ast.Raw_Operand_Inline_Decl,
+	raw_refs: []ast.Raw_Operand_Ref,
+	type_hint: ^Type,
+	lhs: bool,
+	node: ^ast.Node = nil,
+) -> Operand {
+	fallback := Operand{mode = .Value, type = type_hint if type_hint != nil else project_type_unknown(ctx.project)}
+	operand := fallback
+	fact_count := 0
+	for decl in raw_decls {
 		kind := Entity_Kind.Variable if decl.kind == .Data else Entity_Kind.Field_Symbol
-		checker_collect_inferred_expr_decl(ctx, decl.name, kind, decl.range, node, ctx.type_hint)
-	}
-	for ref in expr.raw_refs {
-		namespace := Namespace.Routine if ref.call_like else Namespace.Value
-		if ref.type_base {
-			namespace = .Type
-		}
-		base := checker_check_ident_expr(ctx, node, ref.name, namespace, false)
-		for segment in ref.path {
-			member_namespace := checker_selector_member_namespace(segment.selector, namespace)
-			base = checker_lookup_selector_member(ctx, base, segment.selector, segment.name, member_namespace, node, false)
+		entity := checker_collect_inferred_expr_decl(ctx, decl.name, kind, decl.range, node, type_hint)
+		fact_count += 1
+		if fact_count == 1 && entity != nil {
+			typ := entity.type if entity.type != nil else fallback.type
+			operand = Operand{mode = .Variable, type = typ, entity = entity}
 		}
 	}
-	return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
+	for ref in raw_refs {
+		fact_count += 1
+		if fact_count == 1 {
+			operand = checker_check_raw_operand_ref(ctx, ref, lhs, node)
+		} else {
+			_ = checker_check_raw_operand_ref(ctx, ref, false, node)
+		}
+	}
+	if fact_count == 1 {
+		return operand
+	}
+	return fallback
+}
+
+checker_check_raw_operand_ref :: proc(
+	ctx: ^Checker_Context,
+	ref: ast.Raw_Operand_Ref,
+	lhs: bool,
+	node: ^ast.Node = nil,
+) -> Operand {
+	namespace := Namespace.Routine if ref.call_like else Namespace.Value
+	if ref.type_base {
+		namespace = .Type
+	}
+	base := checker_check_ident_expr(ctx, node, ref.name, namespace, lhs && len(ref.path) == 0)
+	for segment in ref.path {
+		member_namespace := checker_selector_member_namespace(segment.selector, namespace)
+		member := checker_lookup_selector_member(ctx, base, segment.selector, segment.name, member_namespace, node, lhs)
+		if member.entity == nil {
+			member.mode = .Field
+		}
+		base = member
+	}
+	return base
 }
 
 checker_check_let_expr :: proc(

@@ -1371,22 +1371,7 @@ checker_check_call_argument_value :: proc(
 		local.type_hint_expr = arg.value
 		return checker_check_expr(&local, arg.value, .Value, lhs)
 	}
-	for decl in arg.raw_decls {
-		kind := Entity_Kind.Variable if decl.kind == .Data else Entity_Kind.Field_Symbol
-		checker_collect_inferred_expr_decl(ctx, decl.name, kind, decl.range, nil, type_hint)
-	}
-	for ref in arg.raw_refs {
-		namespace := Namespace.Routine if ref.call_like else Namespace.Value
-		if ref.type_base {
-			namespace = .Type
-		}
-		base := checker_check_ident_expr(ctx, nil, ref.name, namespace, false)
-		for segment in ref.path {
-			member_namespace := checker_selector_member_namespace(segment.selector, namespace)
-			base = checker_lookup_selector_member(ctx, base, segment.selector, segment.name, member_namespace, nil, false)
-		}
-	}
-	return Operand{mode = .Value, type = type_hint if type_hint != nil else project_type_unknown(ctx.project)}
+	return checker_check_raw_operand_facts(ctx, arg.raw_decls, arg.raw_refs, type_hint, lhs)
 }
 
 checker_check_call_function_exception_message :: proc(

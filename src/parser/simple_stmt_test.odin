@@ -1208,6 +1208,32 @@ CALL METHOD lo->run
 }
 
 @(test)
+call_function_argument_values_accept_section_keyword_selectors :: proc(t: ^testing.T) {
+	source := `CALL FUNCTION 'Z_FM'
+  TABLES tables_parameter = <ls_func>-tables
+         changing_parameter = <ls_func>-changing.`
+	parsed := parse(source, "call_function_keyword_selectors.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	testing.expect_value(t, len(stmt.named_args), 2)
+	if len(stmt.named_args) != 2 {
+		return
+	}
+
+	first := stmt.named_args[0]
+	second := stmt.named_args[1]
+	testing.expect_value(t, source[first.value_range.start:first.value_range.end], "<ls_func>-tables")
+	testing.expect_value(t, source[second.value_range.start:second.value_range.end], "<ls_func>-changing")
+	testing.expect_value(t, len(first.raw_refs), 1)
+	testing.expect_value(t, len(second.raw_refs), 1)
+	testing.expect_value(t, first.raw_refs[0].name, "<ls_func>")
+	testing.expect_value(t, second.raw_refs[0].name, "<ls_func>")
+	testing.expect_value(t, first.raw_refs[0].path[0].name, "tables")
+	testing.expect_value(t, second.raw_refs[0].path[0].name, "changing")
+}
+
+@(test)
 call_function_accepts_parameter_and_exception_tables :: proc(t: ^testing.T) {
 	source := `CALL FUNCTION lv_func DESTINATION c_dest
   PARAMETER-TABLE lt_params

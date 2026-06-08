@@ -1964,6 +1964,31 @@ CALL FUNCTION 'Z_REQUIRED'
 }
 
 @(test)
+root_semantic_stmt_checker_accepts_writable_raw_selector_function_arguments :: proc(t: ^testing.T) {
+	source := `TYPES ty_texts TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+TYPES: BEGIN OF ty_function,
+         tables TYPE ty_texts,
+       END OF ty_function.
+FUNCTION z_write_tables
+  TABLES tables_parameter TYPE ty_texts.
+ENDFUNCTION.
+DATA lt_functions TYPE STANDARD TABLE OF ty_function WITH DEFAULT KEY.
+FIELD-SYMBOLS <ls_func> LIKE LINE OF lt_functions.
+LOOP AT lt_functions ASSIGNING <ls_func>.
+  CALL FUNCTION 'Z_WRITE_TABLES'
+    TABLES
+      tables_parameter = <ls_func>-tables.
+ENDLOOP.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_func_raw_selector_args.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 0)
+}
+
+@(test)
 root_semantic_stmt_checker_checks_internal_table_row_targets :: proc(t: ^testing.T) {
 	source := `TYPES ty_times TYPE STANDARD TABLE OF t WITH DEFAULT KEY.
 DATA lt_times TYPE ty_times.
