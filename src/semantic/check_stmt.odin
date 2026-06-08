@@ -1182,8 +1182,118 @@ checker_check_call_argument_with_parameter :: proc(
 	if receives {
 		checker_check_argument_compatibility(ctx, formal_type, actual.type, arg.value_range)
 	} else {
-		checker_check_argument_compatibility(ctx, actual.type, formal_type, arg.value_range)
+		if !checker_character_literal_argument_compatible(ctx, arg.value, formal_type) {
+			checker_check_argument_compatibility(ctx, actual.type, formal_type, arg.value_range)
+		}
 	}
+}
+
+checker_character_literal_argument_compatible :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, dst: ^Type) -> bool {
+	value, value_ok := checker_expr_character_literal_text(expr)
+	if !value_ok {
+		return false
+	}
+	dst_name, dst_ok := checker_type_builtin_name(ctx, dst)
+	if !dst_ok {
+		return false
+	}
+	return checker_character_literal_matches_builtin_formal(value, dst_name)
+}
+
+checker_expr_character_literal_text :: proc(expr: ^ast.Expr) -> (string, bool) {
+	if expr == nil {
+		return "", false
+	}
+	lit, ok := expr.derived_expr.(^ast.Literal_Expr)
+	if !ok || len(lit.value) < 2 {
+		return "", false
+	}
+	quote := lit.value[0]
+	if (quote == '\'' || quote == '`') && lit.value[len(lit.value) - 1] == quote {
+		return lit.value[1:len(lit.value) - 1], true
+	}
+	return "", false
+}
+
+checker_character_literal_matches_builtin_formal :: proc(value: string, dst_name: string) -> bool {
+	switch dst_name {
+	case "c", "string", "clike", "csequence":
+		return true
+	case "d":
+		return len(value) == 8
+	case "t":
+		return len(value) == 6
+	case "n":
+		return checker_text_literal_digits(value)
+	case "i", "int1", "int2", "int4", "int8":
+		return checker_text_literal_integer(value)
+	case "p", "f", "decfloat", "decfloat16", "decfloat34", "numeric":
+		return checker_text_literal_decimal(value)
+	case "x", "xstring", "xsequence":
+		return checker_text_literal_hex(value)
+	}
+	return false
+}
+
+checker_text_literal_digits :: proc(value: string) -> bool {
+	if value == "" {
+		return false
+	}
+	for i in 0 ..< len(value) {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+checker_text_literal_integer :: proc(value: string) -> bool {
+	trimmed := strings.trim_space(value)
+	if trimmed == "" {
+		return false
+	}
+	digits := trimmed
+	if trimmed[0] == '+' || trimmed[0] == '-' {
+		digits = trimmed[1:]
+	}
+	return checker_text_literal_digits(digits)
+}
+
+checker_text_literal_decimal :: proc(value: string) -> bool {
+	trimmed := strings.trim_space(value)
+	if trimmed == "" {
+		return false
+	}
+	digits := trimmed
+	if trimmed[0] == '+' || trimmed[0] == '-' {
+		digits = trimmed[1:]
+	}
+	seen_digit := false
+	seen_decimal := false
+	for i in 0 ..< len(digits) {
+		ch := digits[i]
+		if '0' <= ch && ch <= '9' {
+			seen_digit = true
+		} else if ch == '.' && !seen_decimal {
+			seen_decimal = true
+		} else {
+			return false
+		}
+	}
+	return seen_digit
+}
+
+checker_text_literal_hex :: proc(value: string) -> bool {
+	if value == "" {
+		return false
+	}
+	for i in 0 ..< len(value) {
+		ch := value[i]
+		if !('0' <= ch && ch <= '9' || 'A' <= ch && ch <= 'F' || 'a' <= ch && ch <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 checker_check_call_argument_value :: proc(

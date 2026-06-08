@@ -698,6 +698,8 @@ checker_binary_result_type :: proc(
 	     .Like,
 	     .Not_Like:
 		return checker_builtin_type_from_name(ctx.checker, "abap_bool")
+	case .Concatenate:
+		return checker_builtin_type_from_name(ctx.checker, "string")
 	}
 	if !checker_type_is_unknown(left.type) {
 		return left.type

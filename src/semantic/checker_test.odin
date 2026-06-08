@@ -1875,6 +1875,7 @@ CLASS lcl_demo IMPLEMENTATION.
 ENDCLASS.
 DATA lv_text TYPE string.
 lcl_demo=>run( lv_text ).
+lcl_demo=>run( 'abc' ).
 lcl_demo=>run( ).`
 
 	project := project_make()
@@ -1882,7 +1883,7 @@ lcl_demo=>run( ).`
 
 	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_method_args.abap")
 
-	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 2)
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Required_Parameter), 1)
 	missing_message_found := false
 	for diagnostic in checker.info.diagnostics {
@@ -1892,6 +1893,32 @@ lcl_demo=>run( ).`
 		}
 	}
 	testing.expect(t, missing_message_found)
+}
+
+@(test)
+root_semantic_stmt_checker_accepts_string_expression_and_text_literal_arguments :: proc(t: ^testing.T) {
+	source := `TYPES enddatum TYPE d.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS set_value IMPORTING iv_value TYPE string.
+    CLASS-METHODS read_date IMPORTING endda TYPE enddatum.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD set_value.
+  ENDMETHOD.
+  METHOD read_date.
+  ENDMETHOD.
+ENDCLASS.
+lcl_demo=>set_value( sy-datum(4) && '-' && sy-datum+4(2) && '-' && sy-datum+6(2) ).
+lcl_demo=>set_value( sy-uzeit(2) && ':' && sy-uzeit+2(2) && ':' && sy-uzeit+4(2) ).
+lcl_demo=>read_date( endda = '99991231' ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_arg_conversions.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 0)
 }
 
 @(test)
