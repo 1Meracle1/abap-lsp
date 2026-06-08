@@ -1397,6 +1397,51 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_oop_checker_types_me_in_implicit_interface_method_implementation :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_log.
+  METHODS merge_with
+    IMPORTING ii_log TYPE REF TO lif_log
+    RETURNING VALUE(ri_log) TYPE REF TO lif_log.
+ENDINTERFACE.
+CLASS lcl_log DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_log.
+ENDCLASS.
+CLASS lcl_log IMPLEMENTATION.
+  METHOD lif_log~merge_with.
+    ri_log = me.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://oop_implicit_interface_me.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Context), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 0)
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_log", .Class)
+	testing.expect(t, class != nil)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	method := checker_test_lookup(t, &project, class_payload.definition_scope, .Routine, "lif_log~merge_with", .Method)
+	method_payload := method.payload.(^Entity_Routine_Payload)
+	ri_log := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "ri_log", .Parameter)
+	ii_log := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "ii_log", .Parameter)
+	me := checker_test_lookup(t, &project, method_payload.body_scope, .Value, "me", .Parameter)
+	testing.expect(t, method.owner == class)
+	testing.expect(t, method_payload.has_implementation)
+	testing.expect_value(t, len(method_payload.parameters), 2)
+	testing.expect(t, checker_type_object_entity(ri_log.type) != nil)
+	testing.expect(t, checker_type_object_entity(ii_log.type) != nil)
+	testing.expect(t, checker_type_object_entity(me.type) == class)
+	testing.expect(t, .Used in ri_log.flags)
+	testing.expect(t, .Used in me.flags)
+}
+
+@(test)
 root_semantic_oop_checker_enforces_visibility_and_friends :: proc(t: ^testing.T) {
 	source := `CLASS lcl_target DEFINITION FRIENDS lcl_friend.
   PRIVATE SECTION.
@@ -1800,6 +1845,14 @@ lcl_demo=>run( ).`
 
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 1)
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Required_Parameter), 1)
+	missing_message_found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Missing_Required_Parameter {
+			missing_message_found = true
+			testing.expect_value(t, diagnostic.message, "missing required parameter 'iv_index'")
+		}
+	}
+	testing.expect(t, missing_message_found)
 }
 
 @(test)

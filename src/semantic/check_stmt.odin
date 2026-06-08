@@ -1234,8 +1234,26 @@ checker_check_missing_required_parameters :: proc(
 		if checker_parameter_supplied(supplied, param) || !checker_parameter_required_for_call(routine, param) {
 			continue
 		}
-		checker_add_diagnostic(ctx, .Missing_Required_Parameter, range, "missing required parameter", param, param.decl_info)
+		checker_add_diagnostic(
+			ctx,
+			.Missing_Required_Parameter,
+			range,
+			checker_missing_required_parameter_message(ctx, param),
+			param,
+			param.decl_info,
+		)
 	}
+}
+
+checker_missing_required_parameter_message :: proc(ctx: ^Checker_Context, param: ^Entity) -> string {
+	if param == nil || !string_interner.is_valid(param.name) {
+		return "missing required parameter"
+	}
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "missing required parameter '")
+	strings.write_string(&builder, string_interner.load(ctx.project.interner, param.name))
+	strings.write_string(&builder, "'")
+	return strings.to_string(builder)
 }
 
 checker_call_find_named_parameter :: proc(

@@ -1090,6 +1090,9 @@ checker_collect_method_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Method_Dec
 	entity := checker_find_routine_entity_in_scope(ctx, name, .Method)
 	if entity == nil {
 		entity = checker_collect_routine_decl(ctx, name, .Method, decl.range, decl.header_range, decl.header_text, &decl.node.stmt_base)
+		if owner := checker_enclosing_object_owner(ctx.scope); owner != nil {
+			checker_note_member_owner(entity, owner, .Method)
+		}
 	} else {
 		checker_attach_routine_body_decl(ctx, entity, decl.range, decl.header_range, decl.header_text, &decl.node.stmt_base)
 	}
