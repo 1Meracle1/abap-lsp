@@ -40,6 +40,11 @@ Source_Cache_Entry :: struct {
 	source: string,
 }
 
+Analyze_Diagnostic_Output :: struct {
+	diagnostic:    semantic.Checker_Diagnostic,
+	fallback_path: string,
+}
+
 Tree_State :: struct {
 	index: int,
 }
@@ -467,23 +472,55 @@ print_analyze_diagnostics :: proc(
 		return false
 	}
 	source_cache := make([dynamic]Source_Cache_Entry, 0, 16, context.temp_allocator)
+	diagnostics := make([dynamic]Analyze_Diagnostic_Output, 0, 16, context.temp_allocator)
 	for project_result in analysis.project_results {
-		if project_result.checker == nil {
+		if project_result.project == nil || project_result.checker == nil {
 			continue
 		}
-		for diagnostic in project_result.checker.info.diagnostics {
-			if print_semantic_diagnostic(
-				diagnostic,
-				project_result.root_path,
-				warnings_as_errors,
-				use_color,
-				&source_cache,
-			) {
-				had_error = true
-			}
+		query := semantic.semantic_query(project_result.project, project_result.checker)
+		project_diagnostics := semantic.semantic_diagnostic_copies(
+			semantic.semantic_query_diagnostics(query),
+			context.temp_allocator,
+		)
+		for diagnostic in project_diagnostics {
+			append(
+				&diagnostics,
+				Analyze_Diagnostic_Output {
+					diagnostic    = diagnostic,
+					fallback_path = project_result.root_path,
+				},
+			)
+		}
+	}
+	slice.sort_by(diagnostics[:], analyze_diagnostic_output_less)
+	for item in diagnostics {
+		if print_semantic_diagnostic(
+			item.diagnostic,
+			item.fallback_path,
+			warnings_as_errors,
+			use_color,
+			&source_cache,
+		) {
+			had_error = true
 		}
 	}
 	return had_error
+}
+
+analyze_diagnostic_output_less :: proc(left, right: Analyze_Diagnostic_Output) -> bool {
+	return semantic.semantic_diagnostic_less_with_paths(
+		left.diagnostic,
+		analyze_diagnostic_output_path(left),
+		right.diagnostic,
+		analyze_diagnostic_output_path(right),
+	)
+}
+
+analyze_diagnostic_output_path :: proc(item: Analyze_Diagnostic_Output) -> string {
+	if item.diagnostic.file != nil && item.diagnostic.file.path != "" {
+		return item.diagnostic.file.path
+	}
+	return item.fallback_path
 }
 
 print_semantic_diagnostic :: proc(

@@ -4,6 +4,7 @@ import "src:ast"
 import string_interner "src:string_interner"
 
 import "core:mem"
+import "core:slice"
 import "core:strings"
 
 Semantic_Query :: struct {
@@ -275,17 +276,20 @@ semantic_ref_resolving_to_entity :: proc(
 semantic_fact_expression_info_at_offset :: proc(
 	q: Semantic_Fact_Query,
 	offset: int,
-) -> (Semantic_Expression_Info, bool) {
+) -> (
+	Semantic_Expression_Info,
+	bool,
+) {
 	record, kind, ok := semantic_fact_expr_record_at_offset(q, offset)
 	if !ok {
 		return {}, false
 	}
 	return Semantic_Expression_Info {
-			node  = record.node,
-			kind  = kind,
+			node = record.node,
+			kind = kind,
 			scope = semantic_fact_scope_for_node(q, record.node),
 			range = record.node.range if record.node != nil else Range{},
-			info  = record.info,
+			info = record.info,
 		},
 		true
 }
@@ -293,7 +297,10 @@ semantic_fact_expression_info_at_offset :: proc(
 semantic_fact_operand_info_at_offset :: proc(
 	q: Semantic_Fact_Query,
 	offset: int,
-) -> (Checker_Expr_Info, bool) {
+) -> (
+	Checker_Expr_Info,
+	bool,
+) {
 	record, _, ok := semantic_fact_expr_record_at_offset(q, offset)
 	if !ok {
 		return {}, false
@@ -329,7 +336,46 @@ semantic_diagnostic_copies :: proc(
 		}
 		append(&out, diagnostic)
 	}
+	slice.sort_by(out[:], semantic_diagnostic_less)
 	return out
+}
+
+semantic_diagnostic_less :: proc(left, right: Checker_Diagnostic) -> bool {
+	left_path := ""
+	if left.file != nil {
+		left_path = left.file.path
+	}
+	right_path := ""
+	if right.file != nil {
+		right_path = right.file.path
+	}
+
+	return semantic_diagnostic_less_with_paths(left, left_path, right, right_path)
+}
+
+semantic_diagnostic_less_with_paths :: proc(
+	left: Checker_Diagnostic,
+	left_path: string,
+	right: Checker_Diagnostic,
+	right_path: string,
+) -> bool {
+	path_cmp := strings.compare(left_path, right_path)
+	if path_cmp != 0 {
+		return path_cmp < 0
+	}
+	if left.range.start != right.range.start {
+		return left.range.start < right.range.start
+	}
+	if left.range.end != right.range.end {
+		return left.range.end < right.range.end
+	}
+	if left.severity != right.severity {
+		return int(left.severity) < int(right.severity)
+	}
+	if left.kind != right.kind {
+		return int(left.kind) < int(right.kind)
+	}
+	return strings.compare(left.message, right.message) < 0
 }
 
 semantic_completion_items_at_offset :: proc(
@@ -344,7 +390,8 @@ semantic_completion_items_at_offset :: proc(
 
 	scope := semantic_query_scope_at_offset(q.project, q.file, offset)
 	for current := scope; current != nil; current = current.parent {
-		source := Semantic_Completion_Item_Source.Builtin_Scope if current.kind == .Builtin else Semantic_Completion_Item_Source.Lexical_Scope
+		source :=
+			Semantic_Completion_Item_Source.Builtin_Scope if current.kind == .Builtin else Semantic_Completion_Item_Source.Lexical_Scope
 		semantic_completion_append_scope_entities(
 			q.project,
 			current,
@@ -396,7 +443,11 @@ semantic_query_scope_at_offset_walk :: proc(
 semantic_fact_expr_record_at_offset :: proc(
 	q: Semantic_Fact_Query,
 	offset: int,
-) -> (^Checker_Expr_Record, Semantic_Expression_Info_Kind, bool) {
+) -> (
+	^Checker_Expr_Record,
+	Semantic_Expression_Info_Kind,
+	bool,
+) {
 	best := -1
 	best_kind := Semantic_Expression_Info_Kind.Reference
 	best_priority := 0
@@ -411,7 +462,9 @@ semantic_fact_expr_record_at_offset :: proc(
 		kind := semantic_expression_info_kind_from_node(record.node)
 		priority := semantic_expression_info_priority(kind)
 		width := semantic_range_width(record.node.range)
-		if best < 0 || priority < best_priority || (priority == best_priority && width < best_width) {
+		if best < 0 ||
+		   priority < best_priority ||
+		   (priority == best_priority && width < best_width) {
 			best = i
 			best_kind = kind
 			best_priority = priority
@@ -441,13 +494,9 @@ semantic_expression_info_kind_from_node :: proc(node: ^ast.Node) -> Semantic_Exp
 		return .Reference
 	}
 	#partial switch _ in node.derived {
-	case ^ast.Call_Expr,
-	     ^ast.Dynamic_Call_Method_Target_Expr,
-	     ^ast.Ole_Call_Method_Target_Expr:
+	case ^ast.Call_Expr, ^ast.Dynamic_Call_Method_Target_Expr, ^ast.Ole_Call_Method_Target_Expr:
 		return .Call_Result
-	case ^ast.Selector_Expr,
-	     ^ast.Interface_Qualified_Selector_Expr,
-	     ^ast.Sql_Column_Expr:
+	case ^ast.Selector_Expr, ^ast.Interface_Qualified_Selector_Expr, ^ast.Sql_Column_Expr:
 		return .Selector
 	case:
 	}
@@ -493,7 +542,10 @@ semantic_query_use_matches_file :: proc(use: Checker_Entity_Use, file: ^Project_
 	return file == nil || use.file == file
 }
 
-semantic_query_record_matches_file :: proc(record: Checker_Expr_Record, file: ^Project_File) -> bool {
+semantic_query_record_matches_file :: proc(
+	record: Checker_Expr_Record,
+	file: ^Project_File,
+) -> bool {
 	return file == nil || record.file == file
 }
 
@@ -522,7 +574,10 @@ semantic_completion_append_entity :: proc(
 		return
 	}
 	if prefix != "" {
-		name := strings.to_lower(string_interner.load(project.interner, entity.name), context.temp_allocator)
+		name := strings.to_lower(
+			string_interner.load(project.interner, entity.name),
+			context.temp_allocator,
+		)
 		if !strings.has_prefix(name, prefix) {
 			return
 		}
@@ -544,11 +599,11 @@ semantic_completion_append_entity :: proc(
 		append(
 			out,
 			Semantic_Completion_Item {
-				name      = entity.name,
+				name = entity.name,
 				namespace = namespace,
-				entity    = entity,
-				source    = source,
-				range     = entity.name_range,
+				entity = entity,
+				source = source,
+				range = entity.name_range,
 			},
 		)
 	}

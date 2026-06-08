@@ -2244,6 +2244,53 @@ DATA lv_dup TYPE i.`
 }
 
 @(test)
+root_semantic_query_orders_diagnostics_by_file_and_range :: proc(t: ^testing.T) {
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker := checker_make(&project)
+	file_b := checker_add_file(&checker, "mem://b.abap")
+	file_a := checker_add_file(&checker, "mem://a.abap")
+	append(
+		&checker.info.diagnostics,
+		Checker_Diagnostic {
+			kind  = .Duplicate_Declaration,
+			range = Range{start = 20, end = 21},
+			file  = file_b,
+		},
+	)
+	append(
+		&checker.info.diagnostics,
+		Checker_Diagnostic {
+			kind  = .Shadowed_Declaration,
+			range = Range{start = 10, end = 11},
+			file  = file_a,
+		},
+	)
+	append(
+		&checker.info.diagnostics,
+		Checker_Diagnostic {
+			kind  = .Declaration_Cycle,
+			range = Range{start = 5, end = 6},
+			file  = file_b,
+		},
+	)
+
+	query := semantic_query(&project, &checker)
+	diagnostics := semantic_diagnostic_copies(semantic_query_diagnostics(query), context.allocator)
+
+	testing.expect_value(t, len(diagnostics), 3)
+	if len(diagnostics) == 3 {
+		testing.expect(t, diagnostics[0].file == file_a)
+		testing.expect_value(t, diagnostics[0].range.start, 10)
+		testing.expect(t, diagnostics[1].file == file_b)
+		testing.expect_value(t, diagnostics[1].range.start, 5)
+		testing.expect(t, diagnostics[2].file == file_b)
+		testing.expect_value(t, diagnostics[2].range.start, 20)
+	}
+}
+
+@(test)
 root_semantic_query_completion_reads_lexical_scope_chain :: proc(t: ^testing.T) {
 	source := `DATA gv_global TYPE string.
 FORM run.
