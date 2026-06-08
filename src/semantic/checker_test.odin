@@ -550,6 +550,42 @@ TYPES: BEGIN OF ty_wrap,
 }
 
 @(test)
+root_semantic_type_checker_handles_split_structured_include_members :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF etobj_key,
+         key TYPE string,
+       END OF etobj_key.
+TYPES:
+  BEGIN OF ty_bus_msg.
+  INCLUDE TYPE etobj_key.
+TYPES:
+  bus_msg_no TYPE c LENGTH 1,
+  arbgb TYPE string,
+  END OF ty_bus_msg,
+  ty_bus_msgs TYPE STANDARD TABLE OF ty_bus_msg.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://split_structured_include.abap")
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Declaration_Cycle), 0)
+
+	bus_msg := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_bus_msg", .Type_Def)
+	testing.expect(t, bus_msg != nil)
+	if bus_msg == nil {
+		return
+	}
+	structure := checker_type_structure(bus_msg.type)
+	testing.expect(t, structure != nil)
+	if structure == nil {
+		return
+	}
+	testing.expect_value(t, len(structure.fields), 3)
+	testing.expect_value(t, string_interner.load(project.interner, structure.fields[0].name), "key")
+	testing.expect_value(t, string_interner.load(project.interner, structure.fields[1].name), "bus_msg_no")
+	testing.expect_value(t, string_interner.load(project.interner, structure.fields[2].name), "arbgb")
+}
+
+@(test)
 root_semantic_type_checker_resolves_structured_components_named_begin_and_end :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_code_range,
          begin TYPE i,

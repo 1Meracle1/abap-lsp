@@ -197,6 +197,13 @@ parse_types_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if open_groups > 0 && at_keyword(p, "END") && at_keyword_index(p, p.index + 1, "OF") {
 				continue
 			}
+			if open_groups > 0 && types_structured_period_continues(p) {
+				expect_token(p, .Period)
+				if allow_keyword(p, "TYPES") {
+					allow_token(p, .Colon)
+				}
+				continue
+			}
 			break
 		}
 	}
@@ -204,6 +211,20 @@ parse_types_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	assign_decl_depths(&stmt.types)
 	stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
 	return stmt
+}
+
+types_structured_period_continues :: proc(p: ^Parser) -> bool {
+	if current_token(p).kind != .Period {
+		return false
+	}
+	index := p.index + 1
+	return(
+		at_keyword_index(p, index, "TYPES") ||
+		(at_keyword_index(p, index, "INCLUDE") &&
+				(at_keyword_index(p, index + 1, "TYPE") ||
+				 at_keyword_index(p, index + 1, "STRUCTURE"))) ||
+		(at_keyword_index(p, index, "END") && at_keyword_index(p, index + 1, "OF")) \
+	)
 }
 
 parse_constants_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

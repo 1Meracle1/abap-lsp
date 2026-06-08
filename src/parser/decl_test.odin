@@ -255,6 +255,36 @@ END OF dd03p.`
 }
 
 @(test)
+types_structured_declaration_continues_across_include_periods :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_bus_msg.
+  INCLUDE TYPE etobj_key.
+TYPES:
+  bus_msg_no TYPE c LENGTH 1,
+  arbgb TYPE arbgb,
+  END OF ty_bus_msg,
+  ty_bus_msgs TYPE STANDARD TABLE OF ty_bus_msg.`
+	parsed := parse(source, "split_type_structure.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 1)
+	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	testing.expect_value(t, len(types.types), 6)
+	testing.expect_value(t, types.types[0].kind, ast.Decl_Clause_Kind.Begin_Group)
+	testing.expect_value(t, types.types[0].name, "ty_bus_msg")
+	testing.expect_value(t, types.types[1].kind, ast.Decl_Clause_Kind.Include_Type)
+	testing.expect_value(t, types.types[1].depth, 1)
+	testing.expect_value(t, types.types[2].name, "bus_msg_no")
+	testing.expect_value(t, types.types[2].depth, 1)
+	testing.expect_value(t, types.types[4].kind, ast.Decl_Clause_Kind.End_Group)
+	testing.expect_value(t, types.types[4].depth, 0)
+	testing.expect_value(t, types.types[5].name, "ty_bus_msgs")
+	testing.expect_value(t, types.types[5].depth, 0)
+	table_ref := types.types[5].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, table_ref.name, "ty_bus_msg")
+}
+
+@(test)
 data_common_part_delimiters_mark_ast_fact :: proc(t: ^testing.T) {
 	source := `DATA: BEGIN OF COMMON PART fm06lcbe.
 DATA: END OF COMMON PART.
