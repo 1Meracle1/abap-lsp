@@ -20,8 +20,7 @@ ENDDO.
     (qualified_name
       (identifier))
     (keyword)
-    (qualified_name
-      (identifier))
+    (keyword)
     (keyword)
     (qualified_name
       (identifier)))
@@ -71,6 +70,9 @@ ABAP additions highlight as keywords
 
 SELECTION-SCREEN BEGIN OF BLOCK b01 WITH FRAME TITLE TEXT-001.
 PARAMETERS p_dfrom TYPE sy-datum OBLIGATORY.
+PARAMETERS p_dialog RADIOBUTTON GROUP r01.
+DATA lv_code TYPE c LENGTH 10.
+SELECTION-SCREEN END OF BLOCK b01.
 IF p_dto IS INITIAL.
 ENDIF.
 IF p_dto IS NOT INITIAL.
@@ -105,6 +107,30 @@ ENDCLASS.
         (identifier))
       (identifier))
     (keyword))
+  (parameters_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (data_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (number))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
   (if_statement
     (keyword)
     (binary_expression

@@ -246,6 +246,10 @@ const STATEMENT_TAIL_KEYWORDS = [
   "FRAME",
   "TITLE",
   "OBLIGATORY",
+  "RADIOBUTTON",
+  "RANGE",
+  "LENGTH",
+  "END",
   "FINAL",
   "FUNCTION",
   "VIA",
@@ -724,10 +728,10 @@ module.exports = grammar({
     _submit_tail_token: ($) =>
       choice(
         $.string_template,
+        keywordChoice($, STATEMENT_TAIL_KEYWORDS),
         $.qualified_name,
         $._literal,
         keywordChoice($, EXPRESSION_KEYWORDS),
-        keywordChoice($, STATEMENT_TAIL_KEYWORDS),
         $.operator,
         $.punctuation,
       ),
@@ -758,8 +762,8 @@ module.exports = grammar({
 
     _tail_token: ($) =>
       choice(
-        $._raw_token,
         keywordChoice($, STATEMENT_TAIL_KEYWORDS),
+        $._raw_token,
       ),
 
     _raw_token: ($) =>

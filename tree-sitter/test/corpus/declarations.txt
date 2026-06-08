@@ -39,8 +39,7 @@ SELECT-OPTIONS s_id FOR ls_row-id.
     (qualified_name
       (identifier))
     (punctuation)
-    (qualified_name
-      (identifier))
+    (keyword)
     (keyword)
     (qualified_name
       (identifier)))
