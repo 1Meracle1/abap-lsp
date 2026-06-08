@@ -31,7 +31,7 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 	case ^ast.Data_Chained_Decl:
 		checker_collect_data_chained_decl(ctx, n)
 	case ^ast.Data_Inline_Decl:
-		_ = checker_collect_variable_decl(ctx, ctx.scope, n.name, .Variable, n.range, &n.node.decl_base.stmt_base, nil, nil)
+		_ = checker_collect_variable_decl(ctx, ctx.scope, n.name, .Variable, n.name_range, &n.node.decl_base.stmt_base, nil, nil)
 	case ^ast.Types_Decl:
 		checker_collect_types_decl(ctx, n)
 	case ^ast.Constants_Decl:
@@ -53,7 +53,7 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 	case ^ast.Class_Data_Decl:
 		checker_collect_class_data_decl(ctx, n)
 	case ^ast.Function_Pool_Decl:
-		checker_collect_report_decl(ctx, n.name, n.range, &n.node.decl_base.stmt_base)
+		checker_collect_report_decl(ctx, n.name, n.name_range, &n.node.decl_base.stmt_base)
 	case ^ast.Include_Stmt:
 		checker_collect_include_stmt(ctx, n)
 	case ^ast.Report_Stmt:
@@ -124,7 +124,7 @@ checker_collect_data_decl :: proc(
 			ctx.scope,
 			decl.name,
 			.Variable,
-			decl.range,
+			decl.name_range,
 			&decl.node.decl_base.stmt_base,
 			decl.type_clause,
 			decl.value_clause,
@@ -143,6 +143,7 @@ checker_collect_data_decl :: proc(
 		decl.kind,
 		decl.flags,
 		decl.name,
+		decl.name_range,
 		decl.range,
 		&decl.node.decl_base.stmt_base,
 		decl.type_clause,
@@ -172,6 +173,7 @@ checker_collect_data_chained_decl :: proc(
 			clause.kind,
 			clause.flags,
 			clause.name,
+			clause.name_range,
 			decl.range,
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
@@ -202,6 +204,7 @@ checker_collect_constants_decl :: proc(
 			clause.kind,
 			clause.flags,
 			clause.name,
+			clause.name_range,
 			decl.range,
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
@@ -231,6 +234,7 @@ checker_collect_statics_decl :: proc(
 			clause.kind,
 			clause.flags,
 			clause.name,
+			clause.name_range,
 			decl.range,
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
@@ -261,6 +265,7 @@ checker_collect_class_data_decl :: proc(
 			clause.kind,
 			clause.flags,
 			clause.name,
+			clause.name_range,
 			decl.range,
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
@@ -284,6 +289,7 @@ checker_collect_data_branch :: proc(
 	kind: ast.Decl_Clause_Kind,
 	flags: ast.Decl_Clause_Flags,
 	name: string,
+	name_range: Range,
 	range: Range,
 	node: ^ast.Node,
 	type_clause: ^ast.Data_Type_Clause,
@@ -306,9 +312,9 @@ checker_collect_data_branch :: proc(
 		entity: ^Entity
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name, range, node, type_clause, value_clause, occurs)
+			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name, name_range, node, type_clause, value_clause, occurs)
 		} else {
-			entity = checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, range, node, type_clause, value_clause, occurs = occurs)
+			entity = checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, name_range, node, type_clause, value_clause, occurs = occurs)
 			checker_note_variable_decl_flags(entity, read_only = read_only)
 			checker_note_member_owner(entity, owner, .Attribute, visibility)
 		}
@@ -325,9 +331,9 @@ checker_collect_data_branch :: proc(
 	case .Normal:
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name, range, node, type_clause, value_clause, occurs)
+			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name, name_range, node, type_clause, value_clause, occurs)
 		}
-		entity := checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, range, node, type_clause, value_clause, occurs = occurs)
+		entity := checker_collect_variable_decl(ctx, ctx.scope, name, entity_kind, name_range, node, type_clause, value_clause, occurs = occurs)
 		checker_note_variable_decl_flags(entity, read_only = read_only)
 		checker_note_member_owner(entity, owner, .Attribute, visibility)
 		return entity
@@ -361,7 +367,7 @@ checker_collect_types_decl :: proc(
 ) {
 	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
 	for clause in decl.types {
-		checker_collect_type_clause(ctx, &frames, clause, decl.range, &decl.node.decl_base.stmt_base, owner, visibility)
+		checker_collect_type_clause(ctx, &frames, clause, clause.name_range, decl.range, &decl.node.decl_base.stmt_base, owner, visibility)
 	}
 }
 
@@ -369,6 +375,7 @@ checker_collect_type_clause :: proc(
 	ctx: ^Checker_Context,
 	frames: ^[dynamic]Decl_Structure_Frame,
 	clause: ast.Types_Clause,
+	name_range: Range,
 	range: Range,
 	node: ^ast.Node,
 	owner: ^Entity = nil,
@@ -383,9 +390,9 @@ checker_collect_type_clause :: proc(
 		entity: ^Entity
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, range, node, clause.type_clause, nil, clause.occurs)
+			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, name_range, node, clause.type_clause, nil, clause.occurs)
 		} else {
-			entity = checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause, clause.occurs)
+			entity = checker_collect_type_decl(ctx, ctx.scope, clause.name, name_range, node, clause.type_clause, clause.occurs)
 			checker_note_member_owner(entity, owner, .None, visibility)
 		}
 		if entity == nil {
@@ -401,9 +408,9 @@ checker_collect_type_clause :: proc(
 	case .Normal:
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, range, node, clause.type_clause, nil, clause.occurs)
+			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name, name_range, node, clause.type_clause, nil, clause.occurs)
 		}
-		entity := checker_collect_type_decl(ctx, ctx.scope, clause.name, range, node, clause.type_clause, clause.occurs)
+		entity := checker_collect_type_decl(ctx, ctx.scope, clause.name, name_range, node, clause.type_clause, clause.occurs)
 		checker_note_member_owner(entity, owner, .None, visibility)
 		return entity
 	case .Include_Type, .Include_Structure:
@@ -636,7 +643,7 @@ checker_collect_field_symbols_decl :: proc(
 			ctx.scope,
 			clause.name,
 			.Field_Symbol,
-			decl.range,
+			clause.name_range,
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
 			nil,
@@ -652,7 +659,7 @@ checker_collect_tables_decl :: proc(
 	visibility: Visibility = .Public,
 ) {
 	for clause in decl.tables {
-		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, decl.range, &decl.node.decl_base.stmt_base, nil, nil)
+		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, clause.name_range, &decl.node.decl_base.stmt_base, nil, nil)
 		checker_note_variable_decl_flags(entity, has_type = clause.name != "")
 		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
@@ -665,13 +672,13 @@ checker_collect_ranges_decl :: proc(
 	visibility: Visibility = .Public,
 ) {
 	for clause in decl.ranges {
-		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, decl.range, &decl.node.decl_base.stmt_base, nil, nil)
+		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, clause.name_range, &decl.node.decl_base.stmt_base, nil, nil)
 		if entity != nil {
 			structure, scope := checker_attach_structure_to_entity(ctx, entity, decl.range)
-			checker_collect_range_component(ctx, structure, scope, entity, "sign", decl.range, &decl.node.decl_base.stmt_base)
-			checker_collect_range_component(ctx, structure, scope, entity, "option", decl.range, &decl.node.decl_base.stmt_base)
-			checker_collect_range_component(ctx, structure, scope, entity, "low", decl.range, &decl.node.decl_base.stmt_base)
-			checker_collect_range_component(ctx, structure, scope, entity, "high", decl.range, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "sign", Range{}, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "option", Range{}, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "low", Range{}, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "high", Range{}, &decl.node.decl_base.stmt_base)
 		}
 		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
@@ -684,13 +691,13 @@ checker_collect_select_options_decl :: proc(
 	visibility: Visibility = .Public,
 ) {
 	for clause in decl.options {
-		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, decl.range, &decl.node.decl_base.stmt_base, nil, nil, clause.default_clause)
+		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name, .Variable, clause.name_range, &decl.node.decl_base.stmt_base, nil, nil, clause.default_clause)
 		if entity != nil {
 			structure, scope := checker_attach_structure_to_entity(ctx, entity, decl.range)
-			checker_collect_range_component(ctx, structure, scope, entity, "sign", decl.range, &decl.node.decl_base.stmt_base)
-			checker_collect_range_component(ctx, structure, scope, entity, "option", decl.range, &decl.node.decl_base.stmt_base)
-			checker_collect_range_component(ctx, structure, scope, entity, "low", decl.range, &decl.node.decl_base.stmt_base)
-			checker_collect_range_component(ctx, structure, scope, entity, "high", decl.range, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "sign", Range{}, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "option", Range{}, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "low", Range{}, &decl.node.decl_base.stmt_base)
+			checker_collect_range_component(ctx, structure, scope, entity, "high", Range{}, &decl.node.decl_base.stmt_base)
 		}
 		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
@@ -720,7 +727,7 @@ checker_collect_parameters_decl :: proc(
 			ctx.scope,
 			clause.name,
 			.Variable,
-			decl.range,
+			clause.name_range,
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
 			nil,
@@ -746,7 +753,7 @@ checker_collect_controls_decl :: proc(
 			ctx.scope,
 			clause.name,
 			.Control,
-			decl.range,
+			clause.name_range,
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
 			nil,

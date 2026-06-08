@@ -122,6 +122,7 @@ parse_data_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.kind = branch.kind
 	stmt.flags = branch.flags
 	stmt.name = branch.name
+	stmt.name_range = branch.name_range
 	stmt.paren_length = branch.paren_length
 	stmt.length_clauses = branch.length_clauses
 	stmt.type_clause = branch.type_clause
@@ -138,6 +139,7 @@ parse_data_inline_decl_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 	expect_token(p, .LParen)
 	name := expect_token(p, .Ident)
 	if name.kind == .Ident {
+		name.range = parser_token_name_range(p, name)
 		validate_abap_name_length(p, name)
 	}
 	close := expect_token(p, .RParen)
@@ -171,6 +173,7 @@ parse_data_inline_decl_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 		p.allocator,
 	)
 	stmt.name = parser_intern_token_name(p, name)
+	stmt.name_range = name.range
 	stmt.expr = value
 	return stmt
 }
@@ -456,6 +459,7 @@ parse_function_pool_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return nil
 	}
 	stmt.name = parser_intern_token_name(p, name)
+	stmt.name_range = name.range
 	for !decl_clause_boundary(p) {
 		if at_keyword_phrase(p, "MESSAGE-ID") {
 			expect_keyword_phrase(p, "MESSAGE-ID")
@@ -487,13 +491,14 @@ assign_decl_depths :: proc(list: ^[dynamic]$T) {
 }
 
 parse_data_decl_clause :: proc(p: ^Parser) -> (ast.Data_Chained_Branch, bool) {
-	kind, is_common_part_delimiter, name, include_ref, name_index, ok := parse_decl_clause_head(p)
+	kind, is_common_part_delimiter, name, name_range, include_ref, name_index, ok := parse_decl_clause_head(p)
 	if !ok {
 		return ast.Data_Chained_Branch{}, false
 	}
 	clause := ast.Data_Chained_Branch {
 		kind           = kind,
 		name           = name,
+		name_range     = name_range,
 		include_ref    = include_ref,
 		length_clauses = make([dynamic]ast.Length_Clause, 0, 2, p.allocator),
 	}
@@ -551,6 +556,7 @@ parse_decl_clause_head :: proc(
 	ast.Decl_Clause_Kind,
 	bool,
 	string,
+	Range,
 	^ast.Expr,
 	int,
 	bool,
@@ -561,46 +567,46 @@ parse_decl_clause_head :: proc(
 			if decl_keyword_name_tail_starts(p, p.index + 1) {
 				name, name_index, ok := parse_decl_name(p)
 				if !ok {
-					return .Normal, false, "", nil, index, false
+					return .Normal, false, "", {}, nil, index, false
 				}
-				return .Normal, false, parser_intern_token_name(p, name), nil, name_index, true
+				return .Normal, false, parser_intern_token_name(p, name), name.range, nil, name_index, true
 			}
 			error_current(p, "syntax error: expected OF after BEGIN")
-			return .Normal, false, "", nil, index, false
+			return .Normal, false, "", {}, nil, index, false
 		}
 		expect_keyword(p, "BEGIN")
 		expect_keyword(p, "OF")
-		if name, ok := parse_common_part_delimiter_tail(p); ok {
-			return .Begin_Group, true, name, nil, index, true
+		if name, name_range, ok := parse_common_part_delimiter_tail(p); ok {
+			return .Begin_Group, true, name, name_range, nil, index, true
 		}
 		name, _, ok := parse_decl_name(p)
 		if !ok {
-			return .Normal, false, "", nil, index, false
+			return .Normal, false, "", {}, nil, index, false
 		}
-		return .Begin_Group, false, parser_intern_token_name(p, name), nil, index, true
+		return .Begin_Group, false, parser_intern_token_name(p, name), name.range, nil, index, true
 	}
 	if at_keyword(p, "END") {
 		if !at_keyword_index(p, p.index + 1, "OF") {
 			if decl_keyword_name_tail_starts(p, p.index + 1) {
 				name, name_index, ok := parse_decl_name(p)
 				if !ok {
-					return .Normal, false, "", nil, index, false
+					return .Normal, false, "", {}, nil, index, false
 				}
-				return .Normal, false, parser_intern_token_name(p, name), nil, name_index, true
+				return .Normal, false, parser_intern_token_name(p, name), name.range, nil, name_index, true
 			}
 			error_current(p, "syntax error: expected OF after END")
-			return .Normal, false, "", nil, index, false
+			return .Normal, false, "", {}, nil, index, false
 		}
 		expect_keyword(p, "END")
 		expect_keyword(p, "OF")
-		if name, ok := parse_common_part_delimiter_tail(p); ok {
-			return .End_Group, true, name, nil, index, true
+		if name, name_range, ok := parse_common_part_delimiter_tail(p); ok {
+			return .End_Group, true, name, name_range, nil, index, true
 		}
 		name, _, ok := parse_decl_name(p)
 		if !ok {
-			return .Normal, false, "", nil, index, false
+			return .Normal, false, "", {}, nil, index, false
 		}
-		return .End_Group, false, parser_intern_token_name(p, name), nil, index, true
+		return .End_Group, false, parser_intern_token_name(p, name), name.range, nil, index, true
 	}
 	if allow_keyword(p, "INCLUDE") {
 		kind := ast.Decl_Clause_Kind.Include_Type
@@ -610,19 +616,19 @@ parse_decl_clause_head :: proc(
 			kind = .Include_Structure
 		} else {
 			error_current(p, "syntax error: expected keyword")
-			return .Normal, false, "", nil, index, false
+			return .Normal, false, "", {}, nil, index, false
 		}
 		ref := parse_type_ref_expr(p)
 		if ref == nil {
-			return .Normal, false, "", nil, index, false
+			return .Normal, false, "", {}, nil, index, false
 		}
-		return kind, false, "", ref, index, true
+		return kind, false, "", {}, ref, index, true
 	}
 	name, name_index, ok := parse_decl_name(p)
 	if !ok {
-		return .Normal, false, "", nil, index, false
+		return .Normal, false, "", {}, nil, index, false
 	}
-	return .Normal, false, parser_intern_token_name(p, name), nil, name_index, true
+	return .Normal, false, parser_intern_token_name(p, name), name.range, nil, name_index, true
 }
 
 decl_keyword_name_tail_starts :: proc(p: ^Parser, index: int) -> bool {
@@ -648,9 +654,9 @@ decl_keyword_name_tail_starts :: proc(p: ^Parser, index: int) -> bool {
 	)
 }
 
-parse_common_part_delimiter_tail :: proc(p: ^Parser) -> (string, bool) {
+parse_common_part_delimiter_tail :: proc(p: ^Parser) -> (string, Range, bool) {
 	if !at_keyword(p, "COMMON") || !at_keyword_index(p, p.index + 1, "PART") {
-		return "", false
+		return "", {}, false
 	}
 	expect_keyword(p, "COMMON")
 	expect_keyword(p, "PART")
@@ -658,20 +664,21 @@ parse_common_part_delimiter_tail :: proc(p: ^Parser) -> (string, bool) {
 	if tok.kind == .Ident || tok.kind == .Number || tok.kind == .Star {
 		name, _, ok := parse_decl_name(p)
 		if ok {
-			return parser_intern_token_name(p, name), true
+			return parser_intern_token_name(p, name), name.range, true
 		}
 	}
-	return "", true
+	return "", {}, true
 }
 
 parse_types_clause :: proc(p: ^Parser) -> (ast.Types_Clause, bool) {
-	kind, is_common_part_delimiter, name, include_ref, name_index, ok := parse_decl_clause_head(p)
+	kind, is_common_part_delimiter, name, name_range, include_ref, name_index, ok := parse_decl_clause_head(p)
 	if !ok {
 		return ast.Types_Clause{}, false
 	}
 	clause := ast.Types_Clause {
 		kind           = kind,
 		name           = name,
+		name_range     = name_range,
 		include_ref    = include_ref,
 		length_clauses = make([dynamic]ast.Length_Clause, 0, 2, p.allocator),
 	}
@@ -712,13 +719,14 @@ parse_types_clause :: proc(p: ^Parser) -> (ast.Types_Clause, bool) {
 }
 
 parse_constants_clause :: proc(p: ^Parser) -> (ast.Constants_Clause, bool) {
-	kind, is_common_part_delimiter, name, include_ref, name_index, ok := parse_decl_clause_head(p)
+	kind, is_common_part_delimiter, name, name_range, include_ref, name_index, ok := parse_decl_clause_head(p)
 	if !ok {
 		return ast.Constants_Clause{}, false
 	}
 	clause := ast.Constants_Clause {
 		kind           = kind,
 		name           = name,
+		name_range     = name_range,
 		include_ref    = include_ref,
 		length_clauses = make([dynamic]ast.Length_Clause, 0, 2, p.allocator),
 	}
@@ -771,7 +779,8 @@ parse_field_symbols_clause :: proc(p: ^Parser) -> (ast.Field_Symbols_Clause, boo
 		return ast.Field_Symbols_Clause{}, false
 	}
 	clause := ast.Field_Symbols_Clause {
-		name = parser_intern_token_name(p, name),
+		name       = parser_intern_token_name(p, name),
+		name_range = name.range,
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "TYPE") || at_keyword(p, "LIKE") {
@@ -787,13 +796,14 @@ parse_field_symbols_clause :: proc(p: ^Parser) -> (ast.Field_Symbols_Clause, boo
 }
 
 parse_statics_clause :: proc(p: ^Parser) -> (ast.Statics_Clause, bool) {
-	kind, is_common_part_delimiter, name, include_ref, name_index, ok := parse_decl_clause_head(p)
+	kind, is_common_part_delimiter, name, name_range, include_ref, name_index, ok := parse_decl_clause_head(p)
 	if !ok {
 		return ast.Statics_Clause{}, false
 	}
 	clause := ast.Statics_Clause {
 		kind           = kind,
 		name           = name,
+		name_range     = name_range,
 		include_ref    = include_ref,
 		length_clauses = make([dynamic]ast.Length_Clause, 0, 2, p.allocator),
 	}
@@ -846,7 +856,8 @@ parse_tables_clause :: proc(p: ^Parser) -> (ast.Tables_Clause, bool) {
 		return ast.Tables_Clause{}, false
 	}
 	clause := ast.Tables_Clause {
-		name = parser_intern_token_name(p, name),
+		name       = parser_intern_token_name(p, name),
+		name_range = name.range,
 	}
 	for !decl_clause_end(p, name_index) {
 		bump_token(p)
@@ -860,7 +871,8 @@ parse_ranges_clause :: proc(p: ^Parser) -> (ast.Ranges_Clause, bool) {
 		return ast.Ranges_Clause{}, false
 	}
 	clause := ast.Ranges_Clause {
-		name = parser_intern_token_name(p, name),
+		name       = parser_intern_token_name(p, name),
+		name_range = name.range,
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "FOR") {
@@ -885,7 +897,8 @@ parse_parameters_clause :: proc(p: ^Parser) -> (ast.Parameters_Clause, bool) {
 		return ast.Parameters_Clause{}, false
 	}
 	clause := ast.Parameters_Clause {
-		name = parser_intern_token_name(p, name),
+		name       = parser_intern_token_name(p, name),
+		name_range = name.range,
 	}
 	clause.length_clauses = make([dynamic]ast.Length_Clause, 0, 2, p.allocator)
 	if current_token(p).kind == .LParen {
@@ -931,7 +944,8 @@ parse_select_options_clause :: proc(p: ^Parser) -> (ast.Select_Options_Clause, b
 		return ast.Select_Options_Clause{}, false
 	}
 	clause := ast.Select_Options_Clause {
-		name = parser_intern_token_name(p, name),
+		name       = parser_intern_token_name(p, name),
+		name_range = name.range,
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "FOR") {
@@ -966,7 +980,8 @@ parse_controls_clause :: proc(p: ^Parser) -> (ast.Controls_Clause, bool) {
 		return ast.Controls_Clause{}, false
 	}
 	clause := ast.Controls_Clause {
-		name = parser_intern_token_name(p, name),
+		name       = parser_intern_token_name(p, name),
+		name_range = name.range,
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "TYPE") {
@@ -989,13 +1004,14 @@ parse_controls_clause :: proc(p: ^Parser) -> (ast.Controls_Clause, bool) {
 }
 
 parse_class_data_clause :: proc(p: ^Parser) -> (ast.Class_Data_Clause, bool) {
-	kind, is_common_part_delimiter, name, include_ref, name_index, ok := parse_decl_clause_head(p)
+	kind, is_common_part_delimiter, name, name_range, include_ref, name_index, ok := parse_decl_clause_head(p)
 	if !ok {
 		return ast.Class_Data_Clause{}, false
 	}
 	clause := ast.Class_Data_Clause {
 		kind           = kind,
 		name           = name,
+		name_range     = name_range,
 		include_ref    = include_ref,
 		length_clauses = make([dynamic]ast.Length_Clause, 0, 2, p.allocator),
 	}

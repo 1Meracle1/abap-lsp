@@ -1765,6 +1765,7 @@ clone_data_chained_branches :: proc(
 				flags           = branch.flags,
 				depth           = branch.depth,
 				name            = strings.clone(branch.name, allocator),
+				name_range      = branch.name_range,
 				paren_length    = clone_paren_length_clause(branch.paren_length, allocator),
 				length_clauses  = clone_length_clauses(branch.length_clauses, allocator),
 				type_clause     = clone_type_clause(branch.type_clause, allocator),
@@ -1876,6 +1877,7 @@ clone_types_clauses :: proc(list: [dynamic]Types_Clause, allocator: mem.Allocato
 			flags          = clause.flags,
 			depth          = clause.depth,
 			name = strings.clone(clause.name, allocator),
+			name_range     = clause.name_range,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
@@ -1896,6 +1898,7 @@ clone_constants_clauses :: proc(list: [dynamic]Constants_Clause, allocator: mem.
 			flags          = clause.flags,
 			depth          = clause.depth,
 			name = strings.clone(clause.name, allocator),
+			name_range     = clause.name_range,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
@@ -1912,7 +1915,14 @@ clone_constants_clauses :: proc(list: [dynamic]Constants_Clause, allocator: mem.
 clone_field_symbols_clauses :: proc(list: [dynamic]Field_Symbols_Clause, allocator: mem.Allocator) -> [dynamic]Field_Symbols_Clause {
 	res := make([dynamic]Field_Symbols_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Field_Symbols_Clause{strings.clone(clause.name, allocator), clone_type_clause(clause.type_clause, allocator)})
+		append(
+			&res,
+			Field_Symbols_Clause {
+				name = strings.clone(clause.name, allocator),
+				name_range = clause.name_range,
+				type_clause = clone_type_clause(clause.type_clause, allocator),
+			},
+		)
 	}
 	return res
 }
@@ -1925,6 +1935,7 @@ clone_statics_clauses :: proc(list: [dynamic]Statics_Clause, allocator: mem.Allo
 			flags          = clause.flags,
 			depth          = clause.depth,
 			name = strings.clone(clause.name, allocator),
+			name_range     = clause.name_range,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
@@ -1941,7 +1952,13 @@ clone_statics_clauses :: proc(list: [dynamic]Statics_Clause, allocator: mem.Allo
 clone_tables_clauses :: proc(list: [dynamic]Tables_Clause, allocator: mem.Allocator) -> [dynamic]Tables_Clause {
 	res := make([dynamic]Tables_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Tables_Clause{name = strings.clone(clause.name, allocator)})
+		append(
+			&res,
+			Tables_Clause {
+				name = strings.clone(clause.name, allocator),
+				name_range = clause.name_range,
+			},
+		)
 	}
 	return res
 }
@@ -1949,7 +1966,14 @@ clone_tables_clauses :: proc(list: [dynamic]Tables_Clause, allocator: mem.Alloca
 clone_ranges_clauses :: proc(list: [dynamic]Ranges_Clause, allocator: mem.Allocator) -> [dynamic]Ranges_Clause {
 	res := make([dynamic]Ranges_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Ranges_Clause{strings.clone(clause.name, allocator), clone_for_clause(clause.for_clause, allocator)})
+		append(
+			&res,
+			Ranges_Clause {
+				name = strings.clone(clause.name, allocator),
+				name_range = clause.name_range,
+				for_clause = clone_for_clause(clause.for_clause, allocator),
+			},
+		)
 	}
 	return res
 }
@@ -1959,6 +1983,7 @@ clone_parameters_clauses :: proc(list: [dynamic]Parameters_Clause, allocator: me
 	for clause in list {
 		append(&res, Parameters_Clause {
 			name = strings.clone(clause.name, allocator),
+			name_range        = clause.name_range,
 			paren_length      = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses    = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause       = clone_type_clause(clause.type_clause, allocator),
@@ -1980,6 +2005,7 @@ clone_select_options_clauses :: proc(list: [dynamic]Select_Options_Clause, alloc
 	for clause in list {
 		append(&res, Select_Options_Clause {
 			name = strings.clone(clause.name, allocator),
+			name_range       = clause.name_range,
 			for_clause       = clone_for_clause(clause.for_clause, allocator),
 			default_clause   = clone_default_clause(clause.default_clause, allocator),
 			to_clause        = clone_to_clause(clause.to_clause, allocator),
@@ -2000,7 +2026,15 @@ clone_select_options_clauses :: proc(list: [dynamic]Select_Options_Clause, alloc
 clone_controls_clauses :: proc(list: [dynamic]Controls_Clause, allocator: mem.Allocator) -> [dynamic]Controls_Clause {
 	res := make([dynamic]Controls_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Controls_Clause{strings.clone(clause.name, allocator), clone_type_clause(clause.type_clause, allocator), clone_using_screen_clause(clause.using_screen, allocator)})
+		append(
+			&res,
+			Controls_Clause {
+				name = strings.clone(clause.name, allocator),
+				name_range = clause.name_range,
+				type_clause = clone_type_clause(clause.type_clause, allocator),
+				using_screen = clone_using_screen_clause(clause.using_screen, allocator),
+			},
+		)
 	}
 	return res
 }
@@ -2013,6 +2047,7 @@ clone_class_data_clauses :: proc(list: [dynamic]Class_Data_Clause, allocator: me
 			flags          = clause.flags,
 			depth          = clause.depth,
 			name = strings.clone(clause.name, allocator),
+			name_range     = clause.name_range,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),

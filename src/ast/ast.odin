@@ -592,6 +592,7 @@ Let_Expr :: struct {
 Constructor_Let_Binding_Expr :: struct {
 	using node: Expr,
 	name:       string,
+	name_range: tokenizer.Range,
 	value:      ^Expr,
 }
 
@@ -613,6 +614,7 @@ Constructor_For_Clause_Expr :: struct {
 	using node:         Expr,
 	kind:               Constructor_For_Kind,
 	variable:           string,
+	variable_range:     tokenizer.Range,
 	init:               ^Expr,
 	then_expr:          ^Expr,
 	condition:          ^Expr,
@@ -696,12 +698,14 @@ Constructor_Corresponding_Except_Clause_Expr :: struct {
 Data_Inline_Name_Expr :: struct {
 	using node: Expr,
 	name:       string,
+	name_range: tokenizer.Range,
 }
 
 // ABAP syntax: inline declaration expression `FIELD-SYMBOL(<name>)`.
 Field_Symbol_Inline_Name_Expr :: struct {
 	using node: Expr,
 	name:       string,
+	name_range: tokenizer.Range,
 }
 
 // ABAP syntax: DATA statement, for example `DATA name TYPE i.`.
@@ -710,6 +714,7 @@ Data_Decl :: struct {
 	kind:            Decl_Clause_Kind,
 	flags:           Decl_Clause_Flags,
 	name:            string,
+	name_range:      tokenizer.Range,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause, // nil if untyped
@@ -725,6 +730,7 @@ Data_Decl :: struct {
 Data_Inline_Decl :: struct {
 	using node: Decl,
 	name:       string,
+	name_range: tokenizer.Range,
 	expr:       ^Expr,
 }
 
@@ -754,6 +760,7 @@ Data_Chained_Branch :: struct {
 	flags:           Decl_Clause_Flags,
 	depth:           int,
 	name:            string,
+	name_range:      tokenizer.Range,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause, // nil if untyped
@@ -806,6 +813,7 @@ Types_Clause :: struct {
 	flags:           Decl_Clause_Flags,
 	depth:           int,
 	name:            string,
+	name_range:      tokenizer.Range,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause,
@@ -827,6 +835,7 @@ Constants_Clause :: struct {
 	flags:           Decl_Clause_Flags,
 	depth:           int,
 	name:            string,
+	name_range:      tokenizer.Range,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause,
@@ -846,6 +855,7 @@ Field_Symbols_Decl :: struct {
 // ABAP syntax: one FIELD-SYMBOLS entry, for example `<fs> TYPE any` or `<line> LIKE LINE OF itab`.
 Field_Symbols_Clause :: struct {
 	name:        string,
+	name_range:  tokenizer.Range,
 	type_clause: ^Data_Type_Clause,
 }
 
@@ -861,6 +871,7 @@ Statics_Clause :: struct {
 	flags:           Decl_Clause_Flags,
 	depth:           int,
 	name:            string,
+	name_range:      tokenizer.Range,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause,
@@ -879,7 +890,8 @@ Tables_Decl :: struct {
 
 // ABAP syntax: one TABLES work-area entry, for example `mara`.
 Tables_Clause :: struct {
-	name: string,
+	name:       string,
+	name_range: tokenizer.Range,
 }
 
 // ABAP syntax: RANGES statement, for example `RANGES r FOR mara-matnr.`
@@ -891,6 +903,7 @@ Ranges_Decl :: struct {
 // ABAP syntax: one RANGES entry, for example `r_matnr FOR mara-matnr`.
 Ranges_Clause :: struct {
 	name:       string,
+	name_range: tokenizer.Range,
 	for_clause: ^For_Clause,
 }
 
@@ -916,6 +929,7 @@ Parameter_Flags :: bit_set[Parameter_Flag]
 // ABAP syntax: one PARAMETERS entry, for example `p_count TYPE i DEFAULT 1`.
 Parameters_Clause :: struct {
 	name:              string,
+	name_range:        tokenizer.Range,
 	paren_length:      ^Paren_Length_Clause,
 	length_clauses:    [dynamic]Length_Clause,
 	type_clause:       ^Data_Type_Clause,
@@ -955,6 +969,7 @@ Selection_Request_Kind :: enum {
 // ABAP syntax: one SELECT-OPTIONS entry, for example `s_matnr FOR mara-matnr DEFAULT 'A' TO 'Z'`.
 Select_Options_Clause :: struct {
 	name:             string,
+	name_range:       tokenizer.Range,
 	for_clause:       ^For_Clause,
 	default_clause:   ^Default_Clause,
 	to_clause:        ^To_Clause,
@@ -978,6 +993,7 @@ Controls_Decl :: struct {
 // ABAP syntax: one CONTROLS entry, for example `tc TYPE TABLEVIEW USING SCREEN 100`.
 Controls_Clause :: struct {
 	name:         string,
+	name_range:   tokenizer.Range,
 	type_clause:  ^Data_Type_Clause,
 	using_screen: ^Using_Screen_Clause,
 }
@@ -994,6 +1010,7 @@ Class_Data_Clause :: struct {
 	flags:           Decl_Clause_Flags,
 	depth:           int,
 	name:            string,
+	name_range:      tokenizer.Range,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause,
@@ -1015,6 +1032,7 @@ Type_Pools_Decl :: struct {
 Function_Pool_Decl :: struct {
 	using node: Decl,
 	name:       string,
+	name_range: tokenizer.Range,
 	message_id: string,
 }
 

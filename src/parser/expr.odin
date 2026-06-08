@@ -1077,6 +1077,9 @@ parse_let_expr :: proc(p: ^Parser, body_kind: Constructor_Body_Kind) -> ^ast.Exp
 
 parse_constructor_let_binding_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	name := expect_token(p, .Ident)
+	if name.kind == .Ident {
+		name.range = parser_token_name_range(p, name)
+	}
 	expect_token(p, .Eq)
 	value := parse_expr(p)
 	if value == nil {
@@ -1088,6 +1091,7 @@ parse_constructor_let_binding_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		p.allocator,
 	)
 	expr.name = parser_intern_token_name(p, name)
+	expr.name_range = name.range
 	expr.value = value
 	return expr
 }
@@ -1144,8 +1148,10 @@ parse_constructor_for_clause_expr :: proc(p: ^Parser, body_kind: Constructor_Bod
 	if name.kind != .Ident {
 		return nil
 	}
+	name.range = parser_token_name_range(p, name)
 	expr := ast.new(ast.Constructor_For_Clause_Expr, start.range, p.allocator)
 	expr.variable = parser_intern_token_name(p, name)
+	expr.variable_range = name.range
 	expr.body = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 
 	if allow_token(p, .Eq) {
@@ -1170,6 +1176,7 @@ parse_constructor_for_clause_expr :: proc(p: ^Parser, body_kind: Constructor_Bod
 			if group.kind != .Ident {
 				return nil
 			}
+			group.range = parser_token_name_range(p, group)
 			expr.group_source = parser_intern_token_name(p, group)
 			expr.group_source_range = group.range
 		} else {
@@ -1635,6 +1642,7 @@ parse_data_inline_name_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_token(p, .LParen)
 	name := expect_token(p, .Ident)
 	if name.kind == .Ident {
+		name.range = parser_token_name_range(p, name)
 		validate_abap_name_length(p, name)
 	}
 	close := expect_token(p, .RParen)
@@ -1647,6 +1655,7 @@ parse_data_inline_name_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		p.allocator,
 	)
 	expr.name = parser_intern_token_name(p, name)
+	expr.name_range = name.range
 	return expr
 }
 
@@ -1657,6 +1666,7 @@ parse_field_symbol_inline_name_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_token(p, .LParen)
 	name := expect_token(p, .Ident)
 	if name.kind == .Ident {
+		name.range = parser_token_name_range(p, name)
 		validate_abap_name_length(p, name)
 	}
 	close := expect_token(p, .RParen)
@@ -1669,6 +1679,7 @@ parse_field_symbol_inline_name_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		p.allocator,
 	)
 	expr.name = parser_intern_token_name(p, name)
+	expr.name_range = name.range
 	return expr
 }
 

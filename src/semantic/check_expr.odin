@@ -164,7 +164,7 @@ checker_check_expr :: proc(
 		return checker_check_let_expr(ctx, node, n, lhs)
 	case ^ast.Constructor_Let_Binding_Expr:
 		value := checker_check_expr(ctx, n.value)
-		checker_collect_inferred_expr_decl(ctx, n.name, .Variable, n.range, node, value.type)
+		checker_collect_inferred_expr_decl(ctx, n.name, .Variable, n.name_range, node, value.type)
 		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Constructor_When_Clause_Expr:
 		checker_check_expr(ctx, n.condition)
@@ -219,10 +219,10 @@ checker_check_expr :: proc(
 		}
 		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Data_Inline_Name_Expr:
-		entity := checker_collect_inferred_expr_decl(ctx, n.name, .Variable, n.range, node, ctx.type_hint)
+		entity := checker_collect_inferred_expr_decl(ctx, n.name, .Variable, n.name_range, node, ctx.type_hint)
 		return checker_record_operand(ctx, node, .Variable, entity.type if entity != nil else project_type_unknown(ctx.project), entity, lhs)
 	case ^ast.Field_Symbol_Inline_Name_Expr:
-		entity := checker_collect_inferred_expr_decl(ctx, n.name, .Field_Symbol, n.range, node, ctx.type_hint)
+		entity := checker_collect_inferred_expr_decl(ctx, n.name, .Field_Symbol, n.name_range, node, ctx.type_hint)
 		return checker_record_operand(ctx, node, .Variable, entity.type if entity != nil else project_type_unknown(ctx.project), entity, lhs)
 	}
 	return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
@@ -608,7 +608,7 @@ checker_check_constructor_for_clause_expr :: proc(
 	source := checker_check_expr(ctx, expr.source)
 	row_type := checker_type_row(ctx, source.type)
 	if expr.variable != "" {
-		checker_collect_inferred_expr_decl(ctx, expr.variable, .Variable, expr.range, node, row_type)
+		checker_collect_inferred_expr_decl(ctx, expr.variable, .Variable, expr.variable_range, node, row_type)
 	}
 	if expr.group_source != "" {
 		checker_collect_inferred_expr_decl(ctx, expr.group_source, .Variable, expr.group_source_range, node, row_type)

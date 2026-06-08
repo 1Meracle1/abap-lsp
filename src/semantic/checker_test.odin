@@ -2581,9 +2581,13 @@ lv_copy = lv_value + 1.`
 	}
 	testing.expect_value(t, decl.kind, Entity_Kind.Variable)
 	testing.expect_value(t, string_interner.load(project.interner, decl.name), "lv_value")
+	testing.expect_value(t, source[decl.name_range.start:decl.name_range.end], "lv_value")
 
 	by_range := semantic_decl_entity_with_kind_and_decl_range(decl_query, .Variable, decl.name_range)
 	testing.expect(t, by_range == decl)
+	type_keyword_offset := checker_test_find_text(source, "TYPE")
+	testing.expect(t, type_keyword_offset >= 0)
+	testing.expect(t, semantic_decl_entity_at_offset(decl_query, type_keyword_offset) == nil)
 
 	use := semantic_ref_use_at_offset(ref_query, use_offset)
 	testing.expect(t, use != nil)
@@ -2695,6 +2699,10 @@ TYPES: BEGIN OF ty_demo,
 	}
 	testing.expect_value(t, field.kind, Entity_Kind.Field)
 	testing.expect_value(t, string_interner.load(project.interner, field.name), "comp")
+	testing.expect_value(t, source[field.name_range.start:field.name_range.end], "comp")
+	type_offset := checker_test_find_text(source, "TYPE")
+	testing.expect(t, type_offset >= 0)
+	testing.expect(t, semantic_decl_structure_field_at_offset(decl_query, type_offset) == nil)
 
 	ty_demo := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_demo", .Type_Def)
 	testing.expect(t, ty_demo != nil)

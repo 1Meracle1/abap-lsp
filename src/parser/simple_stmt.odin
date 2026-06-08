@@ -638,6 +638,7 @@ raw_operand_inline_decl_at :: proc(
 	   raw_operand_ident_like(p.tokens[index + 2]) &&
 	   p.tokens[index + 3].kind == .RParen {
 		name := p.tokens[index + 2]
+		name.range = parser_token_name_range(p, name)
 		validate_abap_name_length(p, name)
 		return ast.Raw_Operand_Inline_Decl {
 				kind = .Data,
@@ -655,6 +656,7 @@ raw_operand_inline_decl_at :: proc(
 	   raw_operand_ident_like(p.tokens[index + 4]) &&
 	   p.tokens[index + 5].kind == .RParen {
 		name := p.tokens[index + 4]
+		name.range = parser_token_name_range(p, name)
 		validate_abap_name_length(p, name)
 		return ast.Raw_Operand_Inline_Decl {
 				kind = .Field_Symbol,
