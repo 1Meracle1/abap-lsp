@@ -2,19 +2,19 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Build Odin Frontend",
+      "label": "Build Odin Binaries",
       "type": "shell",
       "command": ".\\build.bat",
       "group": "build"
     },
     {
-      "label": "Build Odin Frontend (Release)",
+      "label": "Build Odin Binaries (Release)",
       "type": "shell",
       "command": ".\\build.bat release",
       "group": "build"
     },
     {
-      "label": "Test Odin Frontend",
+      "label": "Test Odin Packages",
       "type": "shell",
       "command": ".\\test.bat",
       "group": "test"
@@ -60,6 +60,16 @@
         "$tsc"
       ],
       "path": "editors/vscode"
+    },
+    {
+      "label": "Build Odin Language Server and Extension",
+      "dependsOn": ["Build Odin Binaries", "Build Extension"],
+      "dependsOrder": "sequence"
+    },
+    {
+      "label": "Build Odin Language Server (Release) and Extension",
+      "dependsOn": ["Build Odin Binaries (Release)", "Build Extension"],
+      "dependsOrder": "sequence"
     },
     {
       "label": "Build Legacy Rust Server and Extension",

@@ -19,6 +19,65 @@
       ]
     },
     {
+      "name": "Run Extension (Odin Debug)",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/editors/vscode",
+        // "--folder-uri=D:/dev/abap/prod_rep_check/"
+        // "--folder-uri=D:/dev/abap/po_creation/"
+        // "--folder-uri=D:/dev/abap/rsa_encryption/"
+        // "--folder-uri=D:/dev/abap/archiving/"
+        // "--folder-uri=D:/dev/abap/ZATTP_OBD_EPCIS_REPROC/"
+        // "--folder-uri=D:/dev/abap/us_sn_reset/"
+        // "--folder-uri=D:/dev/abap/lsp_development_examples/"
+        // "--folder-uri=D:/dev/abap/lsp_development_examples2/"
+        // "--folder-uri=D:/dev/abap/reprocessing_report/"
+        // "--folder-uri=D:/dev/abap/zabapgit"
+        "--folder-uri=D:/dev/abap/odata/"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/editors/vscode/out/**/*.js"
+      ],
+      "preLaunchTask": "Build Odin Language Server and Extension",
+      "skipFiles": [
+        "<node_internals>/**/*.js"
+      ],
+      "env": {
+        "__ABAP_LSP_SERVER_PATH": "${workspaceFolder}/bin/debug/abap_language_server.exe"
+      }
+    },
+    {
+      "name": "Run Extension (Odin Release)",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": [
+        // "--disable-extensions",
+        "--extensionDevelopmentPath=${workspaceFolder}/editors/vscode",
+        // "--folder-uri=D:/dev/abap/prod_rep_check/"
+        // "--folder-uri=D:/dev/abap/po_creation/"
+        // "--folder-uri=D:/dev/abap/rsa_encryption/"
+        // "--folder-uri=D:/dev/abap/archiving/"
+        "--folder-uri=D:/dev/abap/ZATTP_OBD_EPCIS_REPROC/"
+        // "--folder-uri=D:/dev/abap/us_sn_reset/"
+        // "--folder-uri=D:/dev/abap/lsp_development_examples/"
+        // "--folder-uri=D:/dev/abap/lsp_development_examples2/"
+        // "--folder-uri=D:/dev/abap/reprocessing_report/"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/editors/vscode/out/**/*.js"
+      ],
+      "preLaunchTask": "Build Odin Language Server (Release) and Extension",
+      "skipFiles": [
+        "<node_internals>/**/*.js"
+      ],
+      "env": {
+        "__ABAP_LSP_SERVER_PATH": "${workspaceFolder}/bin/release/abap_language_server.exe"
+      }
+    },
+    {
       "name": "Run Extension (Legacy Rust Debug)",
       "type": "extensionHost",
       "request": "launch",
