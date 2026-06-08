@@ -549,7 +549,15 @@ checker_add_entity_and_decl_info :: proc(
 			return false
 		}
 		if shadowed := checker_shadowed_declaration(scope, entity); shadowed != nil {
-			checker_add_diagnostic(ctx, .Shadowed_Declaration, entity.name_range, "declaration shadows outer symbol", entity, decl)
+			checker_add_diagnostic(
+				ctx,
+				.Shadowed_Declaration,
+				entity.name_range,
+				"declaration shadows outer symbol",
+				entity,
+				decl,
+				severity = .Warning,
+			)
 		}
 	}
 
@@ -563,6 +571,10 @@ checker_add_entity_and_decl_info :: proc(
 checker_shadowed_declaration :: proc(scope: ^Scope, entity: ^Entity) -> ^Entity {
 	assert(scope != nil && entity != nil)
 	if entity_is_builtin(entity) {
+		return nil
+	}
+	#partial switch scope.kind {
+	case .Class, .Interface, .Structure:
 		return nil
 	}
 	namespaces := [?]Namespace{.Value, .Type, .Routine}

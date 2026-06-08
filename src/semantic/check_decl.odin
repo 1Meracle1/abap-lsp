@@ -71,10 +71,45 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 	case ^ast.Module_Decl:
 		checker_collect_routine_decl(ctx, n.name, .Module, n.range, n.header_range, n.header_text, &n.node.stmt_base)
 	case ^ast.Event_Block_Stmt:
-		checker_collect_routine_decl(ctx, n.kind, .Event, n.range, n.header_range, n.header_text, &n.node.stmt_base)
+		checker_collect_routine_decl(
+			ctx,
+			checker_event_block_decl_name(n),
+			.Event,
+			n.range,
+			n.header_range,
+			n.header_text,
+			&n.node.stmt_base,
+		)
 	case ^ast.Oop_Simple_Stmt:
 		checker_collect_oop_simple_stmt(ctx, n, nil, .Public)
 	}
+}
+
+checker_event_block_decl_name :: proc(stmt: ^ast.Event_Block_Stmt) -> string {
+	text := stmt.kind
+	if stmt.header_text != "" {
+		text = stmt.header_text
+	}
+	return checker_normalize_event_block_decl_name(text)
+}
+
+checker_normalize_event_block_decl_name :: proc(text: string) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	pending_space := false
+	wrote := false
+	for ch in text {
+		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+			pending_space = wrote
+			continue
+		}
+		if pending_space {
+			strings.write_byte(&builder, ' ')
+			pending_space = false
+		}
+		strings.write_rune(&builder, ch)
+		wrote = true
+	}
+	return strings.to_string(builder)
 }
 
 checker_collect_data_decl :: proc(

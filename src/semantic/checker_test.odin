@@ -849,7 +849,41 @@ ENDFORM.`
 	for diagnostic in checker.info.diagnostics {
 		if diagnostic.kind == .Shadowed_Declaration {
 			shadow_count += 1
+			testing.expect_value(t, diagnostic.severity, Checker_Diagnostic_Severity.Warning)
 			testing.expect(t, diagnostic.entity == local_value)
+		}
+		testing.expect(t, diagnostic.kind != .Duplicate_Declaration)
+	}
+	testing.expect_value(t, shadow_count, 1)
+}
+
+@(test)
+root_semantic_member_scopes_do_not_report_lexical_shadowing :: proc(t: ^testing.T) {
+	source := `DATA name TYPE i.
+CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    DATA name TYPE i.
+    TYPES: BEGIN OF ty_row,
+             name TYPE i,
+           END OF ty_row.
+    CONSTANTS: BEGIN OF c_row,
+                 name TYPE i VALUE 1,
+               END OF c_row.
+ENDCLASS.
+FORM run.
+  DATA name TYPE i.
+ENDFORM.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://member_shadowing.abap")
+
+	shadow_count := 0
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Shadowed_Declaration {
+			shadow_count += 1
+			testing.expect_value(t, diagnostic.severity, Checker_Diagnostic_Severity.Warning)
 		}
 		testing.expect(t, diagnostic.kind != .Duplicate_Declaration)
 	}
@@ -1401,6 +1435,26 @@ CONSTANTS: BEGIN OF gc_pair,
 		testing.expect_value(t, const_struct.type.kind, Type_Kind.Structure)
 		testing.expect_value(t, len(const_struct.type.structure.fields), 2)
 	}
+}
+
+@(test)
+root_semantic_selection_screen_event_variants_are_distinct :: proc(t: ^testing.T) {
+	source := `AT SELECTION-SCREEN OUTPUT.
+  DATA lv_output TYPE i.
+AT   SELECTION-SCREEN   ON   EXIT-COMMAND.
+  DATA lv_exit TYPE i.
+AT SELECTION-SCREEN.
+  DATA lv_event TYPE i.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://selection_screen_events.abap")
+
+	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen output", .Event)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen on exit-command", .Event)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen", .Event)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Duplicate_Declaration), 0)
 }
 
 @(test)
