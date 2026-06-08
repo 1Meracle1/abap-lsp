@@ -340,11 +340,12 @@ Raw_Operand_Path_Segment :: struct {
 }
 
 Raw_Operand_Ref :: struct {
-	name:      string,
-	range:     tokenizer.Range,
-	type_base: bool,
-	call_like: bool,
-	path:      [dynamic]Raw_Operand_Path_Segment,
+	name:         string,
+	range:        tokenizer.Range,
+	type_base:    bool,
+	call_like:    bool,
+	dynamic_path: bool,
+	path:         [dynamic]Raw_Operand_Path_Segment,
 }
 
 // ABAP syntax: declaration type reference such as `ty_line`, `REF TO object`, or `ty_line WITH DEFAULT KEY`.

@@ -1864,6 +1864,27 @@ lr_i = lr_data.`
 }
 
 @(test)
+root_semantic_stmt_checker_accepts_dynamic_object_assign_to_typed_field_symbol :: proc(t: ^testing.T) {
+	source := `CLASS lcl_params DEFINITION.
+ENDCLASS.
+DATA lo_object TYPE REF TO object.
+FIELD-SYMBOLS <lo_params> TYPE REF TO lcl_params.
+
+ASSIGN lo_object->('PARAMS') TO <lo_params>.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_assign_dynamic_object_component.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 0)
+	lo_object := checker_test_lookup(t, &project, file.root_scope, .Value, "lo_object", .Variable)
+	lo_params := checker_test_lookup(t, &project, file.root_scope, .Value, "<lo_params>", .Field_Symbol)
+	testing.expect(t, .Used in lo_object.flags)
+	testing.expect(t, .Used in lo_params.flags)
+}
+
+@(test)
 root_semantic_stmt_checker_reports_method_argument_failures :: proc(t: ^testing.T) {
 	source := `CLASS lcl_demo DEFINITION.
   PUBLIC SECTION.

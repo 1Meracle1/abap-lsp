@@ -1570,6 +1570,21 @@ raw_assign_deref_path_keeps_arrow_selector :: proc(t: ^testing.T) {
 }
 
 @(test)
+raw_assign_dynamic_path_marks_reference_source :: proc(t: ^testing.T) {
+	parsed := parse(`ASSIGN lo_object->('PARAMS') TO <lo_params>.`, "assign_dynamic_path.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	assign := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Field_Stmt)
+	operand := assign.source.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect(t, operand.raw_operand)
+	testing.expect_value(t, len(operand.raw_refs), 1)
+	testing.expect_value(t, operand.raw_refs[0].name, "lo_object")
+	testing.expect(t, operand.raw_refs[0].dynamic_path)
+	testing.expect_value(t, len(operand.raw_refs[0].path), 0)
+}
+
+@(test)
 raw_assign_casting_does_not_reference_clause_keyword :: proc(t: ^testing.T) {
 	parsed := parse(`ASSIGN lv_x TO <lv_y> CASTING.`, "assign_casting.abap", context.allocator)
 

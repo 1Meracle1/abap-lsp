@@ -697,12 +697,29 @@ raw_operand_selector_ref :: proc(
 	path: [dynamic]ast.Raw_Operand_Path_Segment
 	path_ready := false
 	type_base := false
+	dynamic_path := false
 	for i + 1 < end {
 		op := p.tokens[i]
 		if op.kind != .Minus && op.kind != .Arrow && op.kind != .FatArrow && op.kind != .Tilde {
 			break
 		}
 		field := p.tokens[i + 1]
+		if field.kind == .LParen {
+			close := matching_group_index(p, i + 1, .LParen, .RParen)
+			if close < 0 || close >= end {
+				break
+			}
+			if !path_ready {
+				path = make([dynamic]ast.Raw_Operand_Path_Segment, 0, 2, p.allocator)
+				path_ready = true
+			}
+			if len(path) == 0 && (op.kind == .FatArrow || op.kind == .Tilde) {
+				type_base = true
+			}
+			dynamic_path = true
+			i = close + 1
+			break
+		}
 		if !raw_operand_ident_like(field) && !(op.kind == .Arrow && field.kind == .Star) {
 			break
 		}
@@ -730,6 +747,7 @@ raw_operand_selector_ref :: proc(
 			name = parser_intern_token_name(p, base),
 			range = base.range,
 			type_base = type_base,
+			dynamic_path = dynamic_path,
 			path = path,
 		},
 		i,

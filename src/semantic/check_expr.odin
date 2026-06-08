@@ -561,7 +561,7 @@ checker_check_raw_operand_ref :: proc(
 	if ref.type_base {
 		namespace = .Type
 	}
-	base := checker_check_ident_expr(ctx, node, ref.name, namespace, lhs && len(ref.path) == 0)
+	base := checker_check_ident_expr(ctx, node, ref.name, namespace, lhs && len(ref.path) == 0 && !ref.dynamic_path)
 	for segment in ref.path {
 		member_namespace := checker_selector_member_namespace(segment.selector, namespace)
 		member := checker_lookup_selector_member(ctx, base, segment.selector, segment.name, member_namespace, node, lhs)
@@ -569,6 +569,9 @@ checker_check_raw_operand_ref :: proc(
 			member.mode = .Field
 		}
 		base = member
+	}
+	if ref.dynamic_path {
+		return Operand{mode = .Field, type = project_type_unknown(ctx.project)}
 	}
 	return base
 }

@@ -1853,7 +1853,7 @@ checker_dynamic_type_constant_name :: proc(
 	ctx: ^Checker_Context,
 	ref: ast.Raw_Operand_Ref,
 ) -> (string, bool) {
-	if ref.name == "" || ref.type_base || ref.call_like || len(ref.path) > 0 {
+	if ref.name == "" || ref.type_base || ref.call_like || ref.dynamic_path || len(ref.path) > 0 {
 		return "", false
 	}
 	interned := checker_intern_name(ctx.project, ref.name)
