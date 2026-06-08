@@ -471,6 +471,85 @@ remote_dependency_typepool_cache_keeps_original_request_key :: proc(t: ^testing.
 }
 
 @(test)
+typepool_source_analysis_detects_pending_expansion_and_symbols :: proc(t: ^testing.T) {
+	include_analysis := typepool_source_analysis("include ztp_include.", context.allocator)
+	name_analysis := typepool_source_analysis("TYPES ztp_include_name TYPE i.", context.allocator)
+	testing.expect(t, include_analysis.pending_expansion)
+	testing.expect(t, !name_analysis.pending_expansion)
+
+	analysis := typepool_source_analysis(
+		"TYPES ztp_type TYPE i.\nCONSTANTS ztp_const TYPE i VALUE 1.\nTYPES ztp_type TYPE i.",
+		context.allocator,
+	)
+	testing.expect_value(t, len(analysis.symbols), 2)
+	testing.expect(t, "ztp_type" in analysis.symbol_set)
+	testing.expect(t, "ztp_const" in analysis.symbol_set)
+}
+
+@(test)
+remote_dependency_typepool_cache_uses_pool_for_multiple_records :: proc(t: ^testing.T) {
+	path := remote_dependency_test_store_path("typepool_cache_pool.sqlite3")
+	store, store_err := dep_store.dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, store_err, dep_store.Store_Error.None)
+	profile := standalone_dependency_profile()
+	artifacts := [?]dep_store.Stored_Artifact_Input {
+		{
+			package_name     = "ztp_parallel_a",
+			object_kind      = TYPEPOOL_OBJECT_KIND,
+			object_name      = "ztp_parallel_a",
+			object_uri       = typepool_object_uri("ztp_parallel_a", context.allocator),
+			object_type      = TYPEPOOL_OBJECT_TYPE,
+			description      = "Type-pool A",
+			file_extension   = "abap",
+			source_text      = "TYPES ztp_parallel_one TYPE i.",
+			fetched_at       = "2026-06-06T00:00:00Z",
+			typepool_symbols = {"ztp_parallel_one"},
+		},
+		{
+			package_name     = "ztp_parallel_b",
+			object_kind      = TYPEPOOL_OBJECT_KIND,
+			object_name      = "ztp_parallel_b",
+			object_uri       = typepool_object_uri("ztp_parallel_b", context.allocator),
+			object_type      = TYPEPOOL_OBJECT_TYPE,
+			description      = "Type-pool B",
+			file_extension   = "abap",
+			source_text      = "CONSTANTS ztp_parallel_two TYPE i VALUE 1.",
+			fetched_at       = "2026-06-06T00:00:00Z",
+			typepool_symbols = {"ztp_parallel_two"},
+		},
+	}
+	_, put_err := dep_store.put_artifacts(&store, &profile, artifacts[:], context.allocator)
+	testing.expect_value(t, put_err, dep_store.Store_Error.None)
+
+	pool: execution.Pool
+	execution.pool_init(
+		&pool,
+		execution.Options{worker_count = 2, task_capacity = 8, edge_capacity = 8},
+		context.allocator,
+	)
+	defer execution.pool_destroy(&pool)
+	execution.pool_start(&pool)
+
+	config := Config{cache = &store, profile = &profile}
+	state := state_make(context.allocator)
+	requests := [?]Request {
+		{name = "ztp_parallel_one", kind = .Type},
+		{name = "ztp_parallel_two", kind = .Type},
+	}
+	stats_before := execution.pool_stats(&pool)
+
+	resolved := cache_artifacts(requests[:], &config, &state, &pool, context.allocator)
+
+	stats_after := execution.pool_stats(&pool)
+	testing.expect_value(t, len(resolved), 2)
+	expected_tasks := min(max(pool.options.worker_count, 1), len(requests))
+	if pool.options.worker_count > 0 {
+		expected_tasks += len(artifacts)
+	}
+	testing.expect(t, stats_after.submitted >= stats_before.submitted + u64(expected_tasks))
+}
+
+@(test)
 remote_dependency_store_paths_clear_legacy_summary_payload :: proc(t: ^testing.T) {
 	path := remote_dependency_test_store_path("store_paths_clear_legacy_summary_payload.sqlite3")
 	store, store_err := dep_store.dependency_store_from_override_path(path, context.allocator)

@@ -8,7 +8,6 @@ import base_runtime "base:runtime"
 import "core:mem"
 import "core:mem/virtual"
 import filepath "core:path/filepath"
-import "core:slice"
 import "core:strings"
 import "core:time"
 
@@ -58,6 +57,30 @@ Cache_Prepare_Result :: struct {
 	err:      dep_store.Store_Error,
 	record:   dep_store.Stored_Artifact_Record,
 	prepared: Prepared_Artifact,
+}
+
+Typepool_Cache_Record_Status :: enum {
+	None,
+	Ready,
+	Needs_Expansion,
+}
+
+Typepool_Cache_Record_Task_Payload :: struct {
+	record:           dep_store.Stored_Artifact_Record,
+	requests:         []Request,
+	result_allocator: mem.Allocator,
+}
+
+Typepool_Cache_Record_Result :: struct {
+	status:      Typepool_Cache_Record_Status,
+	artifact_id: i64,
+	object_name: string,
+	artifacts:   [dynamic]Artifact,
+}
+
+Typepool_Cache_Record_Task :: struct {
+	task:        execution.Task(Typepool_Cache_Record_Result),
+	arena_index: int,
 }
 
 Local_Task_Payload :: struct {
@@ -325,7 +348,7 @@ resolve_cache_phase :: proc(
 	}
 
 	typepool_artifacts := make([dynamic]Artifact, 0, len(candidates), allocator)
-	append_typepool_cache_artifacts(&typepool_artifacts, candidates[:], config, state, allocator)
+	append_typepool_cache_artifacts(&typepool_artifacts, candidates[:], config, state, pool, allocator)
 	for &artifact in typepool_artifacts {
 		resolve_artifact(result, &artifact, state, resolved, allocator)
 	}
@@ -418,7 +441,7 @@ cache_artifacts :: proc(
 			append_cache_artifacts(&out, candidates[:], config, state, allocator)
 		}
 	}
-	append_typepool_cache_artifacts(&out, candidates[:], config, state, allocator)
+	append_typepool_cache_artifacts(&out, candidates[:], config, state, pool, allocator)
 	return out
 }
 
@@ -753,6 +776,7 @@ append_typepool_cache_artifacts :: proc(
 	requests: []Request,
 	config: ^Config,
 	state: ^State,
+	pool: ^execution.Pool,
 	allocator: mem.Allocator,
 ) {
 	if config.cache == nil {
@@ -799,6 +823,10 @@ append_typepool_cache_artifacts :: proc(
 		}
 		return
 	}
+	if pool != nil && pool.options.worker_count > 0 && len(records) > 1 {
+		append_typepool_cache_artifacts_parallel(out, records[:], requests, state, pool, allocator)
+		return
+	}
 	for &record in records {
 		if state != nil && record.artifact_id in state.seen_artifacts {
 			when TRACE {
@@ -810,42 +838,154 @@ append_typepool_cache_artifacts :: proc(
 			}
 			continue
 		}
-		if typepool_source_has_pending_expansion(record.source_text, context.temp_allocator) {
+		record_result := typepool_cache_record_result(record, requests, context.temp_allocator)
+		append_typepool_cache_record_result(out, &record_result, state, allocator)
+	}
+}
+
+append_typepool_cache_artifacts_parallel :: proc(
+	out: ^[dynamic]Artifact,
+	records: []dep_store.Stored_Artifact_Record,
+	requests: []Request,
+	state: ^State,
+	pool: ^execution.Pool,
+	allocator: mem.Allocator,
+) {
+	result_arenas := make([]virtual.Arena, len(records), context.temp_allocator)
+	tasks := make(
+		[dynamic]Typepool_Cache_Record_Task,
+		0,
+		len(records),
+		context.temp_allocator,
+	)
+
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, context.temp_allocator)
+	for &record, i in records {
+		if state != nil && record.artifact_id in state.seen_artifacts {
 			when TRACE {
 				trace_eprintf(
-					"[trace - remote_dependencies] Type-pool cache entry needs refetch: %s (artifact id %d)\n",
+					"[trace - remote_dependencies] Type-pool cache hit already used: %s (artifact id %d)\n",
 					record.object_name,
 					record.artifact_id,
 				)
 			}
 			continue
 		}
-		symbols := typepool_source_symbols(record.source_text, context.temp_allocator)
-		pool := strings.to_lower(record.object_name, context.temp_allocator)
-		appended := false
-		for request in requests {
-			if !(request.kind == .Type || request.kind == .Symbol) {
-				continue
+		arena_err := virtual.arena_init_growing(&result_arenas[i])
+		assert(arena_err == .None)
+		payload := Typepool_Cache_Record_Task_Payload {
+			record           = record,
+			requests         = requests,
+			result_allocator = virtual.arena_allocator(&result_arenas[i]),
+		}
+		task := execution.submit_value(
+			&graph,
+			execution.worker_executor(pool),
+			payload,
+			typepool_cache_record_task,
+		)
+		append(&tasks, Typepool_Cache_Record_Task{task = task, arena_index = i})
+	}
+	execution.graph_start(&graph)
+	for task_ref in tasks {
+		record_result := execution.wait(task_ref.task)
+		append_typepool_cache_record_result(out, &record_result, state, allocator)
+		virtual.arena_destroy(&result_arenas[task_ref.arena_index])
+	}
+	execution.graph_wait(&graph)
+	execution.graph_destroy(&graph)
+}
+
+typepool_cache_record_task :: proc(
+	payload: Typepool_Cache_Record_Task_Payload,
+) -> Typepool_Cache_Record_Result {
+	return typepool_cache_record_result(
+		payload.record,
+		payload.requests,
+		payload.result_allocator,
+	)
+}
+
+typepool_cache_record_result :: proc(
+	record: dep_store.Stored_Artifact_Record,
+	requests: []Request,
+	allocator: mem.Allocator,
+) -> Typepool_Cache_Record_Result {
+	record_copy := record
+	result := Typepool_Cache_Record_Result {
+		status      = .Ready,
+		artifact_id = record_copy.artifact_id,
+		object_name = strings.clone(record_copy.object_name, allocator),
+		artifacts   = make([dynamic]Artifact, 0, 1, allocator),
+	}
+	analysis := typepool_source_analysis(record_copy.source_text, allocator)
+	if analysis.pending_expansion {
+		result.status = .Needs_Expansion
+		return result
+	}
+	pool := strings.to_lower(record_copy.object_name, context.temp_allocator)
+	for request in requests {
+		if !(request.kind == .Type || request.kind == .Symbol) {
+			continue
+		}
+		if request.name != pool && !(request.name in analysis.symbol_set) {
+			continue
+		}
+		artifact := artifact_from_record(&record_copy, request, .Cache, allocator)
+		append(&result.artifacts, artifact)
+	}
+	return result
+}
+
+append_typepool_cache_record_result :: proc(
+	out: ^[dynamic]Artifact,
+	record_result: ^Typepool_Cache_Record_Result,
+	state: ^State,
+	allocator: mem.Allocator,
+) {
+	switch record_result.status {
+	case .Needs_Expansion:
+		when TRACE {
+			trace_eprintf(
+				"[trace - remote_dependencies] Type-pool cache entry needs refetch: %s (artifact id %d)\n",
+				record_result.object_name,
+				record_result.artifact_id,
+			)
+		}
+		return
+	case .Ready:
+		if len(record_result.artifacts) == 0 {
+			return
+		}
+		if state != nil && record_result.artifact_id in state.seen_artifacts {
+			when TRACE {
+				trace_eprintf(
+					"[trace - remote_dependencies] Type-pool cache hit already used: %s (artifact id %d)\n",
+					record_result.object_name,
+					record_result.artifact_id,
+				)
 			}
-			if request.name != pool && !slice.contains(symbols[:], request.name) {
-				continue
-			}
-			artifact := artifact_from_record(&record, request, .Cache, allocator)
-			append(out, artifact)
-			appended = true
+			return
+		}
+		for &artifact in record_result.artifacts {
+			append(out, clone_artifact(&artifact, allocator))
 			when TRACE {
 				trace_eprintf(
 					"[trace - remote_dependencies] Type-pool cache hit: %s provides %s %s (artifact id %d)\n",
-					record.object_name,
-					trace_request_kind_text(request.kind),
-					request.name,
-					record.artifact_id,
+					artifact.object_name,
+					trace_request_kind_text(artifact.request.kind),
+					artifact.request.name,
+					artifact.artifact_id,
 				)
 			}
 		}
-		if state != nil && appended {
-			state.seen_artifacts[record.artifact_id] = true
+		if state != nil {
+			state.seen_artifacts[record_result.artifact_id] = true
 		}
+		return
+	case .None:
+		assert(false)
 	}
 }
 
@@ -1670,20 +1810,25 @@ typepool_artifacts :: proc(
 				pool,
 			)
 		}
-		source, ok := cached_typepool_source(
+		artifact, ok := cached_typepool_artifact(
 			config.cache,
 			config.profile,
+			request,
 			pool,
-			context.temp_allocator,
+			allocator,
 		)
 		if !ok {
 			when TRACE {
 				trace_eprintf("[trace - remote_dependencies] Type-pool source cache miss: %s\n", pool)
 			}
-			raw, source_err := adt.fetch_typepool_source(
+			source_err: adt.Error
+			artifact, ok, source_err = fetch_typepool_artifact(
 				config.adt_client,
+				request,
 				pool,
-				context.temp_allocator,
+				config.cache if config.cache != nil && config.profile != nil else nil,
+				config.profile if config.cache != nil && config.profile != nil else nil,
+				allocator,
 			)
 			if source_err != .None {
 				when TRACE {
@@ -1695,52 +1840,37 @@ typepool_artifacts :: proc(
 				}
 				continue
 			}
-			source = expanded_typepool_dependency_source(
-				config.adt_client,
-				raw,
-				context.temp_allocator,
-			)
 			when TRACE {
 				trace_eprintf(
 					"[trace - remote_dependencies] Type-pool source fetch ok: %s (bytes=%d)\n",
 					pool,
-					len(source),
+					len(artifact.source_text),
 				)
 			}
-			store_typepool_source(config.cache, config.profile, pool, source)
 		} else {
 			when TRACE {
 				trace_eprintf("[trace - remote_dependencies] Type-pool source cache hit: %s\n", pool)
 			}
 		}
-		append(
-			&out,
-			Artifact {
-				request = clone_request(request, allocator),
-				source_kind = .Type_Pool,
-				object_kind = strings.clone(TYPEPOOL_OBJECT_KIND, allocator),
-				object_name = strings.clone(pool, allocator),
-				object_uri = typepool_object_uri(pool, allocator),
-				object_type = strings.clone(TYPEPOOL_OBJECT_TYPE, allocator),
-				file_extension = "abap",
-				source_text = strings.clone(source, allocator),
-			},
-		)
+		if ok {
+			append(&out, artifact)
+		}
 	}
 	return out
 }
 
-cached_typepool_source :: proc(
+cached_typepool_artifact :: proc(
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
+	request: Request,
 	pool: string,
 	allocator: mem.Allocator,
 ) -> (
-	string,
+	Artifact,
 	bool,
 ) {
 	if store == nil || profile == nil {
-		return "", false
+		return {}, false
 	}
 	record, ok, err := dep_store.find_artifact_by_kind_name(
 		store,
@@ -1750,43 +1880,84 @@ cached_typepool_source :: proc(
 		allocator,
 	)
 	if err != .None || !ok {
-		return "", false
+		return {}, false
 	}
-	if typepool_source_has_pending_expansion(record.source_text, allocator) {
-		return "", false
+	analysis := typepool_source_analysis(record.source_text, allocator)
+	if analysis.pending_expansion {
+		return {}, false
 	}
-	return record.source_text, true
+	return artifact_from_record(&record, request, .Cache, allocator), true
 }
 
-store_typepool_source :: proc(
+fetch_typepool_artifact :: proc(
+	client: ^adt.Client,
+	request: Request,
+	pool: string,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
+	allocator: mem.Allocator,
+) -> (
+	Artifact,
+	bool,
+	adt.Error,
+) {
+	raw, err := adt.fetch_typepool_source(client, pool, context.temp_allocator)
+	if err != .None {
+		return {}, false, err
+	}
+	source := expanded_typepool_dependency_source(client, raw, context.temp_allocator)
+	artifact := typepool_artifact_from_source(request, pool, source, .Type_Pool, allocator)
+	store_typepool_artifact(store, profile, &artifact)
+	return artifact, true, .None
+}
+
+typepool_artifact_from_source :: proc(
+	request: Request,
 	pool, source: string,
+	source_kind: Source_Kind,
+	allocator: mem.Allocator,
+) -> Artifact {
+	return Artifact {
+		request = clone_request(request, allocator),
+		source_kind = source_kind,
+		object_kind = strings.clone(TYPEPOOL_OBJECT_KIND, allocator),
+		object_name = strings.clone(pool, allocator),
+		object_uri = typepool_object_uri(pool, allocator),
+		object_type = strings.clone(TYPEPOOL_OBJECT_TYPE, allocator),
+		file_extension = "abap",
+		source_text = strings.clone(source, allocator),
+	}
+}
+
+store_typepool_artifact :: proc(
+	store: ^dep_store.Dependency_Store,
+	profile: ^dep_store.Dependency_Profile,
+	typepool_artifact: ^Artifact,
 ) {
 	if store == nil || profile == nil {
 		return
 	}
+	assert(typepool_artifact != nil)
 	store_arena: mem.Dynamic_Arena
 	store_backing := base_runtime.heap_allocator()
 	mem.dynamic_arena_init(&store_arena, store_backing, store_backing, alignment = 64)
 	defer mem.dynamic_arena_destroy(&store_arena)
 	store_allocator := mem.dynamic_arena_allocator(&store_arena)
 	fetched_at, _ := time.time_to_rfc3339(time.now(), allocator = store_allocator)
-	symbols := typepool_source_symbols(source, store_allocator)
-	uri := typepool_object_uri(pool, store_allocator)
-	artifact := dep_store.Stored_Artifact_Input {
-		package_name     = pool,
+	analysis := typepool_source_analysis(typepool_artifact.source_text, store_allocator)
+	stored := dep_store.Stored_Artifact_Input {
+		package_name     = typepool_artifact.object_name,
 		object_kind      = TYPEPOOL_OBJECT_KIND,
-		object_name      = pool,
-		object_uri       = uri,
+		object_name      = typepool_artifact.object_name,
+		object_uri       = typepool_artifact.object_uri,
 		object_type      = TYPEPOOL_OBJECT_TYPE,
 		description      = "Type-pool source",
 		file_extension   = "abap",
-		source_text      = source,
+		source_text      = typepool_artifact.source_text,
 		fetched_at       = fetched_at,
-		typepool_symbols = symbols[:],
+		typepool_symbols = analysis.symbols[:],
 	}
-	_, _ = dep_store.put_artifact(store, profile, &artifact, store_allocator)
+	_, _ = dep_store.put_artifact(store, profile, &stored, store_allocator)
 }
 
 store_adt_dependency_fetch :: proc(

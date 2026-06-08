@@ -15,6 +15,12 @@ TYPEPOOL_SYMBOL_PARSE_URI :: "abapls-typepool-symbols"
 TYPEPOOL_DEPENDENCY_URI_PREFIX :: "abapls-typepool:/"
 TYPEPOOL_OBJECT_URI_PREFIX :: "type-pool:"
 
+Typepool_Source_Analysis :: struct {
+	pending_expansion: bool,
+	symbols:           [dynamic]string,
+	symbol_set:        map[string]bool,
+}
+
 typepool_dependency_source :: proc(source: string, allocator: mem.Allocator) -> string {
 	trimmed := strings.trim_left_space(source)
 	if !starts_with_ignore_case(trimmed, TYPEPOOL_DECL_KEYWORD) ||
@@ -75,7 +81,13 @@ append_expanded_typepool_source :: proc(
 				continue
 			}
 			seen^[key] = true
-			fetched, err := adt.fetch_source(client, .Include, name.name, "", context.temp_allocator)
+			fetched, err := adt.fetch_source(
+				client,
+				.Include,
+				name.name,
+				"",
+				context.temp_allocator,
+			)
 			if err != .None {
 				failed = true
 				continue
@@ -86,7 +98,14 @@ append_expanded_typepool_source :: proc(
 				TYPEPOOL_PARSE_URI,
 				context.temp_allocator,
 			)
-			append_expanded_typepool_source(out, client, include_source, include_parsed.root, seen, wrote)
+			append_expanded_typepool_source(
+				out,
+				client,
+				include_source,
+				include_parsed.root,
+				seen,
+				wrote,
+			)
 		}
 		if failed {
 			write_typepool_source_part(out, source[stmt.range.start:stmt.range.end], wrote)
@@ -131,7 +150,11 @@ expanded_typepool_macro_source :: proc(source: string, allocator: mem.Allocator)
 				continue
 			}
 			strings.write_string(&out, source[last:stmt.range.start])
-			args := typepool_macro_call_args(source[stmt.range.start:stmt.range.end], n.name, context.temp_allocator)
+			args := typepool_macro_call_args(
+				source[stmt.range.start:stmt.range.end],
+				n.name,
+				context.temp_allocator,
+			)
 			write_expanded_typepool_macro_body(&out, body, args[:])
 			last = stmt.range.end
 		}
@@ -140,11 +163,7 @@ expanded_typepool_macro_source :: proc(source: string, allocator: mem.Allocator)
 	return strings.to_string(out)
 }
 
-write_expanded_typepool_macro_body :: proc(
-	out: ^strings.Builder,
-	body: string,
-	args: []string,
-) {
+write_expanded_typepool_macro_body :: proc(out: ^strings.Builder, body: string, args: []string) {
 	for i := 0; i < len(body); {
 		if body[i] == '&' && i + 1 < len(body) && body[i + 1] >= '1' && body[i + 1] <= '9' {
 			arg_index := int(body[i + 1] - '1')
@@ -159,7 +178,10 @@ write_expanded_typepool_macro_body :: proc(
 	}
 }
 
-typepool_macro_call_args :: proc(call_source, name: string, allocator: mem.Allocator) -> [dynamic]string {
+typepool_macro_call_args :: proc(
+	call_source, name: string,
+	allocator: mem.Allocator,
+) -> [dynamic]string {
 	text := strings.trim_space(call_source)
 	if strings.has_suffix(text, ".") {
 		text = strings.trim_space(text[:len(text) - 1])
@@ -181,36 +203,51 @@ typepool_macro_call_args :: proc(call_source, name: string, allocator: mem.Alloc
 	return args
 }
 
-typepool_source_symbols :: proc(
+typepool_source_symbols :: proc(source: string, allocator: mem.Allocator) -> [dynamic]string {
+	analysis := typepool_source_analysis(source, allocator)
+	return analysis.symbols
+}
+
+typepool_source_analysis :: proc(
 	source: string,
 	allocator: mem.Allocator,
-) -> [dynamic]string {
-	symbols := make([dynamic]string, 0, 8, allocator)
+) -> Typepool_Source_Analysis {
+	analysis := Typepool_Source_Analysis {
+		symbols    = make([dynamic]string, 0, 8, allocator),
+		symbol_set = make(map[string]bool, 8, allocator),
+	}
 	parsed := parser.parse(source, TYPEPOOL_SYMBOL_PARSE_URI, context.temp_allocator)
 	if parsed.root == nil {
-		return symbols
+		return analysis
+	}
+	for stmt in parsed.root.stmts {
+		#partial switch _ in stmt.derived_stmt {
+		case ^ast.Macro_Def_Stmt, ^ast.Macro_Call_Stmt, ^ast.Include_Stmt:
+			analysis.pending_expansion = true
+			break
+		}
 	}
 	for stmt in parsed.root.stmts {
 		#partial switch n in stmt.derived_stmt {
 		case ^ast.Types_Decl:
 			for clause in n.types {
 				if clause.kind == .Begin_Group || clause.kind == .Normal {
-					insert_unique_typepool_symbol(&symbols, clause.name, allocator)
+					insert_unique_typepool_symbol(&analysis, clause.name, allocator)
 				}
 			}
 		case ^ast.Constants_Decl:
 			for clause in n.constants {
 				if clause.kind == .Begin_Group || clause.kind == .Normal {
-					insert_unique_typepool_symbol(&symbols, clause.name, allocator)
+					insert_unique_typepool_symbol(&analysis, clause.name, allocator)
 				}
 			}
 		}
 	}
-	return symbols
+	return analysis
 }
 
 insert_unique_typepool_symbol :: proc(
-	symbols: ^[dynamic]string,
+	analysis: ^Typepool_Source_Analysis,
 	name: string,
 	allocator: mem.Allocator,
 ) {
@@ -218,24 +255,11 @@ insert_unique_typepool_symbol :: proc(
 		return
 	}
 	key := strings.to_lower(name, allocator)
-	for existing in symbols^ {
-		if existing == key {
-			return
-		}
+	if key in analysis.symbol_set {
+		return
 	}
-	append(symbols, key)
-}
-
-typepool_source_has_pending_expansion :: proc(source: string, allocator: mem.Allocator) -> bool {
-	upper := strings.to_upper(source, context.temp_allocator)
-	if !strings.contains(upper, "INCLUDE") &&
-	   !strings.contains(upper, "DEFINE") &&
-	   !strings.contains(upper, "END-OF-DEFINITION") {
-		return false
-	}
-	parsed := parser.parse(source, TYPEPOOL_PARSE_URI, allocator)
-	return typepool_parsed_source_has_includes(parsed.root) ||
-	       typepool_parsed_source_has_macros(parsed.root)
+	analysis.symbol_set[key] = true
+	append(&analysis.symbols, key)
 }
 
 typepool_parsed_source_has_includes :: proc(root: ^ast.File) -> bool {
@@ -244,20 +268,6 @@ typepool_parsed_source_has_includes :: proc(root: ^ast.File) -> bool {
 	}
 	for stmt in root.stmts {
 		if _, ok := stmt.derived_stmt.(^ast.Include_Stmt); ok {
-			return true
-		}
-	}
-	return false
-}
-
-typepool_parsed_source_has_macros :: proc(root: ^ast.File) -> bool {
-	if root == nil {
-		return false
-	}
-	for stmt in root.stmts {
-		#partial switch _ in stmt.derived_stmt {
-		case ^ast.Macro_Def_Stmt,
-		     ^ast.Macro_Call_Stmt:
 			return true
 		}
 	}
