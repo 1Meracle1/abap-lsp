@@ -2140,6 +2140,83 @@ DELETE ADJACENT DUPLICATES FROM lt_rows COMPARING gone.`
 }
 
 @(test)
+root_semantic_dynamic_create_type_names_do_not_emit_parenthesized_candidates :: proc(t: ^testing.T) {
+	source := `CONSTANTS c_class TYPE string VALUE 'ZCL_CONST_CLASS'.
+DATA lr_data TYPE REF TO data.
+DATA lo_object TYPE REF TO object.
+DATA lv_class TYPE string.
+FIELD-SYMBOLS <ls_list> TYPE any.
+
+CREATE OBJECT lo_object TYPE ('ZCL_LITERAL_CLASS').
+CREATE OBJECT lo_object TYPE (c_class).
+CREATE OBJECT lo_object TYPE (lv_class).
+CREATE OBJECT lo_object TYPE (<ls_list>-method).
+CREATE DATA lr_data TYPE ('ZTY_LITERAL').
+CREATE DATA lr_data TYPE REF TO ('ZIF_LITERAL').
+CREATE DATA lr_data TYPE STANDARD TABLE OF ('ZTY_ROW') WITH DEFAULT KEY.
+CREATE DATA lr_data TYPE ('I').`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://dynamic_create_type_names.abap")
+
+	expected_static := [?]string{"zcl_literal_class", "zcl_const_class", "zty_literal", "zif_literal", "zty_row"}
+	for name in expected_static {
+		testing.expect_value(t, checker_test_unresolved_candidate_namespace_count(&checker, &project, .Global_Symbol, .Type, name), 1)
+	}
+	rejected := [?]string{
+		"('zcl_literal_class')",
+		"(c_class)",
+		"(lv_class)",
+		"(<ls_list>-method)",
+		"('zty_literal')",
+		"('zif_literal')",
+		"('zty_row')",
+		"('i')",
+		"lv_class",
+		"method",
+	}
+	for name in rejected {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+	c_class := checker_test_lookup(t, &project, file.root_scope, .Value, "c_class", .Constant)
+	lv_class := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_class", .Variable)
+	ls_list := checker_test_lookup(t, &project, file.root_scope, .Value, "<ls_list>", .Field_Symbol)
+	testing.expect(t, c_class != nil && .Used in c_class.flags)
+	testing.expect(t, lv_class != nil && .Used in lv_class.flags)
+	testing.expect(t, ls_list != nil && .Used in ls_list.flags)
+}
+
+@(test)
+root_semantic_dynamic_assign_casting_type_names_do_not_emit_parenthesized_candidates :: proc(t: ^testing.T) {
+	source := `CONSTANTS c_cast TYPE string VALUE 'ZTY_CAST_CONST'.
+DATA lv_cast TYPE string.
+DATA hex TYPE x LENGTH 10.
+FIELD-SYMBOLS <fs> TYPE any.
+
+ASSIGN hex TO <fs> CASTING TYPE ('ZTY_CAST_LITERAL').
+ASSIGN hex TO <fs> CASTING TYPE (c_cast).
+ASSIGN hex TO <fs> CASTING TYPE (lv_cast).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://dynamic_assign_casting_type_names.abap")
+
+	testing.expect_value(t, checker_test_unresolved_candidate_namespace_count(&checker, &project, .Global_Symbol, .Type, "zty_cast_literal"), 1)
+	testing.expect_value(t, checker_test_unresolved_candidate_namespace_count(&checker, &project, .Global_Symbol, .Type, "zty_cast_const"), 1)
+	rejected := [?]string{"('zty_cast_literal')", "(c_cast)", "(lv_cast)", "lv_cast"}
+	for name in rejected {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+	c_cast := checker_test_lookup(t, &project, file.root_scope, .Value, "c_cast", .Constant)
+	lv_cast := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_cast", .Variable)
+	testing.expect(t, c_cast != nil && .Used in c_cast.flags)
+	testing.expect(t, lv_cast != nil && .Used in lv_cast.flags)
+}
+
+@(test)
 root_semantic_query_finds_declarations_references_and_expr_info :: proc(t: ^testing.T) {
 	source := `DATA lv_value TYPE i.
 DATA lv_copy TYPE i.

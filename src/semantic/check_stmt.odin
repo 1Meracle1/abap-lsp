@@ -1511,29 +1511,155 @@ checker_check_assign_field_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Assign
 	local.type_hint_expr = stmt.target
 	target := checker_check_expr(&local, stmt.target, .Value, true)
 	checker_check_assignment_compatibility(ctx, source.type, target.type, checker_expr_range(stmt.target))
-	checker_check_expr(ctx, stmt.casting_type, .Type)
+	checker_check_dynamic_or_static_type_expr(ctx, stmt.casting_type)
 	checker_check_expr(ctx, stmt.casting_decimals)
 }
 
 checker_check_create_object_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Create_Object_Stmt) {
 	checker_check_expr(ctx, stmt.target, .Value, true)
-	checker_check_expr(ctx, stmt.type_ref, .Type)
-	if stmt.type_clause != nil {
+	if stmt.type_dynamic {
+		checker_check_dynamic_type_name_expr(ctx, stmt.type_dynamic_expr, stmt.type_ref)
+		checker_check_create_type_clause_non_ref_operands(ctx, stmt.type_clause)
+	} else {
+		checker_check_expr(ctx, stmt.type_ref, .Type)
+	}
+	if stmt.type_clause != nil && !stmt.type_dynamic {
 		checker_check_decl_type_clause(ctx, nil, stmt.type_clause)
 	}
-	checker_check_expr(ctx, stmt.type_dynamic_expr)
 	checker_check_expr_list(ctx, stmt.operands[:])
 }
 
 checker_check_create_data_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Create_Data_Stmt) {
 	checker_check_expr(ctx, stmt.target, .Value, true)
-	checker_check_expr(ctx, stmt.type_ref, .Type)
-	if stmt.type_clause != nil {
+	if stmt.type_dynamic {
+		checker_check_dynamic_type_name_expr(ctx, stmt.type_dynamic_expr, stmt.type_ref)
+		checker_check_create_type_clause_non_ref_operands(ctx, stmt.type_clause)
+	} else {
+		checker_check_expr(ctx, stmt.type_ref, .Type)
+	}
+	if stmt.type_clause != nil && !stmt.type_dynamic {
 		checker_check_decl_type_clause(ctx, nil, stmt.type_clause)
 	}
-	checker_check_expr(ctx, stmt.type_dynamic_expr)
 	checker_check_expr(ctx, stmt.type_handle)
 	checker_check_expr_list(ctx, stmt.operands[:])
+}
+
+checker_check_create_type_clause_non_ref_operands :: proc(
+	ctx: ^Checker_Context,
+	clause: ^ast.Data_Type_Clause,
+) {
+	if clause == nil {
+		return
+	}
+	checker_check_expr(ctx, clause.initial_size, .Value)
+}
+
+checker_check_dynamic_or_static_type_expr :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) {
+	if expr == nil {
+		return
+	}
+	if ref, ok := expr.derived_expr.(^ast.Type_Ref_Expr); ok && ref.raw_operand {
+		checker_check_dynamic_type_name_expr(ctx, expr, expr)
+		return
+	}
+	checker_check_expr(ctx, expr, .Type)
+}
+
+checker_check_dynamic_type_name_expr :: proc(
+	ctx: ^Checker_Context,
+	dynamic_expr: ^ast.Expr,
+	node_expr: ^ast.Expr,
+) {
+	if dynamic_expr == nil {
+		return
+	}
+	checker_check_expr(ctx, dynamic_expr)
+	name, name_range, static_name := checker_dynamic_type_static_name(ctx, dynamic_expr)
+	if !static_name {
+		return
+	}
+	interned := checker_intern_name(ctx.project, name)
+	if !string_interner.is_valid(interned) {
+		return
+	}
+	node := &node_expr.expr_base if node_expr != nil else &dynamic_expr.expr_base
+	if _, entity, ok := checker_lookup_reference(ctx, .Type, interned); ok {
+		checker_add_entity_use(ctx, node, entity)
+		checker_check_entity_for_operand(ctx, entity)
+		return
+	}
+	checker_add_unresolved_candidate(
+		ctx,
+		interned,
+		.Type,
+		.Global_Symbol,
+		.Type_Reference,
+		.Unresolved_Type,
+		name_range,
+		node,
+	)
+}
+
+checker_dynamic_type_static_name :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+) -> (string, Range, bool) {
+	if expr == nil {
+		return "", {}, false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Type_Ref_Expr:
+		if name, ok := checker_dynamic_token_literal_name(n.text); ok {
+			return name, n.range, true
+		}
+		if len(n.raw_refs) == 1 {
+			if name, ok := checker_dynamic_type_constant_name(ctx, n.raw_refs[0]); ok {
+				return name, n.raw_refs[0].range, true
+			}
+		}
+	case ^ast.Literal_Expr:
+		if name, ok := checker_literal_text_value(n.value); ok {
+			return name, n.range, true
+		}
+	case ^ast.Ident_Expr:
+		ref := ast.Raw_Operand_Ref{name = n.name, range = n.range}
+		if name, ok := checker_dynamic_type_constant_name(ctx, ref); ok {
+			return name, n.range, true
+		}
+	}
+	return "", {}, false
+}
+
+checker_dynamic_type_constant_name :: proc(
+	ctx: ^Checker_Context,
+	ref: ast.Raw_Operand_Ref,
+) -> (string, bool) {
+	if ref.name == "" || ref.type_base || ref.call_like || len(ref.path) > 0 {
+		return "", false
+	}
+	interned := checker_intern_name(ctx.project, ref.name)
+	_, entity, ok := checker_lookup_reference(ctx, .Value, interned)
+	if !ok || entity == nil || entity.kind != .Constant {
+		return "", false
+	}
+	checker_check_entity_for_operand(ctx, entity)
+	payload, payload_ok := entity.payload.(^Entity_Constant_Payload)
+	if !payload_ok || payload == nil {
+		return "", false
+	}
+	value, value_ok := payload.constant_value.(^Constant_Text_Value)
+	if !value_ok || value == nil {
+		return "", false
+	}
+	return value.value, value.value != ""
+}
+
+checker_dynamic_token_literal_name :: proc(text: string) -> (string, bool) {
+	value := strings.trim_space(text)
+	if len(value) >= 2 && value[0] == '(' && value[len(value) - 1] == ')' {
+		value = strings.trim_space(value[1:len(value) - 1])
+	}
+	return checker_literal_text_value(value)
 }
 
 checker_check_line_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Line_Stmt) {

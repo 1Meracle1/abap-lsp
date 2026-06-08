@@ -1399,9 +1399,43 @@ checker_check_constant_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl
 		entity.type = typ
 	}
 	checker_check_value_clause(ctx, decl.value_clause)
+	checker_record_constant_value(ctx, entity, decl.value_clause)
 	if entity.type == nil {
 		entity.type = project_type_unknown(ctx.project)
 	}
+}
+
+checker_record_constant_value :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	clause: ^ast.Value_Clause,
+) {
+	if entity == nil || clause == nil || clause.expr == nil {
+		return
+	}
+	payload, payload_ok := entity.payload.(^Entity_Constant_Payload)
+	if !payload_ok || payload == nil {
+		return
+	}
+	if lit, lit_ok := clause.expr.derived_expr.(^ast.Literal_Expr); lit_ok {
+		if text, text_ok := checker_literal_text_value(lit.value); text_ok {
+			value := new(Constant_Text_Value, ctx.project.allocator)
+			value.value = strings.clone(text, ctx.project.allocator)
+			payload.constant_value = value
+			return
+		}
+	}
+}
+
+checker_literal_text_value :: proc(value: string) -> (string, bool) {
+	if len(value) < 2 {
+		return "", false
+	}
+	if (value[0] == '\'' && value[len(value) - 1] == '\'') ||
+	   (value[0] == '`' && value[len(value) - 1] == '`') {
+		return value[1:len(value) - 1], true
+	}
+	return "", false
 }
 
 checker_check_type_decl :: proc(
