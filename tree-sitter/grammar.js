@@ -76,7 +76,6 @@ const SIMPLE_STATEMENT_KEYWORDS = [
   "SEARCH",
   "PERFORM",
   "CALL",
-  "SUBMIT",
   "MESSAGE",
   "WRITE",
   "ASSERT",
@@ -241,6 +240,30 @@ const EXPRESSION_KEYWORDS = [
   "DEFAULT",
 ];
 
+const STATEMENT_TAIL_KEYWORDS = [
+  "BEGIN",
+  "BLOCK",
+  "FRAME",
+  "TITLE",
+  "OBLIGATORY",
+  "FINAL",
+  "FUNCTION",
+  "VIA",
+  "JOB",
+  "NUMBER",
+  "RETURN",
+  "OTHERS",
+  "WORK",
+  "DATA",
+  "AT",
+  "TIME",
+  "STAMP",
+  "ZONE",
+  "DATE",
+  "DISPLAY",
+  "METHOD",
+];
+
 module.exports = grammar({
   name: "abap",
 
@@ -269,6 +292,7 @@ module.exports = grammar({
     [$.qualified_name, $.selector_expression],
     [$.binary_expression, $.selector_expression],
     [$.parenthesized_expression, $._raw_token],
+    [$.parenthesized_expression, $.argument_list],
   ],
 
   rules: {
@@ -294,6 +318,7 @@ module.exports = grammar({
         $.event_block,
         $.macro_definition,
         $.select_statement,
+        $.submit_statement,
         $.exec_sql_statement,
         $.report_statement,
         $.include_statement,
@@ -408,6 +433,7 @@ module.exports = grammar({
       choice(
         prec.left(PREC.OR, seq(field("left", $._expression), field("operator", keyword($, "OR")), field("right", $._expression))),
         prec.left(PREC.AND, seq(field("left", $._expression), field("operator", keyword($, "AND")), field("right", $._expression))),
+        prec.left(PREC.COMPARE, seq(field("left", $._expression), field("operator", keyword($, "IS")), optional(field("negation", keyword($, "NOT"))), field("right", keywordChoice($, ["INITIAL", "BOUND"])))),
         prec.left(PREC.COMPARE, seq(field("left", $._expression), field("operator", choice("=", "<>", "<", ">", "<=", ">=", keywordChoice($, ["EQ", "NE", "LT", "LE", "GT", "GE", "IS", "BETWEEN", "IN", "LIKE", "CO", "CN", "CA", "NA", "CS", "NS", "CP", "NP"]))), field("right", $._expression))),
         prec.left(PREC.CONCAT, seq(field("left", $._expression), field("operator", "&&"), field("right", $._expression))),
         prec.left(PREC.ADD, seq(field("left", $._expression), field("operator", choice("+", "-")), field("right", $._expression))),
@@ -472,7 +498,7 @@ module.exports = grammar({
       prec.left(
         PREC.CALL,
         seq(
-          field("constructor", keywordChoice($, ["VALUE", "NEW", "CONV", "COND", "SWITCH", "REDUCE", "REF", "CORRESPONDING", "FILTER"])),
+          field("constructor", keywordChoice($, ["VALUE", "NEW", "CONV", "COND", "SWITCH", "REDUCE", "REF", "CORRESPONDING", "FILTER", "DATA", "CAST"])),
           optional(field("type", choice($._name, "#", $.qualified_name))),
           field("arguments", $.argument_list),
         ),
@@ -685,6 +711,27 @@ module.exports = grammar({
         ),
       ),
 
+    submit_statement: ($) =>
+      prec(
+        2,
+        seq(
+          keyword($, "SUBMIT"),
+          repeat($._submit_tail_token),
+          ".",
+        ),
+      ),
+
+    _submit_tail_token: ($) =>
+      choice(
+        $.string_template,
+        $.qualified_name,
+        $._literal,
+        keywordChoice($, EXPRESSION_KEYWORDS),
+        keywordChoice($, STATEMENT_TAIL_KEYWORDS),
+        $.operator,
+        $.punctuation,
+      ),
+
     exec_sql_statement: ($) =>
       seq(keyword($, "EXEC"), keyword($, "SQL"), ".", repeat($.unknown_statement), keyword($, "ENDEXEC"), "."),
 
@@ -707,7 +754,13 @@ module.exports = grammar({
 
     unknown_statement: ($) => prec.dynamic(-10, seq(repeat1($._raw_token), ".")),
 
-    _statement_tail: ($) => repeat1($._raw_token),
+    _statement_tail: ($) => repeat1($._tail_token),
+
+    _tail_token: ($) =>
+      choice(
+        $._raw_token,
+        keywordChoice($, STATEMENT_TAIL_KEYWORDS),
+      ),
 
     _raw_token: ($) =>
       choice(

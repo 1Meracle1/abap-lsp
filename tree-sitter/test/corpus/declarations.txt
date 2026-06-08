@@ -22,8 +22,7 @@ SELECT-OPTIONS s_id FOR ls_row-id.
       (identifier)))
   (types_declaration
     (keyword)
-    (qualified_name
-      (identifier))
+    (keyword)
     (keyword)
     (qualified_name
       (identifier))

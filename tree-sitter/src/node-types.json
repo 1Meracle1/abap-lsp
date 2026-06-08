@@ -156,6 +156,10 @@
         "named": true
       },
       {
+        "type": "submit_statement",
+        "named": true
+      },
+      {
         "type": "try_statement",
         "named": true
       },
@@ -344,6 +348,16 @@
           }
         ]
       },
+      "negation": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "keyword",
+            "named": true
+          }
+        ]
+      },
       "operator": {
         "multiple": false,
         "required": true,
@@ -404,6 +418,10 @@
         "types": [
           {
             "type": "_expression",
+            "named": true
+          },
+          {
+            "type": "keyword",
             "named": true
           }
         ]
@@ -2417,6 +2435,41 @@
         },
         {
           "type": "template_text",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "submit_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "string_template",
           "named": true
         }
       ]

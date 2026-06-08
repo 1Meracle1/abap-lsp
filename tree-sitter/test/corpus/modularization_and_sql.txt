@@ -44,9 +44,8 @@ START-OF-SELECTION.
         (identifier))
       (keyword)
       (host_expression
-        (call_expression
-          (qualified_name
-            (identifier))
+        (constructor_expression
+          (keyword)
           (argument_list
             (qualified_name
               (identifier)))))

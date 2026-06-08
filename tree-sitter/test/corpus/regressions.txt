@@ -64,3 +64,184 @@ ENDDO.
     (simple_statement
       (keyword))
     (keyword)))
+
+==================
+ABAP additions highlight as keywords
+==================
+
+SELECTION-SCREEN BEGIN OF BLOCK b01 WITH FRAME TITLE TEXT-001.
+PARAMETERS p_dfrom TYPE sy-datum OBLIGATORY.
+IF p_dto IS INITIAL.
+ENDIF.
+IF p_dto IS NOT INITIAL.
+ENDIF.
+CLASS lcl_report DEFINITION FINAL.
+ENDCLASS.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (number)))
+  (parameters_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (selector_expression
+      (qualified_name
+        (identifier))
+      (identifier))
+    (keyword))
+  (if_statement
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (keyword)
+      (keyword))
+    (keyword))
+  (if_statement
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (keyword)
+      (keyword)
+      (keyword))
+    (keyword))
+  (class_definition
+    (keyword)
+    (identifier)
+    (keyword)
+    (keyword)
+    (keyword)))
+
+==================
+Call and runtime additions highlight as keywords
+==================
+
+CALL FUNCTION 'JOB_OPEN'
+  EXCEPTIONS
+    OTHERS = 4.
+SUBMIT zprog VIA JOB lv_jobname NUMBER lv_jobcount AND RETURN.
+COMMIT WORK.
+CONVERT TIME STAMP ls_srt-created_at TIME ZONE sy-zonlo INTO DATE lv_created_date TIME lv_created_time.
+MESSAGE lv_msg TYPE 'I' DISPLAY LIKE 'E'.
+CALL METHOD cl_soap_payload_util=>get_message_properties.
+lo_value_node = CAST if_sxml_value_node( lo_node ).
+SELECT status INTO @DATA(lv_status) FROM ztab.
+LOOP AT so_ser INTO DATA(ls_ser).
+ENDLOOP.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)
+    (string)
+    (keyword)
+    (keyword)
+    (operator)
+    (number))
+  (submit_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword))
+  (simple_statement
+    (keyword)
+    (keyword))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (selector_expression
+      (qualified_name
+        (identifier))
+      (identifier))
+    (keyword)
+    (keyword)
+    (selector_expression
+      (qualified_name
+        (identifier))
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (simple_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (string)
+    (keyword)
+    (keyword)
+    (string))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (selector_expression
+      (qualified_name
+        (identifier))
+      (identifier)))
+  (assignment_statement
+    (qualified_name
+      (identifier))
+    (constructor_expression
+      (keyword)
+      (identifier)
+      (argument_list
+        (qualified_name
+          (identifier)))))
+  (select_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (host_expression
+      (constructor_expression
+        (keyword)
+        (argument_list
+          (qualified_name
+            (identifier)))))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (loop_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (constructor_expression
+      (keyword)
+      (argument_list
+        (qualified_name
+          (identifier))))
+    (keyword)))
