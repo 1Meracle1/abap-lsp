@@ -258,6 +258,18 @@ ENDFORM.`
 }
 
 @(test)
+form_raising_clause_is_not_a_parameter :: proc(t: ^testing.T) {
+	source := `FORM open_gui USING iv_value TYPE string RAISING zcx_abapgit_exception.
+ENDFORM.`
+	parsed := parse(source, "form_raising.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	form := parsed.root.stmts[0].derived_stmt.(^ast.Form_Decl)
+	testing.expect_value(t, len(form.form_parameters), 1)
+	testing.expect_value(t, form.form_parameters[0].name, "iv_value")
+}
+
+@(test)
 routine_headers_accept_escaped_keyword_parameters :: proc(t: ^testing.T) {
 	source := `FUNCTION z_keywords
   IMPORTING !VALUE TYPE i !REFERENCE TYPE string.

@@ -1220,8 +1220,11 @@ parse_form_header_parameters :: proc(
 	params := make([dynamic]ast.Form_Parameter_Clause, 0, 2, p.allocator)
 	i := header_body_start(start_index, period_index, "FORM")
 	section := ast.Form_Parameter_Section.Using
-	stop_keywords := []string{"TABLES", "USING", "CHANGING"}
+	stop_keywords := []string{"TABLES", "USING", "CHANGING", "RAISING"}
 	for i < period_index {
+		if at_keyword_index(p, i, "RAISING") {
+			break
+		}
 		if form_header_section(p, i, &section) {
 			i += 1
 			continue
