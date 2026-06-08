@@ -1,0 +1,35 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "abap",
+      "camelcase": "ABAP",
+      "title": "ABAP",
+      "scope": "source.abap",
+      "file-types": [
+        "abap"
+      ],
+      "injection-regex": "^abap$",
+      "class-name": "TreeSitterABAP"
+    }
+  ],
+  "metadata": {
+    "version": "0.0.1",
+    "license": "MIT",
+    "description": "ABAP grammar for tree-sitter and Zed.",
+    "authors": [
+      {
+        "name": "ABAP LSP contributors"
+      }
+    ]
+  },
+  "bindings": {
+    "c": true,
+    "node": false,
+    "rust": false,
+    "go": false,
+    "python": false,
+    "swift": false,
+    "zig": false
+  }
+}

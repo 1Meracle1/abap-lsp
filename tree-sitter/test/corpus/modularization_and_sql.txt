@@ -1,0 +1,82 @@
+==================
+Forms, events, and SQL
+==================
+
+REPORT zmod.
+
+FORM run USING iv_id TYPE string.
+  SELECT SINGLE status
+    FROM zorders
+    INTO @DATA(lv_status)
+    WHERE id = @iv_id.
+  IF sy-subrc = 0.
+    WRITE lv_status.
+  ENDIF.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM run USING '4711'.
+
+---
+
+(source_file
+  (report_statement
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (form_definition
+    (keyword)
+    (identifier)
+    (qualified_name
+      (identifier))
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (select_statement
+      (keyword)
+      (keyword)
+      (qualified_name
+        (identifier))
+      (keyword)
+      (qualified_name
+        (identifier))
+      (keyword)
+      (host_expression
+        (call_expression
+          (qualified_name
+            (identifier))
+          (argument_list
+            (qualified_name
+              (identifier)))))
+      (keyword)
+      (binary_expression
+        (qualified_name
+          (identifier))
+        (host_expression
+          (qualified_name
+            (identifier)))))
+    (if_statement
+      (keyword)
+      (binary_expression
+        (selector_expression
+          (qualified_name
+            (identifier))
+          (identifier))
+        (number))
+      (simple_statement
+        (keyword)
+        (qualified_name
+          (identifier)))
+      (keyword))
+    (keyword))
+  (event_block
+    (keyword))
+  (simple_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (qualified_name
+      (identifier))
+    (string)))

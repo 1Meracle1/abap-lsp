@@ -1,0 +1,12 @@
+id = "abap"
+name = "ABAP"
+version = "0.0.1"
+schema_version = 1
+authors = ["ABAP LSP contributors"]
+description = "ABAP syntax support for Zed using the in-repo tree-sitter grammar."
+repository = "https://github.com/1Meracle1/abap-lsp"
+
+[grammars.abap]
+repository = "file:///D:/dev/rust/abap-lsp"
+rev = "HEAD"
+path = "tree-sitter"

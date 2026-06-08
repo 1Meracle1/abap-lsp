@@ -1,0 +1,68 @@
+==================
+Comments and literals
+==================
+
+* full-line comment
+REPORT zlex.
+" inline comment
+DATA lv_text TYPE string VALUE 'hello'.
+DATA lv_raw TYPE string VALUE `raw`.
+DATA lv_template TYPE string VALUE |Material { lv_text ALPHA = IN }|.
+DATA <row> TYPE any.
+
+---
+
+(source_file
+  (comment
+    (star_comment))
+  (report_statement
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (comment
+    (line_comment))
+  (data_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (string))
+  (data_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (string))
+  (data_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (string_template
+      (template_start)
+      (template_text)
+      (template_interpolation
+        (template_interpolation_start)
+        (qualified_name
+          (identifier))
+        (keyword)
+        (operator)
+        (keyword)
+        (template_interpolation_end))
+      (template_end)))
+  (data_declaration
+    (keyword)
+    (qualified_name
+      (field_symbol))
+    (keyword)
+    (qualified_name
+      (identifier))))

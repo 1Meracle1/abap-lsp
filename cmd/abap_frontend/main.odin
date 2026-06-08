@@ -19,6 +19,7 @@ import "core:slice"
 import "core:strings"
 import "core:terminal"
 import ansi "core:terminal/ansi"
+import "core:time"
 
 Node_Count :: struct {
 	name:  string,
@@ -167,12 +168,12 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	defer virtual.arena_temp_end(temp_arena)
 
 	context.allocator = allocator
+	start_time := time.now()
 	when trace.ENABLED {
 		tracker: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&tracker, allocator, allocator)
 		tracked_allocator := mem.tracking_allocator(&tracker)
 		context.allocator = tracked_allocator
-		trace_start := trace.now()
 	}
 
 	target_path := args[2]
@@ -238,6 +239,11 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	}
 	if had_error {
 		os.exit(1)
+	} else {
+		fmt.printf(
+			"run_analyze - finished with no errors - elapsed_ms=%.3f\n",
+			time.duration_milliseconds(time.since(start_time)),
+		)
 	}
 }
 
@@ -461,7 +467,12 @@ print_caret_line :: proc(start_column, width: int, color: string) {
 	fmt.println()
 }
 
-print_source_highlight :: proc(source: string, starts: []int, start, end: Source_Position, color: string) {
+print_source_highlight :: proc(
+	source: string,
+	starts: []int,
+	start, end: Source_Position,
+	color: string,
+) {
 	range_end := end
 	if range_end.line > start.line && range_end.column == 1 {
 		range_end.line -= 1
@@ -512,7 +523,7 @@ print_analyze_diagnostics :: proc(
 			append(
 				&diagnostics,
 				Analyze_Diagnostic_Output {
-					diagnostic    = diagnostic,
+					diagnostic = diagnostic,
 					fallback_path = project_result.root_path,
 				},
 			)

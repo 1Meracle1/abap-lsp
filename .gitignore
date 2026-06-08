@@ -6,6 +6,8 @@ bin/
 .env*
 editors/vscode/node_modules/
 editors/vscode/client/node_modules/
+editors/zed/grammars/
+tree-sitter/node_modules/
 *.rs.bk
 *.svg
 tmp

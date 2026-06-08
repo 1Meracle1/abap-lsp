@@ -1,0 +1,39 @@
+==================
+Unknown statements recover at periods
+==================
+
+REPORT zrecovery.
+UNSUPPORTED-KEYWORD foo bar baz.
+lo_obj->dynamic_call( EXPORTING iv_value = lv_value ).
+
+---
+
+(source_file
+  (report_statement
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (unknown_statement
+    (selector_expression
+      (qualified_name
+        (identifier))
+      (identifier))
+    (qualified_name
+      (identifier))
+    (qualified_name
+      (identifier))
+    (qualified_name
+      (identifier)))
+  (expression_statement
+    (call_expression
+      (selector_expression
+        (qualified_name
+          (identifier))
+        (identifier))
+      (argument_list
+        (keyword)
+        (binary_expression
+          (qualified_name
+            (identifier))
+          (qualified_name
+            (identifier)))))))

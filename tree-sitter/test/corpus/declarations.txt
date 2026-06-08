@@ -1,0 +1,89 @@
+==================
+Chained declarations
+==================
+
+REPORT zdecl.
+TYPES: BEGIN OF ty_row,
+         id TYPE string,
+         amount TYPE i,
+       END OF ty_row.
+DATA: lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY,
+      ls_row TYPE ty_row.
+FIELD-SYMBOLS <row> TYPE ty_row.
+PARAMETERS p_id TYPE string.
+SELECT-OPTIONS s_id FOR ls_row-id.
+
+---
+
+(source_file
+  (report_statement
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (types_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (punctuation)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (punctuation)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (punctuation)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (data_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword)
+    (punctuation)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (field_symbols_declaration
+    (keyword)
+    (qualified_name
+      (field_symbol))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (parameters_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (select_options_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (selector_expression
+      (qualified_name
+        (identifier))
+      (identifier))))

@@ -1,0 +1,26 @@
+{
+  "name": "tree-sitter-abap-lsp",
+  "version": "0.0.1",
+  "description": "Tree-sitter grammar for ABAP used by the abap-lsp Zed extension.",
+  "license": "MIT",
+  "private": true,
+  "type": "commonjs",
+  "main": "bindings/node",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse:sample": "tree-sitter parse ../examples/ZPERF_PARSER_MIXED.abap"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.abap",
+      "file-types": [
+        "abap"
+      ],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

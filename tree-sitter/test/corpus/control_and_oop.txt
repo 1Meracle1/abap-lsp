@@ -1,0 +1,107 @@
+==================
+Control and object blocks
+==================
+
+CLASS lcl_counter DEFINITION.
+  PUBLIC SECTION.
+    METHODS next RETURNING VALUE(rv_value) TYPE i.
+  PRIVATE SECTION.
+    DATA mv_value TYPE i.
+ENDCLASS.
+
+CLASS lcl_counter IMPLEMENTATION.
+  METHOD next.
+    mv_value = mv_value + 1.
+    IF mv_value > 10.
+      mv_value = 0.
+    ELSEIF mv_value = 5.
+      WRITE mv_value.
+    ELSE.
+      WRITE 'ok'.
+    ENDIF.
+    rv_value = mv_value.
+  ENDMETHOD.
+ENDCLASS.
+
+---
+
+(source_file
+  (class_definition
+    (keyword)
+    (identifier)
+    (keyword)
+    (visibility_section
+      (keyword)
+      (keyword))
+    (method_signature
+      (keyword)
+      (qualified_name
+        (identifier))
+      (keyword)
+      (constructor_expression
+        (keyword)
+        (argument_list
+          (qualified_name
+            (identifier))))
+      (keyword)
+      (qualified_name
+        (identifier)))
+    (visibility_section
+      (keyword)
+      (keyword))
+    (data_declaration
+      (keyword)
+      (qualified_name
+        (identifier))
+      (keyword)
+      (qualified_name
+        (identifier)))
+    (keyword))
+  (class_implementation
+    (keyword)
+    (identifier)
+    (keyword)
+    (method_definition
+      (keyword)
+      (qualified_name
+        (identifier))
+      (assignment_statement
+        (qualified_name
+          (identifier))
+        (binary_expression
+          (qualified_name
+            (identifier))
+          (number)))
+      (if_statement
+        (keyword)
+        (binary_expression
+          (qualified_name
+            (identifier))
+          (number))
+        (assignment_statement
+          (qualified_name
+            (identifier))
+          (number))
+        (elseif_clause
+          (keyword)
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (number))
+          (simple_statement
+            (keyword)
+            (qualified_name
+              (identifier))))
+        (else_clause
+          (keyword)
+          (simple_statement
+            (keyword)
+            (string)))
+        (keyword))
+      (assignment_statement
+        (qualified_name
+          (identifier))
+        (qualified_name
+          (identifier)))
+      (keyword))
+    (keyword)))
