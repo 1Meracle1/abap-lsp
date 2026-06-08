@@ -534,43 +534,69 @@ parse_substring_with_offset_expr :: proc(p: ^Parser, base: ^ast.Expr) -> ^ast.Ex
 	}
 	save_index := p.index
 	save_prev := p.previous_index
-	bump_token(p)
+	plus := bump_token(p)
 	offset_start := p.index
 	lparen := find_tight_lparen_for_substring(p, offset_start)
-	if lparen < 0 {
+	if lparen >= 0 {
+		if offset := parse_complete_concat_expr(p, offset_start, lparen); offset != nil {
+			p.index = lparen
+			p.previous_index = lparen - 1
+			bump_token(p)
+			length := parse_substring_length_expr(p)
+			if length == nil {
+				p.index = save_index
+				p.previous_index = save_prev
+				return nil
+			}
+			close := expect_token(p, .RParen)
+			if close.kind != .RParen {
+				p.index = save_index
+				p.previous_index = save_prev
+				return nil
+			}
+			expr := ast.new(
+				ast.Substring_Expr,
+				tokenizer.text_range(base.range.start, close.range.end),
+				p.allocator,
+			)
+			expr.base = base
+			expr.offset = offset
+			expr.length = length
+			return expr
+		}
+	}
+
+	p.index = save_index
+	p.previous_index = save_prev
+	plus = bump_token(p)
+	offset_start = p.index
+	if !tokens_touch(plus, current_token(p)) {
 		p.index = save_index
 		p.previous_index = save_prev
 		return nil
 	}
-	offset := parse_complete_concat_expr(p, offset_start, lparen)
+	offset_end := find_substring_offset_without_length_end(p, offset_start)
+	if offset_end <= offset_start {
+		p.index = save_index
+		p.previous_index = save_prev
+		return nil
+	}
+	offset := parse_complete_concat_expr(p, offset_start, offset_end)
 	if offset == nil {
 		p.index = save_index
 		p.previous_index = save_prev
 		return nil
 	}
-	p.index = lparen
-	p.previous_index = lparen - 1
-	bump_token(p)
-	length := parse_substring_length_expr(p)
-	if length == nil {
-		p.index = save_index
-		p.previous_index = save_prev
-		return nil
-	}
-	close := expect_token(p, .RParen)
-	if close.kind != .RParen {
-		p.index = save_index
-		p.previous_index = save_prev
-		return nil
-	}
+	p.index = offset_end
+	p.previous_index = offset_end - 1
 	expr := ast.new(
 		ast.Substring_Expr,
-		tokenizer.text_range(base.range.start, close.range.end),
+		tokenizer.text_range(base.range.start, offset.range.end),
 		p.allocator,
 	)
 	expr.base = base
 	expr.offset = offset
-	expr.length = length
+	expr.length = nil
 	return expr
 }
 
@@ -1910,6 +1936,58 @@ find_tight_lparen_for_substring :: proc(p: ^Parser, start: int) -> int {
 		}
 	}
 	return -1
+}
+
+find_substring_offset_without_length_end :: proc(p: ^Parser, start: int) -> int {
+	if start >= len(p.tokens) {
+		return -1
+	}
+	i := start
+	if p.tokens[i].kind == .Plus || p.tokens[i].kind == .Minus {
+		i += 1
+		if i >= len(p.tokens) {
+			return -1
+		}
+	}
+	#partial switch p.tokens[i].kind {
+	case .Ident, .Number, .String, .StringTemplate, .Hash:
+		i += 1
+	case .LParen:
+		close := matching_group_index(p, i, .LParen, .RParen)
+		if close < 0 {
+			return -1
+		}
+		i = close + 1
+	case:
+		return -1
+	}
+	for i < len(p.tokens) {
+		prev := p.tokens[i - 1]
+		tok := p.tokens[i]
+		if tok.kind == .LBracket {
+			close := matching_group_index(p, i, .LBracket, .RBracket)
+			if close < 0 {
+				return i
+			}
+			i = close + 1
+			continue
+		}
+		if selector_operator_starts(prev, tok) {
+			if i + 1 >= len(p.tokens) {
+				return i
+			}
+			field := p.tokens[i + 1]
+			if field.kind != .Ident &&
+			   field.kind != .Number &&
+			   !((tok.kind == .Tilde || tok.kind == .Arrow) && field.kind == .Star) {
+				return i
+			}
+			i += 2
+			continue
+		}
+		break
+	}
+	return i
 }
 
 call_padding_is_valid :: proc(p: ^Parser, lparen_idx, rparen_idx: int) -> bool {

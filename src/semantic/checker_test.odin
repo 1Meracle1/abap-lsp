@@ -2161,6 +2161,31 @@ DELETE FROM tcdobs WHERE object = mv_object.`
 }
 
 @(test)
+root_semantic_sql_checker_keeps_offset_hosts_out_of_sql_scope :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF tcdobs,
+         objecttype TYPE string,
+       END OF tcdobs.
+TYPES: BEGIN OF ty_item,
+         obj_name TYPE string,
+       END OF ty_item.
+DATA ms_item TYPE ty_item.
+DATA lv_type_pos TYPE i.
+
+DELETE FROM tcdobs WHERE objecttype = ms_item-obj_name+lv_type_pos.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://sql_offset_host.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	ms_item := checker_test_lookup(t, &project, file.root_scope, .Value, "ms_item", .Variable)
+	lv_type_pos := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_type_pos", .Variable)
+	testing.expect(t, ms_item != nil && .Used in ms_item.flags)
+	testing.expect(t, lv_type_pos != nil && .Used in lv_type_pos.flags)
+}
+
+@(test)
 root_semantic_sql_checker_checks_db_dml_sources_and_hosts :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF zinsert_tab,
          id TYPE string,

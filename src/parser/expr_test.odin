@@ -90,7 +90,8 @@ substring_offset_length_keeps_length_out_of_offset :: proc(t: ^testing.T) {
 	source := `lv_a = lv_val+0(1).
 lv_b = lv_val+lv_last(1).
 lv_c = im_response_string+ls_match-offset(ls_match-length).
-lv_d = lv_val+4(*).`
+lv_d = lv_val+4(*).
+lv_e = lv_val+lv_last.`
 	parsed := parse(source, "substring_offsets.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -119,6 +120,11 @@ lv_d = lv_val+4(*).`
 	testing.expect(t, fourth_offset)
 	testing.expect(t, fourth_length_ok)
 	testing.expect_value(t, fourth_length.value, "*")
+
+	fifth := parsed.root.stmts[4].derived_stmt.(^ast.Assign_Stmt).rhs.derived_expr.(^ast.Substring_Expr)
+	_, fifth_offset := fifth.offset.derived_expr.(^ast.Ident_Expr)
+	testing.expect(t, fifth_offset)
+	testing.expect(t, fifth.length == nil)
 }
 
 @(test)

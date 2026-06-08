@@ -947,7 +947,8 @@ open_sql_parenthesized_static_where_keeps_alias_refs :: proc(t: ^testing.T) {
 @(test)
 open_sql_where_value_side_marks_classic_hosts :: proc(t: ^testing.T) {
 	source := `DELETE FROM tcdobs WHERE object = mv_object.
-SELECT a~matnr FROM mara AS a JOIN makt AS b ON b~matnr = a~matnr INTO TABLE lt_rows WHERE type = zcl_repo=>c_type.`
+SELECT a~matnr FROM mara AS a JOIN makt AS b ON b~matnr = a~matnr INTO TABLE lt_rows WHERE type = zcl_repo=>c_type.
+DELETE FROM tcdobs WHERE objecttype = ms_item-obj_name+lv_type_pos.`
 	parsed := parse(source, "sql_classic_hosts.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -969,6 +970,17 @@ SELECT a~matnr FROM mara AS a JOIN makt AS b ON b~matnr = a~matnr INTO TABLE lt_
 	where_cond := select_stmt.query.where_cond.derived_expr.(^ast.Binary_Expr)
 	where_right_host, where_right_host_ok := where_cond.right.derived_expr.(^ast.Host_Expr)
 	testing.expect(t, where_right_host_ok && where_right_host.implicit)
+
+	offset_delete := parsed.root.stmts[2].derived_stmt.(^ast.Delete_Stmt)
+	offset_cond := offset_delete.where_cond.derived_expr.(^ast.Binary_Expr)
+	offset_right_host, offset_right_host_ok := offset_cond.right.derived_expr.(^ast.Host_Expr)
+	testing.expect(t, offset_right_host_ok && offset_right_host.implicit)
+	if offset_right_host_ok {
+		substring := offset_right_host.value.derived_expr.(^ast.Substring_Expr)
+		_, offset_name := substring.offset.derived_expr.(^ast.Ident_Expr)
+		testing.expect(t, offset_name)
+		testing.expect(t, substring.length == nil)
+	}
 }
 
 @(test)
