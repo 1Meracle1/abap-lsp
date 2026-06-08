@@ -226,20 +226,25 @@ checker_apply_oop_event_handler_signature :: proc(ctx: ^Checker_Context, routine
 	event_payload, event_payload_ok := event.payload.(^Entity_Routine_Payload)
 	assert(event_payload_ok && event_payload != nil)
 	for param in payload.parameters {
-		if .Has_Declared_Type in param.flags && !checker_type_is_unknown(param.type) {
-			continue
-		}
 		event_param := checker_routine_parameter_named(event_payload, param.name)
 		if event_param == nil {
 			continue
 		}
 		checker_check_entity_for_operand(ctx, event_param)
-		param.type = event_param.type if event_param.type != nil else project_type_unknown(ctx.project)
-		param.flags += {.Has_Declared_Type}
-		param.flags -= {.Untyped}
-		param.state = .Resolved
-		if param.decl_info != nil {
-			param.decl_info.state = .Resolved
+		if .Optional in event_param.flags {
+			param.flags += {.Optional}
+		}
+		if .Has_Default_Value in event_param.flags {
+			param.flags += {.Has_Default_Value}
+		}
+		if !(.Has_Declared_Type in param.flags && !checker_type_is_unknown(param.type)) {
+			param.type = event_param.type if event_param.type != nil else project_type_unknown(ctx.project)
+			param.flags += {.Has_Declared_Type}
+			param.flags -= {.Untyped}
+			param.state = .Resolved
+			if param.decl_info != nil {
+				param.decl_info.state = .Resolved
+			}
 		}
 		param_payload, param_ok := param.payload.(^Entity_Variable_Payload)
 		event_param_payload, event_param_ok := event_param.payload.(^Entity_Variable_Payload)

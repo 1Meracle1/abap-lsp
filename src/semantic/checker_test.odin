@@ -1319,6 +1319,45 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_oop_checker_derives_event_handler_optional_parameters :: proc(t: ^testing.T) {
+	source := `CLASS lcl_source DEFINITION.
+  PUBLIC SECTION.
+    EVENTS html_event EXPORTING
+      VALUE(action) TYPE string
+      VALUE(frame) TYPE string OPTIONAL.
+ENDCLASS.
+CLASS lcl_handler DEFINITION.
+  PUBLIC SECTION.
+    METHODS on_event FOR EVENT html_event OF lcl_source IMPORTING action frame.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_handler IMPLEMENTATION.
+  METHOD on_event.
+  ENDMETHOD.
+  METHOD run.
+    on_event( action = 'refresh' ).
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://oop_event_handler_optional.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Required_Parameter), 0)
+	handler_class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_handler", .Class)
+	testing.expect(t, handler_class != nil)
+	if handler_class == nil {
+		return
+	}
+	handler_payload := handler_class.payload.(^Entity_Object_Payload)
+	method := checker_test_lookup(t, &project, handler_payload.definition_scope, .Routine, "on_event", .Method)
+	method_payload := method.payload.(^Entity_Routine_Payload)
+	frame := checker_routine_parameter_named(method_payload, checker_intern_name(&project, "frame"))
+	testing.expect(t, frame != nil && .Optional in frame.flags)
+}
+
+@(test)
 root_semantic_oop_checker_resolves_qualified_interface_signature :: proc(t: ^testing.T) {
 	source := `INTERFACE lif_message.
   METHODS get_longtext IMPORTING preserve_newlines TYPE abap_bool.
