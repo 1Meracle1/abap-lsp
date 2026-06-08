@@ -1245,10 +1245,15 @@ checker_check_call_argument_with_parameter :: proc(
 	if receives {
 		checker_check_argument_compatibility(ctx, formal_type, actual.type, arg.value_range)
 	} else {
-		if !checker_character_literal_argument_compatible(ctx, arg.value, formal_type) {
+		if !checker_literal_argument_compatible(ctx, arg.value, formal_type) {
 			checker_check_argument_compatibility(ctx, actual.type, formal_type, arg.value_range)
 		}
 	}
+}
+
+checker_literal_argument_compatible :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, dst: ^Type) -> bool {
+	return checker_character_literal_argument_compatible(ctx, expr, dst) ||
+	       checker_numeric_literal_argument_compatible(ctx, expr, dst)
 }
 
 checker_character_literal_argument_compatible :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, dst: ^Type) -> bool {
@@ -1294,6 +1299,40 @@ checker_character_literal_matches_builtin_formal :: proc(value: string, dst_name
 		return checker_text_literal_decimal(value)
 	case "x", "xstring", "xsequence":
 		return checker_text_literal_hex(value)
+	}
+	return false
+}
+
+checker_numeric_literal_argument_compatible :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, dst: ^Type) -> bool {
+	value, value_ok := checker_expr_numeric_literal_text(expr)
+	if !value_ok {
+		return false
+	}
+	dst_name, dst_ok := checker_type_builtin_name(ctx, dst)
+	if !dst_ok {
+		return false
+	}
+	return checker_numeric_literal_matches_builtin_formal(value, dst_name)
+}
+
+checker_expr_numeric_literal_text :: proc(expr: ^ast.Expr) -> (string, bool) {
+	if expr == nil {
+		return "", false
+	}
+	lit, ok := expr.derived_expr.(^ast.Literal_Expr)
+	if !ok || !checker_literal_is_integer(lit.value) {
+		return "", false
+	}
+	return lit.value, true
+}
+
+checker_numeric_literal_matches_builtin_formal :: proc(value: string, dst_name: string) -> bool {
+	if !checker_literal_is_integer(value) {
+		return false
+	}
+	switch dst_name {
+	case "n":
+		return true
 	}
 	return false
 }

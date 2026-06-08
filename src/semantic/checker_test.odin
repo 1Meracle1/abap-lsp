@@ -1896,6 +1896,30 @@ lcl_demo=>run( ).`
 }
 
 @(test)
+root_semantic_stmt_checker_accepts_numeric_literals_for_numeric_text_arguments :: proc(t: ^testing.T) {
+	source := `TYPES lvc_outlen TYPE n.
+CLASS lcl_column DEFINITION.
+  PUBLIC SECTION.
+    METHODS set_output_length IMPORTING value TYPE lvc_outlen.
+ENDCLASS.
+CLASS lcl_column IMPLEMENTATION.
+  METHOD set_output_length.
+  ENDMETHOD.
+ENDCLASS.
+DATA lv_length TYPE i.
+DATA lo_column TYPE REF TO lcl_column.
+lo_column->set_output_length( 20 ).
+lo_column->set_output_length( lv_length ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_numeric_text_arg_conversions.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 1)
+}
+
+@(test)
 root_semantic_stmt_checker_accepts_string_expression_and_text_literal_arguments :: proc(t: ^testing.T) {
 	source := `TYPES enddatum TYPE d.
 CLASS lcl_demo DEFINITION.
