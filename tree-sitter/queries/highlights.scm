@@ -12,7 +12,6 @@
 (template_interpolation_start) @punctuation.bracket
 (template_interpolation_end) @punctuation.bracket
 (field_symbol) @variable.special
-(namespaced_identifier) @variable.special
 (cte_identifier) @variable.special
 (identifier) @variable
 ((_

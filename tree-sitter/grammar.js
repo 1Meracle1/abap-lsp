@@ -345,7 +345,7 @@ module.exports = grammar({
     identifier: (_) => token(/[A-Za-z_][A-Za-z0-9_]*/),
     escaped_identifier: (_) => token(/![A-Za-z_][A-Za-z0-9_]*/),
     field_symbol: (_) => token(/<[A-Za-z_][A-Za-z0-9_]*>/),
-    namespaced_identifier: (_) =>
+    _slash_identifier: (_) =>
       token(/\/[A-Za-z][A-Za-z0-9_]*\/[A-Za-z_][A-Za-z0-9_]*/),
     cte_identifier: (_) => token(prec(1, /\+[A-Za-z_][A-Za-z0-9_]*/)),
 
@@ -354,7 +354,7 @@ module.exports = grammar({
         $.identifier,
         $.escaped_identifier,
         $.field_symbol,
-        $.namespaced_identifier,
+        alias($._slash_identifier, $.identifier),
         $.cte_identifier,
       ),
 

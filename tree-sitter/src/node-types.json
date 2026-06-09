@@ -622,10 +622,6 @@
           {
             "type": "identifier",
             "named": true
-          },
-          {
-            "type": "namespaced_identifier",
-            "named": true
           }
         ]
       }
@@ -689,10 +685,6 @@
           },
           {
             "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "namespaced_identifier",
             "named": true
           }
         ]
@@ -848,10 +840,6 @@
           },
           {
             "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "namespaced_identifier",
             "named": true
           },
           {
@@ -1250,10 +1238,6 @@
           {
             "type": "identifier",
             "named": true
-          },
-          {
-            "type": "namespaced_identifier",
-            "named": true
           }
         ]
       }
@@ -1318,10 +1302,6 @@
           {
             "type": "identifier",
             "named": true
-          },
-          {
-            "type": "namespaced_identifier",
-            "named": true
           }
         ]
       }
@@ -1375,10 +1355,6 @@
           },
           {
             "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "namespaced_identifier",
             "named": true
           }
         ]
@@ -1514,10 +1490,6 @@
         {
           "type": "keyword",
           "named": true
-        },
-        {
-          "type": "namespaced_identifier",
-          "named": true
         }
       ]
     }
@@ -1544,10 +1516,6 @@
           },
           {
             "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "namespaced_identifier",
             "named": true
           }
         ]
@@ -1625,10 +1593,6 @@
           {
             "type": "identifier",
             "named": true
-          },
-          {
-            "type": "namespaced_identifier",
-            "named": true
           }
         ]
       }
@@ -1702,10 +1666,6 @@
           },
           {
             "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "namespaced_identifier",
             "named": true
           }
         ]
@@ -1786,10 +1746,6 @@
           },
           {
             "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "namespaced_identifier",
             "named": true
           }
         ]
@@ -1949,10 +1905,6 @@
           {
             "type": "identifier",
             "named": true
-          },
-          {
-            "type": "namespaced_identifier",
-            "named": true
           }
         ]
       }
@@ -2006,10 +1958,6 @@
           },
           {
             "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "namespaced_identifier",
             "named": true
           }
         ]
@@ -2100,10 +2048,6 @@
         {
           "type": "identifier",
           "named": true
-        },
-        {
-          "type": "namespaced_identifier",
-          "named": true
         }
       ]
     }
@@ -2161,10 +2105,6 @@
           },
           {
             "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "namespaced_identifier",
             "named": true
           }
         ]
@@ -2309,10 +2249,6 @@
           },
           {
             "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "namespaced_identifier",
             "named": true
           }
         ]
@@ -2986,10 +2922,6 @@
   },
   {
     "type": "line_comment",
-    "named": true
-  },
-  {
-    "type": "namespaced_identifier",
     "named": true
   },
   {

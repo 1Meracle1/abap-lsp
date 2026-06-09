@@ -151,7 +151,7 @@
         "value": "<[A-Za-z_][A-Za-z0-9_]*>"
       }
     },
-    "namespaced_identifier": {
+    "_slash_identifier": {
       "type": "TOKEN",
       "content": {
         "type": "PATTERN",
@@ -185,8 +185,13 @@
           "name": "field_symbol"
         },
         {
-          "type": "SYMBOL",
-          "name": "namespaced_identifier"
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_slash_identifier"
+          },
+          "named": true,
+          "value": "identifier"
         },
         {
           "type": "SYMBOL",

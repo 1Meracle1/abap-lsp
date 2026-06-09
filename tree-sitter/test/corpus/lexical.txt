@@ -66,3 +66,25 @@ DATA <row> TYPE any.
     (keyword)
     (qualified_name
       (identifier))))
+
+==================
+Namespaced identifiers
+==================
+
+REPORT /STTP/DEMO.
+DATA /STTP/value TYPE /STTP/type.
+
+---
+
+(source_file
+  (report_statement
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (data_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))))
