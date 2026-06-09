@@ -14,10 +14,7 @@ lo_obj->dynamic_call( EXPORTING iv_value = lv_value ).
     (qualified_name
       (identifier)))
   (unknown_statement
-    (selector_expression
-      (qualified_name
-        (identifier))
-      (identifier))
+    (field_path)
     (qualified_name
       (identifier))
     (qualified_name
@@ -29,11 +26,12 @@ lo_obj->dynamic_call( EXPORTING iv_value = lv_value ).
       (selector_expression
         (qualified_name
           (identifier))
-        (identifier))
+        (component_name
+          (identifier)))
       (argument_list
         (keyword)
-        (binary_expression
-          (qualified_name
-            (identifier))
+        (named_argument
+          (identifier)
+          (equals)
           (qualified_name
             (identifier)))))))

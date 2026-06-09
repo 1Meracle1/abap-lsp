@@ -31,31 +31,31 @@ ENDDO.
       (keyword)
       (argument_list
         (constructor_row
-          (binary_expression
-            (qualified_name
-              (identifier))
+          (named_argument
+            (identifier)
+            (equals)
             (string))
-          (binary_expression
-            (qualified_name
-              (identifier))
+          (named_argument
+            (keyword)
+            (equals)
             (string))
-          (binary_expression
-            (qualified_name
-              (identifier))
+          (named_argument
+            (identifier)
+            (equals)
             (qualified_name
               (identifier))))
         (constructor_row
-          (binary_expression
-            (qualified_name
-              (identifier))
+          (named_argument
+            (identifier)
+            (equals)
             (string))
-          (binary_expression
-            (qualified_name
-              (identifier))
+          (named_argument
+            (keyword)
+            (equals)
             (string))
-          (binary_expression
-            (qualified_name
-              (identifier))
+          (named_argument
+            (identifier)
+            (equals)
             (qualified_name
               (identifier)))))))
   (do_statement
@@ -93,19 +93,13 @@ ENDCLASS.
     (keyword)
     (keyword)
     (keyword)
-    (binary_expression
-      (qualified_name
-        (identifier))
-      (number)))
+    (tail_fragment))
   (parameters_declaration
     (keyword)
     (qualified_name
       (identifier))
     (keyword)
-    (selector_expression
-      (qualified_name
-        (identifier))
-      (identifier))
+    (field_path)
     (keyword))
   (parameters_declaration
     (keyword)
@@ -185,8 +179,9 @@ ENDLOOP.
     (keyword)
     (qualified_name
       (identifier))
-    (keyword)
-    (string)
+    (value_tail
+      (keyword)
+      (string))
     (keyword)
     (qualified_name
       (identifier))
@@ -214,8 +209,9 @@ ENDLOOP.
     (keyword)
     (qualified_name
       (identifier))
-    (keyword)
-    (string)
+    (value_tail
+      (keyword)
+      (string))
     (keyword)
     (keyword)
     (qualified_name
@@ -226,8 +222,9 @@ ENDLOOP.
       (identifier))
     (keyword)
     (keyword)
-    (keyword)
-    (string)
+    (value_tail
+      (keyword)
+      (string))
     (keyword)
     (keyword)
     (qualified_name
@@ -248,32 +245,28 @@ ENDLOOP.
     (keyword)
     (case_statement
       (keyword)
-      (selector_expression
-        (qualified_name
-          (identifier))
-        (identifier))
+      (field_path)
       (when_clause
         (keyword)
         (string)
-        (assignment_statement
-          (selector_expression
-            (qualified_name
-              (identifier))
-            (identifier))
-          (constructor_expression
-            (keyword)
-            (identifier)
-            (argument_list
+        (unknown_statement
+          (binary_expression
+            (field_path)
+            (constructor_expression
               (keyword)
-              (binary_expression
-                (qualified_name
-                  (identifier))
-                (qualified_name
-                  (identifier)))
-              (keyword)
-              (number)
-              (keyword)
-              (number))))
+              (qualified_name
+                (identifier))
+              (argument_list
+                (keyword)
+                (named_argument
+                  (identifier)
+                  (equals)
+                  (qualified_name
+                    (identifier)))
+                (keyword)
+                (number)
+                (keyword)
+                (number)))))
         (simple_statement
           (keyword)
           (keyword)))
@@ -300,7 +293,7 @@ ENDLOOP.
 ---
 
 (source_file
-  (simple_statement
+  (call_statement
     (keyword)
     (keyword)
     (string)
@@ -328,16 +321,10 @@ ENDLOOP.
     (keyword)
     (keyword)
     (keyword)
-    (selector_expression
-      (qualified_name
-        (identifier))
-      (identifier))
+    (field_path)
     (keyword)
     (keyword)
-    (selector_expression
-      (qualified_name
-        (identifier))
-      (identifier))
+    (field_path)
     (keyword)
     (keyword)
     (qualified_name
@@ -354,19 +341,17 @@ ENDLOOP.
     (keyword)
     (keyword)
     (string))
-  (simple_statement
+  (call_statement
     (keyword)
     (keyword)
-    (selector_expression
-      (qualified_name
-        (identifier))
-      (identifier)))
+    (static_type_path))
   (assignment_statement
     (qualified_name
       (identifier))
     (constructor_expression
       (keyword)
-      (identifier)
+      (qualified_name
+        (identifier))
       (argument_list
         (qualified_name
           (identifier)))))
@@ -375,12 +360,8 @@ ENDLOOP.
     (qualified_name
       (identifier))
     (keyword)
-    (host_expression
-      (constructor_expression
-        (keyword)
-        (argument_list
-          (qualified_name
-            (identifier)))))
+    (operator)
+    (tail_fragment)
     (keyword)
     (qualified_name
       (identifier)))
@@ -390,11 +371,7 @@ ENDLOOP.
     (qualified_name
       (identifier))
     (keyword)
-    (constructor_expression
-      (keyword)
-      (argument_list
-        (qualified_name
-          (identifier))))
+    (tail_fragment)
     (keyword)))
 
 ==================
@@ -505,28 +482,21 @@ ENDFORM.
       (identifier))
     (keyword)
     (keyword)
-    (host_expression
-      (constructor_expression
-        (keyword)
-        (argument_list
-          (qualified_name
-            (identifier)))))
+    (operator)
+    (tail_fragment)
     (keyword)
     (keyword)
     (keyword)
     (keyword)
-    (host_expression
-      (qualified_name
-        (identifier)))
+    (operator)
+    (qualified_name
+      (identifier))
     (keyword)
-    (binary_expression
-      (qualified_name
-        (identifier))
-      (host_expression
-        (selector_expression
-          (qualified_name
-            (identifier))
-          (identifier)))))
+    (qualified_name
+      (identifier))
+    (operator)
+    (operator)
+    (field_path))
   (simple_statement
     (keyword)
     (keyword)
@@ -540,13 +510,10 @@ ENDFORM.
     (binary_expression
       (qualified_name
         (identifier))
-      (selector_expression
-        (qualified_name
-          (field_symbol))
-        (identifier)))
+      (field_symbol_path))
     (keyword)
     (keyword))
-  (simple_statement
+  (delete_statement
     (keyword)
     (keyword)
     (keyword)
@@ -568,7 +535,7 @@ ENDFORM.
     (keyword)
     (keyword)
     (keyword))
-  (simple_statement
+  (call_statement
     (keyword)
     (keyword)
     (string)
@@ -576,22 +543,22 @@ ENDFORM.
     (qualified_name
       (identifier))
     (keyword)
-    (binary_expression
-      (qualified_name
-        (identifier))
-      (qualified_name
-        (identifier)))
+    (qualified_name
+      (identifier))
+    (operator)
+    (qualified_name
+      (identifier))
     (keyword)
-    (binary_expression
-      (qualified_name
-        (identifier))
-      (qualified_name
-        (identifier)))
+    (qualified_name
+      (identifier))
+    (operator)
+    (qualified_name
+      (identifier))
     (keyword)
-    (binary_expression
-      (qualified_name
-        (identifier))
-      (number))
+    (qualified_name
+      (identifier))
+    (operator)
+    (number)
     (keyword)
     (qualified_name
       (identifier))
@@ -655,10 +622,7 @@ LEAVE TO SCREEN sy-dynnr.
   (select_statement
     (keyword)
     (keyword)
-    (wildcard_selector_expression
-      (qualified_name
-        (identifier))
-      (wildcard))
+    (sql_wildcard_selector)
     (keyword)
     (qualified_name
       (identifier))
@@ -667,22 +631,16 @@ LEAVE TO SCREEN sy-dynnr.
       (identifier))
     (keyword)
     (keyword)
-    (host_expression
-      (constructor_expression
-        (keyword)
-        (argument_list
-          (qualified_name
-            (identifier)))))
+    (operator)
+    (tail_fragment)
     (keyword)
-    (binary_expression
-      (interface_selector_expression
-        (qualified_name
-          (identifier))
-        (identifier))
-      (keyword)
-      (parenthesized_expression
-        (string)
-        (string))))
+    (tail_fragment)
+    (keyword)
+    (punctuation)
+    (string)
+    (punctuation)
+    (string)
+    (punctuation))
   (data_declaration
     (keyword)
     (binary_expression
@@ -691,36 +649,28 @@ LEAVE TO SCREEN sy-dynnr.
           (identifier)))
       (constructor_expression
         (keyword)
-        (identifier)
+        (qualified_name
+          (identifier))
         (argument_list
-          (binary_expression
-            (qualified_name
-              (identifier))
+          (named_argument
+            (identifier)
+            (equals)
             (string_template
               (template_start)
               (template_text)
               (template_interpolation
                 (template_interpolation_start)
-                (selector_expression
-                  (qualified_name
-                    (identifier))
-                  (identifier))
+                (field_path)
                 (template_interpolation_end))
               (template_text)
               (template_interpolation
                 (template_interpolation_start)
-                (selector_expression
-                  (qualified_name
-                    (identifier))
-                  (identifier))
+                (field_path)
                 (template_interpolation_end))
               (template_text)
               (template_interpolation
                 (template_interpolation_start)
-                (selector_expression
-                  (qualified_name
-                    (identifier))
-                  (identifier))
+                (field_path)
                 (template_interpolation_end))
               (template_end)))))))
   (simple_statement
@@ -739,28 +689,18 @@ LEAVE TO SCREEN sy-dynnr.
     (binary_expression
       (qualified_name
         (identifier))
-      (selector_expression
-        (qualified_name
-          (identifier))
-        (identifier)))
+      (field_path))
     (binary_expression
       (qualified_name
         (identifier))
-      (selector_expression
-        (qualified_name
-          (identifier))
-        (identifier))))
+      (field_path)))
   (loop_statement
     (keyword)
     (keyword)
     (qualified_name
       (identifier))
     (keyword)
-    (constructor_expression
-      (keyword)
-      (argument_list
-        (qualified_name
-          (identifier))))
+    (tail_fragment)
     (at_statement
       (keyword)
       (keyword)
@@ -779,30 +719,20 @@ LEAVE TO SCREEN sy-dynnr.
         (keyword)
         (constructor_expression
           (keyword)
-          (identifier)
-          (argument_list
-            (binary_expression
-              (qualified_name
-                (identifier))
-              (selector_expression
-                (qualified_name
-                  (identifier))
-                (identifier)))))
-        (keyword)
-        (selector_expression
-          (selector_expression
-            (qualified_name
-              (identifier))
+          (qualified_name
             (identifier))
-          (identifier)))
+          (argument_list
+            (named_argument
+              (identifier)
+              (equals)
+              (field_path))))
+        (keyword)
+        (field_path))
       (keyword))
     (keyword))
   (simple_statement
     (keyword)
-    (wildcard_selector_expression
-      (qualified_name
-        (identifier))
-      (wildcard))
+    (tail_fragment)
     (keyword)
     (qualified_name
       (field_symbol)))
@@ -819,26 +749,26 @@ LEAVE TO SCREEN sy-dynnr.
       (qualified_name
         (field_symbol)))
     (keyword))
-  (simple_statement
+  (call_statement
     (keyword)
     (keyword)
     (qualified_name
       (identifier))
     (keyword)
-    (binary_expression
-      (qualified_name
-        (identifier))
-      (qualified_name
-        (identifier)))
+    (qualified_name
+      (identifier))
+    (operator)
+    (qualified_name
+      (identifier))
     (keyword)
     (keyword)
     (qualified_name
       (identifier))
     (keyword)
-    (binary_expression
-      (qualified_name
-        (identifier))
-      (string)))
+    (qualified_name
+      (identifier))
+    (operator)
+    (string))
   (assignment_statement
     (qualified_name
       (identifier))
@@ -854,7 +784,4 @@ LEAVE TO SCREEN sy-dynnr.
     (keyword)
     (keyword)
     (keyword)
-    (selector_expression
-      (qualified_name
-        (identifier))
-      (identifier))))
+    (field_path)))

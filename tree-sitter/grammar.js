@@ -61,7 +61,6 @@ const SIMPLE_STATEMENT_KEYWORDS = [
   "UNASSIGN",
   "MOVE",
   "MOVE-CORRESPONDING",
-  "ADD",
   "SUBTRACT",
   "MULTIPLY",
   "DIVIDE",
@@ -75,7 +74,6 @@ const SIMPLE_STATEMENT_KEYWORDS = [
   "FIND",
   "SEARCH",
   "PERFORM",
-  "CALL",
   "MESSAGE",
   "WRITE",
   "ASSERT",
@@ -99,10 +97,8 @@ const SIMPLE_STATEMENT_KEYWORDS = [
   "FIELD-GROUPS",
   "FIELD",
   "ASSIGN",
-  "CREATE",
   "OVERLAY",
   "PACK",
-  "UNPACK",
   "CONVERT",
   "WAIT",
   "SKIP",
@@ -119,19 +115,34 @@ const SIMPLE_STATEMENT_KEYWORDS = [
   "INSERT",
   "APPEND",
   "MODIFY",
-  "SORT",
-  "UPDATE",
-  "DELETE",
   "OPEN",
   "FETCH",
   "CLOSE",
   "GENERATE",
-  "CLASS",
-  "INTERFACE",
   "INTERFACES",
   "EVENTS",
   "CLASS-EVENTS",
   "ALIASES",
+];
+
+const CALLABLE_KEYWORDS = [
+  "ADD",
+  "APPEND",
+  "CALL",
+  "CLEANUP",
+  "CREATE",
+  "DELETE",
+  "FORM",
+  "GET",
+  "INSERT",
+  "LINES",
+  "MODIFY",
+  "RAISE",
+  "READ",
+  "SET",
+  "SORT",
+  "UNPACK",
+  "UPDATE",
 ];
 
 const EXPRESSION_KEYWORDS = [
@@ -242,6 +253,106 @@ const EXPRESSION_KEYWORDS = [
   "DEFAULT",
 ];
 
+const COMPONENT_NAME_KEYWORDS = [
+  "ABSTRACT",
+  "ACTION",
+  "ADD",
+  "ALIAS",
+  "ALL",
+  "ANY",
+  "APPEND",
+  "APPEND",
+  "ASSIGN",
+  "BASE",
+  "BEGIN",
+  "BOUND",
+  "BY",
+  "CALL",
+  "CASE",
+  "CAST",
+  "CLASS",
+  "CLEANUP",
+  "CLIENT",
+  "COMPONENT",
+  "COMPONENTS",
+  "CONSTANTS",
+  "CONTROLS",
+  "DATA",
+  "DEFAULT",
+  "DELETE",
+  "END",
+  "EVENT",
+  "EVENTS",
+  "EXCEPTION",
+  "EXCEPTIONS",
+  "EXPORT",
+  "FIELD",
+  "FIELDS",
+  "FILTER",
+  "FINAL",
+  "FOR",
+  "FORM",
+  "FROM",
+  "FUNCTION",
+  "GET",
+  "GROUP",
+  "IMPORT",
+  "INCLUDE",
+  "INDEX",
+  "INSERT",
+  "INTERFACE",
+  "INTERFACES",
+  "KEY",
+  "LEFT",
+  "LINE",
+  "LINES",
+  "LOOP",
+  "METHOD",
+  "METHODS",
+  "MODIFY",
+  "NAME",
+  "NEW",
+  "OBJECT",
+  "OPTION",
+  "ORDER",
+  "PARAMETER",
+  "PARAMETERS",
+  "PRIVATE",
+  "PROGRAM",
+  "PROTECTED",
+  "PUBLIC",
+  "READ",
+  "RAISE",
+  "RECEIVE",
+  "REF",
+  "REFERENCE",
+  "REPORT",
+  "RESULT",
+  "RETURN",
+  "RETURNING",
+  "RIGHT",
+  "SCREEN",
+  "SECTION",
+  "SELECT",
+  "SET",
+  "SIZE",
+  "SORT",
+  "SOURCE",
+  "TABLE",
+  "TABLES",
+  "THEN",
+  "TO",
+  "TYPE",
+  "TYPES",
+  "UNION",
+  "UNPACK",
+  "UPDATE",
+  "VALUE",
+  "WHERE",
+  "WITH",
+  "WORK",
+];
+
 const CONSTRUCTOR_ARGUMENT_KEYWORDS = [
   ...EXPRESSION_KEYWORDS,
   "WHEN",
@@ -250,10 +361,12 @@ const CONSTRUCTOR_ARGUMENT_KEYWORDS = [
 
 const STATEMENT_TAIL_KEYWORDS = [
   "ACCEPTING",
+  "ADD",
   "ADJACENT",
   "BEGIN",
   "BINARY",
   "BLOCK",
+  "CLEAR",
   "COMPARING",
   "DESTINATION",
   "DISTINCT",
@@ -289,15 +402,49 @@ const STATEMENT_TAIL_KEYWORDS = [
   "ZONE",
   "DATE",
   "DISPLAY",
+  "GET",
+  "APPEND",
+  "INSERT",
   "METHOD",
+  "MODIFY",
   "NEW",
   "OF",
   "SOURCE",
   "RESULT",
+  "SET",
+  "SORT",
   "TRANSFORMATION",
   "XML",
   "OPTIONS",
+  "PATCH",
+  "POST",
+  "PUT",
+  "READ",
+  "UPDATE",
   "TIMES",
+  "ABSTRACT",
+  "ANY",
+  "CATEGORY",
+  "COMPONENT",
+  "COMPONENTS",
+  "CREATE",
+  "DELETE",
+  "DEFINITION",
+  "DEFERRED",
+  "ENUM",
+  "EXCEPTION",
+  "FOR",
+  "GROUP",
+  "IGNORING",
+  "IMPLEMENTS",
+  "INHERITING",
+  "INSTANCE",
+  "PREFERRED",
+  "RAISING",
+  "REDEFINITION",
+  "SHORTDUMP-ID",
+  "TESTING",
+  "VALUE",
 ];
 
 module.exports = grammar({
@@ -325,11 +472,24 @@ module.exports = grammar({
 
   conflicts: ($) => [
     [$.unary_expression, $.binary_expression, $.selector_expression],
+    [$.named_argument, $.binary_expression],
     [$.qualified_name, $.selector_expression],
     [$.binary_expression, $.selector_expression],
     [$.parenthesized_expression, $._raw_token],
     [$.parenthesized_expression, $.argument_list],
+    [$._expression, $._raw_token],
+    [$._expression, $._argument_token],
+    [$._expression, $._argument_value],
+    [$.named_argument, $._argument_token],
     [$._tail_token, $._raw_token],
+    [$.component_name, $._tail_token],
+    [$.component_name, $._raw_token],
+    [$.component_name, $._tail_token, $._raw_token],
+    [$.dynamic_component, $._raw_token],
+    [$.constructor_expression, $._tail_token],
+    [$.constructor_expression, $._raw_token],
+    [$.routine_name, $._expression],
+    [$.catch_clause],
   ],
 
   rules: {
@@ -345,6 +505,8 @@ module.exports = grammar({
         $.loop_statement,
         $.at_statement,
         $.try_statement,
+        $.class_forward_declaration,
+        $.interface_forward_declaration,
         $.class_definition,
         $.class_implementation,
         $.interface_definition,
@@ -354,6 +516,14 @@ module.exports = grammar({
         $.module_definition,
         $.event_block,
         $.macro_definition,
+        $.call_statement,
+        $.delete_statement,
+        $.update_statement,
+        $.sort_statement,
+        $.create_statement,
+        $.add_statement,
+        $.unpack_statement,
+        $.sql_dml_statement,
         $.select_statement,
         $.submit_statement,
         $.exec_sql_statement,
@@ -370,9 +540,23 @@ module.exports = grammar({
     identifier: (_) => token(/[A-Za-z_][A-Za-z0-9_]*/),
     escaped_identifier: (_) => token(/![A-Za-z_][A-Za-z0-9_]*/),
     field_symbol: (_) => token(/<[A-Za-z_][A-Za-z0-9_]*>/),
+    field_symbol_path: (_) =>
+      token(prec(1, /<[A-Za-z_][A-Za-z0-9_]*>(?:-[A-Za-z_][A-Za-z0-9_]*)+/)),
     _slash_identifier: (_) =>
       token(/\/[A-Za-z][A-Za-z0-9_]*\/[A-Za-z_][A-Za-z0-9_]*/),
     cte_identifier: (_) => token(prec(1, /\+[A-Za-z_][A-Za-z0-9_]*/)),
+    field_path: (_) =>
+      token(prec(1, /[A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z_][A-Za-z0-9_]*)+/)),
+    sql_wildcard_selector: (_) =>
+      token(prec(1, /[A-Za-z_][A-Za-z0-9_]*~\*/)),
+    static_type_path: (_) =>
+      token(
+        prec(
+          1,
+          /[A-Za-z_][A-Za-z0-9_]*(?:=>[A-Za-z_][A-Za-z0-9_]*)(?:-[A-Za-z_][A-Za-z0-9_]*)*/,
+        ),
+      ),
+    dynamic_name: (_) => token(prec(1, /\([A-Za-z_][A-Za-z0-9_]*\)/)),
 
     _name: ($) =>
       choice(
@@ -383,12 +567,36 @@ module.exports = grammar({
         $.cte_identifier,
       ),
 
+    _argument_name: ($) =>
+      choice(
+        $._name,
+        alias(keywordChoice($, COMPONENT_NAME_KEYWORDS), $.identifier),
+      ),
+
+    component_name: ($) =>
+      prec(
+        3,
+        choice(
+          $._name,
+          alias(keywordChoice($, COMPONENT_NAME_KEYWORDS), $.identifier),
+        ),
+      ),
+
+    dynamic_component: ($) =>
+      seq(
+        "(",
+        repeat1(choice($._raw_token, keywordChoice($, STATEMENT_TAIL_KEYWORDS))),
+        ")",
+      ),
+
+    routine_name: ($) => choice($.qualified_name, $.component_name),
+
     qualified_name: ($) =>
       prec.left(
         PREC.SELECTOR,
         seq(
           $._name,
-          repeat(seq(choice("-", "->", "=>", "~"), $._name)),
+          repeat(seq(choice("-", "->", "=>", "~"), $.component_name)),
         ),
       ),
 
@@ -456,6 +664,9 @@ module.exports = grammar({
         $.constructor_expression,
         $.parenthesized_expression,
         $.host_expression,
+        $.field_symbol_path,
+        $.field_path,
+        $.static_type_path,
         $.qualified_name,
         $._literal,
       ),
@@ -485,7 +696,7 @@ module.exports = grammar({
         seq(
           field("object", $._expression),
           field("operator", choice("-", "->", "=>")),
-          field("property", $._name),
+          field("property", choice($.component_name, $.dynamic_component)),
         ),
       ),
 
@@ -496,7 +707,7 @@ module.exports = grammar({
         PREC.SELECTOR,
         seq(
           field("object", $._expression),
-          field("operator", choice("->", "~")),
+          field("operator", choice("->", "=>", "~")),
           field("property", $.wildcard),
         ),
       ),
@@ -507,25 +718,70 @@ module.exports = grammar({
         seq(
           field("object", $._expression),
           field("operator", "~"),
-          field("property", $._name),
+          field("property", choice($.component_name, $.dynamic_component)),
         ),
       ),
 
     call_expression: ($) =>
       prec.left(
         PREC.CALL,
-        seq(field("function", $._expression), field("arguments", $.argument_list)),
+        seq(field("function", choice($._expression, keywordChoice($, CALLABLE_KEYWORDS))), field("arguments", $.argument_list)),
       ),
 
     argument_list: ($) =>
       seq(
         "(",
-        repeat(choice($.constructor_row, $.named_argument, $._expression, keywordChoice($, CONSTRUCTOR_ARGUMENT_KEYWORDS), $.operator, $.punctuation)),
+        repeat(choice($.constructor_row, $.named_argument, $._expression, $._argument_token)),
         ")",
       ),
 
+    _argument_token: ($) =>
+      choice(
+        $.static_type_path,
+        $.unary_expression,
+        $.selector_expression,
+        $.interface_selector_expression,
+        $.wildcard_selector_expression,
+        $.call_expression,
+        $.table_expression,
+        $.substring_expression,
+        $.constructor_expression,
+        $.parenthesized_expression,
+        $.host_expression,
+        $.field_symbol_path,
+        $.field_path,
+        $.positional_name,
+        $._literal,
+        keywordChoice($, CONSTRUCTOR_ARGUMENT_KEYWORDS),
+        $.operator,
+        $.punctuation,
+      ),
+
     named_argument: ($) =>
-      seq(field("name", $._name), "=", field("value", $._expression)),
+      prec(PREC.COMPARE + 1, seq(field("name", $._argument_name), $.equals, field("value", $._expression))),
+
+    equals: (_) => token(prec(3, "=")),
+
+    _argument_value: ($) =>
+      choice(
+        $.static_type_path,
+        $.field_symbol_path,
+        $.field_path,
+        $.unary_expression,
+        $.selector_expression,
+        $.interface_selector_expression,
+        $.wildcard_selector_expression,
+        $.call_expression,
+        $.table_expression,
+        $.substring_expression,
+        $.constructor_expression,
+        $.parenthesized_expression,
+        $.host_expression,
+        $.qualified_name,
+        $._literal,
+      ),
+
+    positional_name: ($) => prec(-1, $.qualified_name),
 
     table_expression: ($) =>
       prec.left(
@@ -545,9 +801,11 @@ module.exports = grammar({
       prec.left(
         PREC.CALL,
         seq(
-          field("constructor", keywordChoice($, ["VALUE", "NEW", "CONV", "COND", "SWITCH", "REDUCE", "REF", "CORRESPONDING", "FILTER", "DATA", "CAST"])),
-          optional(field("type", choice($._name, "#", $.qualified_name))),
-          field("arguments", $.argument_list),
+          field("constructor", keywordChoice($, ["VALUE", "CONV", "COND", "REDUCE", "CAST"])),
+          choice(
+            seq(field("type", choice("#", $.qualified_name, $.component_name)), field("arguments", $.argument_list)),
+            field("arguments", $.argument_list),
+          ),
         ),
       ),
 
@@ -661,6 +919,8 @@ module.exports = grammar({
       seq(
         keyword($, "AT"),
         choice(
+          keyword($, "FIRST"),
+          keyword($, "LAST"),
           seq(keyword($, "NEW"), field("name", $._name)),
           seq(keyword($, "END"), keyword($, "OF"), field("name", $._name)),
         ),
@@ -700,6 +960,19 @@ module.exports = grammar({
         ".",
       ),
 
+    class_forward_declaration: ($) =>
+      prec(
+        2,
+        seq(
+          keyword($, "CLASS"),
+          field("name", $._name),
+          keyword($, "DEFINITION"),
+          keyword($, "DEFERRED"),
+          optional($._statement_tail),
+          ".",
+        ),
+      ),
+
     class_implementation: ($) =>
       seq(
         keyword($, "CLASS"),
@@ -718,7 +991,7 @@ module.exports = grammar({
     method_signature: ($) =>
       prec(
         2,
-        seq(keywordChoice($, ["METHODS", "CLASS-METHODS"]), optional(":"), field("name", optional($.qualified_name)), optional($._statement_tail), "."),
+        seq(keywordChoice($, ["METHODS", "CLASS-METHODS"]), optional(":"), field("name", optional($.routine_name)), optional($._statement_tail), "."),
       ),
 
     interface_definition: ($) =>
@@ -732,8 +1005,20 @@ module.exports = grammar({
         ".",
       ),
 
+    interface_forward_declaration: ($) =>
+      prec(
+        2,
+        seq(
+          keyword($, "INTERFACE"),
+          field("name", $._name),
+          keyword($, "DEFERRED"),
+          optional($._statement_tail),
+          ".",
+        ),
+      ),
+
     method_definition: ($) =>
-      seq(keyword($, "METHOD"), field("name", $.qualified_name), optional($._statement_tail), ".", field("body", repeat($._statement)), keyword($, "ENDMETHOD"), "."),
+      seq(keyword($, "METHOD"), field("name", $.routine_name), optional($._statement_tail), ".", field("body", repeat($._statement)), keyword($, "ENDMETHOD"), "."),
 
     form_definition: ($) =>
       seq(keyword($, "FORM"), field("name", $._name), optional($._statement_tail), ".", field("body", repeat($._statement)), keyword($, "ENDFORM"), "."),
@@ -762,14 +1047,144 @@ module.exports = grammar({
     macro_definition: ($) =>
       seq(keyword($, "DEFINE"), field("name", optional($._name)), optional($._statement_tail), ".", field("body", repeat($._statement)), keyword($, "END-OF-DEFINITION"), "."),
 
+    call_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "CALL"),
+          keywordChoice($, ["FUNCTION", "METHOD", "TRANSFORMATION", "SCREEN", "SELECTION-SCREEN"]),
+          repeat($._sql_tail_token),
+          ".",
+        ),
+      ),
+
     select_statement: ($) =>
       prec(
         1,
         seq(
-        keywordChoice($, ["SELECT", "WITH"]),
-        $._statement_tail,
-        ".",
+          keywordChoice($, ["SELECT", "WITH"]),
+          repeat1($._sql_tail_token),
+          ".",
         ),
+      ),
+
+    sql_dml_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "DELETE"),
+          keyword($, "FROM"),
+          repeat($._sql_tail_token),
+          ".",
+        ),
+      ),
+
+    delete_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "DELETE"),
+          choice(
+            $.qualified_name,
+            $.field_path,
+            $.field_symbol_path,
+            keywordChoice($, ["TABLE", "ADJACENT"]),
+          ),
+          repeat($._sql_tail_token),
+          ".",
+        ),
+      ),
+
+    update_statement: ($) =>
+      prec(
+        3,
+        choice(
+          seq(
+            keyword($, "UPDATE"),
+            choice(
+              $.dynamic_name,
+              $.qualified_name,
+              $.field_path,
+              $.field_symbol_path,
+            ),
+            keyword($, "SET"),
+            repeat($._sql_tail_token),
+            ".",
+          ),
+          seq(
+            keyword($, "UPDATE"),
+            choice(
+              $.dynamic_name,
+              $.qualified_name,
+              $.field_path,
+              $.field_symbol_path,
+            ),
+            keyword($, "FROM"),
+            repeat($._sql_tail_token),
+            ".",
+          ),
+        ),
+      ),
+
+    sort_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "SORT"),
+          choice($.qualified_name, $.field_path, $.field_symbol_path),
+          repeat($._sql_tail_token),
+          ".",
+        ),
+      ),
+
+    create_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "CREATE"),
+          keywordChoice($, ["OBJECT", "DATA"]),
+          repeat($._sql_tail_token),
+          ".",
+        ),
+      ),
+
+    add_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "ADD"),
+          choice($._literal, $.qualified_name, $.field_path, $.field_symbol_path),
+          repeat($._sql_tail_token),
+          ".",
+        ),
+      ),
+
+    unpack_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "UNPACK"),
+          choice($._literal, $.qualified_name, $.field_path, $.field_symbol_path),
+          repeat($._sql_tail_token),
+          ".",
+        ),
+      ),
+
+    _sql_tail_token: ($) =>
+      choice(
+        $.static_type_path,
+        $.field_symbol_path,
+        $.field_path,
+        $.dynamic_name,
+        $.substring_expression,
+        $.sql_wildcard_selector,
+        $.qualified_name,
+        $._literal,
+        keywordChoice($, EXPRESSION_KEYWORDS),
+        keywordChoice($, STATEMENT_TAIL_KEYWORDS),
+        $.operator,
+        $.punctuation,
+        $.tail_fragment,
       ),
 
     submit_statement: ($) =>
@@ -822,8 +1237,37 @@ module.exports = grammar({
     _tail_token: ($) =>
       choice(
         $._compound_tail_keyword,
+        $.type_ref_tail,
+        $.value_tail,
         keywordChoice($, STATEMENT_TAIL_KEYWORDS),
         $._raw_token,
+        $.tail_fragment,
+      ),
+
+    type_ref_tail: ($) =>
+      prec(
+        2,
+        seq(
+          keyword($, "REF"),
+          keyword($, "TO"),
+          choice($.qualified_name, $.component_name, $.dynamic_component),
+        ),
+      ),
+
+    value_tail: ($) =>
+      prec(
+        PREC.COMPARE + 1,
+        seq(
+          keywordChoice($, ["VALUE", "DEFAULT"]),
+          choice(
+            $._expression,
+            $._literal,
+            $.qualified_name,
+            $.selector_expression,
+            $.component_name,
+            keywordChoice($, COMPONENT_NAME_KEYWORDS),
+          ),
+        ),
       ),
 
     _compound_tail_keyword: ($) =>
@@ -837,14 +1281,19 @@ module.exports = grammar({
 
     _raw_token: ($) =>
       choice(
+        $.static_type_path,
+        $.field_symbol_path,
+        $.field_path,
         $._expression,
         keywordChoice($, EXPRESSION_KEYWORDS),
         $.operator,
         $.punctuation,
       ),
 
+    tail_fragment: (_) => token(prec(-1, /[^ \t\r\n.]+/)),
+
     operator: (_) =>
-      token(choice("->", "=>", "?=", "<=", ">=", "<>", "&&", "=", "+", "-", "*", "/", "<", ">", "~", "@", "#", "&")),
+      token(choice("->*", "=>*", "->", "=>", "?=", "<=", ">=", "<>", "&&", "=", "+", "-", "*", "/", "<", ">", "~", "@", "#", "&")),
 
     punctuation: (_) => token(choice(",", ":", "(", ")", "[", "]")),
 

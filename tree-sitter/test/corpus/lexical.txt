@@ -28,8 +28,9 @@ DATA <row> TYPE any.
     (keyword)
     (qualified_name
       (identifier))
-    (keyword)
-    (string))
+    (value_tail
+      (keyword)
+      (string)))
   (data_declaration
     (keyword)
     (qualified_name
@@ -37,8 +38,9 @@ DATA <row> TYPE any.
     (keyword)
     (qualified_name
       (identifier))
-    (keyword)
-    (string))
+    (value_tail
+      (keyword)
+      (string)))
   (data_declaration
     (keyword)
     (qualified_name
@@ -46,26 +48,26 @@ DATA <row> TYPE any.
     (keyword)
     (qualified_name
       (identifier))
-    (keyword)
-    (string_template
-      (template_start)
-      (template_text)
-      (template_interpolation
-        (template_interpolation_start)
-        (qualified_name
-          (identifier))
-        (keyword)
-        (operator)
-        (keyword)
-        (template_interpolation_end))
-      (template_end)))
+    (value_tail
+      (keyword)
+      (string_template
+        (template_start)
+        (template_text)
+        (template_interpolation
+          (template_interpolation_start)
+          (qualified_name
+            (identifier))
+          (keyword)
+          (operator)
+          (keyword)
+          (template_interpolation_end))
+        (template_end))))
   (data_declaration
     (keyword)
     (qualified_name
       (field_symbol))
     (keyword)
-    (qualified_name
-      (identifier))))
+    (keyword)))
 
 ==================
 Namespaced identifiers

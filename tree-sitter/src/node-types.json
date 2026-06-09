@@ -20,6 +20,14 @@
         "named": true
       },
       {
+        "type": "field_path",
+        "named": true
+      },
+      {
+        "type": "field_symbol_path",
+        "named": true
+      },
+      {
         "type": "host_expression",
         "named": true
       },
@@ -37,6 +45,10 @@
       },
       {
         "type": "selector_expression",
+        "named": true
+      },
+      {
+        "type": "static_type_path",
         "named": true
       },
       {
@@ -80,11 +92,19 @@
     "named": true,
     "subtypes": [
       {
+        "type": "add_statement",
+        "named": true
+      },
+      {
         "type": "assignment_statement",
         "named": true
       },
       {
         "type": "at_statement",
+        "named": true
+      },
+      {
+        "type": "call_statement",
         "named": true
       },
       {
@@ -96,11 +116,23 @@
         "named": true
       },
       {
+        "type": "class_forward_declaration",
+        "named": true
+      },
+      {
         "type": "class_implementation",
         "named": true
       },
       {
+        "type": "create_statement",
+        "named": true
+      },
+      {
         "type": "declaration_statement",
+        "named": true
+      },
+      {
+        "type": "delete_statement",
         "named": true
       },
       {
@@ -140,6 +172,10 @@
         "named": true
       },
       {
+        "type": "interface_forward_declaration",
+        "named": true
+      },
+      {
         "type": "loop_statement",
         "named": true
       },
@@ -168,6 +204,14 @@
         "named": true
       },
       {
+        "type": "sort_statement",
+        "named": true
+      },
+      {
+        "type": "sql_dml_statement",
+        "named": true
+      },
+      {
         "type": "submit_statement",
         "named": true
       },
@@ -177,6 +221,14 @@
       },
       {
         "type": "unknown_statement",
+        "named": true
+      },
+      {
+        "type": "unpack_statement",
+        "named": true
+      },
+      {
+        "type": "update_statement",
         "named": true
       },
       {
@@ -248,6 +300,65 @@
     ]
   },
   {
+    "type": "add_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "dynamic_name",
+          "named": true
+        },
+        {
+          "type": "field_path",
+          "named": true
+        },
+        {
+          "type": "field_symbol_path",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "sql_wildcard_selector",
+          "named": true
+        },
+        {
+          "type": "static_type_path",
+          "named": true
+        },
+        {
+          "type": "substring_expression",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "argument_list",
     "named": true,
     "fields": {},
@@ -273,6 +384,10 @@
         },
         {
           "type": "operator",
+          "named": true
+        },
+        {
+          "type": "positional_name",
           "named": true
         },
         {
@@ -337,6 +452,18 @@
           {
             "type": "punctuation",
             "named": true
+          },
+          {
+            "type": "tail_fragment",
+            "named": true
+          },
+          {
+            "type": "type_ref_tail",
+            "named": true
+          },
+          {
+            "type": "value_tail",
+            "named": true
           }
         ]
       }
@@ -358,7 +485,7 @@
       },
       "name": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "cte_identifier",
@@ -397,6 +524,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -517,9 +656,72 @@
           {
             "type": "_expression",
             "named": true
+          },
+          {
+            "type": "keyword",
+            "named": true
           }
         ]
       }
+    }
+  },
+  {
+    "type": "call_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "dynamic_name",
+          "named": true
+        },
+        {
+          "type": "field_path",
+          "named": true
+        },
+        {
+          "type": "field_symbol_path",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "sql_wildcard_selector",
+          "named": true
+        },
+        {
+          "type": "static_type_path",
+          "named": true
+        },
+        {
+          "type": "substring_expression",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -544,6 +746,18 @@
           },
           {
             "type": "punctuation",
+            "named": true
+          },
+          {
+            "type": "tail_fragment",
+            "named": true
+          },
+          {
+            "type": "type_ref_tail",
+            "named": true
+          },
+          {
+            "type": "value_tail",
             "named": true
           }
         ]
@@ -598,6 +812,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -624,6 +850,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -701,6 +939,80 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "class_forward_declaration",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "cte_identifier",
+            "named": true
+          },
+          {
+            "type": "escaped_identifier",
+            "named": true
+          },
+          {
+            "type": "field_symbol",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -761,6 +1073,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -812,6 +1136,37 @@
     }
   },
   {
+    "type": "component_name",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "cte_identifier",
+          "named": true
+        },
+        {
+          "type": "escaped_identifier",
+          "named": true
+        },
+        {
+          "type": "field_symbol",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "constants_declaration",
     "named": true,
     "fields": {},
@@ -833,6 +1188,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -871,19 +1238,7 @@
             "named": false
           },
           {
-            "type": "cte_identifier",
-            "named": true
-          },
-          {
-            "type": "escaped_identifier",
-            "named": true
-          },
-          {
-            "type": "field_symbol",
-            "named": true
-          },
-          {
-            "type": "identifier",
+            "type": "component_name",
             "named": true
           },
           {
@@ -952,6 +1307,77 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "create_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "dynamic_name",
+          "named": true
+        },
+        {
+          "type": "field_path",
+          "named": true
+        },
+        {
+          "type": "field_symbol_path",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "sql_wildcard_selector",
+          "named": true
+        },
+        {
+          "type": "static_type_path",
+          "named": true
+        },
+        {
+          "type": "substring_expression",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
         }
       ]
     }
@@ -979,6 +1405,77 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "delete_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "dynamic_name",
+          "named": true
+        },
+        {
+          "type": "field_path",
+          "named": true
+        },
+        {
+          "type": "field_symbol_path",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "sql_wildcard_selector",
+          "named": true
+        },
+        {
+          "type": "static_type_path",
+          "named": true
+        },
+        {
+          "type": "substring_expression",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
         }
       ]
     }
@@ -998,6 +1495,45 @@
         ]
       }
     },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "dynamic_component",
+    "named": true,
+    "fields": {},
     "children": {
       "multiple": true,
       "required": true,
@@ -1080,6 +1616,18 @@
           {
             "type": "punctuation",
             "named": true
+          },
+          {
+            "type": "tail_fragment",
+            "named": true
+          },
+          {
+            "type": "type_ref_tail",
+            "named": true
+          },
+          {
+            "type": "value_tail",
+            "named": true
           }
         ]
       }
@@ -1128,6 +1676,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -1186,6 +1746,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -1212,6 +1784,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -1273,6 +1857,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -1333,6 +1929,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -1382,6 +1990,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -1435,6 +2055,18 @@
           },
           {
             "type": "punctuation",
+            "named": true
+          },
+          {
+            "type": "tail_fragment",
+            "named": true
+          },
+          {
+            "type": "type_ref_tail",
+            "named": true
+          },
+          {
+            "type": "value_tail",
             "named": true
           }
         ]
@@ -1536,6 +2168,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -1608,6 +2252,80 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "interface_forward_declaration",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "cte_identifier",
+            "named": true
+          },
+          {
+            "type": "escaped_identifier",
+            "named": true
+          },
+          {
+            "type": "field_symbol",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -1641,19 +2359,11 @@
         "required": true,
         "types": [
           {
-            "type": "cte_identifier",
+            "type": "component_name",
             "named": true
           },
           {
-            "type": "escaped_identifier",
-            "named": true
-          },
-          {
-            "type": "field_symbol",
-            "named": true
-          },
-          {
-            "type": "identifier",
+            "type": "dynamic_component",
             "named": true
           }
         ]
@@ -1693,6 +2403,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -1754,6 +2476,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -1777,7 +2511,7 @@
         "required": true,
         "types": [
           {
-            "type": "qualified_name",
+            "type": "routine_name",
             "named": true
           }
         ]
@@ -1801,6 +2535,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -1815,7 +2561,7 @@
         "required": false,
         "types": [
           {
-            "type": "qualified_name",
+            "type": "routine_name",
             "named": true
           }
         ]
@@ -1839,6 +2585,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -1900,6 +2658,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -1927,6 +2697,10 @@
           {
             "type": "identifier",
             "named": true
+          },
+          {
+            "type": "keyword",
+            "named": true
           }
         ]
       },
@@ -1940,6 +2714,16 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "equals",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -1965,6 +2749,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -1985,6 +2781,21 @@
     }
   },
   {
+    "type": "positional_name",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "qualified_name",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "punctuation",
     "named": true,
     "fields": {}
@@ -1997,6 +2808,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "component_name",
+          "named": true
+        },
         {
           "type": "cte_identifier",
           "named": true
@@ -2038,6 +2853,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -2089,6 +2916,37 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "routine_name",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "component_name",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
         }
       ]
     }
@@ -2116,6 +2974,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -2129,7 +2999,19 @@
       "required": true,
       "types": [
         {
-          "type": "_expression",
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "dynamic_name",
+          "named": true
+        },
+        {
+          "type": "field_path",
+          "named": true
+        },
+        {
+          "type": "field_symbol_path",
           "named": true
         },
         {
@@ -2142,6 +3024,26 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "sql_wildcard_selector",
+          "named": true
+        },
+        {
+          "type": "static_type_path",
+          "named": true
+        },
+        {
+          "type": "substring_expression",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
           "named": true
         }
       ]
@@ -2184,19 +3086,11 @@
         "required": true,
         "types": [
           {
-            "type": "cte_identifier",
+            "type": "component_name",
             "named": true
           },
           {
-            "type": "escaped_identifier",
-            "named": true
-          },
-          {
-            "type": "field_symbol",
-            "named": true
-          },
-          {
-            "type": "identifier",
+            "type": "dynamic_component",
             "named": true
           }
         ]
@@ -2237,6 +3131,77 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "sort_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "dynamic_name",
+          "named": true
+        },
+        {
+          "type": "field_path",
+          "named": true
+        },
+        {
+          "type": "field_symbol_path",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "sql_wildcard_selector",
+          "named": true
+        },
+        {
+          "type": "static_type_path",
+          "named": true
+        },
+        {
+          "type": "substring_expression",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
         }
       ]
     }
@@ -2252,6 +3217,65 @@
       "types": [
         {
           "type": "_statement",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "sql_dml_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "dynamic_name",
+          "named": true
+        },
+        {
+          "type": "field_path",
+          "named": true
+        },
+        {
+          "type": "field_symbol_path",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "sql_wildcard_selector",
+          "named": true
+        },
+        {
+          "type": "static_type_path",
+          "named": true
+        },
+        {
+          "type": "substring_expression",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
           "named": true
         }
       ]
@@ -2279,6 +3303,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -2412,6 +3448,18 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
         }
       ]
     }
@@ -2513,6 +3561,45 @@
         {
           "type": "punctuation",
           "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "type_ref_tail",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "component_name",
+          "named": true
+        },
+        {
+          "type": "dynamic_component",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
         }
       ]
     }
@@ -2539,6 +3626,18 @@
         },
         {
           "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
           "named": true
         }
       ]
@@ -2606,6 +3705,147 @@
     }
   },
   {
+    "type": "unpack_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "dynamic_name",
+          "named": true
+        },
+        {
+          "type": "field_path",
+          "named": true
+        },
+        {
+          "type": "field_symbol_path",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "sql_wildcard_selector",
+          "named": true
+        },
+        {
+          "type": "static_type_path",
+          "named": true
+        },
+        {
+          "type": "substring_expression",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "update_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "dynamic_name",
+          "named": true
+        },
+        {
+          "type": "field_path",
+          "named": true
+        },
+        {
+          "type": "field_symbol_path",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "sql_wildcard_selector",
+          "named": true
+        },
+        {
+          "type": "static_type_path",
+          "named": true
+        },
+        {
+          "type": "substring_expression",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "value_tail",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        },
+        {
+          "type": "component_name",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "visibility_section",
     "named": true,
     "fields": {},
@@ -2652,6 +3892,18 @@
           },
           {
             "type": "punctuation",
+            "named": true
+          },
+          {
+            "type": "tail_fragment",
+            "named": true
+          },
+          {
+            "type": "type_ref_tail",
+            "named": true
+          },
+          {
+            "type": "value_tail",
             "named": true
           }
         ]
@@ -2701,6 +3953,18 @@
           {
             "type": "punctuation",
             "named": true
+          },
+          {
+            "type": "tail_fragment",
+            "named": true
+          },
+          {
+            "type": "type_ref_tail",
+            "named": true
+          },
+          {
+            "type": "value_tail",
+            "named": true
           }
         ]
       }
@@ -2741,6 +4005,10 @@
         "types": [
           {
             "type": "->",
+            "named": false
+          },
+          {
+            "type": "=>",
             "named": false
           },
           {
@@ -2858,11 +4126,27 @@
     "named": true
   },
   {
+    "type": "dynamic_name",
+    "named": true
+  },
+  {
+    "type": "equals",
+    "named": true
+  },
+  {
     "type": "escaped_identifier",
     "named": true
   },
   {
+    "type": "field_path",
+    "named": true
+  },
+  {
     "type": "field_symbol",
+    "named": true
+  },
+  {
+    "type": "field_symbol_path",
     "named": true
   },
   {
@@ -2891,11 +4175,23 @@
     "extra": true
   },
   {
+    "type": "sql_wildcard_selector",
+    "named": true
+  },
+  {
     "type": "star_comment",
     "named": true
   },
   {
+    "type": "static_type_path",
+    "named": true
+  },
+  {
     "type": "substring_expression",
+    "named": true
+  },
+  {
+    "type": "tail_fragment",
     "named": true
   },
   {

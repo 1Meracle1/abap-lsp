@@ -51,7 +51,7 @@
   (#match? @type.builtin "(?i)^(c|n|d|t|i|int[1248]|f|p|decfloat(16|34)?|string|x|xstring|utclong|data|any|simple|numeric|clike|csequence|xsequence|object|char[0-9]+)$")
   (#set! priority 110))
 ((constructor_expression
-  type: (identifier) @type.builtin)
+  type: (component_name (identifier) @type.builtin))
   (#match? @type.builtin "(?i)^(c|n|d|t|i|int[1248]|f|p|decfloat(16|34)?|string|x|xstring|utclong|data|any|simple|numeric|clike|csequence|xsequence|object|char[0-9]+)$")
   (#set! priority 110))
 ((constructor_expression

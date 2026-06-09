@@ -42,26 +42,19 @@ START-OF-SELECTION.
       (qualified_name
         (identifier))
       (keyword)
-      (host_expression
-        (constructor_expression
-          (keyword)
-          (argument_list
-            (qualified_name
-              (identifier)))))
+      (operator)
+      (tail_fragment)
       (keyword)
-      (binary_expression
-        (qualified_name
-          (identifier))
-        (host_expression
-          (qualified_name
-            (identifier)))))
+      (qualified_name
+        (identifier))
+      (operator)
+      (operator)
+      (qualified_name
+        (identifier)))
     (if_statement
       (keyword)
       (binary_expression
-        (selector_expression
-          (qualified_name
-            (identifier))
-          (identifier))
+        (field_path)
         (number))
       (simple_statement
         (keyword)

@@ -81,7 +81,4 @@ SELECT-OPTIONS s_id FOR ls_row-id.
     (qualified_name
       (identifier))
     (keyword)
-    (selector_expression
-      (qualified_name
-        (identifier))
-      (identifier))))
+    (field_path)))

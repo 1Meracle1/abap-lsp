@@ -38,11 +38,7 @@ ENDCLASS.
       (qualified_name
         (identifier))
       (keyword)
-      (constructor_expression
-        (keyword)
-        (argument_list
-          (qualified_name
-            (identifier))))
+      (tail_fragment)
       (keyword)
       (qualified_name
         (identifier)))
@@ -63,8 +59,9 @@ ENDCLASS.
     (keyword)
     (method_definition
       (keyword)
-      (qualified_name
-        (identifier))
+      (routine_name
+        (qualified_name
+          (identifier)))
       (assignment_statement
         (qualified_name
           (identifier))
