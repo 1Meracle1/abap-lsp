@@ -14,6 +14,11 @@ METHOD_EXIT :: "exit"
 METHOD_DID_OPEN :: "textDocument/didOpen"
 METHOD_DID_CHANGE :: "textDocument/didChange"
 METHOD_DID_CLOSE :: "textDocument/didClose"
+METHOD_DID_CHANGE_WATCHED_FILES :: "workspace/didChangeWatchedFiles"
+METHOD_DID_CHANGE_WORKSPACE_FOLDERS :: "workspace/didChangeWorkspaceFolders"
+METHOD_DID_CREATE_FILES :: "workspace/didCreateFiles"
+METHOD_DID_RENAME_FILES :: "workspace/didRenameFiles"
+METHOD_DID_DELETE_FILES :: "workspace/didDeleteFiles"
 METHOD_COMPLETION :: "textDocument/completion"
 METHOD_HOVER :: "textDocument/hover"
 METHOD_DEFINITION :: "textDocument/definition"
@@ -29,6 +34,10 @@ RPC_INVALID_PARAMS :: -32602
 RPC_INTERNAL_ERROR :: -32603
 
 TEXT_DOCUMENT_SYNC_FULL :: 1
+
+FILE_CHANGE_CREATED :: 1
+FILE_CHANGE_CHANGED :: 2
+FILE_CHANGE_DELETED :: 3
 
 DIAGNOSTIC_ERROR :: 1
 DIAGNOSTIC_WARNING :: 2
@@ -238,28 +247,14 @@ utf16_rune_units :: #force_inline proc "contextless" (r: rune) -> int {
 	return 2 if r >= 0x10000 else 1
 }
 
-json_object :: proc(value: json.Value) -> (json.Object, bool) {
-	if object, ok := value.(json.Object); ok {
-		return object, true
-	}
-	return nil, false
-}
-
-json_array :: proc(value: json.Value) -> (json.Array, bool) {
-	if array, ok := value.(json.Array); ok {
-		return array, true
-	}
-	return nil, false
-}
-
-object_string :: proc(object: json.Object, key: string) -> (string, bool) {
+object_string :: #force_inline proc "contextless" (object: json.Object, key: string) -> (string, bool) {
 	if value, ok := object[key]; ok {
 		return value.(json.String)
 	}
 	return "", false
 }
 
-object_integer :: proc(object: json.Object, key: string) -> (int, bool) {
+object_integer :: #force_inline proc "contextless" (object: json.Object, key: string) -> (int, bool) {
 	if value, ok := object[key]; ok {
 		res, res_ok := value.(json.Integer)
 		return cast(int)res, res_ok
@@ -267,22 +262,22 @@ object_integer :: proc(object: json.Object, key: string) -> (int, bool) {
 	return 0, false
 }
 
-object_object :: proc(object: json.Object, key: string) -> (json.Object, bool) {
+object_object :: #force_inline proc "contextless" (object: json.Object, key: string) -> (json.Object, bool) {
 	if value, ok := object[key]; ok {
-		return json_object(value)
+		return value.(json.Object)
 	}
 	return nil, false
 }
 
-object_array :: proc(object: json.Object, key: string) -> (json.Array, bool) {
+object_array :: #force_inline proc "contextless" (object: json.Object, key: string) -> (json.Array, bool) {
 	if value, ok := object[key]; ok {
-		return json_array(value)
+		return value.(json.Array)
 	}
 	return nil, false
 }
 
 text_document_position_from_params :: proc(params: json.Value) -> Text_Document_Position {
-	object, ok := json_object(params)
+	object, ok := params.(json.Object)
 	if !ok {
 		return {}
 	}

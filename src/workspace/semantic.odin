@@ -94,22 +94,49 @@ analyze_inputs :: proc(
 	pool: ^execution.Pool,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
+	result: Analysis_Result
+	analysis_result_update_inputs(&result, workspace, files, nil, pool, allocator)
+	return result
+}
+
+analysis_result_update_inputs :: proc(
+	result: ^Analysis_Result,
+	workspace: ^Workspace,
+	changed_files: []semantic.Workspace_File_Input,
+	removed_files: []string,
+	pool: ^execution.Pool,
+	allocator: mem.Allocator,
+) -> bool {
+	assert(result != nil)
+	assert(pool != nil)
 	remote_config := remote_dependency_config_from_workspace(workspace)
-	remote_state := remote_deps.state_make(allocator)
-	session := semantic.semantic_graph_session_make(nil, allocator)
-	update := semantic.Semantic_Graph_Update {
-		changed_files            = files,
-		external_frontier_stable = false,
+
+	if result.ok {
+		semantic.semantic_graph_update_result_destroy(&result.last_update)
+	} else {
+		result.session = semantic.semantic_graph_session_make(nil, allocator)
+		result.remote_state = remote_deps.state_make(allocator)
+		result.remote_result = remote_deps.result_make(allocator)
+		result.ok = true
 	}
-	last := semantic.semantic_graph_session_apply_update(&session, update)
-	remote_result := remote_deps.result_make(allocator)
+
+	result.used_manifest = workspace.has_manifest
+	last := semantic.semantic_graph_session_apply_update(
+		&result.session,
+		semantic.Semantic_Graph_Update {
+			changed_files            = changed_files,
+			removed_files            = removed_files,
+			external_frontier_stable = false,
+		},
+	)
+	result.remote_result = remote_deps.result_make(allocator)
 
 	frontier_flushed := false
 	for _ in 0 ..< REMOTE_DEPENDENCY_MAX_ITERATIONS {
 		if len(last.new_fetch_requests) == 0 {
 			semantic.semantic_graph_update_result_destroy(&last)
 			last = semantic.semantic_graph_session_apply_update(
-				&session,
+				&result.session,
 				semantic.Semantic_Graph_Update{external_frontier_stable = true},
 			)
 			frontier_flushed = true
@@ -117,35 +144,35 @@ analyze_inputs :: proc(
 		}
 
 		requests := remote_requests_from_unresolved_candidates(
-			session.interner,
+			result.session.interner,
 			last.new_fetch_requests[:],
 			context.temp_allocator,
 		)
-		remote_result = remote_deps.resolve_requests(
+		result.remote_result = remote_deps.resolve_requests(
 			requests[:],
 			&remote_config,
-			&remote_state,
+			&result.remote_state,
 			pool,
 			allocator,
 		)
 		external_interfaces := external_interface_inputs_from_remote(
-			session.interner,
-			remote_result.interfaces[:],
+			result.session.interner,
+			result.remote_result.interfaces[:],
 			context.temp_allocator,
 		)
 		external_sources := external_source_inputs_from_remote(
-			remote_result.sources[:],
+			result.remote_result.sources[:],
 			context.temp_allocator,
 		)
 		semantic.semantic_graph_update_result_destroy(&last)
 		if len(external_interfaces) == 0 && len(external_sources) == 0 {
 			blocked := blocked_keys_from_requests(
-				session.interner,
+				result.session.interner,
 				requests[:],
 				context.temp_allocator,
 			)
 			last = semantic.semantic_graph_session_apply_update(
-				&session,
+				&result.session,
 				semantic.Semantic_Graph_Update {
 					external_frontier_stable = true,
 					blocked_dependencies = blocked[:],
@@ -155,7 +182,7 @@ analyze_inputs :: proc(
 			break
 		}
 		last = semantic.semantic_graph_session_apply_update(
-			&session,
+			&result.session,
 			semantic.Semantic_Graph_Update {
 				fetched_external_objects = external_interfaces[:],
 				fetched_external_sources = external_sources[:],
@@ -166,18 +193,13 @@ analyze_inputs :: proc(
 	if !frontier_flushed {
 		semantic.semantic_graph_update_result_destroy(&last)
 		last = semantic.semantic_graph_session_apply_update(
-			&session,
+			&result.session,
 			semantic.Semantic_Graph_Update{external_frontier_stable = true},
 		)
 	}
 
-	return Analysis_Result {
-		session = session,
-		last_update = last,
-		remote_state = remote_state,
-		remote_result = remote_result,
-		ok = true,
-	}
+	result.last_update = last
+	return result.ok
 }
 
 analysis_result_destroy :: proc(result: ^Analysis_Result, allocator: mem.Allocator) {

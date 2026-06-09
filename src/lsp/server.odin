@@ -4,6 +4,7 @@ import execution "src:execution"
 import "src:parser"
 import "src:semantic"
 import string_interner "src:string_interner"
+import uri_key "src:uri_key"
 import workspace "src:workspace"
 
 import json "core:encoding/json"
@@ -18,6 +19,7 @@ Document :: struct {
 	uri:     string,
 	text:    string,
 	version: int,
+	dirty:   bool,
 }
 
 Parse_Diagnostic_Bucket :: struct {
@@ -25,18 +27,22 @@ Parse_Diagnostic_Bucket :: struct {
 	errors: [dynamic]parser.Parse_Error,
 }
 
+Server_Workspace :: struct {
+	root:         workspace.Workspace,
+	analysis:     workspace.Analysis_Result,
+	has_analysis: bool,
+}
+
 Server_State :: struct {
-	allocator:          mem.Allocator,
-	options:            workspace.Options,
-	pool:               execution.Pool,
-	documents:          map[string]Document,
-	parse_diagnostics:  [dynamic]Parse_Diagnostic_Bucket,
-	opened_workspace:   workspace.Workspace,
-	has_workspace:      bool,
-	analysis:           workspace.Analysis_Result,
-	has_analysis:       bool,
-	initialized:        bool,
-	shutdown_requested: bool,
+	allocator:            mem.Allocator,
+	options:              workspace.Options,
+	pool:                 execution.Pool,
+	documents:            map[string]Document,
+	parse_diagnostics:    [dynamic]Parse_Diagnostic_Bucket,
+	workspaces:           [dynamic]Server_Workspace,
+	pending_removed_uris: [dynamic]string,
+	initialized:          bool,
+	shutdown_requested:   bool,
 }
 
 Request_Context :: struct {
@@ -126,6 +132,8 @@ server_init :: proc(state: ^Server_State, allocator: mem.Allocator) {
 		options           = workspace.Options{},
 		documents         = make(map[string]Document, 16, allocator),
 		parse_diagnostics = make([dynamic]Parse_Diagnostic_Bucket, 0, 16, allocator),
+		workspaces        = make([dynamic]Server_Workspace, 0, 4, allocator),
+		pending_removed_uris = make([dynamic]string, 0, 8, allocator),
 	}
 	execution.pool_init(
 		&state.pool,
@@ -142,11 +150,15 @@ server_init :: proc(state: ^Server_State, allocator: mem.Allocator) {
 }
 
 server_destroy :: proc(state: ^Server_State) {
-	if state.has_analysis {
-		workspace.analysis_result_destroy(&state.analysis, state.allocator)
+	for &slot in state.workspaces {
+		if slot.has_analysis {
+			workspace.analysis_result_destroy(&slot.analysis, state.allocator)
+		}
+		workspace.workspace_destroy(&slot.root, state.allocator)
 	}
-	if state.has_workspace {
-		workspace.workspace_destroy(&state.opened_workspace, state.allocator)
+	delete(state.workspaces)
+	if state.pending_removed_uris.allocator.procedure != nil {
+		delete(state.pending_removed_uris)
 	}
 	execution.pool_destroy(&state.pool)
 }
@@ -227,71 +239,321 @@ handle_notification :: proc(
 			server_reanalyze(state)
 			publish_all_diagnostics(state, output)
 		}
+	case METHOD_DID_CHANGE_WATCHED_FILES:
+		changed := false
+		object, object_ok := params.(json.Object)
+		if !object_ok {
+			return
+		}
+		changes, changes_ok := object_array(object, "changes")
+		if !changes_ok {
+			return
+		}
+		if state.pending_removed_uris.allocator.procedure == nil {
+			state.pending_removed_uris = make([dynamic]string, 0, len(changes), state.allocator)
+		}
+		for value in changes {
+			event, event_ok := value.(json.Object)
+			if !event_ok {
+				continue
+			}
+			uri, uri_ok := object_string(event, "uri")
+			if !uri_ok {
+				continue
+			}
+			change_type, change_type_ok := object_integer(event, "type")
+			if !change_type_ok {
+				continue
+			}
+			uri = normalize_lsp_uri(uri, context.temp_allocator)
+			switch change_type {
+			case FILE_CHANGE_DELETED:
+				append(&state.pending_removed_uris, uri)
+				to_delete := make([dynamic]string, 0, 4, context.temp_allocator)
+				for doc_uri, _ in state.documents {
+					if lsp_uri_matches_or_under(doc_uri, uri) {
+						append(&to_delete, doc_uri)
+					}
+				}
+				for doc_uri in to_delete {
+					delete_key(&state.documents, doc_uri)
+				}
+				changed = true
+			case FILE_CHANGE_CHANGED, FILE_CHANGE_CREATED:
+				for doc_uri, &doc in state.documents {
+					if !lsp_uri_matches_or_under(doc_uri, uri) {
+						continue
+					}
+					doc.dirty = true
+					changed = true
+				}
+			case:
+			}
+		}
+		if changed {
+			server_reanalyze(state)
+			publish_all_diagnostics(state, output)
+		}
+	case METHOD_DID_CREATE_FILES:
+		changed := false
+		object, object_ok := params.(json.Object)
+		if !object_ok {
+			return
+		}
+		files, files_ok := object_array(object, "files")
+		if !files_ok {
+			return
+		}
+		for value in files {
+			file, file_ok := value.(json.Object)
+			if !file_ok {
+				continue
+			}
+			uri, uri_ok := object_string(file, "uri")
+			if !uri_ok {
+				continue
+			}
+			uri = normalize_lsp_uri(uri, context.temp_allocator)
+			for doc_uri, &doc in state.documents {
+				if !lsp_uri_matches_or_under(doc_uri, uri) {
+					continue
+				}
+				doc.dirty = true
+				changed = true
+			}
+		}
+		if changed {
+			server_reanalyze(state)
+			publish_all_diagnostics(state, output)
+		}
+	case METHOD_DID_DELETE_FILES:
+		changed := false
+		object, object_ok := params.(json.Object)
+		if !object_ok {
+			return
+		}
+		files, files_ok := object_array(object, "files")
+		if !files_ok {
+			return
+		}
+		if state.pending_removed_uris.allocator.procedure == nil {
+			state.pending_removed_uris = make([dynamic]string, 0, len(files), state.allocator)
+		}
+		for value in files {
+			file, file_ok := value.(json.Object)
+			if !file_ok {
+				continue
+			}
+			uri, uri_ok := object_string(file, "uri")
+			if !uri_ok {
+				continue
+			}
+			uri = normalize_lsp_uri(uri, context.temp_allocator)
+			append(&state.pending_removed_uris, uri)
+			to_delete := make([dynamic]string, 0, 4, context.temp_allocator)
+			for doc_uri, _ in state.documents {
+				if lsp_uri_matches_or_under(doc_uri, uri) {
+					append(&to_delete, doc_uri)
+				}
+			}
+			for doc_uri in to_delete {
+				delete_key(&state.documents, doc_uri)
+			}
+			changed = true
+		}
+		if changed {
+			server_reanalyze(state)
+			publish_all_diagnostics(state, output)
+		}
+	case METHOD_DID_RENAME_FILES:
+		changed := false
+		object, object_ok := params.(json.Object)
+		if !object_ok {
+			return
+		}
+		files, files_ok := object_array(object, "files")
+		if !files_ok {
+			return
+		}
+		if state.pending_removed_uris.allocator.procedure == nil {
+			state.pending_removed_uris = make([dynamic]string, 0, len(files), state.allocator)
+		}
+		for value in files {
+			file, file_ok := value.(json.Object)
+			if !file_ok {
+				continue
+			}
+			old_uri, old_uri_ok := object_string(file, "oldUri")
+			new_uri, new_uri_ok := object_string(file, "newUri")
+			if !old_uri_ok || !new_uri_ok {
+				continue
+			}
+			old_uri = normalize_lsp_uri(old_uri, context.temp_allocator)
+			new_uri = normalize_lsp_uri(new_uri, context.temp_allocator)
+			append(&state.pending_removed_uris, old_uri)
+			to_delete := make([dynamic]string, 0, 4, context.temp_allocator)
+			for doc_uri, _ in state.documents {
+				if lsp_uri_matches_or_under(doc_uri, old_uri) {
+					append(&to_delete, doc_uri)
+				}
+			}
+			for doc_uri in to_delete {
+				delete_key(&state.documents, doc_uri)
+			}
+			for doc_uri, &doc in state.documents {
+				if !lsp_uri_matches_or_under(doc_uri, new_uri) {
+					continue
+				}
+				doc.dirty = true
+			}
+			changed = true
+		}
+		if changed {
+			server_reanalyze(state)
+			publish_all_diagnostics(state, output)
+		}
+	case METHOD_DID_CHANGE_WORKSPACE_FOLDERS:
+		changed := false
+		object, object_ok := params.(json.Object)
+		if !object_ok {
+			return
+		}
+		event, event_ok := object_object(object, "event")
+		if !event_ok {
+			return
+		}
+		if removed, removed_ok := object_array(event, "removed"); removed_ok {
+			for value in removed {
+				folder, folder_ok := value.(json.Object)
+				if !folder_ok {
+					continue
+				}
+				uri, uri_ok := object_string(folder, "uri")
+				if !uri_ok {
+					continue
+				}
+				path, path_ok := file_uri_to_path(uri, context.temp_allocator)
+				if !path_ok {
+					continue
+				}
+				root_key := lsp_path_key(path, context.temp_allocator)
+				for i := 0; i < len(state.workspaces); {
+					if lsp_path_key(state.workspaces[i].root.root_path, context.temp_allocator) != root_key {
+						i += 1
+						continue
+					}
+					if state.workspaces[i].has_analysis {
+						workspace.analysis_result_destroy(&state.workspaces[i].analysis, state.allocator)
+					}
+					workspace.workspace_destroy(&state.workspaces[i].root, state.allocator)
+					ordered_remove(&state.workspaces, i)
+					changed = true
+				}
+			}
+		}
+		if added, added_ok := object_array(event, "added"); added_ok {
+			for value in added {
+				folder, folder_ok := value.(json.Object)
+				if !folder_ok {
+					continue
+				}
+				uri, uri_ok := object_string(folder, "uri")
+				if !uri_ok {
+					continue
+				}
+				changed = open_workspace_for_uri(state, uri) || changed
+			}
+		}
+		if changed {
+			server_reanalyze(state)
+			publish_all_diagnostics(state, output)
+		}
 	case:
 	}
 }
 
 handle_initialize :: proc(ctx: ^Request_Context, params: json.Value) {
 	state := ctx.state
-	if object, ok := json_object(params); ok {
+	if object, ok := params.(json.Object); ok {
 		if init_options, init_ok := object_object(object, "initializationOptions"); init_ok {
 			if path, path_ok := object_string(init_options, "dependencyCachePath"); path_ok {
 				state.options.dependency_store_path = strings.clone(path, state.allocator)
 			}
 		}
-		root_uri := initialize_root_uri(object)
-		if root_uri != "" {
-			open_workspace_for_uri(state, root_uri)
+		opened := false
+		if folders, folders_ok := object_array(object, "workspaceFolders");
+		   folders_ok && len(folders) > 0 {
+			for value in folders {
+				folder, folder_ok := value.(json.Object)
+				if !folder_ok {
+					continue
+				}
+				uri, uri_ok := object_string(folder, "uri")
+				if !uri_ok {
+					continue
+				}
+				opened = open_workspace_for_uri(state, uri) || opened
+			}
+		}
+		if !opened {
+			uri, uri_ok := object_string(object, "rootUri")
+			if uri_ok {
+				open_workspace_for_uri(state, uri)
+			}
 		}
 	}
 	state.initialized = true
 	send_success(ctx.output, ctx.id, initialize_result(state.allocator), state.allocator)
 }
 
-initialize_root_uri :: proc(object: json.Object) -> string {
-	if folders, ok := object_array(object, "workspaceFolders"); ok && len(folders) > 0 {
-		if folder, folder_ok := json_object(folders[0]); folder_ok {
-			if uri, uri_ok := object_string(folder, "uri"); uri_ok {
-				return uri
-			}
-		}
-	}
-	if uri, ok := object_string(object, "rootUri"); ok {
-		return uri
-	}
-	return ""
-}
+initialize_result :: proc(allocator: mem.Allocator) -> Initialize_Result {
+	token_modifiers := make([]string, 2, allocator)
+	token_modifiers[0] = "declaration"
+	token_modifiers[1] = "readonly"
 
-initialize_result :: proc(allocator: mem.Allocator) -> Initialize_Result_JSON {
-	_ = allocator
-	return Initialize_Result_JSON {
-		capabilities = Server_Capabilities_JSON {
+	trigger_characters := make([]string, 3, allocator)
+	trigger_characters[0] = "-"
+	trigger_characters[1] = ">"
+	trigger_characters[2] = "~"
+
+	file_operation_filters := make([]Workspace_File_Operation_Filter, 1, allocator)
+	file_operation_filters[0] = Workspace_File_Operation_Filter {
+		scheme = "file",
+		pattern = Workspace_File_Operation_Pattern{glob = "**/*"},
+	}
+	file_operation_options := Workspace_File_Operation_Registration_Options {
+		filters = file_operation_filters,
+	}
+
+	return Initialize_Result {
+		capabilities = Server_Capabilities {
 			text_document_sync = TEXT_DOCUMENT_SYNC_FULL,
 			hover_provider = true,
 			definition_provider = true,
 			references_provider = true,
-			completion_provider = Completion_Options_JSON {
-				trigger_characters = initialize_trigger_characters(allocator),
-			},
-			semantic_tokens_provider = Semantic_Tokens_Options_JSON {
-				legend = Semantic_Tokens_Legend_JSON {
+			completion_provider = Completion_Options{trigger_characters = trigger_characters},
+			semantic_tokens_provider = Semantic_Tokens_Options {
+				legend = Semantic_Tokens_Legend {
 					token_types = initialize_semantic_token_types(allocator),
-					token_modifiers = initialize_semantic_token_modifiers(allocator),
+					token_modifiers = token_modifiers,
 				},
 				full = true,
 			},
 			folding_range_provider = true,
+			workspace = Workspace_Server_Capabilities {
+				workspace_folders = Workspace_Folders_Server_Capability {
+					supported = true,
+					change_notifications = true,
+				},
+				file_operations = Workspace_File_Operation_Server_Capabilities {
+					did_create = file_operation_options,
+					did_rename = file_operation_options,
+					did_delete = file_operation_options,
+				},
+			},
 		},
-		server_info = Server_Info_JSON{name = "abap-lsp-odin", version = "0.1.0"},
+		server_info = Server_Info{name = "abap-lsp-odin", version = "0.1.0"},
 	}
-}
-
-initialize_trigger_characters :: proc(allocator: mem.Allocator) -> []string {
-	out := make([]string, 3, allocator)
-	out[0] = "-"
-	out[1] = ">"
-	out[2] = "~"
-	return out
 }
 
 initialize_semantic_token_types :: proc(allocator: mem.Allocator) -> []string {
@@ -310,67 +572,97 @@ initialize_semantic_token_types :: proc(allocator: mem.Allocator) -> []string {
 	return out
 }
 
-initialize_semantic_token_modifiers :: proc(allocator: mem.Allocator) -> []string {
-	out := make([]string, 2, allocator)
-	out[0] = "declaration"
-	out[1] = "readonly"
-	return out
+Initialize_Result :: struct {
+	capabilities: Server_Capabilities `json:"capabilities"`,
+	server_info:  Server_Info `json:"serverInfo"`,
 }
 
-Initialize_Result_JSON :: struct {
-	capabilities: Server_Capabilities_JSON `json:"capabilities"`,
-	server_info:  Server_Info_JSON `json:"serverInfo"`,
-}
-
-Server_Info_JSON :: struct {
+Server_Info :: struct {
 	name:    string `json:"name"`,
 	version: string `json:"version"`,
 }
 
-Server_Capabilities_JSON :: struct {
+Server_Capabilities :: struct {
 	text_document_sync:       int `json:"textDocumentSync"`,
 	hover_provider:           bool `json:"hoverProvider"`,
 	definition_provider:      bool `json:"definitionProvider"`,
 	references_provider:      bool `json:"referencesProvider"`,
-	completion_provider:      Completion_Options_JSON `json:"completionProvider"`,
-	semantic_tokens_provider: Semantic_Tokens_Options_JSON `json:"semanticTokensProvider"`,
+	completion_provider:      Completion_Options `json:"completionProvider"`,
+	semantic_tokens_provider: Semantic_Tokens_Options `json:"semanticTokensProvider"`,
 	folding_range_provider:   bool `json:"foldingRangeProvider"`,
+	workspace:                Workspace_Server_Capabilities `json:"workspace"`,
 }
 
-Completion_Options_JSON :: struct {
+Completion_Options :: struct {
 	trigger_characters: []string `json:"triggerCharacters"`,
 }
 
-Semantic_Tokens_Options_JSON :: struct {
-	legend: Semantic_Tokens_Legend_JSON `json:"legend"`,
+Workspace_Server_Capabilities :: struct {
+	workspace_folders: Workspace_Folders_Server_Capability `json:"workspaceFolders"`,
+	file_operations:   Workspace_File_Operation_Server_Capabilities `json:"fileOperations"`,
+}
+
+Workspace_Folders_Server_Capability :: struct {
+	supported:            bool `json:"supported"`,
+	change_notifications: bool `json:"changeNotifications"`,
+}
+
+Workspace_File_Operation_Server_Capabilities :: struct {
+	did_create: Workspace_File_Operation_Registration_Options `json:"didCreate"`,
+	did_rename: Workspace_File_Operation_Registration_Options `json:"didRename"`,
+	did_delete: Workspace_File_Operation_Registration_Options `json:"didDelete"`,
+}
+
+Workspace_File_Operation_Registration_Options :: struct {
+	filters: []Workspace_File_Operation_Filter `json:"filters"`,
+}
+
+Workspace_File_Operation_Filter :: struct {
+	scheme:  string `json:"scheme"`,
+	pattern: Workspace_File_Operation_Pattern `json:"pattern"`,
+}
+
+Workspace_File_Operation_Pattern :: struct {
+	glob: string `json:"glob"`,
+}
+
+Semantic_Tokens_Options :: struct {
+	legend: Semantic_Tokens_Legend `json:"legend"`,
 	full:   bool `json:"full"`,
 }
 
-Semantic_Tokens_Legend_JSON :: struct {
+Semantic_Tokens_Legend :: struct {
 	token_types:     []string `json:"tokenTypes"`,
 	token_modifiers: []string `json:"tokenModifiers"`,
 }
 
 open_workspace_for_uri :: proc(state: ^Server_State, uri: string) -> bool {
 	path := file_uri_to_path(uri, state.allocator) or_return
-	if state.has_workspace {
-		workspace.workspace_destroy(&state.opened_workspace, state.allocator)
-		state.has_workspace = false
-	}
-	opened, ok, _ := workspace.open_workspace(path, state.options, state.allocator)
+	return open_workspace_for_path(state, path)
+}
+
+open_workspace_for_path :: proc(state: ^Server_State, path: string) -> bool {
+	opened, ok, _ := workspace.open(path, state.options, state.allocator)
 	if !ok {
-		opened, ok, _ = workspace.open_standalone_workspace(path, state.options, state.allocator)
+		opened, ok, _ = workspace.open_standalone(path, state.options, state.allocator)
 	}
 	if !ok {
 		return false
 	}
-	state.opened_workspace = opened
-	state.has_workspace = true
+	root_key := lsp_path_key(opened.root_path, context.temp_allocator)
+	for &existing in state.workspaces {
+		if lsp_path_key(existing.root.root_path, context.temp_allocator) != root_key {
+			continue
+		}
+		workspace.workspace_destroy(&opened, state.allocator)
+		return true
+	}
+	append(&state.workspaces, Server_Workspace{root = opened})
 	return true
 }
 
 ensure_workspace_for_document :: proc(state: ^Server_State, uri: string) {
-	if state.has_workspace {
+	if _, ok := workspace_index_for_uri(state, uri); ok {
 		return
 	}
 	path, path_ok := file_uri_to_path(uri, context.temp_allocator)
@@ -378,15 +670,11 @@ ensure_workspace_for_document :: proc(state: ^Server_State, uri: string) {
 	if path_ok {
 		root = os.dir(path)
 	}
-	opened, ok, _ := workspace.open_standalone_workspace(root, state.options, state.allocator)
-	if ok {
-		state.opened_workspace = opened
-		state.has_workspace = true
-	}
+	open_workspace_for_path(state, root)
 }
 
 update_document_from_open :: proc(state: ^Server_State, params: json.Value) -> bool {
-	object := json_object(params) or_return
+	object := params.(json.Object) or_return
 	text_document := object_object(object, "textDocument") or_return
 	uri := object_string(text_document, "uri") or_return
 	text := object_string(text_document, "text") or_return
@@ -397,17 +685,18 @@ update_document_from_open :: proc(state: ^Server_State, params: json.Value) -> b
 		uri     = uri,
 		text    = strings.clone(text, state.allocator),
 		version = version,
+		dirty   = true,
 	}
 	return true
 }
 
 update_document_from_change :: proc(state: ^Server_State, params: json.Value) -> bool {
-	object := json_object(params) or_return
+	object := params.(json.Object) or_return
 	text_document := object_object(object, "textDocument") or_return
 	changes := object_array(object, "contentChanges") or_return
 	uri := object_string(text_document, "uri") or_return
 	version := object_integer(text_document, "version") or_return
-	last_change := json_object(changes[len(changes) - 1]) or_return
+	last_change := changes[len(changes) - 1].(json.Object) or_return
 	text := object_string(last_change, "text") or_return
 	uri = normalize_lsp_uri(uri, state.allocator)
 	ensure_workspace_for_document(state, uri)
@@ -415,12 +704,13 @@ update_document_from_change :: proc(state: ^Server_State, params: json.Value) ->
 		uri     = uri,
 		text    = strings.clone(text, state.allocator),
 		version = version,
+		dirty   = true,
 	}
 	return true
 }
 
 close_document :: proc(state: ^Server_State, params: json.Value) -> bool {
-	object := json_object(params) or_return
+	object := params.(json.Object) or_return
 	text_document := object_object(object, "textDocument") or_return
 	uri := object_string(text_document, "uri") or_return
 	uri = normalize_lsp_uri(uri, context.temp_allocator)
@@ -429,39 +719,73 @@ close_document :: proc(state: ^Server_State, params: json.Value) -> bool {
 }
 
 server_reanalyze :: proc(state: ^Server_State) {
-	if state.has_analysis {
-		workspace.analysis_result_destroy(&state.analysis, state.allocator)
-		state.has_analysis = false
-	}
 	clear(&state.parse_diagnostics)
-	if len(state.documents) == 0 || !state.has_workspace {
-		return
-	}
-	inputs := make(
-		[dynamic]semantic.Workspace_File_Input,
-		0,
-		len(state.documents),
-		state.allocator,
-	)
 	for _, doc in state.documents {
-		parsed := parser.parse(doc.text, doc.uri, state.allocator)
-		append_parse_diagnostics(state, doc.uri, parsed.errors)
-		append(
-			&inputs,
-			semantic.Workspace_File_Input {
-				path = strings.clone(doc.uri, state.allocator),
-				root = parsed.root,
-				kind = .Unknown,
-			},
+		ensure_workspace_for_document(state, doc.uri)
+	}
+	for &slot, workspace_index in state.workspaces {
+		inputs := make(
+			[dynamic]semantic.Workspace_File_Input,
+			0,
+			len(state.documents),
+			state.allocator,
+		)
+		removed_paths := make([dynamic]string, 0, 4, context.temp_allocator)
+		for _, workspace_doc in state.documents {
+			doc_workspace_index, doc_workspace_ok := workspace_index_for_uri(state, workspace_doc.uri)
+			if !doc_workspace_ok || doc_workspace_index != workspace_index {
+				continue
+			}
+			parsed := parser.parse(workspace_doc.text, workspace_doc.uri, state.allocator)
+			append_parse_diagnostics(state, workspace_doc.uri, parsed.errors)
+			if slot.has_analysis && !workspace_doc.dirty {
+				continue
+			}
+			append(
+				&inputs,
+				semantic.Workspace_File_Input {
+					path = strings.clone(workspace_doc.uri, state.allocator),
+					root = parsed.root,
+					kind = .Unknown,
+				},
+			)
+		}
+		if slot.has_analysis {
+			for file in slot.analysis.session.editable_files {
+				_, still_open := state.documents[file.path]
+				doc_workspace_index, doc_workspace_ok := workspace_index_for_uri(state, file.path)
+				removed := !(still_open && doc_workspace_ok && doc_workspace_index == workspace_index)
+				if !removed {
+					for removed_uri in state.pending_removed_uris {
+						if lsp_uri_matches_or_under(file.path, removed_uri) {
+							removed = true
+							break
+						}
+					}
+				}
+				if removed {
+					append(&removed_paths, file.path)
+				}
+			}
+		}
+		if len(inputs) == 0 && len(removed_paths) == 0 {
+			continue
+		}
+		slot.has_analysis = workspace.analysis_result_update_inputs(
+			&slot.analysis,
+			&slot.root,
+			inputs[:],
+			removed_paths[:],
+			&state.pool,
+			state.allocator,
 		)
 	}
-	state.analysis = workspace.analyze_inputs(
-		&state.opened_workspace,
-		inputs[:],
-		&state.pool,
-		state.allocator,
-	)
-	state.has_analysis = state.analysis.ok
+	for _, &doc in state.documents {
+		doc.dirty = false
+	}
+	if state.pending_removed_uris.allocator.procedure != nil {
+		clear(&state.pending_removed_uris)
+	}
 }
 
 append_parse_diagnostics :: proc(state: ^Server_State, uri: string, errors: []parser.Parse_Error) {
@@ -513,8 +837,11 @@ diagnostics_for_uri :: proc(
 			)
 		}
 	}
-	if state.has_analysis {
-		if analysis := semantic.semantic_graph_session_current_analysis(&state.analysis.session);
+	for &slot in state.workspaces {
+		if !slot.has_analysis {
+			continue
+		}
+		if analysis := semantic.semantic_graph_session_current_analysis(&slot.analysis.session);
 		   analysis != nil {
 			for &result in analysis.project_results {
 				if result.project == nil || result.checker == nil {
@@ -563,7 +890,7 @@ diagnostic_present :: proc(items: []Diagnostic, item: Diagnostic) -> bool {
 	return false
 }
 
-diagnostic_severity :: proc(severity: semantic.Checker_Diagnostic_Severity) -> int {
+diagnostic_severity :: proc "contextless" (severity: semantic.Checker_Diagnostic_Severity) -> int {
 	switch severity {
 	case .Error:
 		return DIAGNOSTIC_ERROR
@@ -575,7 +902,7 @@ diagnostic_severity :: proc(severity: semantic.Checker_Diagnostic_Severity) -> i
 	return DIAGNOSTIC_ERROR
 }
 
-project_file_for_uri :: proc(
+project_file_for_uri :: proc "contextless" (
 	result: ^semantic.Workspace_Project_Result,
 	uri: string,
 ) -> ^semantic.Project_File {
@@ -609,31 +936,111 @@ snapshot_for_position :: proc(
 
 snapshot_for_uri :: proc(state: ^Server_State, uri: string) -> Snapshot_Lookup {
 	doc, doc_ok := state.documents[uri]
-	if !doc_ok || !state.has_analysis {
+	if !doc_ok {
 		return {}
 	}
-	analysis := semantic.semantic_graph_session_current_analysis(&state.analysis.session)
-	if analysis == nil {
-		return {}
+	candidate_indices := make([dynamic]int, 0, len(state.workspaces), context.temp_allocator)
+	if workspace_index, workspace_ok := workspace_index_for_uri(state, uri); workspace_ok {
+		append(&candidate_indices, workspace_index)
 	}
-	for &result in analysis.project_results {
-		if result.project == nil || result.checker == nil {
+	for i in 0 ..< len(state.workspaces) {
+		if len(candidate_indices) > 0 && candidate_indices[0] == i {
 			continue
 		}
-		file := project_file_for_uri(&result, uri)
-		if file == nil {
+		append(&candidate_indices, i)
+	}
+	for workspace_index in candidate_indices {
+		slot := &state.workspaces[workspace_index]
+		if !slot.has_analysis {
 			continue
 		}
-		return Snapshot_Lookup {
-			project_result = &result,
-			project = result.project,
-			checker = result.checker,
-			file = file,
-			source = doc.text,
-			ok = true,
+		analysis := semantic.semantic_graph_session_current_analysis(&slot.analysis.session)
+		if analysis == nil {
+			continue
+		}
+		for &result in analysis.project_results {
+			if result.project == nil || result.checker == nil {
+				continue
+			}
+			file := project_file_for_uri(&result, uri)
+			if file == nil {
+				continue
+			}
+			return Snapshot_Lookup {
+				project_result = &result,
+				project = result.project,
+				checker = result.checker,
+				file = file,
+				source = doc.text,
+				ok = true,
+			}
 		}
 	}
 	return {}
+}
+
+workspace_index_for_uri :: proc(state: ^Server_State, uri: string) -> (int, bool) {
+	path, ok := file_uri_to_path(uri, context.temp_allocator)
+	if !ok {
+		if len(state.workspaces) > 0 {
+			return 0, true
+		}
+		return -1, false
+	}
+	return workspace_index_for_path(state, path)
+}
+
+workspace_index_for_path :: proc(state: ^Server_State, path: string) -> (int, bool) {
+	path_key := lsp_path_key(path, context.temp_allocator)
+	best_index := -1
+	best_len := -1
+	for &slot, i in state.workspaces { 
+		root_key := lsp_path_key(slot.root.root_path, context.temp_allocator)
+		under_root := path_key == root_key ||
+		              (len(path_key) > len(root_key) &&
+		               strings.has_prefix(path_key, root_key) &&
+		               path_key[len(root_key)] == '/')
+		if under_root && len(root_key) > best_len {
+			best_index = i
+			best_len = len(root_key)
+		}
+	}
+	return best_index, best_index >= 0
+}
+
+lsp_path_key :: proc(path: string, allocator: mem.Allocator) -> string {
+	cleaned, clean_err := os.clean_path(path, allocator)
+	if clean_err == nil {
+		return uri_key.normalized_uri_path_key(cleaned, allocator)
+	}
+	return uri_key.normalized_uri_path_key(path, allocator)
+}
+
+lsp_uri_matches_or_under :: proc(candidate_uri, root_uri: string) -> bool {
+	if candidate_uri == root_uri {
+		return true
+	}
+	candidate_path, candidate_path_ok := file_uri_to_path(candidate_uri, context.temp_allocator)
+	root_path, root_path_ok := file_uri_to_path(root_uri, context.temp_allocator)
+	if candidate_path_ok || root_path_ok {
+		candidate_location := candidate_uri
+		root_location := root_uri
+		if candidate_path_ok {
+			candidate_location = candidate_path
+		}
+		if root_path_ok {
+			root_location = root_path
+		}
+		candidate_key := lsp_path_key(candidate_location, context.temp_allocator)
+		root_key := lsp_path_key(root_location, context.temp_allocator)
+		return candidate_key == root_key ||
+		       (len(candidate_key) > len(root_key) &&
+		        strings.has_prefix(candidate_key, root_key) &&
+		        candidate_key[len(root_key)] == '/')
+	}
+	return len(candidate_uri) > len(root_uri) &&
+	       strings.has_prefix(candidate_uri, root_uri) &&
+	       candidate_uri[len(root_uri)] == '/'
 }
 
 entity_at_position :: proc(state: ^Server_State, params: json.Value) -> Entity_Lookup {
@@ -844,7 +1251,7 @@ handle_folding_ranges :: proc(ctx: ^Request_Context, params: json.Value) {
 }
 
 uri_from_text_document_params :: proc(params: json.Value) -> string {
-	object, ok := json_object(params)
+	object, ok := params.(json.Object)
 	if !ok {
 		return ""
 	}
@@ -1013,7 +1420,7 @@ leading_keyword :: proc(line: string, allocator: mem.Allocator) -> string {
 	return strings.to_upper(trimmed[:end], allocator) if end > 0 else ""
 }
 
-folding_start_keyword :: proc(keyword: string) -> bool {
+folding_start_keyword :: proc "contextless" (keyword: string) -> bool {
 	switch keyword {
 	case "CLASS",
 	     "INTERFACE",
@@ -1032,7 +1439,7 @@ folding_start_keyword :: proc(keyword: string) -> bool {
 	return false
 }
 
-folding_end_keyword :: proc(keyword: string) -> bool {
+folding_end_keyword :: proc "contextless" (keyword: string) -> bool {
 	switch keyword {
 	case "ENDCLASS",
 	     "ENDINTERFACE",
@@ -1051,7 +1458,7 @@ folding_end_keyword :: proc(keyword: string) -> bool {
 	return false
 }
 
-semantic_token_type :: proc(entity: ^semantic.Entity) -> u32 {
+semantic_token_type :: proc "contextless" (entity: ^semantic.Entity) -> u32 {
 	if entity == nil {
 		return TOKEN_TYPE_INDICES.variable
 	}
@@ -1081,7 +1488,7 @@ semantic_token_type :: proc(entity: ^semantic.Entity) -> u32 {
 	return TOKEN_TYPE_INDICES.variable
 }
 
-completion_kind :: proc(entity: ^semantic.Entity) -> int {
+completion_kind :: proc "contextless" (entity: ^semantic.Entity) -> int {
 	if entity == nil {
 		return COMPLETION_VARIABLE
 	}

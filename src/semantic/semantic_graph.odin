@@ -15,6 +15,7 @@ Semantic_Graph_Project_Ref :: struct {
 
 Semantic_Graph_Update :: struct {
 	changed_files:            []Workspace_File_Input,
+	removed_files:            []string,
 	fetched_external_objects: []External_Interface_Input,
 	fetched_external_sources: []External_Source_Input,
 	external_frontier_stable: bool,
@@ -162,6 +163,22 @@ semantic_graph_session_apply_update :: proc(
 	result := semantic_graph_update_result_make(session.generation, session.allocator)
 
 	editable_inputs_changed := false
+	for path in update.removed_files {
+		removed := false
+		for i := 0; i < len(session.editable_files); i += 1 {
+			if session.editable_files[i].path != path {
+				continue
+			}
+			semantic_graph_workspace_file_input_destroy(&session.editable_files[i], session.allocator)
+			ordered_remove(&session.editable_files, i)
+			removed = true
+			break
+		}
+		if removed {
+			editable_inputs_changed = true
+			semantic_graph_session_mark_file_projects_dirty(session, path, &result)
+		}
+	}
 	for file in update.changed_files {
 		if semantic_graph_session_upsert_editable_file(session, file) {
 			editable_inputs_changed = true

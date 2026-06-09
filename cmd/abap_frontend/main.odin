@@ -263,7 +263,7 @@ analyze_cli_path :: proc(
 		return workspace.Analysis_Result{ok = false, error = "invalid path"}
 	}
 	if info.type == .Directory {
-		opened, workspace_ok, workspace_error := workspace.open_workspace(
+		opened, workspace_ok, workspace_error := workspace.open(
 			abs_path,
 			options,
 			allocator,
@@ -275,7 +275,7 @@ analyze_cli_path :: proc(
 		return workspace.analyze_workspace(&opened, include_paths, pool, options, allocator)
 	}
 
-	opened, workspace_ok, workspace_error := workspace.open_standalone_workspace(
+	opened, workspace_ok, workspace_error := workspace.open_standalone(
 		os.dir(abs_path),
 		options,
 		allocator,

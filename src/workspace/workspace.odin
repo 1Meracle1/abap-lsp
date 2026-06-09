@@ -35,7 +35,7 @@ Workspace :: struct {
 	projects_by_object: map[Dependency_Object_Key][dynamic]Project_Id,
 }
 
-open_workspace :: proc(
+open :: proc(
 	folder_path: string,
 	options: Options,
 	allocator: mem.Allocator,
@@ -106,7 +106,7 @@ open_workspace :: proc(
 	return workspace, true, ""
 }
 
-open_standalone_workspace :: proc(
+open_standalone :: proc(
 	root_path: string,
 	options: Options,
 	allocator: mem.Allocator,

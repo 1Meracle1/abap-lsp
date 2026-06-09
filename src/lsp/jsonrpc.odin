@@ -162,7 +162,7 @@ parse_rpc_message :: proc(payload: []byte, allocator: mem.Allocator) -> Rpc_Mess
 	if parse_err != nil {
 		return Rpc_Message{ok = false, error = "invalid JSON"}
 	}
-	object, object_ok := json_object(root_value)
+	object, object_ok := root_value.(json.Object)
 	if !object_ok {
 		return Rpc_Message{ok = false, error = "JSON-RPC message must be an object"}
 	}
