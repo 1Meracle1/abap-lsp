@@ -8,5 +8,5 @@ repository = "https://github.com/1Meracle1/abap-lsp"
 
 [grammars.abap]
 repository = "file:///D:/dev/rust/abap-lsp"
-rev = "d01f03925c197d3eb65495e1215f872bcbdd96c5"
+rev = "882f8fd7a864c37bbf6a6479967b6a50206c024a"
 path = "tree-sitter"
