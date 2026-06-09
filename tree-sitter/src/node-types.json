@@ -84,10 +84,6 @@
         "named": true
       },
       {
-        "type": "comment",
-        "named": true
-      },
-      {
         "type": "declaration_statement",
         "named": true
       },

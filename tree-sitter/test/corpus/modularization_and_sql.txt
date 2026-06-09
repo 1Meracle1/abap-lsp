@@ -27,8 +27,7 @@ START-OF-SELECTION.
   (form_definition
     (keyword)
     (identifier)
-    (qualified_name
-      (identifier))
+    (keyword)
     (qualified_name
       (identifier))
     (keyword)
@@ -76,6 +75,5 @@ START-OF-SELECTION.
     (keyword)
     (qualified_name
       (identifier))
-    (qualified_name
-      (identifier))
+    (keyword)
     (string)))

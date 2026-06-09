@@ -247,10 +247,23 @@ const CONSTRUCTOR_ARGUMENT_KEYWORDS = [
 ];
 
 const STATEMENT_TAIL_KEYWORDS = [
+  "ACCEPTING",
+  "ADJACENT",
   "BEGIN",
+  "BINARY",
   "BLOCK",
+  "COMPARING",
+  "DESTINATION",
+  "DUPLICATE",
+  "DUPLICATES",
+  "ENTRIES",
+  "FIELD-SYMBOL",
   "FRAME",
+  "KEYS",
+  "MESSAGE",
+  "SEARCH",
   "TITLE",
+  "USING",
   "USER-COMMAND",
   "OBLIGATORY",
   "RADIOBUTTON",
@@ -312,7 +325,6 @@ module.exports = grammar({
 
     _statement: ($) =>
       choice(
-        $.comment,
         $.declaration_statement,
         $.if_statement,
         $.case_statement,

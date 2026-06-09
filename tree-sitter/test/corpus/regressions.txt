@@ -396,3 +396,215 @@ ENDLOOP.
         (qualified_name
           (identifier))))
     (keyword)))
+
+==================
+Comments inside ABAP blocks
+==================
+
+FUNCTION zfoo.
+*"Local Interface:
+* comment
+  DATA lv_value TYPE i.
+ENDFUNCTION.
+
+FORM bar USING iv_text TYPE string.
+* comment
+  CLEAR iv_text.
+ENDFORM.
+
+IF foo = bar.
+" comment
+  CLEAR foo.
+ENDIF.
+
+---
+
+(source_file
+  (function_definition
+    (keyword)
+    (identifier)
+    (comment
+      (star_comment))
+    (comment
+      (star_comment))
+    (data_declaration
+      (keyword)
+      (qualified_name
+        (identifier))
+      (keyword)
+      (qualified_name
+        (identifier)))
+    (keyword))
+  (form_definition
+    (keyword)
+    (identifier)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (comment
+      (star_comment))
+    (simple_statement
+      (keyword)
+      (qualified_name
+        (identifier)))
+    (keyword))
+  (if_statement
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (qualified_name
+        (identifier)))
+    (comment
+      (line_comment))
+    (simple_statement
+      (keyword)
+      (qualified_name
+        (identifier)))
+    (keyword)))
+
+==================
+Corpus-backed statement additions
+==================
+
+SELECT ebeln
+  FROM ekpo
+  INTO TABLE @DATA(lt_ekpo)
+  FOR ALL ENTRIES IN @lt_input_po
+  WHERE ebeln = @lt_input_po-ebeln.
+
+READ TABLE lt_existing INTO ls_existing
+  WITH KEY docnum = <ls_insert>-docnum
+  BINARY SEARCH.
+
+DELETE ADJACENT DUPLICATES FROM gt_db_insert COMPARING docnum.
+INSERT ztt_dropout_po FROM TABLE @lt_insert ACCEPTING DUPLICATE KEYS.
+
+CALL FUNCTION 'ZTT_ATTP_DROPOUT_PO_CHECK'
+  DESTINATION iv_rfc_dest
+  EXPORTING it_vendor_po = lt_vendor_po
+  IMPORTING et_dropout_po_result = ct_result
+  EXCEPTIONS system_failure = 1 MESSAGE lv_msg
+             OTHERS = 3.
+
+FORM add_log USING iv_message TYPE string.
+ENDFORM.
+
+---
+
+(source_file
+  (select_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (host_expression
+      (constructor_expression
+        (keyword)
+        (argument_list
+          (qualified_name
+            (identifier)))))
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (host_expression
+      (qualified_name
+        (identifier)))
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (host_expression
+        (selector_expression
+          (qualified_name
+            (identifier))
+          (identifier)))))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (selector_expression
+        (qualified_name
+          (field_symbol))
+        (identifier)))
+    (keyword)
+    (keyword))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (simple_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (host_expression
+      (qualified_name
+        (identifier)))
+    (keyword)
+    (keyword)
+    (keyword))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (string)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (qualified_name
+        (identifier)))
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (qualified_name
+        (identifier)))
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (number))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (operator)
+    (number))
+  (form_definition
+    (keyword)
+    (identifier)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)))
