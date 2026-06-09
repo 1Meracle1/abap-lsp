@@ -2665,6 +2665,47 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_query_uses_precise_table_type_key_ranges :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_order_map,
+    odata_property TYPE string,
+  END OF ty_order_map,
+  tt_order_map TYPE HASHED TABLE OF ty_order_map
+    WITH UNIQUE KEY odata_property.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://table_key_ranges.abap")
+	query := semantic_query(&project, &checker, file)
+	ref_query := semantic_query_refs(query)
+
+	row_type := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_order_map", .Type_Def)
+	structure := checker_type_structure(row_type.type)
+	field := checker_test_structure_field(t, &project, structure, "odata_property")
+
+	base_ref_offset := checker_test_find_text_last(source, "ty_order_map")
+	key_offset := checker_test_find_text_last(source, "odata_property")
+	testing.expect(t, base_ref_offset >= 0 && key_offset > base_ref_offset)
+
+	base_use := semantic_ref_use_at_offset(ref_query, base_ref_offset)
+	testing.expect(t, base_use != nil)
+	if base_use != nil {
+		testing.expect(t, base_use.entity == row_type)
+		range := semantic_entity_use_range(base_use^)
+		testing.expect_value(t, source[range.start:range.end], "ty_order_map")
+	}
+
+	key_use := semantic_ref_use_at_offset(ref_query, key_offset)
+	testing.expect(t, key_use != nil)
+	if key_use != nil {
+		testing.expect(t, key_use.entity == field)
+		range := semantic_entity_use_range(key_use^)
+		testing.expect_value(t, source[range.start:range.end], "odata_property")
+	}
+}
+
+@(test)
 root_semantic_query_returns_project_owned_decl_and_builtin_use_pointers :: proc(t: ^testing.T) {
 	source := `DATA gv_value TYPE i.`
 

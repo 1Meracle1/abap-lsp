@@ -71,6 +71,56 @@ ENDCLASS.`
 	)
 }
 
+@(test)
+semantic_tokens_include_multiline_table_key_type_names :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_order_map,
+    odata_property TYPE string,
+  END OF ty_order_map,
+  tt_order_map TYPE HASHED TABLE OF ty_order_map
+    WITH UNIQUE KEY odata_property.`
+
+	parsed := parser.parse(source, "mem://semantic_tokens_table_key.abap", context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+
+	project := semantic.project_make()
+	defer semantic.project_destroy(&project)
+
+	checker := semantic.checker_make(&project)
+	file := semantic.checker_add_file(&checker, parsed.path, parsed.root)
+	semantic.checker_check_file(&checker, file)
+
+	snapshot := Snapshot_Lookup {
+		project = &project,
+		checker = &checker,
+		file    = file,
+		source  = source,
+		ok      = true,
+	}
+	tokens := semantic_tokens_for_snapshot(snapshot, context.allocator)
+
+	testing.expect(
+		t,
+		semantic_token_data_has_token(
+			source,
+			tokens,
+			"HASHED TABLE OF ty_order_map",
+			"ty_order_map",
+			TOKEN_TYPE_INDICES.type_,
+		),
+	)
+	testing.expect(
+		t,
+		semantic_token_data_has_token(
+			source,
+			tokens,
+			"WITH UNIQUE KEY odata_property",
+			"odata_property",
+			TOKEN_TYPE_INDICES.property,
+		),
+	)
+}
+
 semantic_token_data_has_token :: proc(
 	source: string,
 	data: []u32,

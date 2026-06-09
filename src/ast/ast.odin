@@ -307,12 +307,14 @@ Type_Ref_Key_Kind :: enum {
 
 // ABAP syntax: type-reference key addition such as `WITH DEFAULT KEY` or `WITH UNIQUE KEY id`.
 Type_Ref_Key_Clause :: struct {
-	kind:        Type_Ref_Key_Kind,
-	default_key: bool,
-	sorted:      bool,
-	hashed:      bool,
-	name:        string,
-	components:  [dynamic]string,
+	kind:             Type_Ref_Key_Kind,
+	default_key:      bool,
+	sorted:           bool,
+	hashed:           bool,
+	name:             string,
+	name_range:       tokenizer.Range,
+	components:       [dynamic]string,
+	component_ranges: [dynamic]tokenizer.Range,
 }
 
 Type_Ref_Path_Segment :: struct {

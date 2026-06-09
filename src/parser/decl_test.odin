@@ -241,6 +241,29 @@ TYPES ty_code_ranges TYPE SORTED TABLE OF ty_code_range WITH UNIQUE KEY begin.`
 }
 
 @(test)
+table_type_key_clause_keeps_precise_identifier_ranges :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_order_map,
+    odata_property TYPE string,
+  END OF ty_order_map,
+  tt_order_map TYPE HASHED TABLE OF ty_order_map
+    WITH UNIQUE KEY odata_property.`
+	parsed := parse(source, "table_key_ranges.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	ref := decl.types[3].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect_value(t, ref.name, "ty_order_map")
+	testing.expect_value(t, source[ref.base_range.start:ref.base_range.end], "ty_order_map")
+	testing.expect(t, ref.key != nil)
+	if ref.key != nil {
+		testing.expect_value(t, ref.key.components[0], "odata_property")
+		testing.expect_value(t, source[ref.key.component_ranges[0].start:ref.key.component_ranges[0].end], "odata_property")
+	}
+}
+
+@(test)
 structured_type_keyword_head_requires_of_when_not_component :: proc(t: ^testing.T) {
 	parsed := parse("TYPES: BEGIN ty_code_range, field TYPE i.", "bad_keyword_group.abap", context.allocator)
 

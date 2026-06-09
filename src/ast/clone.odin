@@ -1227,7 +1227,17 @@ clone_type_ref_key_clause :: proc(clause: ^Type_Ref_Key_Clause, allocator: mem.A
 	res.sorted = clause.sorted
 	res.hashed = clause.hashed
 	res.name = strings.clone(clause.name, allocator)
+	res.name_range = clause.name_range
 	res.components = clone_string_list(clause.components, allocator)
+	res.component_ranges = clone_range_list(clause.component_ranges, allocator)
+	return res
+}
+
+clone_range_list :: proc(list: [dynamic]tokenizer.Range, allocator: mem.Allocator) -> [dynamic]tokenizer.Range {
+	res := make([dynamic]tokenizer.Range, 0, len(list), allocator)
+	for range in list {
+		append(&res, range)
+	}
 	return res
 }
 

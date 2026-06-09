@@ -21,6 +21,7 @@ checker_check_decl_type_clause :: proc(
 	if has_ref {
 		checker_record_type_ref_raw_uses(ctx, clause.type_ref)
 		checker_record_type_expr_info(ctx, clause.type_ref, typ)
+		checker_record_type_ref_key_uses(ctx, clause.type_ref, typ, form)
 		checker_validate_decl_type_ref(ctx, entity, type_ref)
 	} else if checker_type_clause_is_generic_table(clause, form) {
 		checker_validate_generic_table_type_form(ctx, entity, clause, form)
@@ -49,6 +50,7 @@ checker_check_field_type :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^
 		if has_ref {
 			checker_record_type_ref_raw_uses(ctx, decl.type_clause.type_ref)
 			checker_record_type_expr_info(ctx, decl.type_clause.type_ref, typ)
+			checker_record_type_ref_key_uses(ctx, decl.type_clause.type_ref, typ, payload.type_clause_form)
 			checker_validate_decl_type_ref(ctx, entity, type_ref)
 		}
 	} else if .Has_Type_Ref in payload.flags {
@@ -183,10 +185,11 @@ checker_type_from_ref_data :: proc(
 	}
 
 	current_entity := entity
-	current := checker_type_from_entity(ctx, current_entity, node)
+	current := checker_type_from_entity(ctx, current_entity, node, type_ref.base_range)
 	for i := 0; i < len(type_ref.field_path); i += 1 {
 		selector := checker_type_selector_at(type_ref.field_selectors[:], i)
 		name := type_ref.field_path[i]
+		range := type_ref.field_ranges[i] if i < len(type_ref.field_ranges) else Range{}
 		if selector == .Arrow {
 			target := checker_type_ref_target(ctx, current)
 			if checker_type_path_segment_is_deref(type_ref, i) {
@@ -200,13 +203,13 @@ checker_type_from_ref_data :: proc(
 					owner,
 					.Value,
 					name,
-					type_ref.field_ranges[i] if i < len(type_ref.field_ranges) else Range{},
+					range,
 				)
 				if !member_ok {
 					return project_type_unknown(ctx.project), current_entity
 				}
 				current_entity = member
-				current = checker_type_from_entity(ctx, current_entity, node)
+				current = checker_type_from_entity(ctx, current_entity, node, range)
 				continue
 			}
 			return project_type_unknown(ctx.project), current_entity
@@ -224,13 +227,13 @@ checker_type_from_ref_data :: proc(
 				owner,
 				.Type,
 				name,
-				type_ref.field_ranges[i] if i < len(type_ref.field_ranges) else Range{},
+				range,
 			)
 			if !member_ok {
 				return project_type_unknown(ctx.project), current_entity
 			}
 			current_entity = member
-			current = checker_type_from_entity(ctx, current_entity, node)
+			current = checker_type_from_entity(ctx, current_entity, node, range)
 			continue
 		}
 		if structure := checker_type_structure(current); structure != nil {
@@ -239,7 +242,7 @@ checker_type_from_ref_data :: proc(
 				return project_type_unknown(ctx.project), current_entity
 			}
 			current_entity = field
-			current = checker_type_from_entity(ctx, current_entity, node)
+			current = checker_type_from_entity(ctx, current_entity, node, range)
 			continue
 		}
 		return project_type_unknown(ctx.project), current_entity
@@ -260,11 +263,20 @@ checker_type_ref_should_skip_current_decl :: proc(
 	       entity_kind_occupies(entity.kind, .Value)
 }
 
-checker_type_from_entity :: proc(ctx: ^Checker_Context, entity: ^Entity, node: ^ast.Node = nil) -> ^Type {
+checker_type_from_entity :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	node: ^ast.Node = nil,
+	range: Range = {},
+) -> ^Type {
 	if entity == nil {
 		return project_type_unknown(ctx.project)
 	}
-	checker_add_entity_use(ctx, node, entity)
+	if range.end > range.start {
+		checker_add_entity_use_at_range(ctx, node, entity, range)
+	} else {
+		checker_add_entity_use(ctx, node, entity)
+	}
 	if !entity_is_builtin(entity) && entity.state != .Resolved && entity.state != .Failed {
 		checker_check_entity_decl(ctx, entity)
 	}
@@ -383,6 +395,56 @@ checker_record_type_ref_raw_uses :: proc(ctx: ^Checker_Context, expr: ^ast.Expr)
 		for raw_ref in n.raw_refs {
 			ref_namespace := Namespace.Type if raw_ref.type_base else Namespace.Value
 			checker_check_ident_name(ctx, &expr.expr_base, raw_ref.name, ref_namespace, false)
+		}
+	}
+}
+
+checker_record_type_ref_key_uses :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	typ: ^Type,
+	form: ast.Data_Type_Form,
+) {
+	if expr == nil || typ == nil || !checker_type_form_is_table_category(form) {
+		return
+	}
+	n, ok := expr.derived_expr.(^ast.Type_Ref_Expr)
+	if !ok {
+		return
+	}
+	row_structure := checker_type_structure(checker_type_row(ctx, typ))
+	if row_structure == nil {
+		return
+	}
+	if len(n.keys) > 0 {
+		for key in n.keys {
+			checker_record_type_ref_key_clause_uses(ctx, key, row_structure, &expr.expr_base)
+		}
+		return
+	}
+	checker_record_type_ref_key_clause_uses(ctx, n.key, row_structure, &expr.expr_base)
+}
+
+checker_record_type_ref_key_clause_uses :: proc(
+	ctx: ^Checker_Context,
+	key: ^ast.Type_Ref_Key_Clause,
+	row_structure: ^Structure,
+	node: ^ast.Node,
+) {
+	if key == nil || row_structure == nil {
+		return
+	}
+	for component, i in key.components {
+		range := key.component_ranges[i] if i < len(key.component_ranges) else Range{}
+		if range.end <= range.start {
+			continue
+		}
+		name := checker_intern_name(ctx.project, component)
+		if !string_interner.is_valid(name) {
+			continue
+		}
+		if field, ok := checker_lookup_structure_field(row_structure, name); ok {
+			checker_add_entity_use_at_range(ctx, node, field, range)
 		}
 	}
 }

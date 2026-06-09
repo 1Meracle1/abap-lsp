@@ -1311,6 +1311,7 @@ parse_type_ref_key_clause :: proc(p: ^Parser) -> ^ast.Type_Ref_Key_Clause {
 	clause, _ := mem.new(ast.Type_Ref_Key_Clause, p.allocator)
 	clause.kind = .Generic
 	clause.components = make([dynamic]string, 0, 2, p.allocator)
+	clause.component_ranges = make([dynamic]Range, 0, 2, p.allocator)
 	if allow_keyword(p, "DEFAULT") {
 		allow_keyword(p, "KEY")
 		clause.kind = .Default
@@ -1347,11 +1348,14 @@ parse_type_ref_key_clause :: proc(p: ^Parser) -> ^ast.Type_Ref_Key_Clause {
 		if tok.kind != .Ident && tok.kind != .Number && tok.kind != .Star {
 			break
 		}
+		tok.range = parser_token_name_range(p, tok)
 		name := parser_intern_token_name(p, tok)
 		if !in_components && (clause.sorted || clause.hashed) && clause.name == "" {
 			clause.name = name
+			clause.name_range = tok.range
 		} else {
 			append(&clause.components, name)
+			append(&clause.component_ranges, tok.range)
 		}
 		bump_token(p)
 	}
