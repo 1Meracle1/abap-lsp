@@ -240,11 +240,18 @@ const EXPRESSION_KEYWORDS = [
   "DEFAULT",
 ];
 
+const CONSTRUCTOR_ARGUMENT_KEYWORDS = [
+  ...EXPRESSION_KEYWORDS,
+  "WHEN",
+  "ELSE",
+];
+
 const STATEMENT_TAIL_KEYWORDS = [
   "BEGIN",
   "BLOCK",
   "FRAME",
   "TITLE",
+  "USER-COMMAND",
   "OBLIGATORY",
   "RADIOBUTTON",
   "RANGE",
@@ -260,6 +267,7 @@ const STATEMENT_TAIL_KEYWORDS = [
   "WORK",
   "DATA",
   "AT",
+  "OUTPUT",
   "TIME",
   "STAMP",
   "ZONE",
@@ -473,7 +481,7 @@ module.exports = grammar({
     argument_list: ($) =>
       seq(
         "(",
-        repeat(choice($.constructor_row, $.named_argument, $._expression, keywordChoice($, EXPRESSION_KEYWORDS), $.operator, $.punctuation)),
+        repeat(choice($.constructor_row, $.named_argument, $._expression, keywordChoice($, CONSTRUCTOR_ARGUMENT_KEYWORDS), $.operator, $.punctuation)),
         ")",
       ),
 
@@ -612,7 +620,7 @@ module.exports = grammar({
       seq(keyword($, "DO"), optional($._statement_tail), ".", field("body", repeat($._statement)), keyword($, "ENDDO"), "."),
 
     loop_statement: ($) =>
-      seq(keyword($, "LOOP"), $._statement_tail, ".", field("body", repeat($._statement)), keyword($, "ENDLOOP"), "."),
+      seq(keyword($, "LOOP"), choice(prec(1, seq(keyword($, "AT"), keyword($, "SCREEN"))), $._statement_tail), ".", field("body", repeat($._statement)), keyword($, "ENDLOOP"), "."),
 
     try_statement: ($) =>
       seq(
@@ -754,7 +762,10 @@ module.exports = grammar({
       prec(2, seq(field("expression", $.call_expression), optional($._statement_tail), ".")),
 
     simple_statement: ($) =>
-      seq(field("keyword", keywordChoice($, SIMPLE_STATEMENT_KEYWORDS)), optional($._statement_tail), "."),
+      choice(
+        prec(1, seq(field("keyword", keyword($, "MODIFY")), keyword($, "SCREEN"), optional($._statement_tail), ".")),
+        seq(field("keyword", keywordChoice($, SIMPLE_STATEMENT_KEYWORDS)), optional($._statement_tail), "."),
+      ),
 
     unknown_statement: ($) => prec.dynamic(-10, seq(repeat1($._raw_token), ".")),
 
@@ -762,8 +773,17 @@ module.exports = grammar({
 
     _tail_token: ($) =>
       choice(
+        $._compound_tail_keyword,
         keywordChoice($, STATEMENT_TAIL_KEYWORDS),
         $._raw_token,
+      ),
+
+    _compound_tail_keyword: ($) =>
+      choice(
+        seq(keyword($, "LOWER"), keyword($, "CASE")),
+        seq(keyword($, "MODIF"), keyword($, "ID")),
+        seq(keyword($, "AS"), keyword($, "CHECKBOX")),
+        seq(keyword($, "ON"), keyword($, "VALUE-REQUEST")),
       ),
 
     _raw_token: ($) =>

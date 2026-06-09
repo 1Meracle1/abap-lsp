@@ -156,6 +156,131 @@ ENDCLASS.
     (keyword)))
 
 ==================
+Selection-screen additions highlight as keywords
+==================
+
+PARAMETERS: pmd_out RADIOBUTTON GROUP g1 DEFAULT 'X' USER-COMMAND rad,
+            pmd_inb RADIOBUTTON GROUP g1.
+PARAMETERS: pv_pth TYPE string LOWER CASE.
+PARAMETERS: pmd_lcl RADIOBUTTON GROUP g2 DEFAULT 'X' MODIF ID m1.
+PARAMETERS: pv_chn AS CHECKBOX DEFAULT 'X' MODIF ID m2.
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR pv_pth.
+AT SELECTION-SCREEN OUTPUT.
+LOOP AT SCREEN.
+  CASE screen-group1.
+    WHEN 'M1'.
+      screen-active = COND i( WHEN pmd_out = abap_true THEN 1 ELSE 0 ).
+      MODIFY SCREEN.
+  ENDCASE.
+ENDLOOP.
+
+---
+
+(source_file
+  (parameters_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (string)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (punctuation)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (parameters_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword))
+  (parameters_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (string)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (parameters_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword)
+    (string)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (event_block
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (event_block
+    (keyword)
+    (keyword))
+  (loop_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (case_statement
+      (keyword)
+      (selector_expression
+        (qualified_name
+          (identifier))
+        (identifier))
+      (when_clause
+        (keyword)
+        (string)
+        (assignment_statement
+          (selector_expression
+            (qualified_name
+              (identifier))
+            (identifier))
+          (constructor_expression
+            (keyword)
+            (identifier)
+            (argument_list
+              (keyword)
+              (binary_expression
+                (qualified_name
+                  (identifier))
+                (qualified_name
+                  (identifier)))
+              (keyword)
+              (number)
+              (keyword)
+              (number))))
+        (simple_statement
+          (keyword)
+          (keyword)))
+      (keyword))
+    (keyword)))
+
+==================
 Call and runtime additions highlight as keywords
 ==================
 
