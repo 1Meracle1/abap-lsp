@@ -135,6 +135,7 @@ checker_type_from_ref_data :: proc(
 	type_ref: Field_Type_Ref_Data,
 	node: ^ast.Node = nil,
 	current_decl_entity: ^Entity = nil,
+	preferred_external_kind: External_Candidate_Kind = .Global_Symbol,
 ) -> (^Type, ^Entity) {
 	if !string_interner.is_valid(type_ref.base_name) {
 		return project_type_unknown(ctx.project), nil
@@ -143,18 +144,24 @@ checker_type_from_ref_data :: proc(
 	entity: ^Entity
 	ok: bool
 	if skip_current {
-		_, entity, ok = checker_lookup_reference(ctx, type_ref.namespace, type_ref.base_name, excluded = current_decl_entity)
+		_, entity, ok = checker_lookup_reference(
+			ctx,
+			type_ref.namespace,
+			type_ref.base_name,
+			preferred_external_kind,
+			excluded = current_decl_entity,
+		)
 	} else {
-		_, entity, ok = checker_lookup_reference(ctx, type_ref.namespace, type_ref.base_name)
+		_, entity, ok = checker_lookup_reference(ctx, type_ref.namespace, type_ref.base_name, preferred_external_kind)
 	}
 	if !ok && type_ref.namespace == .Value && type_ref.allow_type_lookup {
-		_, entity, ok = checker_lookup_reference(ctx, .Type, type_ref.base_name)
+		_, entity, ok = checker_lookup_reference(ctx, .Type, type_ref.base_name, preferred_external_kind)
 		if !ok {
 			checker_add_unresolved_candidate(
 				ctx,
 				type_ref.base_name,
 				.Type,
-				.Global_Symbol,
+				preferred_external_kind,
 				.Type_Reference,
 				.Unresolved_Type,
 				type_ref.base_range,
@@ -172,7 +179,7 @@ checker_type_from_ref_data :: proc(
 			ctx,
 			type_ref.base_name,
 			type_ref.namespace,
-			kind,
+			preferred_external_kind if preferred_external_kind != .Global_Symbol else kind,
 			.Type_Reference,
 			reason,
 			type_ref.base_range,

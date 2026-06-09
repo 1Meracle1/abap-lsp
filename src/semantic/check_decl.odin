@@ -1265,14 +1265,33 @@ checker_collect_oop_signature :: proc(
 			}
 			continue
 		}
-		if sig.kind == .Exceptions || sig.kind == .Raising {
+		if sig.kind == .Exceptions {
 			for value in sig.values {
 				if name, _, name_ok := checker_expr_name(value); name_ok {
 					append(&payload.exceptions, checker_intern_name(ctx.project, name))
 				}
 			}
+			continue
+		}
+		if sig.kind == .Raising {
+			for value in sig.values {
+				checker_collect_oop_raising_exception(ctx, payload, value)
+			}
 		}
 	}
+}
+
+checker_collect_oop_raising_exception :: proc(
+	ctx: ^Checker_Context,
+	payload: ^Entity_Routine_Payload,
+	value: ^ast.Expr,
+) {
+	type_ref := checker_type_ref_data_from_expr(ctx, value, .Type)
+	if !string_interner.is_valid(type_ref.base_name) {
+		return
+	}
+	append(&payload.exceptions, type_ref.base_name)
+	append(&payload.exception_type_refs, type_ref)
 }
 
 checker_collect_parameter_decl :: proc(
@@ -1480,6 +1499,7 @@ checker_check_routine_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl:
 	assert(ok && payload != nil)
 	assert(payload.signature_scope != nil && payload.body_scope != nil)
 	checker_prepare_oop_routine_signature(ctx, entity)
+	checker_check_routine_exception_type_refs(ctx, entity, payload)
 	if entity.type == nil || entity.type.kind != .Routine {
 		entity.type = project_type_routine(ctx.project, payload.signature_scope)
 	}
@@ -1496,6 +1516,22 @@ checker_check_routine_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl:
 		body_ctx.current_routine = entity
 		body_ctx.current_signature = entity.type
 		checker_check_stmt_list(&body_ctx, body)
+	}
+}
+
+checker_check_routine_exception_type_refs :: proc(
+	ctx: ^Checker_Context,
+	routine: ^Entity,
+	payload: ^Entity_Routine_Payload,
+) {
+	assert(routine != nil && payload != nil)
+	for type_ref in payload.exception_type_refs {
+		_, _ = checker_type_from_ref_data(
+			ctx,
+			type_ref,
+			routine.node,
+			preferred_external_kind = .Class,
+		)
 	}
 }
 

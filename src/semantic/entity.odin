@@ -248,6 +248,7 @@ Entity_Routine_Payload :: struct {
 	signature:            string,
 	parameters:           [dynamic]^Entity,
 	exceptions:           [dynamic]string_interner.String,
+	exception_type_refs:  [dynamic]Field_Type_Ref_Data,
 	visibility:           Visibility,
 	member_kind:          Class_Member_Kind,
 	event_name:           string_interner.String,
@@ -421,6 +422,7 @@ entity_default_payload :: proc(kind: Entity_Kind, allocator: mem.Allocator) -> E
 		payload := new(Entity_Routine_Payload, allocator)
 		payload.parameters = make([dynamic]^Entity, 0, 4, allocator)
 		payload.exceptions = make([dynamic]string_interner.String, 0, 1, allocator)
+		payload.exception_type_refs = make([dynamic]Field_Type_Ref_Data, 0, 1, allocator)
 		return payload
 	case .Field:
 		payload := new(Entity_Field_Payload, allocator)
