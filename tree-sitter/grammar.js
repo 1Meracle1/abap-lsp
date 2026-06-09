@@ -37,6 +37,10 @@ function keywordChoice($, words) {
   return choice(...words.map((word) => keyword($, word)));
 }
 
+function assignmentTail($) {
+  return repeat1(choice($._expression, keywordChoice($, EXPRESSION_KEYWORDS), $.operator, $.punctuation, $.tail_fragment));
+}
+
 const DECLARATION_KEYWORDS = [
   "DATA",
   "TYPES",
@@ -1233,7 +1237,7 @@ module.exports = grammar({
         seq(
           field("left", choice($.qualified_name, $.selector_expression, $.table_expression)),
           field("operator", choice("=", "?=")),
-          field("right", optional($._statement_tail)),
+          field("right", optional(assignmentTail($))),
           ".",
         ),
       ),

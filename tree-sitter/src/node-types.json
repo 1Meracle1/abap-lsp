@@ -550,14 +550,6 @@
           {
             "type": "tail_fragment",
             "named": true
-          },
-          {
-            "type": "type_ref_tail",
-            "named": true
-          },
-          {
-            "type": "value_tail",
-            "named": true
           }
         ]
       }

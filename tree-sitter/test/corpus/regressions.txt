@@ -805,3 +805,21 @@ ASSIGN COMPONENT 'PATH' OF STRUCTURE is_node TO <path>.
       (identifier))
     (keyword)
     (field_symbol)))
+
+==================
+Keyword-like assignment RHS identifiers
+==================
+
+me->MESSAGE = MESSAGE .
+
+---
+
+(source_file
+  (assignment_statement
+    (selector_expression
+      (qualified_name
+        (identifier))
+      (component_name
+        (identifier)))
+    (qualified_name
+      (identifier))))
