@@ -608,3 +608,253 @@ ENDFORM.
     (qualified_name
       (identifier))
     (keyword)))
+
+==================
+Corpus-backed inline declarations and loop events
+==================
+
+SELECT DISTINCT e~*
+  FROM /sttp/dm_evt AS e
+  INTO TABLE @DATA(lt_comm_evt)
+  WHERE e~objtype IN ('2', '3').
+
+DATA(lv_epc) = VALUE /sttp/epc1(
+  content = |urn:epc:id:sgtin:{ ls_rel_itm-owner }.{ ls_rel_itm-product }.{ ls_rel_itm-serial }|
+).
+
+READ TABLE lt_rel_itm_grp ASSIGNING FIELD-SYMBOL(<fs_itm_grp>)
+  WITH TABLE KEY evtid = ls_rel_itm-evtid
+                 gtin = ls_rel_itm-gtin.
+
+LOOP AT lt_rel_sscc INTO DATA(ls_rel_sscc).
+  AT NEW evtid.
+    CLEAR ls_obj_evt.
+  ENDAT.
+  AT END OF evtid.
+    APPEND VALUE /sttp/epc1( content = ls_encode_epc-code_char ) TO ls_obj_evt-epc_list-epc.
+  ENDAT.
+ENDLOOP.
+
+ASSIGN lo_sap_struct->* TO <ls_sap_struct>.
+IF <ls_sap_struct> IS ASSIGNED.
+  cv_epcis = <ls_sap_struct>.
+ENDIF.
+
+CALL TRANSFORMATION ztt_us_tl_ship_ext_trans
+  SOURCE tl_ship_ext = ls_tl_ship_ext
+  RESULT XML lv_sapext_xml
+  OPTIONS xml_header = 'no'.
+
+lv_trans_date = lv_event_date_str+0(8).
+CONCATENATE lv_stsmp_str(8) lv_stsmp_str+8(6) INTO cv_filename.
+LEAVE TO SCREEN sy-dynnr.
+
+---
+
+(source_file
+  (select_statement
+    (keyword)
+    (keyword)
+    (wildcard_selector_expression
+      (qualified_name
+        (identifier))
+      (wildcard))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (host_expression
+      (constructor_expression
+        (keyword)
+        (argument_list
+          (qualified_name
+            (identifier)))))
+    (keyword)
+    (binary_expression
+      (interface_selector_expression
+        (qualified_name
+          (identifier))
+        (identifier))
+      (keyword)
+      (parenthesized_expression
+        (string)
+        (string))))
+  (data_declaration
+    (keyword)
+    (binary_expression
+      (parenthesized_expression
+        (qualified_name
+          (identifier)))
+      (constructor_expression
+        (keyword)
+        (identifier)
+        (argument_list
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (string_template
+              (template_start)
+              (template_text)
+              (template_interpolation
+                (template_interpolation_start)
+                (selector_expression
+                  (qualified_name
+                    (identifier))
+                  (identifier))
+                (template_interpolation_end))
+              (template_text)
+              (template_interpolation
+                (template_interpolation_start)
+                (selector_expression
+                  (qualified_name
+                    (identifier))
+                  (identifier))
+                (template_interpolation_end))
+              (template_text)
+              (template_interpolation
+                (template_interpolation_start)
+                (selector_expression
+                  (qualified_name
+                    (identifier))
+                  (identifier))
+                (template_interpolation_end))
+              (template_end)))))))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (parenthesized_expression
+      (qualified_name
+        (field_symbol)))
+    (keyword)
+    (keyword)
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (selector_expression
+        (qualified_name
+          (identifier))
+        (identifier)))
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (selector_expression
+        (qualified_name
+          (identifier))
+        (identifier))))
+  (loop_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (constructor_expression
+      (keyword)
+      (argument_list
+        (qualified_name
+          (identifier))))
+    (at_statement
+      (keyword)
+      (keyword)
+      (identifier)
+      (simple_statement
+        (keyword)
+        (qualified_name
+          (identifier)))
+      (keyword))
+    (at_statement
+      (keyword)
+      (keyword)
+      (keyword)
+      (identifier)
+      (simple_statement
+        (keyword)
+        (constructor_expression
+          (keyword)
+          (identifier)
+          (argument_list
+            (binary_expression
+              (qualified_name
+                (identifier))
+              (selector_expression
+                (qualified_name
+                  (identifier))
+                (identifier)))))
+        (keyword)
+        (selector_expression
+          (selector_expression
+            (qualified_name
+              (identifier))
+            (identifier))
+          (identifier)))
+      (keyword))
+    (keyword))
+  (simple_statement
+    (keyword)
+    (wildcard_selector_expression
+      (qualified_name
+        (identifier))
+      (wildcard))
+    (keyword)
+    (qualified_name
+      (field_symbol)))
+  (if_statement
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (field_symbol))
+      (keyword)
+      (keyword))
+    (assignment_statement
+      (qualified_name
+        (identifier))
+      (qualified_name
+        (field_symbol)))
+    (keyword))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (qualified_name
+        (identifier)))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (string)))
+  (assignment_statement
+    (qualified_name
+      (identifier))
+    (substring_expression))
+  (simple_statement
+    (keyword)
+    (substring_expression)
+    (substring_expression)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (selector_expression
+      (qualified_name
+        (identifier))
+      (identifier))))

@@ -81,6 +81,7 @@ const SIMPLE_STATEMENT_KEYWORDS = [
   "ASSERT",
   "CHECK",
   "RETURN",
+  "LEAVE",
   "CONTINUE",
   "EXIT",
   "STOP",
@@ -139,6 +140,7 @@ const EXPRESSION_KEYWORDS = [
   "NOT",
   "IS",
   "INITIAL",
+  "ASSIGNED",
   "BOUND",
   "BETWEEN",
   "IN",
@@ -254,6 +256,7 @@ const STATEMENT_TAIL_KEYWORDS = [
   "BLOCK",
   "COMPARING",
   "DESTINATION",
+  "DISTINCT",
   "DUPLICATE",
   "DUPLICATES",
   "ENTRIES",
@@ -287,6 +290,14 @@ const STATEMENT_TAIL_KEYWORDS = [
   "DATE",
   "DISPLAY",
   "METHOD",
+  "NEW",
+  "OF",
+  "SOURCE",
+  "RESULT",
+  "TRANSFORMATION",
+  "XML",
+  "OPTIONS",
+  "TIMES",
 ];
 
 module.exports = grammar({
@@ -318,6 +329,7 @@ module.exports = grammar({
     [$.binary_expression, $.selector_expression],
     [$.parenthesized_expression, $._raw_token],
     [$.parenthesized_expression, $.argument_list],
+    [$._tail_token, $._raw_token],
   ],
 
   rules: {
@@ -331,6 +343,7 @@ module.exports = grammar({
         $.while_statement,
         $.do_statement,
         $.loop_statement,
+        $.at_statement,
         $.try_statement,
         $.class_definition,
         $.class_implementation,
@@ -407,7 +420,6 @@ module.exports = grammar({
 
     _template_token: ($) =>
       choice(
-        $.string_template,
         $._expression,
         keywordChoice($, [
           "WIDTH",
@@ -429,7 +441,7 @@ module.exports = grammar({
 
     template_punctuation: (_) => token(choice(",", ":", "(", ")", "[", "]")),
 
-    _literal: ($) => choice($.number, $.string),
+    _literal: ($) => choice($.number, $.string, $.string_template),
 
     _expression: ($) =>
       choice(
@@ -437,8 +449,10 @@ module.exports = grammar({
         $.unary_expression,
         $.selector_expression,
         $.interface_selector_expression,
+        $.wildcard_selector_expression,
         $.call_expression,
         $.table_expression,
+        $.substring_expression,
         $.constructor_expression,
         $.parenthesized_expression,
         $.host_expression,
@@ -448,7 +462,8 @@ module.exports = grammar({
 
     host_expression: ($) => seq("@", field("value", $._expression)),
 
-    parenthesized_expression: ($) => seq("(", optional($._expression), ")"),
+    parenthesized_expression: ($) =>
+      seq("(", optional(seq($._expression, repeat(seq(",", $._expression)))), ")"),
 
     unary_expression: ($) =>
       prec.left(PREC.UNARY, seq(field("operator", choice("+", "-", keyword($, "NOT"))), field("operand", $._expression))),
@@ -457,7 +472,7 @@ module.exports = grammar({
       choice(
         prec.left(PREC.OR, seq(field("left", $._expression), field("operator", keyword($, "OR")), field("right", $._expression))),
         prec.left(PREC.AND, seq(field("left", $._expression), field("operator", keyword($, "AND")), field("right", $._expression))),
-        prec.left(PREC.COMPARE, seq(field("left", $._expression), field("operator", keyword($, "IS")), optional(field("negation", keyword($, "NOT"))), field("right", keywordChoice($, ["INITIAL", "BOUND"])))),
+        prec.left(PREC.COMPARE, seq(field("left", $._expression), field("operator", keyword($, "IS")), optional(field("negation", keyword($, "NOT"))), field("right", keywordChoice($, ["INITIAL", "BOUND", "ASSIGNED"])))),
         prec.left(PREC.COMPARE, seq(field("left", $._expression), field("operator", choice("=", "<>", "<", ">", "<=", ">=", keywordChoice($, ["EQ", "NE", "LT", "LE", "GT", "GE", "IS", "BETWEEN", "IN", "LIKE", "CO", "CN", "CA", "NA", "CS", "NS", "CP", "NP"]))), field("right", $._expression))),
         prec.left(PREC.CONCAT, seq(field("left", $._expression), field("operator", "&&"), field("right", $._expression))),
         prec.left(PREC.ADD, seq(field("left", $._expression), field("operator", choice("+", "-")), field("right", $._expression))),
@@ -471,6 +486,18 @@ module.exports = grammar({
           field("object", $._expression),
           field("operator", choice("-", "->", "=>")),
           field("property", $._name),
+        ),
+      ),
+
+    wildcard: (_) => token("*"),
+
+    wildcard_selector_expression: ($) =>
+      prec.left(
+        PREC.SELECTOR,
+        seq(
+          field("object", $._expression),
+          field("operator", choice("->", "~")),
+          field("property", $.wildcard),
         ),
       ),
 
@@ -506,15 +533,11 @@ module.exports = grammar({
         seq(field("table", $._expression), "[", repeat(choice($.named_argument, $._expression, keywordChoice($, EXPRESSION_KEYWORDS), $.operator, $.punctuation)), "]"),
       ),
 
-    substring_expression: ($) =>
-      prec.left(
-        PREC.CALL,
-        seq(
-          field("value", $._expression),
-          optional(seq("+", field("offset", choice($._expression, "*")))),
-          "(",
-          field("length", optional(choice($._expression, "*"))),
-          ")",
+    substring_expression: (_) =>
+      token(
+        prec(
+          1,
+          /[A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z_][A-Za-z0-9_]*)*(?:(?:\+\d+)?\(\d+\)|\+\d+)/,
         ),
       ),
 
@@ -634,6 +657,20 @@ module.exports = grammar({
     loop_statement: ($) =>
       seq(keyword($, "LOOP"), choice(prec(1, seq(keyword($, "AT"), keyword($, "SCREEN"))), $._statement_tail), ".", field("body", repeat($._statement)), keyword($, "ENDLOOP"), "."),
 
+    at_statement: ($) =>
+      seq(
+        keyword($, "AT"),
+        choice(
+          seq(keyword($, "NEW"), field("name", $._name)),
+          seq(keyword($, "END"), keyword($, "OF"), field("name", $._name)),
+        ),
+        optional($._statement_tail),
+        ".",
+        field("body", repeat($._statement)),
+        keyword($, "ENDAT"),
+        ".",
+      ),
+
     try_statement: ($) =>
       seq(
         keyword($, "TRY"),
@@ -747,7 +784,6 @@ module.exports = grammar({
 
     _submit_tail_token: ($) =>
       choice(
-        $.string_template,
         keywordChoice($, STATEMENT_TAIL_KEYWORDS),
         $.qualified_name,
         $._literal,
@@ -796,11 +832,11 @@ module.exports = grammar({
         seq(keyword($, "MODIF"), keyword($, "ID")),
         seq(keyword($, "AS"), keyword($, "CHECKBOX")),
         seq(keyword($, "ON"), keyword($, "VALUE-REQUEST")),
+        seq(keyword($, "TO"), keyword($, "SCREEN")),
       ),
 
     _raw_token: ($) =>
       choice(
-        $.string_template,
         $._expression,
         keywordChoice($, EXPRESSION_KEYWORDS),
         $.operator,

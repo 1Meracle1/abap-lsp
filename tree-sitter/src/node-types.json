@@ -40,11 +40,19 @@
         "named": true
       },
       {
+        "type": "substring_expression",
+        "named": true
+      },
+      {
         "type": "table_expression",
         "named": true
       },
       {
         "type": "unary_expression",
+        "named": true
+      },
+      {
+        "type": "wildcard_selector_expression",
         "named": true
       }
     ]
@@ -60,6 +68,10 @@
       {
         "type": "string",
         "named": true
+      },
+      {
+        "type": "string_template",
+        "named": true
       }
     ]
   },
@@ -69,6 +81,10 @@
     "subtypes": [
       {
         "type": "assignment_statement",
+        "named": true
+      },
+      {
+        "type": "at_statement",
         "named": true
       },
       {
@@ -321,13 +337,69 @@
           {
             "type": "punctuation",
             "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "at_statement",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "_statement",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "cte_identifier",
+            "named": true
           },
           {
-            "type": "string_template",
+            "type": "escaped_identifier",
+            "named": true
+          },
+          {
+            "type": "field_symbol",
+            "named": true
+          },
+          {
+            "type": "identifier",
             "named": true
           }
         ]
       }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -473,10 +545,6 @@
           {
             "type": "punctuation",
             "named": true
-          },
-          {
-            "type": "string_template",
-            "named": true
           }
         ]
       }
@@ -530,10 +598,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -560,10 +624,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -641,10 +701,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -704,10 +760,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -781,10 +833,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -877,10 +925,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -908,10 +952,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -938,10 +978,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -980,10 +1016,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -1048,10 +1080,6 @@
           {
             "type": "punctuation",
             "named": true
-          },
-          {
-            "type": "string_template",
-            "named": true
           }
         ]
       }
@@ -1100,10 +1128,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -1162,10 +1186,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -1192,10 +1212,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -1257,10 +1273,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -1321,10 +1333,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -1374,10 +1382,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -1431,10 +1435,6 @@
           },
           {
             "type": "punctuation",
-            "named": true
-          },
-          {
-            "type": "string_template",
             "named": true
           }
         ]
@@ -1536,10 +1536,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -1611,10 +1607,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -1702,10 +1694,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -1766,10 +1754,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -1818,10 +1802,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -1859,10 +1839,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -1923,10 +1899,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -1993,10 +1965,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -2006,7 +1974,7 @@
     "named": true,
     "fields": {},
     "children": {
-      "multiple": false,
+      "multiple": true,
       "required": false,
       "types": [
         {
@@ -2071,10 +2039,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -2125,10 +2089,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -2156,10 +2116,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -2186,10 +2142,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -2285,10 +2237,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -2331,10 +2279,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -2398,10 +2342,6 @@
         },
         {
           "type": "qualified_name",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -2472,10 +2412,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -2498,10 +2434,6 @@
         },
         {
           "type": "operator",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         },
         {
@@ -2581,10 +2513,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -2611,10 +2539,6 @@
         },
         {
           "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "string_template",
           "named": true
         }
       ]
@@ -2677,10 +2601,6 @@
         {
           "type": "punctuation",
           "named": true
-        },
-        {
-          "type": "string_template",
-          "named": true
         }
       ]
     }
@@ -2733,10 +2653,6 @@
           {
             "type": "punctuation",
             "named": true
-          },
-          {
-            "type": "string_template",
-            "named": true
           }
         ]
       }
@@ -2785,10 +2701,6 @@
           {
             "type": "punctuation",
             "named": true
-          },
-          {
-            "type": "string_template",
-            "named": true
           }
         ]
       }
@@ -2802,6 +2714,51 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "wildcard",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "wildcard_selector_expression",
+    "named": true,
+    "fields": {
+      "object": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_expression",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "->",
+            "named": false
+          },
+          {
+            "type": "~",
+            "named": false
+          }
+        ]
+      },
+      "property": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "wildcard",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -2935,6 +2892,10 @@
   },
   {
     "type": "star_comment",
+    "named": true
+  },
+  {
+    "type": "substring_expression",
     "named": true
   },
   {
