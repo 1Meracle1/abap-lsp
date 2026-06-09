@@ -671,7 +671,7 @@ entity_at_position :: proc(state: ^Server_State, params: json.Value) -> Entity_L
 	ref_query := semantic.semantic_query_refs(query)
 	if use := semantic.semantic_ref_use_at_offset(ref_query, offset);
 	   use != nil && use.entity != nil {
-		range := use.node.range if use.node != nil else use.entity.name_range
+		range := semantic.semantic_entity_use_range(use^)
 		return Entity_Lookup{snapshot = snapshot, entity = use.entity, range = range, ok = true}
 	}
 	return {}
@@ -745,13 +745,17 @@ handle_references :: proc(ctx: ^Request_Context, params: json.Value) {
 		)
 	}
 	for ref in refs {
-		if ref == nil || ref.node == nil || ref.file == nil {
+		if ref == nil || ref.file == nil {
 			continue
 		}
 		source := source_for_project_file(ctx.state, ref.file)
+		range := semantic.semantic_entity_use_range(ref^)
+		if range.start >= range.end {
+			continue
+		}
 		location := Location {
 			uri   = ref.file.path,
-			range = range_from_offsets(source, ref.node.range.start, ref.node.range.end),
+			range = range_from_offsets(source, range.start, range.end),
 		}
 		if !location_present(locations[:], location) {
 			append(&locations, location)
@@ -867,10 +871,10 @@ semantic_tokens_for_snapshot :: proc(
 		push_pending_token(&pending, entity.name_range, entity, true)
 	}
 	for use in snapshot.checker.info.uses {
-		if use.file != snapshot.file || use.entity == nil || use.node == nil {
+		if use.file != snapshot.file || use.entity == nil {
 			continue
 		}
-		push_pending_token(&pending, use.node.range, use.entity, false)
+		push_pending_token(&pending, semantic.semantic_entity_use_range(use), use.entity, false)
 	}
 	slice.sort_by(pending[:], pending_token_less)
 	merged := make([dynamic]Pending_Token, 0, len(pending), context.temp_allocator)

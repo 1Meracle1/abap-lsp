@@ -2274,6 +2274,7 @@ Class_Friend_Clause :: struct {
 Class_Decl :: struct {
 	using node:       Stmt,
 	name:             string,
+	name_range:       tokenizer.Range,
 	body:             [dynamic]^Stmt,
 	header_range:     tokenizer.Range,
 	header_text:      string,
@@ -2286,6 +2287,7 @@ Class_Decl :: struct {
 Interface_Decl :: struct {
 	using node:   Stmt,
 	name:         string,
+	name_range:   tokenizer.Range,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
 	header_text:  string,

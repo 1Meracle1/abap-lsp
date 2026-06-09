@@ -347,6 +347,7 @@ CLASS lcl_deferred DEFINITION DEFERRED.`
 	testing.expect(t, .Abstract in abs.flags)
 	testing.expect(t, !(.Implementation in abs.flags))
 	testing.expect(t, !(.Bodyless in abs.flags))
+	testing.expect_value(t, source[child.name_range.start:child.name_range.end], "lcl_child")
 	testing.expect_value(t, child.superclass_name, "lcl_super")
 	testing.expect_value(
 		t,

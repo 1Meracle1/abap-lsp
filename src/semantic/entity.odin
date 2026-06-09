@@ -236,6 +236,7 @@ Entity_Object_Payload :: struct {
 	definition_scope:       ^Scope,
 	signature:              string,
 	superclass_name:        string_interner.String,
+	superclass_range:       Range,
 	implemented_interfaces: [dynamic]string_interner.String,
 	friends:                [dynamic]string_interner.String,
 	is_abstract:            bool,

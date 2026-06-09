@@ -69,6 +69,7 @@ Checker_Entity_Use :: struct {
 	scope:  ^Scope,
 	decl:   ^Decl_Info,
 	entity: ^Entity,
+	range:  Range,
 }
 
 Checker_Info :: struct {
@@ -654,6 +655,16 @@ checker_add_entity_use :: proc(
 	node: ^ast.Node,
 	entity: ^Entity,
 ) {
+	range := node.range if node != nil else Range{}
+	checker_add_entity_use_at_range(ctx, node, entity, range)
+}
+
+checker_add_entity_use_at_range :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	entity: ^Entity,
+	range: Range,
+) {
 	assert(entity != nil)
 	entity.flags += {.Used}
 	checker_add_dependency(ctx, entity)
@@ -665,6 +676,7 @@ checker_add_entity_use :: proc(
 			scope  = ctx.scope,
 			decl   = ctx.decl,
 			entity = entity,
+			range  = range,
 		},
 	)
 }

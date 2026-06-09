@@ -2624,6 +2624,47 @@ lv_copy = lv_value + 1.`
 }
 
 @(test)
+root_semantic_query_uses_precise_class_header_ranges :: proc(t: ^testing.T) {
+	source := `CLASS lcl_parent DEFINITION.
+ENDCLASS.
+CLASS lcl_child DEFINITION
+  INHERITING FROM lcl_parent
+  CREATE PUBLIC.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://class_header_ranges.abap")
+	query := semantic_query(&project, &checker, file)
+	decl_query := semantic_query_decls(query)
+	ref_query := semantic_query_refs(query)
+
+	child_offset := checker_test_find_text(source, "lcl_child")
+	parent_decl_offset := checker_test_find_text(source, "lcl_parent")
+	parent_ref_offset := checker_test_find_text_last(source, "lcl_parent")
+	testing.expect(t, child_offset >= 0 && parent_decl_offset >= 0 && parent_ref_offset > parent_decl_offset)
+
+	child := semantic_decl_entity_at_offset(decl_query, child_offset)
+	testing.expect(t, child != nil)
+	if child != nil {
+		testing.expect_value(t, child.kind, Entity_Kind.Class)
+		testing.expect_value(t, source[child.name_range.start:child.name_range.end], "lcl_child")
+	}
+
+	parent := semantic_decl_entity_at_offset(decl_query, parent_decl_offset)
+	parent_use := semantic_ref_use_at_offset(ref_query, parent_ref_offset)
+	testing.expect(t, parent != nil)
+	testing.expect(t, parent_use != nil)
+	if parent != nil && parent_use != nil {
+		testing.expect(t, parent_use.entity == parent)
+		range := semantic_entity_use_range(parent_use^)
+		testing.expect_value(t, source[range.start:range.end], "lcl_parent")
+		testing.expect(t, semantic_ref_use_at_range(ref_query, range) == parent_use)
+	}
+}
+
+@(test)
 root_semantic_query_returns_project_owned_decl_and_builtin_use_pointers :: proc(t: ^testing.T) {
 	source := `DATA gv_value TYPE i.`
 

@@ -11,10 +11,16 @@ checker_check_object_semantics :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 	if entity.kind == .Class && string_interner.is_valid(payload.superclass_name) {
 		if super, super_ok := checker_lookup_type_name_from_scope(ctx, entity.scope, payload.superclass_name, .Class);
 		   super_ok && super.kind == .Class {
-			checker_add_entity_use(ctx, entity.node, super)
+			checker_add_entity_use_at_range(ctx, entity.node, super, payload.superclass_range)
 			checker_check_entity_for_operand(ctx, super)
 		} else {
-			checker_add_unresolved_oop_type_candidate(ctx, entity, payload.superclass_name, .Class)
+			checker_add_unresolved_oop_type_candidate(
+				ctx,
+				entity,
+				payload.superclass_name,
+				.Class,
+				payload.superclass_range,
+			)
 		}
 	}
 
@@ -37,10 +43,12 @@ checker_add_unresolved_oop_type_candidate :: proc(
 	owner: ^Entity,
 	name: string_interner.String,
 	kind: External_Candidate_Kind,
+	range: Range = {},
 ) {
 	if owner == nil {
 		return
 	}
+	ref_range := range if range.end > range.start else owner.name_range
 	checker_add_unresolved_candidate(
 		ctx,
 		name,
@@ -48,7 +56,7 @@ checker_add_unresolved_oop_type_candidate :: proc(
 		kind,
 		.Type_Reference,
 		.Unresolved_Type,
-		owner.name_range,
+		ref_range,
 		owner.node,
 	)
 }

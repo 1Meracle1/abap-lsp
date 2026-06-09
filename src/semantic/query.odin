@@ -230,13 +230,14 @@ semantic_ref_use_at_offset :: proc(q: Semantic_Ref_Query, offset: int) -> ^Check
 	best := -1
 	best_width := 0
 	for use, i in q.checker.info.uses {
-		if use.node == nil || !semantic_query_use_matches_file(use, q.file) {
+		range := semantic_entity_use_range(use)
+		if range.start >= range.end || !semantic_query_use_matches_file(use, q.file) {
 			continue
 		}
-		if !semantic_range_contains_offset(use.node.range, offset) {
+		if !semantic_range_contains_offset(range, offset) {
 			continue
 		}
-		width := semantic_range_width(use.node.range)
+		width := semantic_range_width(range)
 		if best < 0 || width < best_width {
 			best = i
 			best_width = width
@@ -247,9 +248,8 @@ semantic_ref_use_at_offset :: proc(q: Semantic_Ref_Query, offset: int) -> ^Check
 
 semantic_ref_use_at_range :: proc(q: Semantic_Ref_Query, range: Range) -> ^Checker_Entity_Use {
 	for &use in q.checker.info.uses {
-		if use.node != nil &&
-		   semantic_query_use_matches_file(use, q.file) &&
-		   use.node.range == range {
+		if semantic_query_use_matches_file(use, q.file) &&
+		   semantic_entity_use_range(use) == range {
 			return &use
 		}
 	}
@@ -540,6 +540,16 @@ semantic_query_entity_matches_file :: proc(entity: ^Entity, file: ^Project_File)
 
 semantic_query_use_matches_file :: proc(use: Checker_Entity_Use, file: ^Project_File) -> bool {
 	return file == nil || use.file == file
+}
+
+semantic_entity_use_range :: proc(use: Checker_Entity_Use) -> Range {
+	if use.range.end > use.range.start {
+		return use.range
+	}
+	if use.node != nil {
+		return use.node.range
+	}
+	return {}
 }
 
 semantic_query_record_matches_file :: proc(

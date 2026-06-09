@@ -808,7 +808,7 @@ checker_collect_class_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_Decl)
 		entity = project_new_entity(ctx.project, .Class)
 		entity.node = &decl.node.stmt_base
 		interned := checker_intern_name(ctx.project, decl.name)
-		info := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Class, decl.header_range, &decl.node.stmt_base)
+		info := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Class, decl.name_range, &decl.node.stmt_base)
 		_ = checker_add_entity_and_decl_info(ctx, entity, info)
 	}
 	if entity == nil {
@@ -834,6 +834,7 @@ checker_collect_class_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_Decl)
 	}
 	if decl.superclass_name != "" {
 		payload.superclass_name = checker_intern_name(ctx.project, decl.superclass_name)
+		payload.superclass_range = decl.superclass_range
 	}
 	for friend in decl.friends {
 		if friend.name != "" {
@@ -853,7 +854,7 @@ checker_collect_interface_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Interfa
 		entity = project_new_entity(ctx.project, .Interface)
 		entity.node = &decl.node.stmt_base
 		interned := checker_intern_name(ctx.project, decl.name)
-		info := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Interface, decl.header_range, &decl.node.stmt_base)
+		info := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Interface, decl.name_range, &decl.node.stmt_base)
 		_ = checker_add_entity_and_decl_info(ctx, entity, info)
 	}
 	if entity == nil {

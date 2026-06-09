@@ -1079,6 +1079,9 @@ parse_named_block_stmt :: proc(
 	}
 	stmt := ast.new(T, start.range, p.allocator)
 	stmt.name = parser_intern_token_name(p, name) if name.kind != .Eof else ""
+	when intrinsics.type_has_field(T, "name_range") {
+		stmt.name_range = parser_token_name_range(p, name) if name.kind != .Eof else tokenizer.Range{}
+	}
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
 	stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
 	period_index := p.previous_index
