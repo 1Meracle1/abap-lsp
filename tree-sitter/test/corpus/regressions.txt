@@ -785,3 +785,23 @@ LEAVE TO SCREEN sy-dynnr.
     (keyword)
     (keyword)
     (field_path)))
+
+==================
+Assign component of structure
+==================
+
+ASSIGN COMPONENT 'PATH' OF STRUCTURE is_node TO <path>.
+
+---
+
+(source_file
+  (assign_statement
+    (keyword)
+    (keyword)
+    (string)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (field_symbol)))

@@ -529,6 +529,7 @@ module.exports = grammar({
         $.exec_sql_statement,
         $.report_statement,
         $.include_statement,
+        $.assign_statement,
         $.assignment_statement,
         $.expression_statement,
         $.simple_statement,
@@ -1209,6 +1210,22 @@ module.exports = grammar({
 
     exec_sql_statement: ($) =>
       seq(keyword($, "EXEC"), keyword($, "SQL"), ".", repeat($.unknown_statement), keyword($, "ENDEXEC"), "."),
+
+    assign_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "ASSIGN"),
+          keyword($, "COMPONENT"),
+          field("component", choice($._literal, $.qualified_name, $.field_path, $.field_symbol_path, $.dynamic_name, $.dynamic_component)),
+          keyword($, "OF"),
+          keyword($, "STRUCTURE"),
+          field("structure", choice($.qualified_name, $.field_path, $.field_symbol_path, $.selector_expression, $.table_expression, $.dynamic_name)),
+          keyword($, "TO"),
+          field("target", choice($.field_symbol, $.field_symbol_path)),
+          ".",
+        ),
+      ),
 
     assignment_statement: ($) =>
       prec(
