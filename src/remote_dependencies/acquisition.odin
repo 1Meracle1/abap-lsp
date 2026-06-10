@@ -19,6 +19,16 @@ ADT_Fetch_Task_Payload :: struct {
 	result_allocator: mem.Allocator,
 }
 
+ADT_Probe_Task_Payload :: struct {
+	client:           ^adt.Client,
+	result_allocator: mem.Allocator,
+}
+
+ADT_Probe_Result :: struct {
+	bootstrap: adt.Session_Bootstrap,
+	err:       adt.Error,
+}
+
 Cache_Lookup_Result :: struct {
 	record: dep_store.Stored_Artifact_Record,
 	ok:     bool,
@@ -1353,6 +1363,102 @@ store_local_export_dependency :: proc(
 	_, _ = dep_store.put_artifact(store, profile, &artifact, store_allocator)
 }
 
+ensure_adt_available :: proc(
+	config: ^Config,
+	pool: ^execution.Pool,
+) -> bool {
+	if config == nil || config.adt_client == nil {
+		return false
+	}
+	availability := config.adt_availability
+	if availability != nil && availability.status == .Unavailable {
+		return false
+	}
+	if config.adt_client.csrf_token != "" {
+		if availability != nil {
+			availability.status = .Available
+			availability.error = .None
+		}
+		return true
+	}
+
+	probe: ADT_Probe_Result
+	if pool != nil && pool.started && pool.options.worker_count > 0 {
+		result_arena: virtual.Arena
+		arena_err := virtual.arena_init_growing(&result_arena)
+		assert(arena_err == .None)
+		defer virtual.arena_destroy(&result_arena)
+
+		graph: execution.Graph
+		execution.graph_init(&graph, pool, context.temp_allocator)
+		task := execution.submit_value(
+			&graph,
+			execution.worker_executor(pool),
+			ADT_Probe_Task_Payload {
+				client           = config.adt_client,
+				result_allocator = virtual.arena_allocator(&result_arena),
+			},
+			adt_probe_task,
+		)
+		execution.graph_start(&graph)
+		probe = execution.wait(task)
+		execution.graph_wait(&graph)
+		execution.graph_destroy(&graph)
+	} else {
+		probe.bootstrap, probe.err = adt.bootstrap_session(
+			config.adt_client,
+			context.temp_allocator,
+		)
+	}
+
+	if probe.err != .None {
+		if availability != nil {
+			availability.status = .Unavailable
+			availability.error = probe.err
+		}
+		when TRACE {
+			trace_eprintf(
+				"[trace - remote_dependencies] ADT session probe failed; disabling ADT for this session: %v\n",
+				probe.err,
+			)
+		}
+		return false
+	}
+	adt.apply_session_bootstrap(config.adt_client, &probe.bootstrap)
+	if availability != nil {
+		availability.status = .Available
+		availability.error = .None
+	}
+	return true
+}
+
+adt_probe_task :: proc(payload: ADT_Probe_Task_Payload) -> ADT_Probe_Result {
+	bootstrap, err := adt.bootstrap_session(payload.client, payload.result_allocator)
+	return ADT_Probe_Result{bootstrap = bootstrap, err = err}
+}
+
+block_adt_unavailable_requests :: proc(
+	result: ^Result,
+	requests: []Request,
+) {
+	for request in requests {
+		result_add_blocked(result, request)
+		result_add_diagnostic(
+			result,
+			request,
+			.ADT,
+			"ADT connection unavailable for this session",
+		)
+		when TRACE {
+			trace_eprintf(
+				"[trace - remote_dependencies] ADT miss: %s %s (connection unavailable for this session)\n",
+				trace_request_kind_text(request.kind),
+				request.name,
+			)
+		}
+	}
+}
+
 resolve_adt_source_phase :: proc(
 	result: ^Result,
 	requests: []Request,
@@ -1379,17 +1485,8 @@ resolve_adt_source_phase :: proc(
 	if len(filtered) == 0 {
 		return
 	}
-	if config.adt_client.csrf_token == "" &&
-	   adt.ensure_session(config.adt_client, context.temp_allocator) != .None {
-		when TRACE {
-			for request in filtered {
-				trace_eprintf(
-					"[trace - remote_dependencies] ADT miss: %s %s (session setup failed)\n",
-					trace_request_kind_text(request.kind),
-					request.name,
-				)
-			}
-		}
+	if !ensure_adt_available(config, pool) {
+		block_adt_unavailable_requests(result, filtered[:])
 		return
 	}
 	if pool != nil && len(filtered) > 1 {
@@ -1494,12 +1591,11 @@ adt_artifacts :: proc(
 	if len(filtered) == 0 {
 		return out
 	}
-	if config.adt_client.csrf_token == "" &&
-	   adt.ensure_session(config.adt_client, context.temp_allocator) != .None {
+	if !ensure_adt_available(config, pool) {
 		when TRACE {
 			for request in filtered {
 				trace_eprintf(
-					"[trace - remote_dependencies] ADT miss: %s %s (session setup failed)\n",
+					"[trace - remote_dependencies] ADT miss: %s %s (connection unavailable for this session)\n",
 					trace_request_kind_text(request.kind),
 					request.name,
 				)
@@ -1771,10 +1867,29 @@ typepool_artifacts :: proc(
 		&state.seen_typepool_requests if state != nil else nil,
 		context.temp_allocator,
 	)
+	filtered := make([dynamic]Request, 0, len(candidates), context.temp_allocator)
 	for request in candidates {
 		if !(request.kind == .Type || request.kind == .Symbol) {
 			continue
 		}
+		append(&filtered, request)
+	}
+	if len(filtered) == 0 {
+		return out
+	}
+	if !ensure_adt_available(config, nil) {
+		when TRACE {
+			for request in filtered {
+				trace_eprintf(
+					"[trace - remote_dependencies] Type-pool owner lookup skipped: %s %s (connection unavailable for this session)\n",
+					trace_request_kind_text(request.kind),
+					request.name,
+				)
+			}
+		}
+		return out
+	}
+	for request in filtered {
 		pool, owner_err := adt.resolve_typepool_owner(
 			config.adt_client,
 			request.name,
@@ -2232,8 +2347,7 @@ open_source_from_adt :: proc(
 	if config.adt_client == nil {
 		return {}, false
 	}
-	if config.adt_client.csrf_token == "" &&
-	   adt.ensure_session(config.adt_client, context.temp_allocator) != .None {
+	if !ensure_adt_available(config, nil) {
 		return {}, false
 	}
 	artifacts := fetch_adt_request(

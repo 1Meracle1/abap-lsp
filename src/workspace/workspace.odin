@@ -29,6 +29,7 @@ Workspace :: struct {
 	local_export_roots: [dynamic]string,
 	adt_client:         adt.Client,
 	adt_config:         adt.Connection_Config,
+	adt_availability:   remote_deps.ADT_Availability,
 	has_adt:            bool,
 	has_dotenv:         bool,
 	projects:           [dynamic]^Project_Slot,

@@ -32,6 +32,17 @@ Source_Kind :: enum {
 	Type_Pool,
 }
 
+ADT_Availability_Status :: enum {
+	Unknown,
+	Available,
+	Unavailable,
+}
+
+ADT_Availability :: struct {
+	status: ADT_Availability_Status,
+	error:  adt.Error,
+}
+
 Remote_Dependency_Object_Role :: enum {
 	Unknown,
 	Report,
@@ -59,6 +70,7 @@ Config :: struct {
 	cache_any_profile:  bool,
 	local_export_roots: []string,
 	adt_client:         ^adt.Client,
+	adt_availability:   ^ADT_Availability,
 	source_order:       Source_Order,
 }
 

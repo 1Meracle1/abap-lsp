@@ -248,6 +248,7 @@ remote_dependency_config_from_workspace :: proc(workspace: ^Workspace) -> remote
 	}
 	if workspace.has_adt {
 		config.adt_client = &workspace.adt_client
+		config.adt_availability = &workspace.adt_availability
 	}
 	return config
 }

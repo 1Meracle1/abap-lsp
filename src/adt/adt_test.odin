@@ -212,6 +212,54 @@ typepool_resolver_test_client_destroy :: proc(client: ^Client, allocator: mem.Al
 }
 
 @(test)
+bootstrap_session_returns_token_and_cookie :: proc(t: ^testing.T) {
+	server := Typepool_Resolver_Test_Server {
+		session_response = test_http_response_status(
+			"200 OK",
+			"ok",
+			"x-csrf-token: token\r\nset-cookie: sap-contextid=abc; path=/\r\n",
+			context.allocator,
+		),
+		owner_response = test_http_response_status("200 OK", "", "", context.allocator),
+		source_response = test_http_response_status("200 OK", "", "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.owner_response, context.allocator)
+	defer delete(server.source_response, context.allocator)
+	client, worker := typepool_resolver_test_client(t, &server)
+	defer typepool_resolver_test_client_destroy(&client, context.allocator)
+	defer typepool_resolver_test_server_stop(&server, worker)
+
+	bootstrap, err := bootstrap_session(&client, context.allocator)
+	defer session_bootstrap_destroy(&bootstrap, context.allocator)
+
+	testing.expect_value(t, err, Error.None)
+	testing.expect_value(t, bootstrap.csrf_token, "token")
+	testing.expect_value(t, bootstrap.cookie, "sap-contextid=abc")
+	testing.expect_value(t, client.csrf_token, "")
+}
+
+@(test)
+bootstrap_session_reports_bad_status :: proc(t: ^testing.T) {
+	server := Typepool_Resolver_Test_Server {
+		session_response = test_http_response_status("503 Service Unavailable", "down", "", context.allocator),
+		owner_response   = test_http_response_status("200 OK", "", "", context.allocator),
+		source_response  = test_http_response_status("200 OK", "", "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.owner_response, context.allocator)
+	defer delete(server.source_response, context.allocator)
+	client, worker := typepool_resolver_test_client(t, &server)
+	defer typepool_resolver_test_client_destroy(&client, context.allocator)
+	defer typepool_resolver_test_server_stop(&server, worker)
+
+	_, err := bootstrap_session(&client, context.allocator)
+
+	testing.expect_value(t, err, Error.Bad_Status)
+	testing.expect_value(t, client.csrf_token, "")
+}
+
+@(test)
 typepool_resolver_http_fetches_owner_and_source :: proc(t: ^testing.T) {
 	server := Typepool_Resolver_Test_Server {
 		session_response = test_http_response_status("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),

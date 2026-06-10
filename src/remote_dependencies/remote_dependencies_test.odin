@@ -1,13 +1,112 @@
 package abap_frontend_remote_dependencies
 
+import adt "src:adt"
 import "src:ast"
 import dep_store "src:dependency_store"
 import execution "src:execution"
 
+import "core:mem"
+import "core:net"
 import "core:os"
 import filepath "core:path/filepath"
 import "core:strings"
 import "core:testing"
+import "core:thread"
+import "core:time"
+
+Remote_ADT_Test_Server :: struct {
+	listener:         net.TCP_Socket,
+	session_response: string,
+	source_response:  string,
+	request_buf:      [4096]u8,
+	session_count:    int,
+	source_count:     int,
+}
+
+remote_adt_test_server_run :: proc(t: ^thread.Thread) {
+	server := cast(^Remote_ADT_Test_Server)t.data
+	for {
+		client, _, err := net.accept_tcp(server.listener)
+		if err != nil {
+			return
+		}
+		n, recv_err := net.recv_tcp(client, server.request_buf[:])
+		response := server.session_response
+		if recv_err == nil {
+			request := string(server.request_buf[:n])
+			if strings.contains(request, "/runtime/systemmessages") {
+				server.session_count += 1
+			} else {
+				server.source_count += 1
+				response = server.source_response
+			}
+		}
+		_, _ = net.send_tcp(client, transmute([]u8)response)
+		net.close(client)
+	}
+}
+
+remote_adt_test_client :: proc(
+	t: ^testing.T,
+	server: ^Remote_ADT_Test_Server,
+) -> (adt.Client, ^thread.Thread) {
+	listener, listen_err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = 0})
+	testing.expect(t, listen_err == nil)
+	_ = net.set_option(listener, .Receive_Timeout, 500 * time.Millisecond)
+	ep, ep_err := net.bound_endpoint(listener)
+	testing.expect(t, ep_err == nil)
+	server.listener = listener
+	worker := thread.create(remote_adt_test_server_run)
+	worker.data = server
+	thread.start(worker)
+
+	base_url := strings.builder_make(context.allocator)
+	strings.write_string(&base_url, "http://127.0.0.1:")
+	strings.write_int(&base_url, ep.port)
+	strings.write_string(&base_url, "/sap/bc/adt")
+	client: adt.Client
+	adt.client_init(
+		&client,
+		adt.Connection_Config {
+			base_url = strings.to_string(base_url),
+			username = "demo",
+			password = "secret",
+		},
+		context.allocator,
+	)
+	client.http.timeout = 2 * time.Second
+	return client, worker
+}
+
+remote_adt_test_client_destroy :: proc(client: ^adt.Client, allocator: mem.Allocator) {
+	delete(client.connection.base_url, allocator)
+	adt.client_destroy(client, allocator)
+}
+
+remote_adt_test_server_stop :: proc(
+	server: ^Remote_ADT_Test_Server,
+	worker: ^thread.Thread,
+) {
+	net.close(server.listener)
+	thread.join(worker)
+	thread.destroy(worker)
+}
+
+remote_test_http_response_status :: proc(
+	status, body, extra_headers: string,
+	allocator: mem.Allocator,
+) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "HTTP/1.1 ")
+	strings.write_string(&out, status)
+	strings.write_string(&out, "\r\nContent-Length: ")
+	strings.write_int(&out, len(body))
+	strings.write_string(&out, "\r\nConnection: close\r\n")
+	strings.write_string(&out, extra_headers)
+	strings.write_string(&out, "\r\n")
+	strings.write_string(&out, body)
+	return strings.to_string(out)
+}
 
 @(test)
 remote_dependency_requests_are_normalized_and_deduped :: proc(t: ^testing.T) {
@@ -275,6 +374,160 @@ remote_dependency_cache_uses_pool_for_multiple_requests :: proc(t: ^testing.T) {
 		testing.expect_value(t, len(input.root.stmts), 1)
 	}
 	testing.expect(t, stats_after.submitted > stats_before.submitted)
+}
+
+@(test)
+remote_dependency_cache_hit_does_not_probe_adt :: proc(t: ^testing.T) {
+	bad_session := remote_test_http_response_status("503 Service Unavailable", "down", "", context.allocator)
+	source_response := remote_test_http_response_status(
+		"200 OK",
+		"CLASS zcl_cache_no_probe DEFINITION. ENDCLASS.",
+		"",
+		context.allocator,
+	)
+	defer delete(bad_session, context.allocator)
+	defer delete(source_response, context.allocator)
+	server := Remote_ADT_Test_Server {
+		session_response = bad_session,
+		source_response  = source_response,
+	}
+	client, worker := remote_adt_test_client(t, &server)
+	defer remote_adt_test_client_destroy(&client, context.allocator)
+	defer remote_adt_test_server_stop(&server, worker)
+
+	path := remote_dependency_test_store_path("cache_hit_does_not_probe_adt.sqlite3")
+	store, store_err := dep_store.dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, store_err, dep_store.Store_Error.None)
+	profile := standalone_dependency_profile()
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "zpkg",
+		object_kind    = "global-class",
+		object_name    = "zcl_cache_no_probe",
+		object_uri     = "/sap/bc/adt/oo/classes/zcl_cache_no_probe",
+		object_type    = "CLAS/OC",
+		description    = "Cache hit",
+		file_extension = "abap",
+		source_text    = "CLASS zcl_cache_no_probe DEFINITION. ENDCLASS.",
+		fetched_at     = "2026-06-07T00:00:00Z",
+	}
+	_, put_err := dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, put_err, dep_store.Store_Error.None)
+
+	availability: ADT_Availability
+	config := Config {
+		cache            = &store,
+		profile          = &profile,
+		adt_client       = &client,
+		adt_availability = &availability,
+		source_order     = .ADT_First,
+	}
+	state := state_make(context.allocator)
+	request := Request{name = "zcl_cache_no_probe", kind = .Class}
+
+	result := resolve_requests({request}, &config, &state, nil, context.allocator)
+
+	testing.expect_value(t, len(result.interfaces), 1)
+	testing.expect_value(t, len(result.misses), 0)
+	testing.expect_value(t, server.session_count, 0)
+	testing.expect_value(t, server.source_count, 0)
+	testing.expect_value(t, availability.status, ADT_Availability_Status.Unknown)
+}
+
+@(test)
+remote_dependency_local_export_hit_does_not_probe_adt :: proc(t: ^testing.T) {
+	bad_session := remote_test_http_response_status("503 Service Unavailable", "down", "", context.allocator)
+	source_response := remote_test_http_response_status(
+		"200 OK",
+		"CLASS zcl_local_no_probe DEFINITION. ENDCLASS.",
+		"",
+		context.allocator,
+	)
+	defer delete(bad_session, context.allocator)
+	defer delete(source_response, context.allocator)
+	server := Remote_ADT_Test_Server {
+		session_response = bad_session,
+		source_response  = source_response,
+	}
+	client, worker := remote_adt_test_client(t, &server)
+	defer remote_adt_test_client_destroy(&client, context.allocator)
+	defer remote_adt_test_server_stop(&server, worker)
+
+	root := remote_dependency_test_root("local_export_no_adt_probe")
+	os.remove_all(root)
+	testing.expect(t, os.make_directory_all(root) == nil)
+	path, _ := filepath.join({root, "zcl_local_no_probe.abap"}, context.allocator)
+	source := "CLASS zcl_local_no_probe DEFINITION. ENDCLASS."
+	testing.expect(t, os.write_entire_file(path, source) == nil)
+
+	availability: ADT_Availability
+	config := Config {
+		local_export_roots = {root},
+		adt_client         = &client,
+		adt_availability   = &availability,
+		source_order       = .Local_First,
+	}
+	state := state_make(context.allocator)
+	request := Request{name = "zcl_local_no_probe", kind = .Class}
+
+	result := resolve_requests({request}, &config, &state, nil, context.allocator)
+
+	testing.expect_value(t, len(result.interfaces), 1)
+	testing.expect_value(t, len(result.misses), 0)
+	testing.expect_value(t, server.session_count, 0)
+	testing.expect_value(t, server.source_count, 0)
+	testing.expect_value(t, availability.status, ADT_Availability_Status.Unknown)
+}
+
+@(test)
+remote_dependency_failed_adt_probe_disables_session :: proc(t: ^testing.T) {
+	bad_session := remote_test_http_response_status("503 Service Unavailable", "down", "", context.allocator)
+	good_session := remote_test_http_response_status("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator)
+	source_response := remote_test_http_response_status(
+		"200 OK",
+		"CLASS zcl_after_probe DEFINITION. ENDCLASS.",
+		"",
+		context.allocator,
+	)
+	defer delete(bad_session, context.allocator)
+	defer delete(good_session, context.allocator)
+	defer delete(source_response, context.allocator)
+	server := Remote_ADT_Test_Server {
+		session_response = bad_session,
+		source_response  = source_response,
+	}
+	client, worker := remote_adt_test_client(t, &server)
+	defer remote_adt_test_client_destroy(&client, context.allocator)
+	defer remote_adt_test_server_stop(&server, worker)
+
+	availability: ADT_Availability
+	config := Config {
+		adt_client       = &client,
+		adt_availability = &availability,
+		source_order     = .ADT_First,
+	}
+	first_state := state_make(context.allocator)
+	first_request := Request{name = "zcl_down", kind = .Class}
+
+	first := resolve_requests({first_request}, &config, &first_state, nil, context.allocator)
+
+	testing.expect_value(t, len(first.interfaces), 0)
+	testing.expect_value(t, len(first.blocked_requests), 1)
+	testing.expect_value(t, len(first.diagnostics), 1)
+	testing.expect_value(t, availability.status, ADT_Availability_Status.Unavailable)
+	testing.expect_value(t, availability.error, adt.Error.Bad_Status)
+	testing.expect_value(t, server.session_count, 1)
+	testing.expect_value(t, server.source_count, 0)
+
+	server.session_response = good_session
+	second_state := state_make(context.allocator)
+	second_request := Request{name = "zcl_after_probe", kind = .Class}
+
+	second := resolve_requests({second_request}, &config, &second_state, nil, context.allocator)
+
+	testing.expect_value(t, len(second.interfaces), 0)
+	testing.expect_value(t, len(second.blocked_requests), 1)
+	testing.expect_value(t, server.session_count, 1)
+	testing.expect_value(t, server.source_count, 0)
 }
 
 @(test)

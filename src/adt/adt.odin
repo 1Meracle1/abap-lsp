@@ -192,6 +192,11 @@ Client :: struct {
 	allocator:  mem.Allocator,
 }
 
+Session_Bootstrap :: struct {
+	csrf_token: string,
+	cookie:     string,
+}
+
 connection_config_from_sources :: proc(
 	overrides: ^Connection_Overrides,
 	dotenv: ^Dotenv_Defaults,
@@ -1722,33 +1727,69 @@ send_text :: proc(
 }
 
 ensure_session :: proc(client: ^Client, temp_allocator: mem.Allocator) -> Error {
-	url := absolute_url(&client.connection, "/runtime/systemmessages", temp_allocator)
-	request: http.Request
-	http.request_init(&request, .Get, url, temp_allocator)
-	defer http.request_destroy(&request, temp_allocator)
-	set_auth_header(&request, &client.connection, temp_allocator)
-	http.header_set(&request.headers, "Cache-Control", "no-cache", temp_allocator)
-	http.header_set(&request.headers, "Accept", SESSION_BOOTSTRAP_ACCEPT, temp_allocator)
-	http.header_set(&request.headers, "x-csrf-token", "Fetch", temp_allocator)
-
-	response, http_err := http.client_do(&client.http, &request, temp_allocator)
-	if http_err != .None {
-		return http_error_to_adt(http_err)
+	if client.csrf_token != "" {
+		return .None
 	}
-	defer http.response_destroy(&response, temp_allocator)
+	bootstrap, err := bootstrap_session(client, temp_allocator)
+	if err != .None {
+		return err
+	}
+	apply_session_bootstrap(client, &bootstrap)
+	return .None
+}
+
+bootstrap_session :: proc(
+	client: ^Client,
+	allocator: mem.Allocator,
+) -> (
+	Session_Bootstrap,
+	Error,
+) {
+	url := absolute_url(&client.connection, "/runtime/systemmessages", allocator)
+	request: http.Request
+	http.request_init(&request, .Get, url, allocator)
+	defer http.request_destroy(&request, allocator)
+	set_auth_header(&request, &client.connection, allocator)
+	http.header_set(&request.headers, "Cache-Control", "no-cache", allocator)
+	http.header_set(&request.headers, "Accept", SESSION_BOOTSTRAP_ACCEPT, allocator)
+	http.header_set(&request.headers, "x-csrf-token", "Fetch", allocator)
+
+	response, http_err := http.client_do(&client.http, &request, allocator)
+	if http_err != .None {
+		return {}, http_error_to_adt(http_err)
+	}
+	defer http.response_destroy(&response, allocator)
 	if !status_success(response.status_code) {
-		return .Bad_Status
+		return {}, .Bad_Status
 	}
 	token, ok := http.header_get(response.headers, "x-csrf-token")
 	token = strings.trim_space(token)
 	if !ok || token == "" {
-		return .Missing_Csrf_Token
+		return {}, .Missing_Csrf_Token
 	}
-	client.csrf_token = strings.clone(token, client.allocator)
+	bootstrap := Session_Bootstrap {
+		csrf_token = strings.clone(token, allocator),
+	}
 	if cookie, cookie_ok := http.header_get(response.headers, "set-cookie"); cookie_ok {
-		client.cookie = strings.clone(cookie_pair(cookie), client.allocator)
+		bootstrap.cookie = strings.clone(cookie_pair(cookie), allocator)
 	}
-	return .None
+	return bootstrap, .None
+}
+
+apply_session_bootstrap :: proc(client: ^Client, bootstrap: ^Session_Bootstrap) {
+	delete(client.csrf_token, client.allocator)
+	delete(client.cookie, client.allocator)
+	client.csrf_token = strings.clone(bootstrap.csrf_token, client.allocator)
+	client.cookie = strings.clone(bootstrap.cookie, client.allocator)
+}
+
+session_bootstrap_destroy :: proc(
+	bootstrap: ^Session_Bootstrap,
+	allocator: mem.Allocator,
+) {
+	delete(bootstrap.csrf_token, allocator)
+	delete(bootstrap.cookie, allocator)
+	bootstrap^ = {}
 }
 
 http_error_to_adt :: proc(err: http.Error) -> Error {
