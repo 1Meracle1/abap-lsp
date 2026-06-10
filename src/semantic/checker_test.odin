@@ -2011,6 +2011,82 @@ ENDFORM.`
 }
 
 @(test)
+root_semantic_checker_collects_structured_form_header_parameters :: proc(t: ^testing.T) {
+	source := `FORM plain.
+ENDFORM.
+FORM with_tables TABLES rows TYPE STANDARD TABLE OF string rawtab.
+ENDFORM.
+FORM with_using USING !VALUE TYPE string iv_untyped.
+ENDFORM.
+FORM with_changing CHANGING cv_count TYPE i cv_untyped.
+ENDFORM.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://form_header_parameters.abap")
+
+	plain := checker_test_lookup(t, &project, file.root_scope, .Routine, "plain", .Form)
+	tables := checker_test_lookup(t, &project, file.root_scope, .Routine, "with_tables", .Form)
+	using_form := checker_test_lookup(t, &project, file.root_scope, .Routine, "with_using", .Form)
+	changing := checker_test_lookup(t, &project, file.root_scope, .Routine, "with_changing", .Form)
+	testing.expect(t, plain != nil && tables != nil && using_form != nil && changing != nil)
+	if plain == nil || tables == nil || using_form == nil || changing == nil {
+		return
+	}
+
+	plain_payload := plain.payload.(^Entity_Routine_Payload)
+	testing.expect_value(t, len(plain_payload.parameters), 0)
+
+	tables_payload := tables.payload.(^Entity_Routine_Payload)
+	rows := checker_test_lookup(t, &project, tables_payload.signature_scope, .Value, "rows", .Parameter)
+	rawtab := checker_test_lookup(t, &project, tables_payload.signature_scope, .Value, "rawtab", .Parameter)
+	testing.expect(t, rows != nil && rawtab != nil)
+	if rows != nil {
+		rows_payload := rows.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, rows_payload.section, Entity_Parameter_Section.Form_Tables)
+		testing.expect_value(t, rows_payload.passing, Entity_Parameter_Passing.Direct)
+		testing.expect_value(t, rows.decl_info.type_clause.form, ast.Data_Type_Form.Standard_Table)
+	}
+	if rawtab != nil {
+		rawtab_payload := rawtab.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, rawtab_payload.section, Entity_Parameter_Section.Form_Tables)
+		testing.expect(t, rawtab.decl_info.type_clause == nil)
+	}
+
+	using_payload := using_form.payload.(^Entity_Routine_Payload)
+	value := checker_test_lookup(t, &project, using_payload.signature_scope, .Value, "value", .Parameter)
+	iv_untyped := checker_test_lookup(t, &project, using_payload.signature_scope, .Value, "iv_untyped", .Parameter)
+	testing.expect(t, value != nil && iv_untyped != nil)
+	if value != nil {
+		value_payload := value.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, value_payload.section, Entity_Parameter_Section.Form_Using)
+		testing.expect_value(t, value_payload.passing, Entity_Parameter_Passing.Direct)
+		testing.expect_value(t, checker_test_type_name(&project, value.type), "string")
+	}
+	if iv_untyped != nil {
+		iv_untyped_payload := iv_untyped.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, iv_untyped_payload.section, Entity_Parameter_Section.Form_Using)
+		testing.expect(t, iv_untyped.decl_info.type_clause == nil)
+	}
+
+	changing_payload := changing.payload.(^Entity_Routine_Payload)
+	cv_count := checker_test_lookup(t, &project, changing_payload.signature_scope, .Value, "cv_count", .Parameter)
+	cv_untyped := checker_test_lookup(t, &project, changing_payload.signature_scope, .Value, "cv_untyped", .Parameter)
+	testing.expect(t, cv_count != nil && cv_untyped != nil)
+	if cv_count != nil {
+		cv_count_payload := cv_count.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, cv_count_payload.section, Entity_Parameter_Section.Form_Changing)
+		testing.expect_value(t, checker_test_type_name(&project, cv_count.type), "i")
+	}
+	if cv_untyped != nil {
+		cv_untyped_payload := cv_untyped.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, cv_untyped_payload.section, Entity_Parameter_Section.Form_Changing)
+		testing.expect(t, cv_untyped.decl_info.type_clause == nil)
+	}
+}
+
+@(test)
 root_semantic_stmt_checker_accepts_numeric_literals_for_numeric_text_arguments :: proc(t: ^testing.T) {
 	source := `TYPES lvc_outlen TYPE n.
 CLASS lcl_column DEFINITION.

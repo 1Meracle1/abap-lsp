@@ -1522,7 +1522,7 @@ parse_form_header_parameters :: proc(
 			i += 1
 			continue
 		}
-		name, name_range, passing, next, ok := parse_header_param_name(p, i, period_index)
+		name, name_range, passing, escaped, next, ok := parse_header_param_name(p, i, period_index)
 		if !ok {
 			i += 1
 			continue
@@ -1532,6 +1532,7 @@ parse_form_header_parameters :: proc(
 			section = section,
 			name    = parser_ast_token(name, name_range),
 			passing = passing,
+			escaped = escaped,
 		}
 		i = next
 		if header_type_clause_starts(p, i, period_index) {
@@ -1560,7 +1561,7 @@ parse_function_header_parameters :: proc(
 			i += 1
 			continue
 		}
-		name, name_range, passing, next, ok := parse_header_param_name(p, i, period_index)
+		name, name_range, passing, _, next, ok := parse_header_param_name(p, i, period_index)
 		if !ok {
 			i += 1
 			continue
@@ -1640,14 +1641,20 @@ parse_header_param_name :: proc(
 	string,
 	tokenizer.Range,
 	ast.Parameter_Passing_Kind,
+	bool,
 	int,
 	bool,
 ) {
 	i := index
 	escaped := false
-	if i < period_index && tokenizer.token_lexeme(p.tokens[i], p.source) == "!" {
-		i += 1
-		escaped = true
+	if i < period_index {
+		text := tokenizer.token_lexeme(p.tokens[i], p.source)
+		if text == "!" {
+			i += 1
+			escaped = true
+		} else if len(text) > 0 && text[0] == '!' {
+			escaped = true
+		}
 	}
 	passing := ast.Parameter_Passing_Kind.Direct
 	if !escaped && (at_keyword_index(p, i, "VALUE") || at_keyword_index(p, i, "REFERENCE")) {
@@ -1657,21 +1664,21 @@ parse_header_param_name :: proc(
 			i += 1
 		}
 		if i >= period_index || !header_name_token_like(p.tokens[i]) {
-			return "", tokenizer.Range{}, passing, i, false
+			return "", tokenizer.Range{}, passing, escaped, i, false
 		}
 		tok := p.tokens[i]
 		i += 1
 		if i < period_index && p.tokens[i].kind == .RParen {
 			i += 1
 		}
-		return parser_intern_token_name(p, tok), parser_token_name_range(p, tok), passing, i, true
+		return parser_intern_token_name(p, tok), parser_token_name_range(p, tok), passing, escaped, i, true
 	}
 	if i >= period_index || !header_name_token_like(p.tokens[i]) {
-		return "", tokenizer.Range{}, passing, i, false
+		return "", tokenizer.Range{}, passing, escaped, i, false
 	}
 	tok := p.tokens[i]
 	name := parser_intern_token_name(p, tok)
-	return name, parser_token_name_range(p, tok), passing, i + 1, name != ""
+	return name, parser_token_name_range(p, tok), passing, escaped, i + 1, name != ""
 }
 
 header_name_token_like :: proc(token: tokenizer.Token) -> bool {
@@ -1986,7 +1993,7 @@ header_type_ref_done :: proc(
 }
 
 header_parameter_starts :: proc(p: ^Parser, index, period_index: int) -> bool {
-	_, _, _, next, ok := parse_header_param_name(p, index, period_index)
+	_, _, _, _, next, ok := parse_header_param_name(p, index, period_index)
 	return ok && header_type_clause_starts(p, next, period_index)
 }
 

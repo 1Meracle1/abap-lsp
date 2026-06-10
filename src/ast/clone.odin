@@ -1438,6 +1438,7 @@ clone_form_parameters :: proc(list: [dynamic]Form_Parameter_Clause, allocator: m
 				section = clause.section,
 				name = clone_token_text(clause.name, allocator),
 				passing = clause.passing,
+				escaped = clause.escaped,
 				type_clause = clone_type_clause(clause.type_clause, allocator),
 			},
 		)

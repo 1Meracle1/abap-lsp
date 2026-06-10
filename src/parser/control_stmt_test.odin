@@ -205,6 +205,60 @@ ENDFUNCTION.`
 }
 
 @(test)
+form_headers_are_structured_ast_facts :: proc(t: ^testing.T) {
+	source := `FORM plain.
+ENDFORM.
+FORM with_tables TABLES rows STRUCTURE mara rawtab.
+ENDFORM.
+FORM with_using USING !VALUE TYPE string iv_untyped.
+ENDFORM.
+FORM with_changing CHANGING cv_count TYPE i cv_untyped.
+ENDFORM.`
+	parsed := parse(source, "form_header_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 4)
+	plain := parsed.root.stmts[0].derived_stmt.(^ast.Form_Decl)
+	tables := parsed.root.stmts[1].derived_stmt.(^ast.Form_Decl)
+	using_form := parsed.root.stmts[2].derived_stmt.(^ast.Form_Decl)
+	changing := parsed.root.stmts[3].derived_stmt.(^ast.Form_Decl)
+
+	testing.expect_value(t, plain.name.text, "plain")
+	testing.expect_value(t, source[plain.name.range.start:plain.name.range.end], "plain")
+	testing.expect_value(t, len(plain.form_parameters), 0)
+
+	testing.expect_value(t, len(tables.form_parameters), 2)
+	testing.expect_value(t, tables.form_parameters[0].section, ast.Form_Parameter_Section.Tables)
+	testing.expect_value(t, tables.form_parameters[0].name.text, "rows")
+	testing.expect_value(t, tables.form_parameters[0].type_clause.form, ast.Data_Type_Form.Structure)
+	table_ref := tables.form_parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, table_ref.base_name.text, "mara")
+	testing.expect_value(t, tables.form_parameters[1].name.text, "rawtab")
+	testing.expect(t, tables.form_parameters[1].type_clause == nil)
+
+	testing.expect_value(t, len(using_form.form_parameters), 2)
+	testing.expect_value(t, using_form.form_parameters[0].section, ast.Form_Parameter_Section.Using)
+	testing.expect_value(t, using_form.form_parameters[0].name.text, "VALUE")
+	testing.expect(t, using_form.form_parameters[0].escaped)
+	testing.expect_value(t, using_form.form_parameters[0].passing, ast.Parameter_Passing_Kind.Direct)
+	testing.expect_value(t, using_form.form_parameters[0].type_clause.form, ast.Data_Type_Form.Type)
+	using_ref := using_form.form_parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, using_ref.base_name.text, "string")
+	testing.expect_value(t, using_form.form_parameters[1].name.text, "iv_untyped")
+	testing.expect(t, using_form.form_parameters[1].type_clause == nil)
+
+	testing.expect_value(t, len(changing.form_parameters), 2)
+	testing.expect_value(t, changing.form_parameters[0].section, ast.Form_Parameter_Section.Changing)
+	testing.expect_value(t, changing.form_parameters[0].name.text, "cv_count")
+	testing.expect_value(t, changing.form_parameters[0].type_clause.form, ast.Data_Type_Form.Type)
+	changing_ref := changing.form_parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, changing_ref.base_name.text, "i")
+	testing.expect_value(t, changing.form_parameters[1].name.text, "cv_untyped")
+	testing.expect(t, changing.form_parameters[1].type_clause == nil)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 form_tables_structure_keeps_following_untyped_parameter :: proc(t: ^testing.T) {
 	source := `FORM get_non_deleted_objects TABLES resulttab STRUCTURE ddsymtab
                                     rangetab

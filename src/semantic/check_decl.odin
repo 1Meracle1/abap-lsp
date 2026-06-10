@@ -61,7 +61,8 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 	case ^ast.Interface_Decl:
 		checker_collect_interface_decl(ctx, n)
 	case ^ast.Form_Decl:
-		checker_collect_routine_decl(ctx, n.name, .Form, n.range, n.header_range, n.header_text, &n.node.stmt_base)
+		name_range := n.name.range if n.name.text != "" else n.header_range
+		checker_collect_routine_decl(ctx, n.name.text, .Form, n.range, name_range, "", &n.node.stmt_base)
 	case ^ast.Method_Decl:
 		checker_collect_method_decl(ctx, n)
 	case ^ast.Function_Decl:

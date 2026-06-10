@@ -858,7 +858,7 @@ ENDFUNCTION.`
 	testing.expect_value(t, method_decl.qualifier.text, "lif_iface")
 	testing.expect_value(t, method_decl.member_name.text, "run")
 	testing.expect_value(t, method_decl.kernel_modules[0].text, "zkernel")
-	testing.expect_value(t, form_decl.name, "sub_form")
+	testing.expect_value(t, form_decl.name.text, "sub_form")
 	testing.expect_value(t, form_decl.form_parameters[0].name.text, "iv_form")
 	testing.expect_value(t, form_decl.form_parameters[1].name.text, "cv_form")
 	testing.expect_value(t, function_decl.name, "z_func")

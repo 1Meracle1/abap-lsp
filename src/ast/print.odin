@@ -623,7 +623,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Method_Decl:
 		emit_method_decl(p, n)
 	case ^Form_Decl:
-		emit_named_block(p, "FORM", n.name, n.header_text, n.body, "ENDFORM")
+		emit_form_decl(p, n)
 	case ^Function_Decl:
 		emit_named_block(p, "FUNCTION", n.name, n.header_text, n.body, "ENDFUNCTION")
 	case ^Module_Decl:
@@ -3074,6 +3074,62 @@ emit_try_stmt :: proc(p: ^Printer, stmt: ^Try_Stmt) {
 	}
 	emit_newline(p)
 	emit(p, "ENDTRY.")
+}
+
+emit_form_decl :: proc(p: ^Printer, stmt: ^Form_Decl) {
+	emit_form_header(p, stmt)
+	emit_block(p, stmt.body, "ENDFORM")
+}
+
+emit_form_header :: proc(p: ^Printer, stmt: ^Form_Decl) {
+	emit(p, "FORM")
+	if stmt.name.text != "" {
+		emit_space(p)
+		emit(p, stmt.name)
+	}
+	have_section := false
+	current_section := Form_Parameter_Section.Using
+	for param in stmt.form_parameters {
+		if !have_section || param.section != current_section {
+			emit_space(p)
+			emit(p, form_parameter_section_text(param.section))
+			current_section = param.section
+			have_section = true
+		}
+		emit_space(p)
+		emit_form_parameter(p, param)
+	}
+}
+
+emit_form_parameter :: proc(p: ^Printer, param: Form_Parameter_Clause) {
+	if param.escaped {
+		emit(p, "!")
+	}
+	switch param.passing {
+	case .Value:
+		emit(p, "VALUE(")
+		emit(p, param.name)
+		emit(p, ")")
+	case .Reference:
+		emit(p, "REFERENCE(")
+		emit(p, param.name)
+		emit(p, ")")
+	case .Direct:
+		emit(p, param.name)
+	}
+	emit_type_clause(p, param.type_clause)
+}
+
+form_parameter_section_text :: proc(section: Form_Parameter_Section) -> string {
+	#partial switch section {
+	case .Tables:
+		return "TABLES"
+	case .Using:
+		return "USING"
+	case .Changing:
+		return "CHANGING"
+	}
+	return ""
 }
 
 emit_named_block :: proc(

@@ -2318,15 +2318,15 @@ Form_Parameter_Clause :: struct {
 	section:     Form_Parameter_Section,
 	name:        Token_Text,
 	passing:     Parameter_Passing_Kind,
+	escaped:     bool,
 	type_clause: ^Data_Type_Clause,
 }
 
 Form_Decl :: struct {
 	using node:      Stmt,
-	name:            string,
+	name:            Token_Text,
 	body:            [dynamic]^Stmt,
 	header_range:    tokenizer.Range,
-	header_text:     string,
 	form_parameters: [dynamic]Form_Parameter_Clause,
 }
 
