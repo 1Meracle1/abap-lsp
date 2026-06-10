@@ -1528,6 +1528,7 @@ checker_check_object_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: 
 		entity.type = project_type_class_or_interface(ctx.project, entity.name, entity, entity.kind)
 	}
 	checker_check_object_semantics(ctx, entity)
+	checker_check_object_body_oop_load_stmts(ctx, entity, payload)
 }
 
 checker_check_metadata_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {

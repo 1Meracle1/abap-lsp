@@ -377,9 +377,26 @@ INTERFACE if_sxml LOAD.`
 	class_load := iface.body[0].derived_stmt.(^ast.Oop_Load_Stmt)
 	interface_load := parsed.root.stmts[1].derived_stmt.(^ast.Oop_Load_Stmt)
 	testing.expect_value(t, class_load.kind, ast.Oop_Load_Kind.Class)
+	testing.expect_value(t, class_load.object_keyword.text, "CLASS")
 	testing.expect_value(t, class_load.name.text, "cl_gui_column_tree")
+	testing.expect_value(t, class_load.definition_keyword.text, "DEFINITION")
+	testing.expect_value(t, class_load.load_keyword.text, "LOAD")
+	testing.expect_value(
+		t,
+		source[class_load.definition_keyword.range.start:class_load.definition_keyword.range.end],
+		"DEFINITION",
+	)
+	testing.expect_value(
+		t,
+		source[class_load.period_range.start:class_load.period_range.end],
+		".",
+	)
 	testing.expect_value(t, interface_load.kind, ast.Oop_Load_Kind.Interface)
+	testing.expect_value(t, interface_load.object_keyword.text, "INTERFACE")
 	testing.expect_value(t, interface_load.name.text, "if_sxml")
+	testing.expect_value(t, interface_load.load_keyword.text, "LOAD")
+	testing.expect_value(t, ast.print_node(class_load, context.allocator), "CLASS cl_gui_column_tree DEFINITION LOAD.")
+	testing.expect_value(t, ast.print_node(interface_load, context.allocator), "INTERFACE if_sxml LOAD.")
 }
 
 @(test)

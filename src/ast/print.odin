@@ -818,8 +818,6 @@ trivia_is_in_printed_source_fragment :: proc(node: ^Node, trivia: Ast_Trivia) ->
 	#partial switch n in node.derived {
 	case ^Selection_Screen_Stmt:
 		return n.text != "" && range_contains(n.range, trivia.range)
-	case ^Oop_Load_Stmt:
-		return n.text != "" && range_contains(n.range, trivia.range)
 	case ^Loop_Stmt:
 		return range_contains(n.header_range, trivia.range)
 	case ^Class_Decl:
@@ -2753,18 +2751,30 @@ emit_oop_parameter_clause :: proc(p: ^Printer, param: Oop_Parameter_Clause) {
 }
 
 emit_oop_load_stmt :: proc(p: ^Printer, stmt: ^Oop_Load_Stmt) {
-	if stmt.text != "" {
-		emit(p, stmt.text)
-		return
-	}
 	if stmt.kind == .Class {
-		emit(p, "CLASS ")
+		emit_keyword_token_or_default(p, stmt.object_keyword, "CLASS")
+		emit_space(p)
 		emit(p, stmt.name)
-		emit(p, " DEFINITION LOAD.")
+		emit_space(p)
+		emit_keyword_token_or_default(p, stmt.definition_keyword, "DEFINITION")
+		emit_space(p)
+		emit_keyword_token_or_default(p, stmt.load_keyword, "LOAD")
+		emit(p, ".")
 	} else {
-		emit(p, "INTERFACE ")
+		emit_keyword_token_or_default(p, stmt.object_keyword, "INTERFACE")
+		emit_space(p)
 		emit(p, stmt.name)
-		emit(p, " LOAD.")
+		emit_space(p)
+		emit_keyword_token_or_default(p, stmt.load_keyword, "LOAD")
+		emit(p, ".")
+	}
+}
+
+emit_keyword_token_or_default :: proc(p: ^Printer, token: Token_Text, fallback: string) {
+	if token.text != "" {
+		emit(p, token)
+	} else {
+		emit(p, fallback)
 	}
 }
 
@@ -3726,8 +3736,6 @@ oop_simple_kind_text :: proc(kind: Oop_Simple_Kind) -> string {
 	case .Class_Section: return "PUBLIC SECTION"
 	case .Class_Deferred: return "CLASS DEFERRED"
 	case .Interface_Deferred: return "INTERFACE DEFERRED"
-	case .Class_Load: return "CLASS LOAD"
-	case .Interface_Load: return "INTERFACE LOAD"
 	}
 	return "?"
 }

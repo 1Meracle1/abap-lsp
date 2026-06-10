@@ -1968,8 +1968,6 @@ Oop_Simple_Kind :: enum {
 	Aliases,
 	Class_Deferred,
 	Interface_Deferred,
-	Class_Load,
-	Interface_Load,
 }
 
 Oop_Visibility :: enum {
@@ -2056,10 +2054,13 @@ Oop_Load_Kind :: enum {
 
 // ABAP syntax: load directive such as `CLASS cls DEFINITION LOAD.` or `INTERFACE intf LOAD.`.
 Oop_Load_Stmt :: struct {
-	using node: Stmt,
-	kind:       Oop_Load_Kind,
-	name:       Token_Text,
-	text:       string,
+	using node:        Stmt,
+	kind:              Oop_Load_Kind,
+	object_keyword:    Token_Text,
+	name:              Token_Text,
+	definition_keyword: Token_Text,
+	load_keyword:      Token_Text,
+	period_range:      tokenizer.Range,
 }
 
 // ABAP syntax: `ELSEIF condition.` arm inside an IF block.

@@ -64,9 +64,14 @@ parse_oop_load_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Oop_Load_Stmt, start.range, p.allocator)
 	if allow_keyword(p, "CLASS") {
 		stmt.kind = .Class
+		stmt.object_keyword = parser_ast_token("CLASS", start.range)
 	} else {
-		expect_keyword(p, "INTERFACE")
+		keyword := expect_keyword(p, "INTERFACE")
+		if !token_is_keyword(p, keyword, "INTERFACE") {
+			return nil
+		}
 		stmt.kind = .Interface
+		stmt.object_keyword = parser_ast_token("INTERFACE", keyword.range)
 	}
 
 	name := current_token(p)
@@ -78,22 +83,24 @@ parse_oop_load_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.name = parser_ast_raw_name_token(p, name)
 
 	if stmt.kind == .Class {
-		if !allow_keyword(p, "DEFINITION") {
-			error_current(p, "syntax error: expected keyword")
+		definition := expect_keyword(p, "DEFINITION")
+		if !token_is_keyword(p, definition, "DEFINITION") {
 			return nil
 		}
+		stmt.definition_keyword = parser_ast_token("DEFINITION", definition.range)
 	}
-	if !allow_keyword(p, "LOAD") {
-		error_current(p, "syntax error: expected keyword")
+	load := expect_keyword(p, "LOAD")
+	if !token_is_keyword(p, load, "LOAD") {
 		return nil
 	}
+	stmt.load_keyword = parser_ast_token("LOAD", load.range)
 
 	period := expect_token_message(p, .Period, "syntax error: expected '.' after load statement")
 	if period.kind != .Period {
 		return nil
 	}
 	stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
-	stmt.text = source_range_text(p, stmt.range)
+	stmt.period_range = period.range
 	return stmt
 }
 

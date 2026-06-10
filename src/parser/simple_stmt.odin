@@ -2150,8 +2150,6 @@ parse_oop_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		case .Class_Section:
 		case .Class_Deferred:
 		case .Interface_Deferred:
-		case .Class_Load:
-		case .Interface_Load:
 		}
 		if stmt.kind == .Aliases {
 			if !parse_oop_aliases(p, stmt) {

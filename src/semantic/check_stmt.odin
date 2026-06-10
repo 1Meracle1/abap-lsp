@@ -96,11 +96,12 @@ checker_check_stmt :: proc(
 	     ^ast.Function_Decl,
 	     ^ast.Module_Decl,
 	     ^ast.Event_Block_Stmt,
-	     ^ast.Oop_Simple_Stmt,
-	     ^ast.Oop_Load_Stmt:
+	     ^ast.Oop_Simple_Stmt:
 		if collect_declarations {
 			checker_collect_stmt_entities(ctx, stmt)
 		}
+	case ^ast.Oop_Load_Stmt:
+		checker_check_oop_load_stmt(ctx, n)
 	case ^ast.Data_Inline_Decl:
 		if collect_declarations {
 			checker_collect_stmt_entities(ctx, stmt)

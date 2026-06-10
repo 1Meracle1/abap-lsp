@@ -2751,6 +2751,46 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_oop_load_records_type_uses_and_candidates :: proc(t: ^testing.T) {
+	source := `CLASS lcl_target DEFINITION.
+ENDCLASS.
+INTERFACE lif_demo.
+  CLASS lcl_target DEFINITION LOAD.
+ENDINTERFACE.
+INTERFACE lif_missing LOAD.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://oop_load_semantic.abap")
+	target := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_target", .Class)
+	query := semantic_query(&project, &checker, file)
+	ref_query := semantic_query_refs(query)
+
+	load_offset := checker_test_find_text_last(source, "lcl_target")
+	testing.expect(t, load_offset >= 0)
+	load_use := semantic_ref_use_at_offset(ref_query, load_offset)
+	testing.expect(t, load_use != nil)
+	if load_use != nil {
+		testing.expect(t, load_use.entity == target)
+		range := semantic_entity_use_range(load_use^)
+		testing.expect_value(t, source[range.start:range.end], "lcl_target")
+	}
+
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Interface,
+			.Type,
+			"lif_missing",
+		),
+		1,
+	)
+}
+
+@(test)
 root_semantic_query_uses_precise_table_type_key_ranges :: proc(t: ^testing.T) {
 	source := `TYPES:
   BEGIN OF ty_order_map,

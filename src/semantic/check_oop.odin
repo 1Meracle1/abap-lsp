@@ -38,6 +38,67 @@ checker_check_object_semantics :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 	}
 }
 
+checker_check_object_body_oop_load_stmts :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	payload: ^Entity_Object_Payload,
+) {
+	if entity == nil || entity.node == nil || payload == nil || payload.definition_scope == nil {
+		return
+	}
+	body_ctx := ctx^
+	body_ctx.scope = payload.definition_scope
+	#partial switch n in entity.node.derived {
+	case ^ast.Class_Decl:
+		checker_check_oop_load_stmt_list(&body_ctx, n.body)
+	case ^ast.Interface_Decl:
+		checker_check_oop_load_stmt_list(&body_ctx, n.body)
+	}
+}
+
+checker_check_oop_load_stmt_list :: proc(ctx: ^Checker_Context, body: [dynamic]^ast.Stmt) {
+	for stmt in body {
+		if stmt == nil {
+			continue
+		}
+		if load, ok := stmt.derived_stmt.(^ast.Oop_Load_Stmt); ok {
+			checker_check_oop_load_stmt(ctx, load)
+		}
+	}
+}
+
+checker_check_oop_load_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Oop_Load_Stmt) {
+	if stmt == nil || stmt.name.text == "" {
+		return
+	}
+	interned := checker_intern_name(ctx.project, stmt.name.text)
+	if !string_interner.is_valid(interned) {
+		return
+	}
+	candidate_kind := External_Candidate_Kind.Class
+	entity_kind := Entity_Kind.Class
+	if stmt.kind == .Interface {
+		candidate_kind = .Interface
+		entity_kind = .Interface
+	}
+	if entity, ok := checker_lookup_type_name_from_scope(ctx, ctx.scope, interned, candidate_kind);
+	   ok && entity.kind == entity_kind {
+		checker_add_entity_use_at_range(ctx, &stmt.node.stmt_base, entity, stmt.name.range)
+		checker_check_entity_for_operand(ctx, entity)
+		return
+	}
+	checker_add_unresolved_candidate(
+		ctx,
+		interned,
+		.Type,
+		candidate_kind,
+		.Type_Reference,
+		.Unresolved_Type,
+		stmt.name.range,
+		&stmt.node.stmt_base,
+	)
+}
+
 checker_add_unresolved_oop_type_candidate :: proc(
 	ctx: ^Checker_Context,
 	owner: ^Entity,

@@ -983,6 +983,11 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 			dst.dbtab = clone_token_text(src.dbtab, allocator)
 		}
 	}
+	when intrinsics.type_has_field(T, "definition_keyword") {
+		when intrinsics.type_field_type(T, "definition_keyword") == Token_Text {
+			dst.definition_keyword = clone_token_text(src.definition_keyword, allocator)
+		}
+	}
 	when intrinsics.type_has_field(T, "encoding") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "encoding")) {
 			dst.encoding = strings.clone(src.encoding, allocator)
@@ -1053,6 +1058,11 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 			dst.member_name = clone_token_text(src.member_name, allocator)
 		}
 	}
+	when intrinsics.type_has_field(T, "load_keyword") {
+		when intrinsics.type_field_type(T, "load_keyword") == Token_Text {
+			dst.load_keyword = clone_token_text(src.load_keyword, allocator)
+		}
+	}
 	when intrinsics.type_has_field(T, "message_id") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "message_id")) {
 			dst.message_id = strings.clone(src.message_id, allocator)
@@ -1072,6 +1082,11 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "option") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "option")) {
 			dst.option = strings.clone(src.option, allocator)
+		}
+	}
+	when intrinsics.type_has_field(T, "object_keyword") {
+		when intrinsics.type_field_type(T, "object_keyword") == Token_Text {
+			dst.object_keyword = clone_token_text(src.object_keyword, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "qualifier") {
