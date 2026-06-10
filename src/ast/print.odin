@@ -816,8 +816,6 @@ trivia_prints_before_final_period :: proc(node: ^Node, trivia: Ast_Trivia) -> bo
 
 trivia_is_in_printed_source_fragment :: proc(node: ^Node, trivia: Ast_Trivia) -> bool {
 	#partial switch n in node.derived {
-	case ^Parameters_Decl:
-		return n.text != "" && range_contains(n.range, trivia.range)
 	case ^Selection_Screen_Stmt:
 		return n.text != "" && range_contains(n.range, trivia.range)
 	case ^Oop_Simple_Stmt:
@@ -1199,22 +1197,19 @@ emit_ranges_decl :: proc(p: ^Printer, decl: ^Ranges_Decl) {
 }
 
 emit_parameters_decl :: proc(p: ^Printer, decl: ^Parameters_Decl) {
-	if decl.text != "" {
-		emit(p, decl.text)
-		return
+	if decl.keyword.text != "" {
+		emit(p, decl.keyword)
+	} else {
+		emit(p, "PARAMETERS")
 	}
-	emit(p, "PARAMETERS")
-	emit(p, ": " if len(decl.parameters) > 1 else " ")
+	emit(p, ": " if decl.has_colon || len(decl.parameters) > 1 else " ")
 	for clause, i in decl.parameters {
 		if i > 0 {
 			emit(p, ", ")
 		}
 		emit(p, clause.name)
 		emit_paren_length(p, clause.paren_length)
-		emit_length_clauses(p, clause.length_clauses)
-		emit_type_clause(p, clause.type_clause)
-		emit_default_clause(p, clause.default_clause)
-		emit_parameter_additions(p, clause)
+		emit_parameter_clause_tail(p, clause)
 	}
 	emit(p, ".")
 }
@@ -1465,11 +1460,15 @@ emit_paren_length :: proc(p: ^Printer, clause: ^Paren_Length_Clause) {
 
 emit_length_clauses :: proc(p: ^Printer, clauses: [dynamic]Length_Clause) {
 	for clause in clauses {
-		emit_space(p)
-		emit(p, "DECIMALS" if clause.kind == .Decimals else "LENGTH")
-		emit_space(p)
-		emit_node(p, clause.expr)
+		emit_length_clause(p, clause)
 	}
+}
+
+emit_length_clause :: proc(p: ^Printer, clause: Length_Clause) {
+	emit_space(p)
+	emit(p, "DECIMALS" if clause.kind == .Decimals else "LENGTH")
+	emit_space(p)
+	emit_node(p, clause.expr)
 }
 
 emit_value_clause :: proc(p: ^Printer, clause: ^Value_Clause) {
@@ -1487,6 +1486,89 @@ emit_default_clause :: proc(p: ^Printer, clause: ^Default_Clause) {
 	if clause != nil {
 		emit(p, " DEFAULT ")
 		emit_node(p, clause.expr)
+	}
+}
+
+emit_parameter_clause_tail :: proc(p: ^Printer, clause: Parameters_Clause) {
+	if len(clause.parts) == 0 {
+		emit_type_clause(p, clause.type_clause)
+		emit_length_clauses(p, clause.length_clauses)
+		emit_default_clause(p, clause.default_clause)
+		emit_parameter_additions(p, clause)
+		return
+	}
+
+	length_index := 0
+	for part in clause.parts {
+		#partial switch part {
+		case .Type_Clause:
+			emit_type_clause(p, clause.type_clause)
+		case .Length_Clause:
+			if length_index < len(clause.length_clauses) {
+				emit_length_clause(p, clause.length_clauses[length_index])
+				length_index += 1
+			}
+		case .Default_Clause:
+			emit_default_clause(p, clause.default_clause)
+		case .As_Checkbox:
+			if .As_Checkbox in clause.flags {
+				emit(p, " AS CHECKBOX")
+			}
+		case .Lower_Case:
+			if .Lower_Case in clause.flags {
+				emit(p, " LOWER CASE")
+			}
+		case .Obligatory:
+			if .Obligatory in clause.flags {
+				emit(p, " OBLIGATORY")
+			}
+		case .No_Display:
+			if .No_Display in clause.flags {
+				emit(p, " NO-DISPLAY")
+			}
+		case .Value_Check:
+			if .Value_Check in clause.flags {
+				emit(p, " VALUE CHECK")
+			}
+		case .Help_Request:
+			if .Help_Request in clause.flags {
+				emit(p, " HELP-REQUEST")
+			}
+		case .Value_Request:
+			if .Value_Request in clause.flags {
+				emit(p, " VALUE-REQUEST")
+			}
+		case .Radiobutton_Group:
+			if group, ok := clause.radiobutton_group.?; ok {
+				emit(p, " RADIOBUTTON GROUP ")
+				emit(p, group)
+			}
+		case .User_Command:
+			if command, ok := clause.user_command.?; ok {
+				emit(p, " USER-COMMAND ")
+				emit(p, command)
+			}
+		case .Modif_Id:
+			if id, ok := clause.modif_id.?; ok {
+				emit(p, " MODIF ID ")
+				emit(p, id)
+			}
+		case .Memory_Id:
+			if clause.memory_id != nil {
+				emit(p, " MEMORY ID ")
+				emit_node(p, clause.memory_id)
+			}
+		case .Matchcode_Object:
+			if clause.matchcode_object != nil {
+				emit(p, " MATCHCODE OBJECT ")
+				emit_node(p, clause.matchcode_object)
+			}
+		case .Visible_Length:
+			if clause.visible_length != nil {
+				emit(p, " VISIBLE LENGTH ")
+				emit_node(p, clause.visible_length)
+			}
+		}
 	}
 }
 
@@ -1512,29 +1594,29 @@ emit_parameter_additions :: proc(p: ^Printer, clause: Parameters_Clause) {
 	if .Value_Request in clause.flags {
 		emit(p, " VALUE-REQUEST")
 	}
-	if clause.radiobutton_group != nil {
+	if group, ok := clause.radiobutton_group.?; ok {
 		emit(p, " RADIOBUTTON GROUP ")
-		emit(p, clause.radiobutton_group.group)
+		emit(p, group)
 	}
-	if clause.user_command != nil {
+	if command, ok := clause.user_command.?; ok {
 		emit(p, " USER-COMMAND ")
-		emit(p, clause.user_command.command)
+		emit(p, command)
 	}
-	if clause.modif_id != nil {
+	if id, ok := clause.modif_id.?; ok {
 		emit(p, " MODIF ID ")
-		emit(p, clause.modif_id.id)
+		emit(p, id)
 	}
 	if clause.memory_id != nil {
 		emit(p, " MEMORY ID ")
-		emit_node(p, clause.memory_id.id)
+		emit_node(p, clause.memory_id)
 	}
 	if clause.matchcode_object != nil {
 		emit(p, " MATCHCODE OBJECT ")
-		emit_node(p, clause.matchcode_object.object)
+		emit_node(p, clause.matchcode_object)
 	}
 	if clause.visible_length != nil {
 		emit(p, " VISIBLE LENGTH ")
-		emit_node(p, clause.visible_length.length)
+		emit_node(p, clause.visible_length)
 	}
 }
 
@@ -1557,21 +1639,21 @@ emit_select_option_additions :: proc(p: ^Printer, clause: Select_Options_Clause)
 	if .No_Database_Selection in clause.flags {
 		emit(p, " NO DATABASE SELECTION")
 	}
-	if clause.modif_id != nil {
+	if id, ok := clause.modif_id.?; ok {
 		emit(p, " MODIF ID ")
-		emit(p, clause.modif_id.id)
+		emit(p, id)
 	}
 	if clause.memory_id != nil {
 		emit(p, " MEMORY ID ")
-		emit_node(p, clause.memory_id.id)
+		emit_node(p, clause.memory_id)
 	}
 	if clause.matchcode_object != nil {
 		emit(p, " MATCHCODE OBJECT ")
-		emit_node(p, clause.matchcode_object.object)
+		emit_node(p, clause.matchcode_object)
 	}
 	if clause.visible_length != nil {
 		emit(p, " VISIBLE LENGTH ")
-		emit_node(p, clause.visible_length.length)
+		emit_node(p, clause.visible_length)
 	}
 	if clause.help_request != nil {
 		emit(p, " HELP-REQUEST FOR ")

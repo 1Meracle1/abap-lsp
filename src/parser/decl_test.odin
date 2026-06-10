@@ -133,9 +133,15 @@ SELECT-OPTIONS s_matnr FOR mara-matnr NO-DISPLAY VISIBLE LENGTH 20 DEFAULT 'A' T
 	testing.expect_value(t, field_table.field_symbols[0].type_clause.form, ast.Data_Type_Form.Standard_Table)
 	testing.expect(t, .As_Checkbox in checkbox.parameters[0].flags)
 	testing.expect(t, checkbox.parameters[0].default_clause != nil)
-	testing.expect_value(t, checkbox.parameters[0].modif_id.id, "md")
-	testing.expect_value(t, radio.parameters[0].radiobutton_group.group, "g01")
-	testing.expect_value(t, radio.parameters[0].user_command.command, "upd")
+	checkbox_modif_id, checkbox_has_modif_id := checkbox.parameters[0].modif_id.?
+	radio_group, radio_has_group := radio.parameters[0].radiobutton_group.?
+	radio_command, radio_has_command := radio.parameters[0].user_command.?
+	testing.expect(t, checkbox_has_modif_id)
+	testing.expect(t, radio_has_group)
+	testing.expect(t, radio_has_command)
+	testing.expect_value(t, checkbox_modif_id.text, "md")
+	testing.expect_value(t, radio_group.text, "g01")
+	testing.expect_value(t, radio_command.text, "upd")
 	testing.expect(t, .Lower_Case in radio.parameters[0].flags)
 	testing.expect(t, .Obligatory in radio.parameters[0].flags)
 	testing.expect(t, .No_Display in options.options[0].flags)
@@ -145,7 +151,36 @@ SELECT-OPTIONS s_matnr FOR mara-matnr NO-DISPLAY VISIBLE LENGTH 20 DEFAULT 'A' T
 	testing.expect_value(t, options.options[0].sign_clause.sign, "I")
 	testing.expect(t, options.options[0].matchcode_object != nil)
 	testing.expect(t, options.options[0].memory_id != nil)
-	testing.expect_value(t, options.options[0].modif_id.id, "grp")
+	option_modif_id, option_has_modif_id := options.options[0].modif_id.?
+	testing.expect(t, option_has_modif_id)
+	testing.expect_value(t, option_modif_id.text, "grp")
+}
+
+@(test)
+parameters_declaration_keeps_structural_print_facts :: proc(t: ^testing.T) {
+	source := `PARAMETER p_one TYPE c LENGTH 3 AS CHECKBOX DEFAULT 'X' MODIF ID md.
+PARAMETERS: p_two TYPE string.`
+	parsed := parse(source, "parameter_structural_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	parameter := parsed.root.stmts[0].derived_stmt.(^ast.Parameters_Decl)
+	parameters := parsed.root.stmts[1].derived_stmt.(^ast.Parameters_Decl)
+	clause := parameter.parameters[0]
+
+	testing.expect_value(t, parameter.keyword.text, "PARAMETER")
+	testing.expect(t, !parameter.has_colon)
+	testing.expect_value(t, parameters.keyword.text, "PARAMETERS")
+	testing.expect(t, parameters.has_colon)
+	testing.expect_value(t, len(clause.parts), 5)
+	testing.expect_value(t, clause.parts[0], ast.Parameter_Clause_Part.Type_Clause)
+	testing.expect_value(t, clause.parts[1], ast.Parameter_Clause_Part.Length_Clause)
+	testing.expect_value(t, clause.parts[2], ast.Parameter_Clause_Part.As_Checkbox)
+	testing.expect_value(t, clause.parts[3], ast.Parameter_Clause_Part.Default_Clause)
+	testing.expect_value(t, clause.parts[4], ast.Parameter_Clause_Part.Modif_Id)
+	modif_id, has_modif_id := clause.modif_id.?
+	testing.expect(t, has_modif_id)
+	testing.expect_value(t, source[modif_id.range.start:modif_id.range.end], "md")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
 @(test)

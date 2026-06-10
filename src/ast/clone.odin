@@ -310,6 +310,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return r
 	case ^Parameters_Decl:
 		r := clone_shallow(n, allocator)
+		r.keyword = clone_token_text(n.keyword, allocator)
 		r.parameters = clone_parameters_clauses(n.parameters, allocator)
 		return r
 	case ^Select_Options_Decl:
@@ -885,6 +886,13 @@ clone_token_text_list :: proc(list: [dynamic]Token_Text, allocator: mem.Allocato
 		append(&res, clone_token_text(token, allocator))
 	}
 	return res
+}
+
+clone_optional_token_text :: proc(token: Maybe(Token_Text), allocator: mem.Allocator) -> Maybe(Token_Text) {
+	if value, ok := token.?; ok {
+		return clone_token_text(value, allocator)
+	}
+	return nil
 }
 
 clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
@@ -2062,16 +2070,17 @@ clone_parameters_clauses :: proc(list: [dynamic]Parameters_Clause, allocator: me
 		append(&res, Parameters_Clause {
 			name              = clone_token_text(clause.name, allocator),
 			paren_length      = clone_paren_length_clause(clause.paren_length, allocator),
+			parts             = clone_parameter_clause_parts(clause.parts, allocator),
 			length_clauses    = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause       = clone_type_clause(clause.type_clause, allocator),
 			default_clause    = clone_default_clause(clause.default_clause, allocator),
 			flags             = clause.flags,
-			radiobutton_group = clone_radiobutton_group_clause(clause.radiobutton_group, allocator),
-			user_command      = clone_user_command_clause(clause.user_command, allocator),
-			modif_id          = clone_modif_id_clause(clause.modif_id, allocator),
-			memory_id         = clone_memory_id_clause(clause.memory_id, allocator),
-			matchcode_object  = clone_matchcode_object_clause(clause.matchcode_object, allocator),
-			visible_length   = clone_visible_length_clause(clause.visible_length, allocator),
+			radiobutton_group = clone_optional_token_text(clause.radiobutton_group, allocator),
+			user_command      = clone_optional_token_text(clause.user_command, allocator),
+			modif_id          = clone_optional_token_text(clause.modif_id, allocator),
+			memory_id         = clone(clause.memory_id, allocator),
+			matchcode_object  = clone(clause.matchcode_object, allocator),
+			visible_length    = clone(clause.visible_length, allocator),
 		})
 	}
 	return res
@@ -2088,10 +2097,10 @@ clone_select_options_clauses :: proc(list: [dynamic]Select_Options_Clause, alloc
 			option_clause    = clone_option_clause(clause.option_clause, allocator),
 			sign_clause      = clone_sign_clause(clause.sign_clause, allocator),
 			flags            = clause.flags,
-			modif_id         = clone_modif_id_clause(clause.modif_id, allocator),
-			memory_id        = clone_memory_id_clause(clause.memory_id, allocator),
-			matchcode_object = clone_matchcode_object_clause(clause.matchcode_object, allocator),
-			visible_length  = clone_visible_length_clause(clause.visible_length, allocator),
+			modif_id         = clone_optional_token_text(clause.modif_id, allocator),
+			memory_id        = clone(clause.memory_id, allocator),
+			matchcode_object = clone(clause.matchcode_object, allocator),
+			visible_length   = clone(clause.visible_length, allocator),
 			help_request    = clone_selection_request_clause(clause.help_request, allocator),
 			value_request   = clone_selection_request_clause(clause.value_request, allocator),
 		})
@@ -2131,6 +2140,17 @@ clone_class_data_clauses :: proc(list: [dynamic]Class_Data_Clause, allocator: me
 			as_name        = clone_token_text(clause.as_name, allocator),
 			renaming_suffix = clone_token_text(clause.renaming_suffix, allocator),
 		})
+	}
+	return res
+}
+
+clone_parameter_clause_parts :: proc(
+	list: [dynamic]Parameter_Clause_Part,
+	allocator: mem.Allocator,
+) -> [dynamic]Parameter_Clause_Part {
+	res := make([dynamic]Parameter_Clause_Part, 0, len(list), allocator)
+	for part in list {
+		append(&res, part)
 	}
 	return res
 }
@@ -2225,60 +2245,6 @@ clone_sign_clause :: proc(clause: ^Sign_Clause, allocator: mem.Allocator) -> ^Si
 	}
 	res, _ := mem.new(Sign_Clause, allocator)
 	res.sign = strings.clone(clause.sign, allocator)
-	return res
-}
-
-clone_radiobutton_group_clause :: proc(clause: ^Radiobutton_Group_Clause, allocator: mem.Allocator) -> ^Radiobutton_Group_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(Radiobutton_Group_Clause, allocator)
-	res.group = strings.clone(clause.group, allocator)
-	return res
-}
-
-clone_user_command_clause :: proc(clause: ^User_Command_Clause, allocator: mem.Allocator) -> ^User_Command_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(User_Command_Clause, allocator)
-	res.command = strings.clone(clause.command, allocator)
-	return res
-}
-
-clone_modif_id_clause :: proc(clause: ^Modif_Id_Clause, allocator: mem.Allocator) -> ^Modif_Id_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(Modif_Id_Clause, allocator)
-	res.id = strings.clone(clause.id, allocator)
-	return res
-}
-
-clone_memory_id_clause :: proc(clause: ^Memory_Id_Clause, allocator: mem.Allocator) -> ^Memory_Id_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(Memory_Id_Clause, allocator)
-	res.id = clone(clause.id, allocator)
-	return res
-}
-
-clone_matchcode_object_clause :: proc(clause: ^Matchcode_Object_Clause, allocator: mem.Allocator) -> ^Matchcode_Object_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(Matchcode_Object_Clause, allocator)
-	res.object = clone(clause.object, allocator)
-	return res
-}
-
-clone_visible_length_clause :: proc(clause: ^Visible_Length_Clause, allocator: mem.Allocator) -> ^Visible_Length_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(Visible_Length_Clause, allocator)
-	res.length = clone(clause.length, allocator)
 	return res
 }
 

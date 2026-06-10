@@ -883,7 +883,8 @@ Ranges_Clause :: struct {
 // ABAP syntax: PARAMETERS statement, for example `PARAMETERS p TYPE i.`
 Parameters_Decl :: struct {
 	using node: Decl,
-	text:       string,
+	keyword:    Token_Text,
+	has_colon:  bool,
 	parameters: [dynamic]Parameters_Clause,
 }
 
@@ -899,20 +900,41 @@ Parameter_Flag :: enum {
 }
 Parameter_Flags :: bit_set[Parameter_Flag]
 
+// Source-order marker for the typed parts of one PARAMETERS entry after its name.
+Parameter_Clause_Part :: enum {
+	Type_Clause,
+	Length_Clause,
+	Default_Clause,
+	As_Checkbox,
+	Lower_Case,
+	Obligatory,
+	No_Display,
+	Value_Check,
+	Help_Request,
+	Value_Request,
+	Radiobutton_Group,
+	User_Command,
+	Modif_Id,
+	Memory_Id,
+	Matchcode_Object,
+	Visible_Length,
+}
+
 // ABAP syntax: one PARAMETERS entry, for example `p_count TYPE i DEFAULT 1`.
 Parameters_Clause :: struct {
 	name:              Token_Text,
 	paren_length:      ^Paren_Length_Clause,
+	parts:             [dynamic]Parameter_Clause_Part,
 	length_clauses:    [dynamic]Length_Clause,
 	type_clause:       ^Data_Type_Clause,
 	default_clause:    ^Default_Clause,
 	flags:             Parameter_Flags,
-	radiobutton_group: ^Radiobutton_Group_Clause,
-	user_command:      ^User_Command_Clause,
-	modif_id:          ^Modif_Id_Clause,
-	memory_id:         ^Memory_Id_Clause,
-	matchcode_object:  ^Matchcode_Object_Clause,
-	visible_length:    ^Visible_Length_Clause,
+	radiobutton_group: Maybe(Token_Text),
+	user_command:      Maybe(Token_Text),
+	modif_id:          Maybe(Token_Text),
+	memory_id:         ^Expr,
+	matchcode_object:  ^Expr,
+	visible_length:    ^Expr,
 }
 
 // ABAP syntax: SELECT-OPTIONS statement, for example `SELECT-OPTIONS s FOR mara-matnr.`
@@ -947,10 +969,10 @@ Select_Options_Clause :: struct {
 	option_clause:    ^Option_Clause,
 	sign_clause:      ^Sign_Clause,
 	flags:            Select_Option_Flags,
-	modif_id:         ^Modif_Id_Clause,
-	memory_id:        ^Memory_Id_Clause,
-	matchcode_object: ^Matchcode_Object_Clause,
-	visible_length:   ^Visible_Length_Clause,
+	modif_id:         Maybe(Token_Text),
+	memory_id:        ^Expr,
+	matchcode_object: ^Expr,
+	visible_length:   ^Expr,
 	help_request:     ^Selection_Request_Clause,
 	value_request:    ^Selection_Request_Clause,
 }
@@ -1064,36 +1086,6 @@ Option_Clause :: struct {
 // ABAP syntax: SELECT-OPTIONS sign addition, for example `SIGN I`.
 Sign_Clause :: struct {
 	sign: string,
-}
-
-// ABAP syntax: PARAMETERS radio-button group addition, for example `RADIOBUTTON GROUP g01`.
-Radiobutton_Group_Clause :: struct {
-	group: string,
-}
-
-// ABAP syntax: PARAMETERS user-command addition, for example `USER-COMMAND upd`.
-User_Command_Clause :: struct {
-	command: string,
-}
-
-// ABAP syntax: selection-screen modification group addition, for example `MODIF ID grp`.
-Modif_Id_Clause :: struct {
-	id: string,
-}
-
-// ABAP syntax: selection-screen memory id addition, for example `MEMORY ID gln`.
-Memory_Id_Clause :: struct {
-	id: ^Expr,
-}
-
-// ABAP syntax: matchcode object addition, for example `MATCHCODE OBJECT /sttp/h_loc_gln`.
-Matchcode_Object_Clause :: struct {
-	object: ^Expr,
-}
-
-// ABAP syntax: selection-screen visible length addition, for example `VISIBLE LENGTH 20`.
-Visible_Length_Clause :: struct {
-	length: ^Expr,
 }
 
 // ABAP syntax: selection-screen request addition, for example `HELP-REQUEST FOR LOW` or `VALUE-REQUEST FOR HIGH`.

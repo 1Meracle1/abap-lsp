@@ -310,8 +310,10 @@ parse_ranges_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 parse_parameters_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := bump_token(p)
-	allow_token(p, .Colon)
+	has_colon := allow_token(p, .Colon)
 	stmt := ast.new(ast.Parameters_Decl, start.range, p.allocator)
+	stmt.keyword = parser_ast_raw_name_token(p, start)
+	stmt.has_colon = has_colon
 	stmt.parameters = make([dynamic]ast.Parameters_Clause, 0, 2, p.allocator)
 	for !decl_clause_boundary(p) {
 		clause, ok := parse_parameters_clause(p)
@@ -325,7 +327,6 @@ parse_parameters_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	period := expect_token(p, .Period)
 	stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
-	stmt.text = source_range_text(p, stmt.range)
 	return stmt
 }
 
@@ -866,6 +867,7 @@ parse_parameters_clause :: proc(p: ^Parser) -> (ast.Parameters_Clause, bool) {
 	clause := ast.Parameters_Clause {
 		name = parser_ast_raw_name_token(p, name),
 	}
+	clause.parts = make([dynamic]ast.Parameter_Clause_Part, 0, 4, p.allocator)
 	clause.length_clauses = make([dynamic]ast.Length_Clause, 0, 2, p.allocator)
 	if current_token(p).kind == .LParen {
 		clause.paren_length = parse_required_paren_length_clause(p)
@@ -879,6 +881,7 @@ parse_parameters_clause :: proc(p: ^Parser) -> (ast.Parameters_Clause, bool) {
 			if clause.type_clause == nil {
 				return ast.Parameters_Clause{}, false
 			}
+			append(&clause.parts, ast.Parameter_Clause_Part.Type_Clause)
 			continue
 		}
 		if at_keyword(p, "DEFAULT") {
@@ -886,6 +889,7 @@ parse_parameters_clause :: proc(p: ^Parser) -> (ast.Parameters_Clause, bool) {
 			if clause.default_clause == nil {
 				return ast.Parameters_Clause{}, false
 			}
+			append(&clause.parts, ast.Parameter_Clause_Part.Default_Clause)
 			continue
 		}
 		matched, add_ok := parse_parameter_addition(p, &clause)
@@ -1490,71 +1494,101 @@ parse_parameter_addition :: proc(p: ^Parser, clause: ^ast.Parameters_Clause) -> 
 		length_clause, ok := parse_required_length_clause(p)
 		if ok {
 			append(&clause.length_clauses, length_clause)
+			append(&clause.parts, ast.Parameter_Clause_Part.Length_Clause)
 		}
 		return true, ok
 	}
 	if at_keyword_phrase(p, "AS CHECKBOX") {
 		expect_keyword_phrase(p, "AS CHECKBOX")
 		clause.flags += {.As_Checkbox}
+		append(&clause.parts, ast.Parameter_Clause_Part.As_Checkbox)
 		return true, true
 	}
 	if at_keyword_phrase(p, "LOWER CASE") {
 		expect_keyword_phrase(p, "LOWER CASE")
 		clause.flags += {.Lower_Case}
+		append(&clause.parts, ast.Parameter_Clause_Part.Lower_Case)
 		return true, true
 	}
 	if allow_keyword(p, "OBLIGATORY") {
 		clause.flags += {.Obligatory}
+		append(&clause.parts, ast.Parameter_Clause_Part.Obligatory)
 		return true, true
 	}
 	if at_keyword_phrase(p, "NO-DISPLAY") {
 		expect_keyword_phrase(p, "NO-DISPLAY")
 		clause.flags += {.No_Display}
+		append(&clause.parts, ast.Parameter_Clause_Part.No_Display)
 		return true, true
 	}
 	if at_keyword_phrase(p, "VALUE CHECK") {
 		expect_keyword_phrase(p, "VALUE CHECK")
 		clause.flags += {.Value_Check}
+		append(&clause.parts, ast.Parameter_Clause_Part.Value_Check)
 		return true, true
 	}
 	if at_keyword_phrase(p, "HELP-REQUEST") {
 		expect_keyword_phrase(p, "HELP-REQUEST")
 		clause.flags += {.Help_Request}
+		append(&clause.parts, ast.Parameter_Clause_Part.Help_Request)
 		return true, true
 	}
 	if at_keyword_phrase(p, "VALUE-REQUEST") {
 		expect_keyword_phrase(p, "VALUE-REQUEST")
 		clause.flags += {.Value_Request}
+		append(&clause.parts, ast.Parameter_Clause_Part.Value_Request)
 		return true, true
 	}
 	if at_keyword_phrase(p, "RADIOBUTTON GROUP") {
 		if clause.memory_id != nil {
 			error_current(p, "syntax error: RADIOBUTTON GROUP and MEMORY ID cannot be used together")
 		}
-		clause.radiobutton_group = parse_required_radiobutton_group_clause(p)
-		return true, clause.radiobutton_group != nil
+		group, ok := parse_required_radiobutton_group(p)
+		if ok {
+			clause.radiobutton_group = group
+			append(&clause.parts, ast.Parameter_Clause_Part.Radiobutton_Group)
+		}
+		return true, ok
 	}
 	if at_keyword_phrase(p, "USER-COMMAND") {
-		clause.user_command = parse_required_user_command_clause(p)
-		return true, clause.user_command != nil
+		command, ok := parse_required_user_command(p)
+		if ok {
+			clause.user_command = command
+			append(&clause.parts, ast.Parameter_Clause_Part.User_Command)
+		}
+		return true, ok
 	}
 	if at_keyword_phrase(p, "MODIF ID") {
-		clause.modif_id = parse_required_modif_id_clause(p)
-		return true, clause.modif_id != nil
+		modif_id, ok := parse_required_modif_id(p)
+		if ok {
+			clause.modif_id = modif_id
+			append(&clause.parts, ast.Parameter_Clause_Part.Modif_Id)
+		}
+		return true, ok
 	}
 	if at_keyword_phrase(p, "MEMORY ID") {
-		if clause.radiobutton_group != nil {
+		_, has_radiobutton_group := clause.radiobutton_group.?
+		if has_radiobutton_group {
 			error_current(p, "syntax error: RADIOBUTTON GROUP and MEMORY ID cannot be used together")
 		}
-		clause.memory_id = parse_required_memory_id_clause(p)
+		clause.memory_id = parse_required_memory_id(p)
+		if clause.memory_id != nil {
+			append(&clause.parts, ast.Parameter_Clause_Part.Memory_Id)
+		}
 		return true, clause.memory_id != nil
 	}
 	if at_keyword_phrase(p, "MATCHCODE OBJECT") {
-		clause.matchcode_object = parse_required_matchcode_object_clause(p)
+		clause.matchcode_object = parse_required_matchcode_object(p)
+		if clause.matchcode_object != nil {
+			append(&clause.parts, ast.Parameter_Clause_Part.Matchcode_Object)
+		}
 		return true, clause.matchcode_object != nil
 	}
 	if at_keyword_phrase(p, "VISIBLE LENGTH") {
-		clause.visible_length = parse_required_visible_length_clause(p)
+		clause.visible_length = parse_required_visible_length(p)
+		if clause.visible_length != nil {
+			append(&clause.parts, ast.Parameter_Clause_Part.Visible_Length)
+		}
 		return true, clause.visible_length != nil
 	}
 	return false, true
@@ -1609,19 +1643,22 @@ parse_select_option_addition :: proc(
 		return true, true
 	}
 	if at_keyword_phrase(p, "MODIF ID") {
-		clause.modif_id = parse_required_modif_id_clause(p)
-		return true, clause.modif_id != nil
+		modif_id, ok := parse_required_modif_id(p)
+		if ok {
+			clause.modif_id = modif_id
+		}
+		return true, ok
 	}
 	if at_keyword_phrase(p, "MEMORY ID") {
-		clause.memory_id = parse_required_memory_id_clause(p)
+		clause.memory_id = parse_required_memory_id(p)
 		return true, clause.memory_id != nil
 	}
 	if at_keyword_phrase(p, "MATCHCODE OBJECT") {
-		clause.matchcode_object = parse_required_matchcode_object_clause(p)
+		clause.matchcode_object = parse_required_matchcode_object(p)
 		return true, clause.matchcode_object != nil
 	}
 	if at_keyword_phrase(p, "VISIBLE LENGTH") {
-		clause.visible_length = parse_required_visible_length_clause(p)
+		clause.visible_length = parse_required_visible_length(p)
 		return true, clause.visible_length != nil
 	}
 	if at_keyword_phrase(p, "HELP-REQUEST") {
@@ -1668,52 +1705,34 @@ parse_required_sign_clause :: proc(p: ^Parser) -> ^ast.Sign_Clause {
 	return clause
 }
 
-parse_required_radiobutton_group_clause :: proc(p: ^Parser) -> ^ast.Radiobutton_Group_Clause {
+parse_required_radiobutton_group :: proc(p: ^Parser) -> (ast.Token_Text, bool) {
 	expect_keyword_phrase(p, "RADIOBUTTON GROUP")
-	group, ok := parse_required_addition_name(
+	return parse_required_addition_token_text(
 		p,
 		SELECTION_SCREEN_RADIOBUTTON_GROUP_MAX_LENGTH,
 		"syntax error: selection-screen radio button group name can be up to four characters long",
 	)
-	if !ok {
-		return nil
-	}
-	clause, _ := mem.new(ast.Radiobutton_Group_Clause, p.allocator)
-	clause.group = group
-	return clause
 }
 
-parse_required_user_command_clause :: proc(p: ^Parser) -> ^ast.User_Command_Clause {
+parse_required_user_command :: proc(p: ^Parser) -> (ast.Token_Text, bool) {
 	expect_keyword_phrase(p, "USER-COMMAND")
-	command, ok := parse_required_addition_name(
+	return parse_required_addition_token_text(
 		p,
 		SELECTION_SCREEN_COMMAND_MAX_LENGTH,
 		"syntax error: selection-screen user command can be up to 20 characters long",
 	)
-	if !ok {
-		return nil
-	}
-	clause, _ := mem.new(ast.User_Command_Clause, p.allocator)
-	clause.command = command
-	return clause
 }
 
-parse_required_modif_id_clause :: proc(p: ^Parser) -> ^ast.Modif_Id_Clause {
+parse_required_modif_id :: proc(p: ^Parser) -> (ast.Token_Text, bool) {
 	expect_keyword_phrase(p, "MODIF ID")
-	id, ok := parse_required_addition_name(
+	return parse_required_addition_token_text(
 		p,
 		SELECTION_SCREEN_MODIF_ID_MAX_LENGTH,
 		"syntax error: selection-screen modification id can be up to three characters long",
 	)
-	if !ok {
-		return nil
-	}
-	clause, _ := mem.new(ast.Modif_Id_Clause, p.allocator)
-	clause.id = id
-	return clause
 }
 
-parse_required_memory_id_clause :: proc(p: ^Parser) -> ^ast.Memory_Id_Clause {
+parse_required_memory_id :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_keyword_phrase(p, "MEMORY ID")
 	name := current_token(p)
 	if name.kind == .Ident || name.kind == .Number {
@@ -1728,31 +1747,25 @@ parse_required_memory_id_clause :: proc(p: ^Parser) -> ^ast.Memory_Id_Clause {
 	if id == nil {
 		return nil
 	}
-	clause, _ := mem.new(ast.Memory_Id_Clause, p.allocator)
-	clause.id = id
-	return clause
+	return id
 }
 
-parse_required_matchcode_object_clause :: proc(p: ^Parser) -> ^ast.Matchcode_Object_Clause {
+parse_required_matchcode_object :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_keyword_phrase(p, "MATCHCODE OBJECT")
 	object := parse_expr(p)
 	if object == nil {
 		return nil
 	}
-	clause, _ := mem.new(ast.Matchcode_Object_Clause, p.allocator)
-	clause.object = object
-	return clause
+	return object
 }
 
-parse_required_visible_length_clause :: proc(p: ^Parser) -> ^ast.Visible_Length_Clause {
+parse_required_visible_length :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_keyword_phrase(p, "VISIBLE LENGTH")
 	length := parse_expr(p)
 	if length == nil {
 		return nil
 	}
-	clause, _ := mem.new(ast.Visible_Length_Clause, p.allocator)
-	clause.length = length
-	return clause
+	return length
 }
 
 parse_required_selection_request_clause :: proc(

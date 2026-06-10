@@ -784,13 +784,21 @@ INCLUDE zinc IF FOUND.`
 	testing.expect_value(t, tables_decl.tables[0].name.text, "mara")
 	testing.expect_value(t, ranges_decl.ranges[0].name.text, "r_date")
 	testing.expect_value(t, parameters_decl.parameters[0].name.text, "p_one")
-	testing.expect_value(t, parameters_decl.parameters[0].radiobutton_group.group, "g1")
-	testing.expect_value(t, parameters_decl.parameters[0].user_command.command, "go")
-	testing.expect_value(t, parameters_decl.parameters[0].modif_id.id, "mid")
+	parameter_group, parameter_has_group := parameters_decl.parameters[0].radiobutton_group.?
+	parameter_command, parameter_has_command := parameters_decl.parameters[0].user_command.?
+	parameter_modif_id, parameter_has_modif_id := parameters_decl.parameters[0].modif_id.?
+	testing.expect(t, parameter_has_group)
+	testing.expect(t, parameter_has_command)
+	testing.expect(t, parameter_has_modif_id)
+	testing.expect_value(t, parameter_group.text, "g1")
+	testing.expect_value(t, parameter_command.text, "go")
+	testing.expect_value(t, parameter_modif_id.text, "mid")
 	testing.expect_value(t, select_options_decl.options[0].name.text, "s_date")
 	testing.expect_value(t, select_options_decl.options[0].option_clause.option, "EQ")
 	testing.expect_value(t, select_options_decl.options[0].sign_clause.sign, "I")
-	testing.expect_value(t, select_options_decl.options[0].modif_id.id, "sid")
+	select_option_modif_id, select_option_has_modif_id := select_options_decl.options[0].modif_id.?
+	testing.expect(t, select_option_has_modif_id)
+	testing.expect_value(t, select_option_modif_id.text, "sid")
 	testing.expect_value(t, select_options_decl.options[0].help_request.target, "LOW")
 	testing.expect_value(t, select_options_decl.options[0].value_request.target, "HIGH")
 	testing.expect_value(t, controls_decl.controls[0].name.text, "tc_one")
@@ -993,7 +1001,8 @@ DATA lv_date LIKE sy-datum.`
 
 	testing.expect_value(t, root.leading_trivia[0].text, `" keep this comment`)
 	testing.expect_value(t, parameters.trailing_trivia[0].text, `" inline comment`)
-	testing.expect_value(t, parameters.text, "PARAMETERS p_text TYPE string.")
+	testing.expect_value(t, parameters.keyword.text, "PARAMETERS")
+	testing.expect(t, !parameters.has_colon)
 	testing.expect_value(t, parameters.parameters[0].name.text, "p_text")
 	testing.expect_value(t, selection_screen.text, "SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.")
 	testing.expect_value(t, selection_screen.title_name.text, "text")

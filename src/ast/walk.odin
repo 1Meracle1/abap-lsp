@@ -205,18 +205,18 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk_length_clauses(next, clause.length_clauses)
 			walk_data_type_clause(next, clause.type_clause)
 			walk_default_clause(next, clause.default_clause)
-			walk_memory_id_clause(next, clause.memory_id)
-			walk_matchcode_object_clause(next, clause.matchcode_object)
-			walk_visible_length_clause(next, clause.visible_length)
+			walk(next, clause.memory_id)
+			walk(next, clause.matchcode_object)
+			walk(next, clause.visible_length)
 		}
 	case ^Select_Options_Decl:
 		for clause in n.options {
 			walk_for_clause(next, clause.for_clause)
 			walk_default_clause(next, clause.default_clause)
 			walk_to_clause(next, clause.to_clause)
-			walk_memory_id_clause(next, clause.memory_id)
-			walk_matchcode_object_clause(next, clause.matchcode_object)
-			walk_visible_length_clause(next, clause.visible_length)
+			walk(next, clause.memory_id)
+			walk(next, clause.matchcode_object)
+			walk(next, clause.visible_length)
 		}
 	case ^Controls_Decl:
 		for clause in n.controls {
@@ -845,20 +845,3 @@ walk_message_head :: proc(v: ^Visitor, clause: ^Message_Head_Clause) {
 	}
 }
 
-walk_memory_id_clause :: proc(v: ^Visitor, clause: ^Memory_Id_Clause) {
-	if clause != nil {
-		walk(v, clause.id)
-	}
-}
-
-walk_matchcode_object_clause :: proc(v: ^Visitor, clause: ^Matchcode_Object_Clause) {
-	if clause != nil {
-		walk(v, clause.object)
-	}
-}
-
-walk_visible_length_clause :: proc(v: ^Visitor, clause: ^Visible_Length_Clause) {
-	if clause != nil {
-		walk(v, clause.length)
-	}
-}

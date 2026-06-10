@@ -2022,7 +2022,7 @@ parse_selection_screen_comment :: proc(
 			continue
 		}
 		if at_keyword_phrase(p, "MODIF ID") {
-			_ = parse_required_modif_id_clause(p)
+			_, _ = parse_required_modif_id(p)
 			continue
 		}
 		bump_token(p)
@@ -2037,11 +2037,11 @@ parse_selection_screen_pushbutton :: proc(p: ^Parser, body_start: int) {
 	)
 	for !simple_stmt_done(p, body_start) {
 		if at_keyword_phrase(p, "USER-COMMAND") {
-			_ = parse_required_user_command_clause(p)
+			_, _ = parse_required_user_command(p)
 			continue
 		}
 		if at_keyword_phrase(p, "MODIF ID") {
-			_ = parse_required_modif_id_clause(p)
+			_, _ = parse_required_modif_id(p)
 			continue
 		}
 		bump_token(p)
