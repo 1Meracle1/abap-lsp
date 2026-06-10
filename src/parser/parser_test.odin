@@ -587,7 +587,7 @@ parsed_expression_strings_survive_source_overwrite :: proc(t: ^testing.T) {
 	testing.expect_value(t, first_rhs.value, "'A'")
 	testing.expect_value(t, second_lhs.name, "rv_text")
 	testing.expect_value(t, template_lit.literal, "Hello ")
-	testing.expect_value(t, template_spec.name, "WIDTH")
+	testing.expect_value(t, template_spec.name.text, "WIDTH")
 }
 
 @(test)
@@ -1084,7 +1084,7 @@ DATA lv_date LIKE sy-datum.`
 	template_spec := template_interp.format_specs[0].derived_expr.(^ast.Template_Format_Spec_Expr)
 	testing.expect_value(t, template_decl.name.text, "lv_text")
 	testing.expect_value(t, template_lit.literal, "Hello ")
-	testing.expect_value(t, template_spec.name, "WIDTH")
+	testing.expect_value(t, template_spec.name.text, "WIDTH")
 	literal := literal_decl.expr.derived_expr.(^ast.Literal_Expr)
 	testing.expect_value(t, literal.value, "'B'")
 	type_ref := type_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)

@@ -40,6 +40,24 @@ new_clone_walk_and_print_cover_surface_nodes :: proc(t: ^testing.T) {
 }
 
 @(test)
+template_format_spec_prints_token_name_and_walks_value :: proc(t: ^testing.T) {
+	name_range := tokenizer.text_range(0, 5)
+	value_range := tokenizer.text_range(8, 9)
+	spec := new(Template_Format_Spec_Expr, tokenizer.text_range(0, 9), context.allocator)
+	spec.name = Token_Text{text = "WIDTH", range = name_range}
+	spec.option = Template_Format_Option.Width
+	spec.value = new(Literal_Expr, value_range, context.allocator)
+	spec.value.derived_expr.(^Literal_Expr).value = "5"
+
+	testing.expect_value(t, print_node(spec, context.allocator), "WIDTH = 5")
+
+	count := 0
+	visitor := Visitor{visit = test_count_visit, data = &count}
+	walk(&visitor, spec)
+	testing.expect(t, count >= 2)
+}
+
+@(test)
 macro_expansion_emits_ast_body_with_call_arguments :: proc(t: ^testing.T) {
 	r := tokenizer.text_range(0, 1)
 	file := new(File, r, context.allocator)

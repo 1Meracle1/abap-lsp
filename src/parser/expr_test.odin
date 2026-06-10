@@ -254,6 +254,33 @@ print_node_reconstructs_string_template_nodes :: proc(t: ^testing.T) {
 }
 
 @(test)
+string_template_format_specs_keep_name_tokens :: proc(t: ^testing.T) {
+	source := `DATA(lv_text) = |Value { lv_value WIDTH = 5 ALIGN = LEFT }|.`
+	parsed := parse(source, "template_format_tokens.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	counts := count_nodes(parsed.root)
+	testing.expect_value(t, counts.format_spec, 2)
+
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Inline_Decl)
+	template := decl.expr.derived_expr.(^ast.Char_String_Template_Expr)
+	interpolation := template.parts[1].derived_expr.(^ast.Template_Interpolation_Expr)
+	width := interpolation.format_specs[0].derived_expr.(^ast.Template_Format_Spec_Expr)
+	align := interpolation.format_specs[1].derived_expr.(^ast.Template_Format_Spec_Expr)
+	width_start := strings.index(source, "WIDTH")
+	align_start := strings.index(source, "ALIGN")
+
+	testing.expect_value(t, width.name.text, "WIDTH")
+	testing.expect_value(t, width.name.range, tokenizer.text_range(width_start, width_start + len("WIDTH")))
+	testing.expect_value(t, source[width.name.range.start:width.name.range.end], "WIDTH")
+	testing.expect_value(t, align.name.text, "ALIGN")
+	testing.expect_value(t, align.name.range, tokenizer.text_range(align_start, align_start + len("ALIGN")))
+	testing.expect_value(t, source[align.name.range.start:align.name.range.end], "ALIGN")
+	testing.expect_value(t, ast.print_node(template, context.allocator), `|Value { lv_value WIDTH = 5 ALIGN = LEFT }|`)
+	testing.expect_value(t, ast.print_node(interpolation, context.allocator), `{ lv_value WIDTH = 5 ALIGN = LEFT }`)
+}
+
+@(test)
 template_interpolation_extracts_decimals_and_width_specs :: proc(t: ^testing.T) {
 	parsed := parse("rv = |Amount { lv_amount DECIMALS = 2 WIDTH = 12 }|.", "test.abap", context.allocator)
 

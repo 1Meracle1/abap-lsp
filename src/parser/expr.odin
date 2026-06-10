@@ -1808,7 +1808,7 @@ parse_template_format_spec_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		tokenizer.text_range(name.range.start, value.range.end),
 		p.allocator,
 	)
-	spec.name = parser_intern_token_name(p, name)
+	spec.name = parser_ast_name_token(p, name)
 	spec.option = template_format_option(p, name)
 	spec.value = value
 	return spec

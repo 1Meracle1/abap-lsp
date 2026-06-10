@@ -264,7 +264,7 @@ Template_Format_Option :: enum {
 // ABAP syntax: string-template output option such as `WIDTH = n` or `ALIGN = LEFT`.
 Template_Format_Spec_Expr :: struct {
 	using node: Expr,
-	name:       string,
+	name:       Token_Text,
 	option:     Maybe(Template_Format_Option),
 	value:      ^Expr,
 }
