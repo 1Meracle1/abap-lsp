@@ -192,6 +192,7 @@ ENDFUNCTION.`
 	testing.expect(t, .Is_Optional in function.function_parameters[0].flags)
 	testing.expect_value(t, function.function_parameters[1].name.text, "iv_text")
 	testing.expect(t, .Has_Default_Value in function.function_parameters[1].flags)
+	testing.expect(t, function.function_parameters[1].default_expr != nil)
 	testing.expect_value(t, function.function_parameters[2].section, ast.Function_Parameter_Section.Exporting)
 	function_ref := function.function_parameters[2].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, function_ref.base_name.text, "sy")
@@ -201,6 +202,7 @@ ENDFUNCTION.`
 	testing.expect_value(t, function.function_parameters[4].type_clause.form, ast.Data_Type_Form.Structure)
 	testing.expect_value(t, len(function.exceptions), 2)
 	testing.expect_value(t, function.exceptions[0].name.text, "failed")
+	testing.expect(t, function.exceptions[0].code_expr != nil)
 	testing.expect_value(t, function.exceptions[1].name.text, "not_found")
 }
 
@@ -335,8 +337,15 @@ ENDFUNCTION.`
 	testing.expect_value(t, len(function.function_parameters), 2)
 	testing.expect_value(t, function.function_parameters[0].name.text, "VALUE")
 	testing.expect_value(t, function.function_parameters[0].passing, ast.Parameter_Passing_Kind.Direct)
+	testing.expect(t, function.function_parameters[0].escaped)
 	testing.expect_value(t, function.function_parameters[1].name.text, "REFERENCE")
 	testing.expect_value(t, function.function_parameters[1].passing, ast.Parameter_Passing_Kind.Direct)
+	testing.expect(t, function.function_parameters[1].escaped)
+	testing.expect_value(
+		t,
+		ast.print_node(parsed.root, context.allocator),
+		"FUNCTION z_keywords IMPORTING !VALUE TYPE i !REFERENCE TYPE string.\nENDFUNCTION.",
+	)
 }
 
 @(test)
@@ -361,6 +370,94 @@ ENDFUNCTION.`
 	testing.expect_value(t, ref.base_name.text, "HROEXIST")
 	testing.expect_value(t, len(function.exceptions), 1)
 	testing.expect_value(t, function.exceptions[0].name.text, "NOT_FOUND")
+}
+
+@(test)
+function_headers_are_structured_ast_facts :: proc(t: ^testing.T) {
+	source := `FUNCTION z_plain.
+ENDFUNCTION.
+FUNCTION z_importing
+  IMPORTING iv_typed TYPE i iv_untyped VALUE(iv_value) TYPE string OPTIONAL iv_default TYPE string DEFAULT 'x'.
+ENDFUNCTION.
+FUNCTION z_exporting
+  EXPORTING ev_text LIKE sy-uname ev_untyped.
+ENDFUNCTION.
+FUNCTION z_changing
+  CHANGING REFERENCE(cv_ref) TYPE REF TO object cv_untyped.
+ENDFUNCTION.
+FUNCTION z_tables
+  TABLES et_return STRUCTURE bapiret2 et_untyped.
+ENDFUNCTION.
+FUNCTION z_exceptions
+  EXCEPTIONS failed = 1 not_found.
+ENDFUNCTION.`
+	parsed := parse(source, "function_header_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 6)
+	plain := parsed.root.stmts[0].derived_stmt.(^ast.Function_Decl)
+	importing := parsed.root.stmts[1].derived_stmt.(^ast.Function_Decl)
+	exporting := parsed.root.stmts[2].derived_stmt.(^ast.Function_Decl)
+	changing := parsed.root.stmts[3].derived_stmt.(^ast.Function_Decl)
+	tables := parsed.root.stmts[4].derived_stmt.(^ast.Function_Decl)
+	exceptions := parsed.root.stmts[5].derived_stmt.(^ast.Function_Decl)
+
+	testing.expect_value(t, plain.name.text, "z_plain")
+	testing.expect_value(t, source[plain.name.range.start:plain.name.range.end], "z_plain")
+	testing.expect_value(t, len(plain.function_parameters), 0)
+
+	testing.expect_value(t, len(importing.function_parameters), 4)
+	testing.expect_value(t, importing.function_parameters[0].section, ast.Function_Parameter_Section.Importing)
+	testing.expect_value(t, importing.function_parameters[0].name.text, "iv_typed")
+	testing.expect_value(t, importing.function_parameters[0].type_clause.form, ast.Data_Type_Form.Type)
+	testing.expect_value(t, importing.function_parameters[1].name.text, "iv_untyped")
+	testing.expect(t, importing.function_parameters[1].type_clause == nil)
+	testing.expect_value(t, importing.function_parameters[2].passing, ast.Parameter_Passing_Kind.Value)
+	testing.expect(t, .Is_Optional in importing.function_parameters[2].flags)
+	testing.expect_value(t, importing.function_parameters[3].name.text, "iv_default")
+	testing.expect(t, .Has_Default_Value in importing.function_parameters[3].flags)
+	testing.expect(t, importing.function_parameters[3].default_expr != nil)
+
+	testing.expect_value(t, len(exporting.function_parameters), 2)
+	testing.expect_value(t, exporting.function_parameters[0].section, ast.Function_Parameter_Section.Exporting)
+	testing.expect_value(t, exporting.function_parameters[0].type_clause.form, ast.Data_Type_Form.Like)
+	export_ref := exporting.function_parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, export_ref.base_name.text, "sy")
+	testing.expect_value(t, export_ref.path[0].name.text, "uname")
+	testing.expect(t, exporting.function_parameters[1].type_clause == nil)
+
+	testing.expect_value(t, len(changing.function_parameters), 2)
+	testing.expect_value(t, changing.function_parameters[0].section, ast.Function_Parameter_Section.Changing)
+	testing.expect_value(t, changing.function_parameters[0].passing, ast.Parameter_Passing_Kind.Reference)
+	testing.expect_value(t, changing.function_parameters[0].type_clause.form, ast.Data_Type_Form.Ref_To)
+	testing.expect(t, changing.function_parameters[1].type_clause == nil)
+
+	testing.expect_value(t, len(tables.function_parameters), 2)
+	testing.expect_value(t, tables.function_parameters[0].section, ast.Function_Parameter_Section.Tables)
+	testing.expect_value(t, tables.function_parameters[0].type_clause.form, ast.Data_Type_Form.Structure)
+	table_ref := tables.function_parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, table_ref.base_name.text, "bapiret2")
+	testing.expect(t, tables.function_parameters[1].type_clause == nil)
+
+	testing.expect_value(t, len(exceptions.exceptions), 2)
+	testing.expect_value(t, exceptions.exceptions[0].name.text, "failed")
+	testing.expect(t, exceptions.exceptions[0].code_expr != nil)
+	testing.expect_value(t, exceptions.exceptions[1].name.text, "not_found")
+	testing.expect(t, exceptions.exceptions[1].code_expr == nil)
+
+	expected := `FUNCTION z_plain.
+ENDFUNCTION.
+FUNCTION z_importing IMPORTING iv_typed TYPE i iv_untyped VALUE(iv_value) TYPE string OPTIONAL iv_default TYPE string DEFAULT 'x'.
+ENDFUNCTION.
+FUNCTION z_exporting EXPORTING ev_text LIKE sy-uname ev_untyped.
+ENDFUNCTION.
+FUNCTION z_changing CHANGING REFERENCE(cv_ref) TYPE REF TO object cv_untyped.
+ENDFUNCTION.
+FUNCTION z_tables TABLES et_return STRUCTURE bapiret2 et_untyped.
+ENDFUNCTION.
+FUNCTION z_exceptions EXCEPTIONS failed = 1 not_found.
+ENDFUNCTION.`
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), expected)
 }
 
 @(test)

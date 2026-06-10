@@ -1455,7 +1455,9 @@ clone_function_parameters :: proc(list: [dynamic]Function_Parameter_Clause, allo
 				section = clause.section,
 				name = clone_token_text(clause.name, allocator),
 				passing = clause.passing,
+				escaped = clause.escaped,
 				type_clause = clone_type_clause(clause.type_clause, allocator),
+				default_expr = clone(clause.default_expr, allocator),
 				flags = clause.flags,
 			},
 		)
@@ -1466,9 +1468,13 @@ clone_function_parameters :: proc(list: [dynamic]Function_Parameter_Clause, allo
 clone_function_exceptions :: proc(list: [dynamic]Function_Exception_Clause, allocator: mem.Allocator) -> [dynamic]Function_Exception_Clause {
 	res := make([dynamic]Function_Exception_Clause, 0, len(list), allocator)
 	for clause in list {
-		next := clause
-		clone_string_fields(&next, &next, allocator)
-		append(&res, next)
+		append(
+			&res,
+			Function_Exception_Clause {
+				name = clone_token_text(clause.name, allocator),
+				code_expr = clone(clause.code_expr, allocator),
+			},
+		)
 	}
 	return res
 }

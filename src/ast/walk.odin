@@ -567,6 +567,10 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Function_Decl:
 		for param in n.function_parameters {
 			walk_data_type_clause(next, param.type_clause)
+			walk(next, param.default_expr)
+		}
+		for exception in n.exceptions {
+			walk(next, exception.code_expr)
 		}
 		walk_stmt_list(next, n.body)
 	case ^Module_Decl:

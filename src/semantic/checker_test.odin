@@ -2087,6 +2087,99 @@ ENDFORM.`
 }
 
 @(test)
+root_semantic_checker_collects_structured_function_header_parameters :: proc(t: ^testing.T) {
+	source := `FUNCTION z_plain.
+ENDFUNCTION.
+FUNCTION z_header
+  IMPORTING iv_typed TYPE i iv_untyped VALUE(iv_value) TYPE string OPTIONAL iv_default TYPE string DEFAULT 'x'
+  EXPORTING ev_text LIKE sy-uname ev_untyped
+  CHANGING REFERENCE(cv_ref) TYPE REF TO object cv_untyped
+  TABLES et_return STRUCTURE bapiret2 et_untyped
+  EXCEPTIONS failed = 1 not_found.
+ENDFUNCTION.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://function_header_parameters.abap")
+
+	plain := checker_test_lookup(t, &project, file.root_scope, .Routine, "z_plain", .Module)
+	header := checker_test_lookup(t, &project, file.root_scope, .Routine, "z_header", .Module)
+	testing.expect(t, plain != nil && header != nil)
+	if plain == nil || header == nil {
+		return
+	}
+
+	plain_payload := plain.payload.(^Entity_Routine_Payload)
+	testing.expect_value(t, len(plain_payload.parameters), 0)
+
+	payload := header.payload.(^Entity_Routine_Payload)
+	iv_typed := checker_test_lookup(t, &project, payload.signature_scope, .Value, "iv_typed", .Parameter)
+	iv_untyped := checker_test_lookup(t, &project, payload.signature_scope, .Value, "iv_untyped", .Parameter)
+	iv_value := checker_test_lookup(t, &project, payload.signature_scope, .Value, "iv_value", .Parameter)
+	iv_default := checker_test_lookup(t, &project, payload.signature_scope, .Value, "iv_default", .Parameter)
+	ev_text := checker_test_lookup(t, &project, payload.signature_scope, .Value, "ev_text", .Parameter)
+	ev_untyped := checker_test_lookup(t, &project, payload.signature_scope, .Value, "ev_untyped", .Parameter)
+	cv_ref := checker_test_lookup(t, &project, payload.signature_scope, .Value, "cv_ref", .Parameter)
+	cv_untyped := checker_test_lookup(t, &project, payload.signature_scope, .Value, "cv_untyped", .Parameter)
+	et_return := checker_test_lookup(t, &project, payload.signature_scope, .Value, "et_return", .Parameter)
+	et_untyped := checker_test_lookup(t, &project, payload.signature_scope, .Value, "et_untyped", .Parameter)
+	failed := checker_test_lookup(t, &project, payload.signature_scope, .Value, "failed", .Exception)
+	not_found := checker_test_lookup(t, &project, payload.signature_scope, .Value, "not_found", .Exception)
+	testing.expect(t, iv_typed != nil && iv_untyped != nil && iv_value != nil && iv_default != nil)
+	testing.expect(t, ev_text != nil && ev_untyped != nil && cv_ref != nil && cv_untyped != nil)
+	testing.expect(t, et_return != nil && et_untyped != nil && failed != nil && not_found != nil)
+
+	if iv_typed != nil {
+		iv_typed_payload := iv_typed.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, iv_typed_payload.section, Entity_Parameter_Section.Function_Importing)
+		testing.expect_value(t, iv_typed_payload.passing, Entity_Parameter_Passing.Direct)
+		testing.expect_value(t, checker_test_type_name(&project, iv_typed.type), "i")
+	}
+	if iv_untyped != nil {
+		testing.expect(t, iv_untyped.decl_info.type_clause == nil)
+	}
+	if iv_value != nil {
+		iv_value_payload := iv_value.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, iv_value_payload.section, Entity_Parameter_Section.Function_Importing)
+		testing.expect_value(t, iv_value_payload.passing, Entity_Parameter_Passing.Value)
+		testing.expect(t, .Optional in iv_value.flags)
+	}
+	if iv_default != nil {
+		iv_default_payload := iv_default.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, iv_default_payload.section, Entity_Parameter_Section.Function_Importing)
+		testing.expect(t, .Has_Default_Value in iv_default.flags)
+		testing.expect(t, iv_default.decl_info.default_expr != nil)
+	}
+	if ev_text != nil {
+		ev_text_payload := ev_text.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, ev_text_payload.section, Entity_Parameter_Section.Function_Exporting)
+		testing.expect_value(t, ev_text.decl_info.type_clause.form, ast.Data_Type_Form.Like)
+	}
+	if ev_untyped != nil {
+		testing.expect(t, ev_untyped.decl_info.type_clause == nil)
+	}
+	if cv_ref != nil {
+		cv_ref_payload := cv_ref.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, cv_ref_payload.section, Entity_Parameter_Section.Function_Changing)
+		testing.expect_value(t, cv_ref_payload.passing, Entity_Parameter_Passing.Reference)
+		testing.expect_value(t, cv_ref.decl_info.type_clause.form, ast.Data_Type_Form.Ref_To)
+	}
+	if cv_untyped != nil {
+		testing.expect(t, cv_untyped.decl_info.type_clause == nil)
+	}
+	if et_return != nil {
+		et_return_payload := et_return.payload.(^Entity_Variable_Payload)
+		testing.expect_value(t, et_return_payload.section, Entity_Parameter_Section.Function_Tables)
+		testing.expect_value(t, et_return.decl_info.type_clause.form, ast.Data_Type_Form.Structure)
+	}
+	if et_untyped != nil {
+		testing.expect(t, et_untyped.decl_info.type_clause == nil)
+	}
+	testing.expect_value(t, len(payload.exceptions), 2)
+}
+
+@(test)
 root_semantic_stmt_checker_accepts_numeric_literals_for_numeric_text_arguments :: proc(t: ^testing.T) {
 	source := `TYPES lvc_outlen TYPE n.
 CLASS lcl_column DEFINITION.

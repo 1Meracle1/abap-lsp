@@ -876,8 +876,8 @@ Ranges_Decl :: struct {
 
 // ABAP syntax: one RANGES entry, for example `r_matnr FOR mara-matnr`.
 Ranges_Clause :: struct {
-	name:       Token_Text,
-	for_expr:   ^Expr,
+	name:     Token_Text,
+	for_expr: ^Expr,
 }
 
 // ABAP syntax: PARAMETERS statement, for example `PARAMETERS p TYPE i.`
@@ -1529,11 +1529,11 @@ Submit_Option_Clause :: struct {
 
 // ABAP syntax: `SUBMIT report ... [AND RETURN].`
 Submit_Stmt :: struct {
-	using node:               Stmt,
-	target:                   ^Expr,
-	target_kind:              Submit_Target_Kind,
-	options:                  [dynamic]Submit_Option_Clause,
-	flags:                    Submit_Flags,
+	using node:  Stmt,
+	target:      ^Expr,
+	target_kind: Submit_Target_Kind,
+	options:     [dynamic]Submit_Option_Clause,
+	flags:       Submit_Flags,
 }
 
 // ABAP syntax: MESSAGE head, for example `e001(id)` or `ID id TYPE type NUMBER number`.
@@ -1989,14 +1989,14 @@ Oop_Signature_Kind :: enum {
 }
 
 Oop_Parameter_Clause :: struct {
-	name:        Token_Text,
-	range:       tokenizer.Range,
-	passing:     Parameter_Passing_Kind,
-	type_clause: ^Data_Type_Clause,
+	name:         Token_Text,
+	range:        tokenizer.Range,
+	passing:      Parameter_Passing_Kind,
+	type_clause:  ^Data_Type_Clause,
 	default_expr: ^Expr,
-	escaped:     bool,
-	optional:    bool,
-	has_default: bool,
+	escaped:      bool,
+	optional:     bool,
+	has_default:  bool,
 }
 
 Oop_Signature_Clause :: struct {
@@ -2054,13 +2054,13 @@ Oop_Load_Kind :: enum {
 
 // ABAP syntax: load directive such as `CLASS cls DEFINITION LOAD.` or `INTERFACE intf LOAD.`.
 Oop_Load_Stmt :: struct {
-	using node:        Stmt,
-	kind:              Oop_Load_Kind,
-	object_keyword:    Token_Text,
-	name:              Token_Text,
+	using node:         Stmt,
+	kind:               Oop_Load_Kind,
+	object_keyword:     Token_Text,
+	name:               Token_Text,
 	definition_keyword: Token_Text,
-	load_keyword:      Token_Text,
-	period_range:      tokenizer.Range,
+	load_keyword:       Token_Text,
+	period_range:       tokenizer.Range,
 }
 
 // ABAP syntax: `ELSEIF condition.` arm inside an IF block.
@@ -2285,21 +2285,21 @@ Method_Amdp_Option :: enum {
 Method_Amdp_Options :: bit_set[Method_Amdp_Option]
 
 Method_Decl :: struct {
-	using node:       Stmt,
-	name:             Token_Text,
-	qualifier:        Token_Text,
-	member_name:      Token_Text,
-	body:             [dynamic]^Stmt,
-	header_range:     tokenizer.Range,
-	is_amdp:          bool,
-	amdp_kind:        Method_Amdp_Kind,
-	amdp_database:    Method_Amdp_Database,
-	amdp_language:    Method_Amdp_Language,
-	amdp_options:     Method_Amdp_Options,
-	amdp_using:       [dynamic]Token_Text,
-	amdp_body:        string,
-	is_kernel:        bool,
-	kernel_modules:   [dynamic]Token_Text,
+	using node:     Stmt,
+	name:           Token_Text,
+	qualifier:      Token_Text,
+	member_name:    Token_Text,
+	body:           [dynamic]^Stmt,
+	header_range:   tokenizer.Range,
+	is_amdp:        bool,
+	amdp_kind:      Method_Amdp_Kind,
+	amdp_database:  Method_Amdp_Database,
+	amdp_language:  Method_Amdp_Language,
+	amdp_options:   Method_Amdp_Options,
+	amdp_using:     [dynamic]Token_Text,
+	amdp_body:      string,
+	is_kernel:      bool,
+	kernel_modules: [dynamic]Token_Text,
 }
 
 Parameter_Passing_Kind :: enum {
@@ -2344,23 +2344,25 @@ Function_Parameter_Flag :: enum {
 Function_Parameter_Flags :: bit_set[Function_Parameter_Flag]
 
 Function_Parameter_Clause :: struct {
-	section:     Function_Parameter_Section,
-	name:        Token_Text,
-	passing:     Parameter_Passing_Kind,
-	type_clause: ^Data_Type_Clause,
-	flags:       Function_Parameter_Flags,
+	section:      Function_Parameter_Section,
+	name:         Token_Text,
+	passing:      Parameter_Passing_Kind,
+	escaped:      bool,
+	type_clause:  ^Data_Type_Clause,
+	default_expr: ^Expr,
+	flags:        Function_Parameter_Flags,
 }
 
 Function_Exception_Clause :: struct {
-	name: Token_Text,
+	name:      Token_Text,
+	code_expr: ^Expr,
 }
 
 Function_Decl :: struct {
 	using node:          Stmt,
-	name:                string,
+	name:                Token_Text,
 	body:                [dynamic]^Stmt,
 	header_range:        tokenizer.Range,
-	header_text:         string,
 	function_parameters: [dynamic]Function_Parameter_Clause,
 	exceptions:          [dynamic]Function_Exception_Clause,
 }

@@ -861,7 +861,7 @@ ENDFUNCTION.`
 	testing.expect_value(t, form_decl.name.text, "sub_form")
 	testing.expect_value(t, form_decl.form_parameters[0].name.text, "iv_form")
 	testing.expect_value(t, form_decl.form_parameters[1].name.text, "cv_form")
-	testing.expect_value(t, function_decl.name, "z_func")
+	testing.expect_value(t, function_decl.name.text, "z_func")
 	testing.expect_value(t, function_decl.function_parameters[0].name.text, "iv_func")
 	testing.expect_value(t, function_decl.exceptions[0].name.text, "failed")
 }

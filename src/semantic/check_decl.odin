@@ -66,7 +66,8 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 	case ^ast.Method_Decl:
 		checker_collect_method_decl(ctx, n)
 	case ^ast.Function_Decl:
-		checker_collect_routine_decl(ctx, n.name, .Module, n.range, n.header_range, n.header_text, &n.node.stmt_base)
+		name_range := n.name.range if n.name.text != "" else n.header_range
+		checker_collect_routine_decl(ctx, n.name.text, .Module, n.range, name_range, "", &n.node.stmt_base)
 	case ^ast.Module_Decl:
 		checker_collect_routine_decl(ctx, n.name, .Module, n.range, n.header_range, n.header_text, &n.node.stmt_base)
 	case ^ast.Event_Block_Stmt:
@@ -1185,6 +1186,7 @@ checker_collect_routine_parameters :: proc(ctx: ^Checker_Context, owner: ^Entity
 				checker_parameter_passing_from_ast(param.passing),
 				optional = .Is_Optional in param.flags,
 				has_default = .Has_Default_Value in param.flags,
+				default_expr = param.default_expr,
 			)
 		}
 		for exception in n.exceptions {

@@ -625,7 +625,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Form_Decl:
 		emit_form_decl(p, n)
 	case ^Function_Decl:
-		emit_named_block(p, "FUNCTION", n.name, n.header_text, n.body, "ENDFUNCTION")
+		emit_function_decl(p, n)
 	case ^Module_Decl:
 		emit_named_block(p, "MODULE", n.name, n.header_text, n.body, "ENDMODULE")
 	case ^Event_Block_Stmt:
@@ -3128,6 +3128,90 @@ form_parameter_section_text :: proc(section: Form_Parameter_Section) -> string {
 		return "USING"
 	case .Changing:
 		return "CHANGING"
+	}
+	return ""
+}
+
+emit_function_decl :: proc(p: ^Printer, stmt: ^Function_Decl) {
+	emit_function_header(p, stmt)
+	emit_block(p, stmt.body, "ENDFUNCTION")
+}
+
+emit_function_header :: proc(p: ^Printer, stmt: ^Function_Decl) {
+	emit(p, "FUNCTION")
+	if stmt.name.text != "" {
+		emit_space(p)
+		emit(p, stmt.name)
+	}
+	have_section := false
+	current_section := Function_Parameter_Section.Importing
+	for param in stmt.function_parameters {
+		if !have_section || param.section != current_section {
+			emit_space(p)
+			emit(p, function_parameter_section_text(param.section))
+			current_section = param.section
+			have_section = true
+		}
+		emit_space(p)
+		emit_function_parameter(p, param)
+	}
+	if len(stmt.exceptions) > 0 {
+		emit_space(p)
+		emit(p, "EXCEPTIONS")
+		for exception in stmt.exceptions {
+			emit_space(p)
+			emit_function_exception(p, exception)
+		}
+	}
+}
+
+emit_function_parameter :: proc(p: ^Printer, param: Function_Parameter_Clause) {
+	if param.escaped {
+		emit(p, "!")
+	}
+	switch param.passing {
+	case .Value:
+		emit(p, "VALUE(")
+		emit(p, param.name)
+		emit(p, ")")
+	case .Reference:
+		emit(p, "REFERENCE(")
+		emit(p, param.name)
+		emit(p, ")")
+	case .Direct:
+		emit(p, param.name)
+	}
+	emit_type_clause(p, param.type_clause)
+	if .Is_Optional in param.flags {
+		emit(p, " OPTIONAL")
+	}
+	if .Has_Default_Value in param.flags {
+		emit(p, " DEFAULT")
+		if param.default_expr != nil {
+			emit_space(p)
+			emit_node(p, param.default_expr)
+		}
+	}
+}
+
+emit_function_exception :: proc(p: ^Printer, exception: Function_Exception_Clause) {
+	emit(p, exception.name)
+	if exception.code_expr != nil {
+		emit(p, " = ")
+		emit_node(p, exception.code_expr)
+	}
+}
+
+function_parameter_section_text :: proc(section: Function_Parameter_Section) -> string {
+	#partial switch section {
+	case .Importing:
+		return "IMPORTING"
+	case .Exporting:
+		return "EXPORTING"
+	case .Changing:
+		return "CHANGING"
+	case .Tables:
+		return "TABLES"
 	}
 	return ""
 }

@@ -1561,7 +1561,7 @@ parse_function_header_parameters :: proc(
 			i += 1
 			continue
 		}
-		name, name_range, passing, _, next, ok := parse_header_param_name(p, i, period_index)
+		name, name_range, passing, escaped, next, ok := parse_header_param_name(p, i, period_index)
 		if !ok {
 			i += 1
 			continue
@@ -1569,16 +1569,16 @@ parse_function_header_parameters :: proc(
 		validate_abap_name_text_length(p, name, name_range)
 		i = next
 		if in_exceptions {
-			append(&exceptions, ast.Function_Exception_Clause{name = parser_ast_token(name, name_range)})
-			if i + 1 < period_index && p.tokens[i].kind == .Eq {
-				i += 2
-			}
+			exception := ast.Function_Exception_Clause{name = parser_ast_token(name, name_range)}
+			exception.code_expr, i = parse_function_exception_code_expr(p, i, period_index)
+			append(&exceptions, exception)
 			continue
 		}
 		param := ast.Function_Parameter_Clause {
 			section = section,
 			name    = parser_ast_token(name, name_range),
 			passing = passing,
+			escaped = escaped,
 		}
 		if header_type_clause_starts(p, i, period_index) {
 			param.type_clause, i = parse_header_type_clause(p, i, period_index, stop_keywords)
@@ -1591,7 +1591,9 @@ parse_function_header_parameters :: proc(
 			}
 			if at_keyword_index(p, i, "DEFAULT") {
 				param.flags += {.Has_Default_Value}
-				i = skip_header_addition_value(p, i + 1, period_index, stop_keywords)
+				default_start := i + 1
+				i = skip_header_addition_value(p, default_start, period_index, stop_keywords)
+				param.default_expr = parse_function_header_expr(p, default_start, i)
 				continue
 			}
 			break
@@ -1599,6 +1601,29 @@ parse_function_header_parameters :: proc(
 		append(&params, param)
 	}
 	return params, exceptions
+}
+
+parse_function_header_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
+	if start >= end {
+		return nil
+	}
+	value := parse_complete_concat_expr(p, start, end)
+	if value == nil {
+		value = cast(^ast.Expr)type_ref_expr_from_tokens(p, start, end, -1, false, false)
+	}
+	return value
+}
+
+parse_function_exception_code_expr :: proc(
+	p: ^Parser,
+	index, period_index: int,
+) -> (^ast.Expr, int) {
+	if index >= period_index || p.tokens[index].kind != .Eq {
+		return nil, index
+	}
+	value_start := index + 1
+	value_end := value_start + 1 if value_start < period_index else value_start
+	return parse_function_header_expr(p, value_start, value_end), value_end
 }
 
 header_body_start :: proc(start_index, period_index: int, keyword: string) -> int {
