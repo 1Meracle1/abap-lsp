@@ -2755,6 +2755,31 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_class_payload_keeps_structured_header_metadata :: proc(t: ^testing.T) {
+	source := `CLASS lcl_meta DEFINITION PUBLIC FINAL CREATE PRIVATE
+  SHARED MEMORY ENABLED
+  FOR TESTING RISK LEVEL DANGEROUS DURATION LONG.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://class_header_metadata.abap")
+	entity := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_meta", .Class)
+	payload, ok := entity.payload.(^Entity_Object_Payload)
+	testing.expect(t, ok)
+	if ok && payload != nil {
+		testing.expect(t, payload.is_public)
+		testing.expect(t, payload.is_final)
+		testing.expect(t, payload.is_shared_memory_enabled)
+		testing.expect(t, payload.is_for_testing)
+		testing.expect_value(t, payload.create_visibility, ast.Oop_Visibility.Private)
+		testing.expect_value(t, payload.test_risk_level, ast.Class_Test_Risk_Level.Dangerous)
+		testing.expect_value(t, payload.test_duration, ast.Class_Test_Duration.Long)
+	}
+}
+
+@(test)
 root_semantic_oop_load_records_type_uses_and_candidates :: proc(t: ^testing.T) {
 	source := `CLASS lcl_target DEFINITION.
 ENDCLASS.

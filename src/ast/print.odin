@@ -617,7 +617,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Try_Stmt:
 		emit_try_stmt(p, n)
 	case ^Class_Decl:
-		emit_named_block(p, "CLASS", n.name.text, n.header_text, n.body, "ENDCLASS")
+		emit_class_decl(p, n)
 	case ^Interface_Decl:
 		emit_named_block(p, "INTERFACE", n.name.text, n.header_text, n.body, "ENDINTERFACE")
 	case ^Method_Decl:
@@ -2714,6 +2714,78 @@ emit_oop_load_stmt :: proc(p: ^Printer, stmt: ^Oop_Load_Stmt) {
 	}
 }
 
+emit_class_decl :: proc(p: ^Printer, stmt: ^Class_Decl) {
+	emit(p, "CLASS")
+	if stmt.name.text != "" {
+		emit_space(p)
+		emit(p, stmt.name)
+	}
+	if .Implementation in stmt.flags {
+		emit_space(p)
+		emit(p, "IMPLEMENTATION")
+		emit_block(p, stmt.body, "ENDCLASS")
+		return
+	}
+
+	emit_space(p)
+	emit(p, "DEFINITION")
+	if .Public in stmt.flags {
+		emit_space(p)
+		emit(p, "PUBLIC")
+	}
+	if .Deferred in stmt.flags {
+		emit_space(p)
+		emit(p, "DEFERRED")
+	}
+	if .Abstract in stmt.flags {
+		emit_space(p)
+		emit(p, "ABSTRACT")
+	}
+	if .Final in stmt.flags {
+		emit_space(p)
+		emit(p, "FINAL")
+	}
+	if stmt.superclass_name.text != "" {
+		emit_space(p)
+		emit(p, "INHERITING FROM")
+		emit_space(p)
+		emit(p, stmt.superclass_name)
+	}
+	if stmt.create_visibility != .Unspecified {
+		emit_space(p)
+		emit(p, "CREATE ")
+		emit(p, oop_visibility_text(stmt.create_visibility))
+	}
+	if .Shared_Memory_Enabled in stmt.flags {
+		emit_space(p)
+		emit(p, "SHARED MEMORY ENABLED")
+	}
+	if .For_Testing in stmt.flags {
+		emit_space(p)
+		emit(p, "FOR TESTING")
+		if stmt.risk_level != .Unspecified {
+			emit(p, " RISK LEVEL ")
+			emit(p, class_test_risk_level_text(stmt.risk_level))
+		}
+		if stmt.duration != .Unspecified {
+			emit(p, " DURATION ")
+			emit(p, class_test_duration_text(stmt.duration))
+		}
+	}
+	if len(stmt.friends) > 0 {
+		emit_space(p)
+		emit(p, "FRIENDS")
+		for friend in stmt.friends {
+			if friend.name.text == "" {
+				continue
+			}
+			emit_space(p)
+			emit(p, friend.name)
+		}
+	}
+	emit_block(p, stmt.body, "ENDCLASS")
+}
+
 emit_keyword_token_or_default :: proc(p: ^Printer, token: Token_Text, fallback: string) {
 	if token.text != "" {
 		emit(p, token)
@@ -3781,6 +3853,26 @@ oop_visibility_text :: proc(visibility: Oop_Visibility) -> string {
 	case .Public: return "PUBLIC"
 	case .Protected: return "PROTECTED"
 	case .Private: return "PRIVATE"
+	case .Unspecified:
+	}
+	return "?"
+}
+
+class_test_risk_level_text :: proc(level: Class_Test_Risk_Level) -> string {
+	switch level {
+	case .Harmless: return "HARMLESS"
+	case .Dangerous: return "DANGEROUS"
+	case .Critical: return "CRITICAL"
+	case .Unspecified:
+	}
+	return "?"
+}
+
+class_test_duration_text :: proc(duration: Class_Test_Duration) -> string {
+	switch duration {
+	case .Short: return "SHORT"
+	case .Medium: return "MEDIUM"
+	case .Long: return "LONG"
 	case .Unspecified:
 	}
 	return "?"

@@ -771,10 +771,17 @@ checker_collect_class_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_Decl)
 	}
 
 	entity.flags -= {.Forward}
+	payload.is_public = .Public in decl.flags
 	if .Abstract in decl.flags {
 		entity.flags += {.Abstract}
 		payload.is_abstract = true
 	}
+	payload.is_final = .Final in decl.flags
+	payload.create_visibility = decl.create_visibility
+	payload.is_shared_memory_enabled = .Shared_Memory_Enabled in decl.flags
+	payload.is_for_testing = .For_Testing in decl.flags
+	payload.test_risk_level = decl.risk_level
+	payload.test_duration = decl.duration
 	if decl.superclass_name.text != "" {
 		payload.superclass_name = checker_intern_name(ctx.project, decl.superclass_name.text)
 		payload.superclass_range = decl.superclass_name.range

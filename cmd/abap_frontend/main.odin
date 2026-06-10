@@ -144,7 +144,7 @@ run_parse :: proc(path: string, dump_tree: bool, allocator: mem.Allocator) {
 	if !ok {
 		os.exit(1)
 	}
-
+	start_time := time.now()
 	{
 		context.temp_allocator = allocator
 		parsed := parser.parse(source, path, allocator)
@@ -155,6 +155,11 @@ run_parse :: proc(path: string, dump_tree: bool, allocator: mem.Allocator) {
 		}
 		if had_errors {
 			os.exit(1)
+		} else {
+			fmt.printf(
+				"run_parse - finished with no errors - elapsed_ms=%.3f\n",
+				time.duration_milliseconds(time.since(start_time)),
+			)
 		}
 	}
 }

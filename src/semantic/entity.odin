@@ -240,7 +240,14 @@ Entity_Object_Payload :: struct {
 	superclass_range:       Range,
 	implemented_interfaces: [dynamic]string_interner.String,
 	friends:                [dynamic]string_interner.String,
-	is_abstract:            bool,
+	create_visibility:        ast.Oop_Visibility,
+	test_risk_level:          ast.Class_Test_Risk_Level,
+	test_duration:            ast.Class_Test_Duration,
+	is_public:                bool,
+	is_abstract:              bool,
+	is_final:                 bool,
+	is_shared_memory_enabled: bool,
+	is_for_testing:           bool,
 }
 
 Entity_Routine_Payload :: struct {

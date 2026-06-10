@@ -1136,15 +1136,23 @@ parse_named_block_stmt :: proc(
 		stmt.name = parser_intern_token_name(p, name) if name.kind != .Eof else ""
 	}
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
-	stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
+	when intrinsics.type_has_field(T, "header_text") {
+		stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
+	}
 	period_index := p.previous_index
 	bodyless := named_block_header_is_bodyless(p, start_keyword, start_index, period_index)
 	when intrinsics.type_has_field(T, "is_bodyless") {
 		stmt.is_bodyless = bodyless
 	}
 	when intrinsics.type_has_field(T, "flags") {
+		if class_header_public(p, start_index, period_index) {
+			stmt.flags += {.Public}
+		}
 		if bodyless {
 			stmt.flags += {.Bodyless}
+		}
+		if named_block_header_has_keyword(p, start_index, period_index, "DEFERRED") {
+			stmt.flags += {.Deferred}
 		}
 		if named_block_header_has_keyword(p, start_index, period_index, "IMPLEMENTATION") {
 			stmt.flags += {.Implementation}
@@ -1152,7 +1160,19 @@ parse_named_block_stmt :: proc(
 		if named_block_header_has_keyword(p, start_index, period_index, "ABSTRACT") {
 			stmt.flags += {.Abstract}
 		}
+		if named_block_header_has_keyword(p, start_index, period_index, "FINAL") {
+			stmt.flags += {.Final}
+		}
+		stmt.create_visibility = class_header_create_visibility(p, start_index, period_index)
 		stmt.superclass_name = named_block_header_superclass(p, start_index, period_index)
+		if class_header_shared_memory_enabled(p, start_index, period_index) {
+			stmt.flags += {.Shared_Memory_Enabled}
+		}
+		if class_header_for_testing(p, start_index, period_index) {
+			stmt.flags += {.For_Testing}
+		}
+		stmt.risk_level = class_header_risk_level(p, start_index, period_index)
+		stmt.duration = class_header_duration(p, start_index, period_index)
 		stmt.friends = named_block_header_friends(p, start_index, period_index)
 	}
 	when intrinsics.type_has_field(T, "form_parameters") {
@@ -1214,6 +1234,45 @@ named_block_header_has_keyword :: proc(
 	return false
 }
 
+class_header_public :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> bool {
+	for i in start_index ..< period_index {
+		if !token_is_keyword(p, p.tokens[i], "PUBLIC") {
+			continue
+		}
+		if i > start_index && token_is_keyword(p, p.tokens[i - 1], "CREATE") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+class_header_create_visibility :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> ast.Oop_Visibility {
+	for i in start_index ..< period_index {
+		if !token_is_keyword(p, p.tokens[i], "CREATE") {
+			continue
+		}
+		if i + 1 >= period_index {
+			return .Unspecified
+		}
+		return class_header_visibility_at(p, i + 1)
+	}
+	return .Unspecified
+}
+
+class_header_visibility_at :: proc(p: ^Parser, index: int) -> ast.Oop_Visibility {
+	if at_keyword_index(p, index, "PUBLIC") {return .Public}
+	if at_keyword_index(p, index, "PROTECTED") {return .Protected}
+	if at_keyword_index(p, index, "PRIVATE") {return .Private}
+	return .Unspecified
+}
+
 named_block_header_superclass :: proc(
 	p: ^Parser,
 	start_index, period_index: int,
@@ -1232,6 +1291,84 @@ named_block_header_superclass :: proc(
 		}
 	}
 	return {}
+}
+
+class_header_shared_memory_enabled :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> bool {
+	for i in start_index ..< period_index {
+		if i + 2 >= period_index {
+			break
+		}
+		if token_is_keyword(p, p.tokens[i], "SHARED") &&
+		   token_is_keyword(p, p.tokens[i + 1], "MEMORY") &&
+		   token_is_keyword(p, p.tokens[i + 2], "ENABLED") {
+			return true
+		}
+	}
+	return false
+}
+
+class_header_for_testing :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> bool {
+	for i in start_index ..< period_index {
+		if i + 1 >= period_index {
+			break
+		}
+		if token_is_keyword(p, p.tokens[i], "FOR") &&
+		   token_is_keyword(p, p.tokens[i + 1], "TESTING") {
+			return true
+		}
+	}
+	return false
+}
+
+class_header_risk_level :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> ast.Class_Test_Risk_Level {
+	for i in start_index ..< period_index {
+		if i + 2 >= period_index {
+			break
+		}
+		if token_is_keyword(p, p.tokens[i], "RISK") &&
+		   token_is_keyword(p, p.tokens[i + 1], "LEVEL") {
+			return class_test_risk_level_at(p, i + 2)
+		}
+	}
+	return .Unspecified
+}
+
+class_test_risk_level_at :: proc(p: ^Parser, index: int) -> ast.Class_Test_Risk_Level {
+	if at_keyword_index(p, index, "HARMLESS") {return .Harmless}
+	if at_keyword_index(p, index, "DANGEROUS") {return .Dangerous}
+	if at_keyword_index(p, index, "CRITICAL") {return .Critical}
+	return .Unspecified
+}
+
+class_header_duration :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> ast.Class_Test_Duration {
+	for i in start_index ..< period_index {
+		if i + 1 >= period_index {
+			break
+		}
+		if token_is_keyword(p, p.tokens[i], "DURATION") {
+			return class_test_duration_at(p, i + 1)
+		}
+	}
+	return .Unspecified
+}
+
+class_test_duration_at :: proc(p: ^Parser, index: int) -> ast.Class_Test_Duration {
+	if at_keyword_index(p, index, "SHORT") {return .Short}
+	if at_keyword_index(p, index, "MEDIUM") {return .Medium}
+	if at_keyword_index(p, index, "LONG") {return .Long}
+	return .Unspecified
 }
 
 named_block_header_friends :: proc(

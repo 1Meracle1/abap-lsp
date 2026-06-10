@@ -333,16 +333,21 @@ CLASS lcl_child DEFINITION INHERITING FROM lcl_super.
 ENDCLASS.
 CLASS lcl_impl IMPLEMENTATION.
 ENDCLASS.
-CLASS lcl_deferred DEFINITION DEFERRED.`
+CLASS lcl_deferred DEFINITION DEFERRED.
+CLASS lcl_test DEFINITION PUBLIC FINAL CREATE PROTECTED
+  SHARED MEMORY ENABLED
+  FOR TESTING RISK LEVEL HARMLESS DURATION SHORT.
+ENDCLASS.`
 	parsed := parse(source, "class_header_facts.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
-	testing.expect_value(t, len(parsed.root.stmts), 4)
+	testing.expect_value(t, len(parsed.root.stmts), 5)
 
 	abs := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl)
 	child := parsed.root.stmts[1].derived_stmt.(^ast.Class_Decl)
 	impl := parsed.root.stmts[2].derived_stmt.(^ast.Class_Decl)
 	deferred := parsed.root.stmts[3].derived_stmt.(^ast.Class_Decl)
+	test_class := parsed.root.stmts[4].derived_stmt.(^ast.Class_Decl)
 
 	testing.expect(t, .Abstract in abs.flags)
 	testing.expect(t, !(.Implementation in abs.flags))
@@ -357,7 +362,15 @@ CLASS lcl_deferred DEFINITION DEFERRED.`
 	testing.expect(t, .Implementation in impl.flags)
 	testing.expect(t, !(.Bodyless in impl.flags))
 	testing.expect(t, .Bodyless in deferred.flags)
+	testing.expect(t, .Deferred in deferred.flags)
 	testing.expect_value(t, len(deferred.body), 0)
+	testing.expect(t, .Public in test_class.flags)
+	testing.expect(t, .Final in test_class.flags)
+	testing.expect(t, .Shared_Memory_Enabled in test_class.flags)
+	testing.expect(t, .For_Testing in test_class.flags)
+	testing.expect_value(t, test_class.create_visibility, ast.Oop_Visibility.Protected)
+	testing.expect_value(t, test_class.risk_level, ast.Class_Test_Risk_Level.Harmless)
+	testing.expect_value(t, test_class.duration, ast.Class_Test_Duration.Short)
 }
 
 @(test)
@@ -411,6 +424,7 @@ ENDCLASS.`
 	testing.expect_value(t, len(parsed.root.stmts), 1)
 
 	class := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl)
+	testing.expect_value(t, class.create_visibility, ast.Oop_Visibility.Private)
 	testing.expect_value(t, len(class.friends), 2)
 	testing.expect_value(t, class.friends[0].name.text, "lcl_friend")
 	testing.expect_value(t, class.friends[1].name.text, "zcl_global")

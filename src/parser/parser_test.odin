@@ -1015,7 +1015,7 @@ DATA lv_date LIKE sy-datum.`
 	testing.expect_value(t, load.definition_keyword.text, "DEFINITION")
 	testing.expect_value(t, load.load_keyword.text, "LOAD")
 	testing.expect_value(t, ast.print_node(load, context.allocator), "CLASS lcl_util DEFINITION LOAD.")
-	testing.expect_value(t, class_def.header_text, "CLASS lcl DEFINITION")
+	testing.expect(t, !(.Implementation in class_def.flags))
 	testing.expect_value(t, ast.print_node(methods, context.allocator), "METHODS run.")
 	testing.expect_value(t, methods.members[0].name.text, "run")
 	testing.expect_value(t, method.header_text, "METHOD run BY DATABASE PROCEDURE FOR HDB LANGUAGE SQLSCRIPT OPTIONS READ-ONLY USING mara")

@@ -2205,7 +2205,12 @@ Try_Stmt :: struct {
 Class_Decl_Flag :: enum {
 	Implementation,
 	Bodyless,
+	Deferred,
+	Public,
 	Abstract,
+	Final,
+	Shared_Memory_Enabled,
+	For_Testing,
 }
 
 Class_Decl_Flags :: bit_set[Class_Decl_Flag]
@@ -2214,15 +2219,31 @@ Class_Friend_Clause :: struct {
 	name: Token_Text,
 }
 
+Class_Test_Risk_Level :: enum {
+	Unspecified,
+	Harmless,
+	Dangerous,
+	Critical,
+}
+
+Class_Test_Duration :: enum {
+	Unspecified,
+	Short,
+	Medium,
+	Long,
+}
+
 Class_Decl :: struct {
-	using node:      Stmt,
-	name:            Token_Text,
-	body:            [dynamic]^Stmt,
-	header_range:    tokenizer.Range,
-	header_text:     string,
-	flags:           Class_Decl_Flags,
-	superclass_name: Token_Text,
-	friends:         [dynamic]Class_Friend_Clause,
+	using node:        Stmt,
+	name:              Token_Text,
+	body:              [dynamic]^Stmt,
+	header_range:      tokenizer.Range,
+	flags:             Class_Decl_Flags,
+	create_visibility: Oop_Visibility,
+	risk_level:        Class_Test_Risk_Level,
+	duration:          Class_Test_Duration,
+	superclass_name:   Token_Text,
+	friends:           [dynamic]Class_Friend_Clause,
 }
 
 Interface_Decl :: struct {
