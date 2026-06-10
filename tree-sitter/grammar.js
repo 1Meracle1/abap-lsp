@@ -1311,7 +1311,8 @@ module.exports = grammar({
         $.punctuation,
       ),
 
-    tail_fragment: (_) => token(prec(-1, /[^ \t\r\n.]+/)),
+    tail_fragment: (_) =>
+      token(prec(-1, /[^ \t\r\n.,:()\[\]{}'"`|=<>+\-*\/&@#?~!]+/)),
 
     operator: (_) =>
       token(choice("->*", "=>*", "->", "=>", "?=", "<=", ">=", "<>", "&&", "=", "+", "-", "*", "/", "<", ">", "~", "@", "#", "&")),

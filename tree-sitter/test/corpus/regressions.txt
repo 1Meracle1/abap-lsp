@@ -93,7 +93,10 @@ ENDCLASS.
     (keyword)
     (keyword)
     (keyword)
-    (tail_fragment))
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (number)))
   (parameters_declaration
     (keyword)
     (qualified_name
@@ -361,7 +364,8 @@ ENDLOOP.
       (identifier))
     (keyword)
     (operator)
-    (tail_fragment)
+    (keyword)
+    (dynamic_name)
     (keyword)
     (qualified_name
       (identifier)))
@@ -371,7 +375,10 @@ ENDLOOP.
     (qualified_name
       (identifier))
     (keyword)
-    (tail_fragment)
+    (keyword)
+    (parenthesized_expression
+      (qualified_name
+        (identifier)))
     (keyword)))
 
 ==================
@@ -483,7 +490,8 @@ ENDFORM.
     (keyword)
     (keyword)
     (operator)
-    (tail_fragment)
+    (keyword)
+    (dynamic_name)
     (keyword)
     (keyword)
     (keyword)
@@ -632,9 +640,13 @@ LEAVE TO SCREEN sy-dynnr.
     (keyword)
     (keyword)
     (operator)
-    (tail_fragment)
     (keyword)
-    (tail_fragment)
+    (dynamic_name)
+    (keyword)
+    (qualified_name
+      (identifier)
+      (component_name
+        (identifier)))
     (keyword)
     (punctuation)
     (string)
@@ -700,7 +712,10 @@ LEAVE TO SCREEN sy-dynnr.
     (qualified_name
       (identifier))
     (keyword)
-    (tail_fragment)
+    (keyword)
+    (parenthesized_expression
+      (qualified_name
+        (identifier)))
     (at_statement
       (keyword)
       (keyword)
@@ -732,7 +747,9 @@ LEAVE TO SCREEN sy-dynnr.
     (keyword))
   (simple_statement
     (keyword)
-    (tail_fragment)
+    (qualified_name
+      (identifier))
+    (operator)
     (keyword)
     (qualified_name
       (field_symbol)))
@@ -823,3 +840,91 @@ me->MESSAGE = MESSAGE .
         (identifier)))
     (qualified_name
       (identifier))))
+
+==================
+String template calls and inline declarations
+==================
+
+DATA gv_text TYPE string.
+gv_text = |Rows: { lines( gt_po ) }; error: { lx_submit->get_text( ) }|.
+SELECT docnum INTO TABLE @DATA(lt_docnum) FROM ztab.
+LOOP AT lt_docnum INTO DATA(ls_docnum).
+ENDLOOP.
+READ TABLE lt_docnum ASSIGNING FIELD-SYMBOL(<ls_docnum>)
+  WITH KEY docnum = ls_docnum-docnum.
+
+---
+
+(source_file
+  (data_declaration
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (assignment_statement
+    (qualified_name
+      (identifier))
+    (string_template
+      (template_start)
+      (template_text)
+      (template_interpolation
+        (template_interpolation_start)
+        (call_expression
+          (keyword)
+          (argument_list
+            (qualified_name
+              (identifier))))
+        (template_interpolation_end))
+      (template_text)
+      (template_interpolation
+        (template_interpolation_start)
+        (call_expression
+          (selector_expression
+            (qualified_name
+              (identifier))
+            (component_name
+              (identifier)))
+          (argument_list))
+        (template_interpolation_end))
+      (template_end)))
+  (select_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (operator)
+    (keyword)
+    (dynamic_name)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (loop_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (parenthesized_expression
+      (qualified_name
+        (identifier)))
+    (keyword))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (parenthesized_expression
+      (qualified_name
+        (field_symbol)))
+    (keyword)
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (field_path))))

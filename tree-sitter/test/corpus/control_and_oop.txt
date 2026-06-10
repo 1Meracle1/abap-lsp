@@ -38,7 +38,11 @@ ENDCLASS.
       (qualified_name
         (identifier))
       (keyword)
-      (tail_fragment)
+      (value_tail
+        (keyword)
+        (parenthesized_expression
+          (qualified_name
+            (identifier))))
       (keyword)
       (qualified_name
         (identifier)))

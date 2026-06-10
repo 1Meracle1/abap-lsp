@@ -43,7 +43,8 @@ START-OF-SELECTION.
         (identifier))
       (keyword)
       (operator)
-      (tail_fragment)
+      (keyword)
+      (dynamic_name)
       (keyword)
       (qualified_name
         (identifier))

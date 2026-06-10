@@ -9,6 +9,7 @@
       "file-types": [
         "abap"
       ],
+      "highlights": "queries/highlights.scm",
       "injection-regex": "^abap$",
       "class-name": "TreeSitterABAP"
     }

@@ -12,7 +12,12 @@
 (template_interpolation_start) @punctuation.bracket
 (template_interpolation_end) @punctuation.bracket
 (field_symbol) @variable.special
+(field_symbol_path) @variable.special
 (cte_identifier) @variable.special
+(field_path) @variable
+(static_type_path) @variable
+(dynamic_name) @variable
+(sql_wildcard_selector) @variable
 (identifier) @variable
 ((_
   (keyword) @_type_keyword
@@ -59,5 +64,40 @@
   (#match? @type.builtin "(?i)^(c|n|d|t|i|int[1248]|f|p|decfloat(16|34)?|string|x|xstring|utclong|data|any|simple|numeric|clike|csequence|xsequence|object|char[0-9]+)$")
   (#set! priority 110))
 (escaped_identifier) @variable
+(wildcard) @operator
 (operator) @operator
 (punctuation) @punctuation.delimiter
+(template_punctuation) @punctuation.delimiter
+
+[
+  "->"
+  "=>"
+  "~"
+  "-"
+  "+"
+  "*"
+  "/"
+  "="
+  "?="
+  "<="
+  ">="
+  "<>"
+  "<"
+  ">"
+  "&&"
+  "@"
+  "#"
+] @operator
+
+[
+  "("
+  ")"
+  "["
+  "]"
+] @punctuation.bracket
+
+[
+  "."
+  ","
+  ":"
+] @punctuation.delimiter
