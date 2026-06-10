@@ -1224,11 +1224,23 @@ parse_named_block_stmt :: proc(
 		stmt.name = parser_intern_token_name(p, name) if name.kind != .Eof else ""
 	}
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
-	when intrinsics.type_has_field(T, "header_text") {
-		stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
-	}
 	period_index := p.previous_index
 	bodyless := named_block_header_is_bodyless(p, start_keyword, start_index, period_index)
+	when intrinsics.type_has_field(T, "spot_name") {
+		when intrinsics.type_field_type(T, "spot_name") == ast.Token_Text {
+			stmt.spot_name = enhancement_section_header_spot_name(p, start_index, period_index)
+		}
+	}
+	when intrinsics.type_has_field(T, "is_static") {
+		when intrinsics.type_field_type(T, "is_static") == bool {
+			stmt.is_static = named_block_header_has_keyword(p, start_index, period_index, "STATIC")
+		}
+	}
+	when intrinsics.type_has_field(T, "include_bound") {
+		when intrinsics.type_field_type(T, "include_bound") == bool {
+			stmt.include_bound = enhancement_section_header_include_bound(p, start_index, period_index)
+		}
+	}
 	when intrinsics.type_has_field(T, "flags") {
 		when intrinsics.type_field_type(T, "flags") == ast.Class_Decl_Flags {
 			if class_header_public(p, start_index, period_index) {
@@ -1355,6 +1367,37 @@ module_header_flow :: proc(
 		i += 1
 	}
 	return .None
+}
+
+enhancement_section_header_spot_name :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> ast.Token_Text {
+	i := header_body_start(start_index, period_index, "ENHANCEMENT-SECTION")
+	for i < period_index {
+		if at_keyword_index(p, i, "SPOTS") && i + 1 < period_index {
+			tok := p.tokens[i + 1]
+			if tok.kind == .Ident || tok.kind == .Number {
+				return parser_ast_raw_name_token(p, tok)
+			}
+		}
+		i += 1
+	}
+	return {}
+}
+
+enhancement_section_header_include_bound :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> bool {
+	i := header_body_start(start_index, period_index, "ENHANCEMENT-SECTION")
+	for i + 1 < period_index {
+		if at_keyword_index(p, i, "INCLUDE") && at_keyword_index(p, i + 1, "BOUND") {
+			return true
+		}
+		i += 1
+	}
+	return false
 }
 
 class_header_public :: proc(

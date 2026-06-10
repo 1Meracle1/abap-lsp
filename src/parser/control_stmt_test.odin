@@ -170,6 +170,86 @@ ENDENHANCEMENT.`
 }
 
 @(test)
+enhancement_section_header_is_structured_ast_fact :: proc(t: ^testing.T) {
+	source := `ENHANCEMENT-SECTION z_sec SPOTS es_demo STATIC INCLUDE BOUND.
+  DATA lv_section TYPE i.
+END-ENHANCEMENT-SECTION.`
+	parsed := parse_then_overwrite_source(source)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 1)
+	section := parsed.root.stmts[0].derived_stmt.(^ast.Enhancement_Section_Stmt)
+	testing.expect_value(t, section.name.text, "z_sec")
+	testing.expect_value(t, source[section.name.range.start:section.name.range.end], "z_sec")
+	testing.expect_value(t, section.spot_name.text, "es_demo")
+	testing.expect_value(t, source[section.spot_name.range.start:section.spot_name.range.end], "es_demo")
+	testing.expect(t, section.is_static)
+	testing.expect(t, section.include_bound)
+	testing.expect_value(
+		t,
+		ast.print_node(parsed.root, context.allocator),
+		"ENHANCEMENT-SECTION z_sec SPOTS es_demo STATIC INCLUDE BOUND.\n    DATA lv_section TYPE i.\nEND-ENHANCEMENT-SECTION.",
+	)
+
+	cloned := clone_parse_after_source_overwrite(t, source)
+	cloned_section := cloned.stmts[0].derived_stmt.(^ast.Enhancement_Section_Stmt)
+	testing.expect_value(t, cloned_section.name.text, "z_sec")
+	testing.expect_value(t, cloned_section.spot_name.text, "es_demo")
+	testing.expect(t, cloned_section.is_static)
+	testing.expect(t, cloned_section.include_bound)
+	testing.expect_value(
+		t,
+		ast.print_node(cloned_section, context.allocator),
+		"ENHANCEMENT-SECTION z_sec SPOTS es_demo STATIC INCLUDE BOUND.\n    DATA lv_section TYPE i.\nEND-ENHANCEMENT-SECTION.",
+	)
+
+	counts := count_nodes(cloned)
+	testing.expect_value(t, counts.enhancement_section, 1)
+	testing.expect_value(t, counts.data_decl, 1)
+}
+
+@(test)
+test_block_headers_are_structured_ast_facts :: proc(t: ^testing.T) {
+	source := `TEST-SEAM seam.
+  DATA lv_seam TYPE i.
+END-TEST-SEAM.
+TEST-INJECTION seam.
+  DATA lv_injection TYPE i.
+END-TEST-INJECTION.`
+	parsed := parse_then_overwrite_source(source)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 2)
+	seam := parsed.root.stmts[0].derived_stmt.(^ast.Test_Seam_Stmt)
+	injection := parsed.root.stmts[1].derived_stmt.(^ast.Test_Injection_Stmt)
+	testing.expect_value(t, seam.name.text, "seam")
+	testing.expect_value(t, source[seam.name.range.start:seam.name.range.end], "seam")
+	testing.expect_value(t, injection.name.text, "seam")
+	testing.expect_value(t, source[injection.name.range.start:injection.name.range.end], "seam")
+	testing.expect_value(
+		t,
+		ast.print_node(parsed.root, context.allocator),
+		"TEST-SEAM seam.\n    DATA lv_seam TYPE i.\nEND-TEST-SEAM.\nTEST-INJECTION seam.\n    DATA lv_injection TYPE i.\nEND-TEST-INJECTION.",
+	)
+
+	cloned := clone_parse_after_source_overwrite(t, source)
+	cloned_seam := cloned.stmts[0].derived_stmt.(^ast.Test_Seam_Stmt)
+	cloned_injection := cloned.stmts[1].derived_stmt.(^ast.Test_Injection_Stmt)
+	testing.expect_value(t, cloned_seam.name.text, "seam")
+	testing.expect_value(t, cloned_injection.name.text, "seam")
+	testing.expect_value(
+		t,
+		ast.print_node(cloned, context.allocator),
+		"TEST-SEAM seam.\n    DATA lv_seam TYPE i.\nEND-TEST-SEAM.\nTEST-INJECTION seam.\n    DATA lv_injection TYPE i.\nEND-TEST-INJECTION.",
+	)
+
+	counts := count_nodes(cloned)
+	testing.expect_value(t, counts.test_seam, 1)
+	testing.expect_value(t, counts.test_injection, 1)
+	testing.expect_value(t, counts.data_decl, 2)
+}
+
+@(test)
 event_block_headers_are_structured_ast_facts :: proc(t: ^testing.T) {
 	source := `START-OF-SELECTION.
 AT SELECTION-SCREEN.

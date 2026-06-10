@@ -2422,27 +2422,27 @@ Enhancement_Stmt :: struct {
 }
 
 Enhancement_Section_Stmt :: struct {
-	using node:   Stmt,
-	name:         string,
-	body:         [dynamic]^Stmt,
-	header_range: tokenizer.Range,
-	header_text:  string,
+	using node:    Stmt,
+	name:          Token_Text,
+	spot_name:     Token_Text,
+	body:          [dynamic]^Stmt,
+	header_range:  tokenizer.Range,
+	is_static:     bool,
+	include_bound: bool,
 }
 
 Test_Seam_Stmt :: struct {
 	using node:   Stmt,
-	name:         string,
+	name:         Token_Text,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
-	header_text:  string,
 }
 
 Test_Injection_Stmt :: struct {
 	using node:   Stmt,
-	name:         string,
+	name:         Token_Text,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
-	header_text:  string,
 }
 
 // ABAP syntax: one SELECT projection, optionally with `AS alias`.

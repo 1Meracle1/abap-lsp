@@ -1689,6 +1689,52 @@ ENDENHANCEMENT.`
 }
 
 @(test)
+root_semantic_collects_declarations_inside_enhancement_sections :: proc(t: ^testing.T) {
+	source := `ENHANCEMENT-SECTION z_sec SPOTS es_demo INCLUDE BOUND.
+  DATA lv_section TYPE i.
+END-ENHANCEMENT-SECTION.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://enhancement_section_decl.abap")
+	entity := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_section", .Variable)
+
+	name_offset := checker_test_find_text(source, "lv_section")
+	testing.expect(t, name_offset >= 0)
+	query := semantic_query(&project, &checker, file)
+	decl := semantic_decl_entity_at_offset(semantic_query_decls(query), name_offset)
+	testing.expect(t, decl == entity)
+}
+
+@(test)
+root_semantic_collects_declarations_inside_test_blocks :: proc(t: ^testing.T) {
+	source := `TEST-SEAM seam.
+  DATA lv_seam TYPE i.
+END-TEST-SEAM.
+TEST-INJECTION seam.
+  DATA lv_injection TYPE i.
+END-TEST-INJECTION.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://test_block_decl.abap")
+	seam_entity := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_seam", .Variable)
+	injection_entity := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_injection", .Variable)
+
+	query := semantic_query(&project, &checker, file)
+	seam_offset := checker_test_find_text(source, "lv_seam")
+	injection_offset := checker_test_find_text(source, "lv_injection")
+	testing.expect(t, seam_offset >= 0)
+	testing.expect(t, injection_offset >= 0)
+	seam_decl := semantic_decl_entity_at_offset(semantic_query_decls(query), seam_offset)
+	injection_decl := semantic_decl_entity_at_offset(semantic_query_decls(query), injection_offset)
+	testing.expect(t, seam_decl == seam_entity)
+	testing.expect(t, injection_decl == injection_entity)
+}
+
+@(test)
 root_semantic_selection_screen_event_variants_are_distinct :: proc(t: ^testing.T) {
 	source := `PARAMETERS p_field TYPE string.
 AT SELECTION-SCREEN OUTPUT.

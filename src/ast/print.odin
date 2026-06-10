@@ -633,11 +633,11 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Enhancement_Stmt:
 		emit_enhancement_stmt(p, n)
 	case ^Enhancement_Section_Stmt:
-		emit_named_block(p, "ENHANCEMENT-SECTION", n.name, n.header_text, n.body, "END-ENHANCEMENT-SECTION")
+		emit_enhancement_section_stmt(p, n)
 	case ^Test_Seam_Stmt:
-		emit_named_block(p, "TEST-SEAM", n.name, n.header_text, n.body, "END-TEST-SEAM")
+		emit_token_named_block(p, "TEST-SEAM", n.name, n.body, "END-TEST-SEAM")
 	case ^Test_Injection_Stmt:
-		emit_named_block(p, "TEST-INJECTION", n.name, n.header_text, n.body, "END-TEST-INJECTION")
+		emit_token_named_block(p, "TEST-INJECTION", n.name, n.body, "END-TEST-INJECTION")
 	case ^Select_Stmt:
 		emit_select_stmt(p, n)
 	case ^Open_Cursor_Stmt:
@@ -3312,32 +3312,38 @@ emit_enhancement_stmt :: proc(p: ^Printer, stmt: ^Enhancement_Stmt) {
 	emit_block(p, stmt.body, "ENDENHANCEMENT")
 }
 
-emit_named_block :: proc(
+emit_enhancement_section_stmt :: proc(p: ^Printer, stmt: ^Enhancement_Section_Stmt) {
+	emit(p, "ENHANCEMENT-SECTION")
+	if stmt.name.text != "" {
+		emit_space(p)
+		emit(p, stmt.name)
+	}
+	if stmt.spot_name.text != "" {
+		emit(p, " SPOTS ")
+		emit(p, stmt.spot_name)
+	}
+	if stmt.is_static {
+		emit(p, " STATIC")
+	}
+	if stmt.include_bound {
+		emit(p, " INCLUDE BOUND")
+	}
+	emit_block(p, stmt.body, "END-ENHANCEMENT-SECTION")
+}
+
+emit_token_named_block :: proc(
 	p: ^Printer,
-	start_keyword, name, header_text: string,
+	start_keyword: string,
+	name: Token_Text,
 	body: [dynamic]^Stmt,
 	end_keyword: string,
 ) {
-	if header_text != "" {
-		emit(p, header_text)
-	} else {
-		emit(p, start_keyword)
-		if name != "" {
-			emit_space(p)
-			emit(p, name)
-		}
+	emit(p, start_keyword)
+	if name.text != "" {
+		emit_space(p)
+		emit(p, name)
 	}
-	if end_keyword == "" {
-		emit(p, ".")
-		p.indent_level += 1
-		if len(body) > 0 {
-			emit_newline(p)
-			emit_stmt_list(p, body)
-		}
-		p.indent_level -= 1
-	} else {
-		emit_block(p, body, end_keyword)
-	}
+	emit_block(p, body, end_keyword)
 }
 
 emit_select_stmt :: proc(p: ^Printer, stmt: ^Select_Stmt) {

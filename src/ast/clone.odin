@@ -1025,11 +1025,6 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 			dst.group_source = clone_token_text(src.group_source, allocator)
 		}
 	}
-	when intrinsics.type_has_field(T, "header_text") {
-		when intrinsics.type_is_string(intrinsics.type_field_type(T, "header_text")) {
-			dst.header_text = strings.clone(src.header_text, allocator)
-		}
-	}
 	when intrinsics.type_has_field(T, "id") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "id")) {
 			dst.id = strings.clone(src.id, allocator)
@@ -1111,6 +1106,11 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "sign") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "sign")) {
 			dst.sign = strings.clone(src.sign, allocator)
+		}
+	}
+	when intrinsics.type_has_field(T, "spot_name") {
+		when intrinsics.type_field_type(T, "spot_name") == Token_Text {
+			dst.spot_name = clone_token_text(src.spot_name, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "superclass_name") {

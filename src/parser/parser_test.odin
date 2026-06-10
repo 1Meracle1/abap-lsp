@@ -106,6 +106,7 @@ Node_Counts :: struct {
 	module_decl:   int,
 	event_block:   int,
 	enhancement:   int,
+	enhancement_section: int,
 	test_seam:     int,
 	test_injection: int,
 	select_stmt:   int,
@@ -439,6 +440,8 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.event_block += 1
 	case ^ast.Enhancement_Stmt:
 		counts.enhancement += 1
+	case ^ast.Enhancement_Section_Stmt:
+		counts.enhancement_section += 1
 	case ^ast.Test_Seam_Stmt:
 		counts.test_seam += 1
 	case ^ast.Test_Injection_Stmt:
