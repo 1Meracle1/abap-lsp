@@ -12,5 +12,5 @@ languages = ["ABAP"]
 
 [grammars.abap]
 repository = "file:///D:/dev/rust/abap-lsp"
-rev = "774e42fdcc02bc68f8e5dd1f4738713b9addf7d7"
+rev = "cb3c450ce67f4bb00cf52faaff0cc759d5052c85"
 path = "tree-sitter"
