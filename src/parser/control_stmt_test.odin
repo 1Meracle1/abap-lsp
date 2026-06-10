@@ -661,6 +661,25 @@ ENDLOOP.`
 }
 
 @(test)
+loop_header_models_casting_and_transporting_fields :: proc(t: ^testing.T) {
+	source := `LOOP AT lt_rows ASSIGNING <row> CASTING TYPE ty_line TRANSPORTING value nested-part.
+ENDLOOP.`
+	parsed := parse(source, "loop_header_structured_additions.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	loop := parsed.root.stmts[0].derived_stmt.(^ast.Loop_Stmt)
+	testing.expect_value(t, loop.target_kind, ast.Loop_Target_Kind.Assigning)
+	testing.expect(t, loop.target_casting)
+	testing.expect(t, loop.target_casting_type_keyword)
+	testing.expect(t, loop.target_casting_type != nil)
+	testing.expect_value(t, len(loop.transporting_fields), 2)
+	testing.expect_value(t, loop.transporting_fields[0].name.text, "value")
+	testing.expect_value(t, loop.transporting_fields[1].name.text, "nested-part")
+	testing.expect_value(t, len(loop.transporting_fields[1].path), 2)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 loop_header_allows_group_by_targets :: proc(t: ^testing.T) {
 	source := `LOOP AT lt_hu_por ASSIGNING FIELD-SYMBOL(<fs_hu_por>)
   GROUP BY ( unique_id = <fs_hu_por>-unique_id ) ASCENDING
@@ -708,7 +727,9 @@ ENDLOOP.`
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	loop := parsed.root.stmts[0].derived_stmt.(^ast.Loop_Stmt)
+	testing.expect_value(t, loop.source_kind, ast.Loop_Source_Kind.Group)
 	testing.expect(t, loop.source != nil)
+	testing.expect_value(t, source[loop.source.range.start:loop.source.range.end], "<fs_group>")
 	testing.expect_value(t, loop.target_kind, ast.Loop_Target_Kind.Assigning)
 }
 

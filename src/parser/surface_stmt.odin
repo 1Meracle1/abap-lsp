@@ -2826,7 +2826,7 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "MODIFY")
 	body_start := p.index
 	stmt := ast.new(ast.Modify_Stmt, start.range, p.allocator)
-	stmt.transporting = make([dynamic]ast.Modify_Transporting_Field_Clause, 0, 2, p.allocator)
+	stmt.transporting = make([dynamic]ast.Transporting_Field_Clause, 0, 2, p.allocator)
 	stmt.table_keyword = allow_keyword(p, "TABLE")
 	stmt.target = data_expr(
 		p,
@@ -2995,7 +2995,7 @@ parse_modify_transporting_fields :: proc(p: ^Parser, body_start: int, stmt: ^ast
 			continue
 		}
 		start := p.index
-		if field, ok := parse_modify_transporting_field(p); ok {
+		if field, ok := parse_transporting_field(p); ok {
 			append(&stmt.transporting, field)
 		} else {
 			error_current(p, "syntax error: expected MODIFY TRANSPORTING component path")
@@ -3005,25 +3005,25 @@ parse_modify_transporting_fields :: proc(p: ^Parser, body_start: int, stmt: ^ast
 	}
 }
 
-parse_modify_transporting_field :: proc(
+parse_transporting_field :: proc(
 	p: ^Parser,
 ) -> (
-	ast.Modify_Transporting_Field_Clause,
+	ast.Transporting_Field_Clause,
 	bool,
 ) {
-	if !modify_transporting_segment_token(current_token(p)) {
+	if !transporting_segment_token(current_token(p)) {
 		return {}, false
 	}
 	start := current_token(p).range.start
-	path := make([dynamic]ast.Modify_Transporting_Field_Segment, 0, 2, p.allocator)
+	path := make([dynamic]ast.Transporting_Field_Segment, 0, 2, p.allocator)
 	for {
 		tok := current_token(p)
-		if !modify_transporting_segment_token(tok) {
+		if !transporting_segment_token(tok) {
 			break
 		}
 		append(
 			&path,
-			ast.Modify_Transporting_Field_Segment {
+			ast.Transporting_Field_Segment {
 				name = parser_ast_raw_name_token(p, tok),
 			},
 		)
@@ -3035,21 +3035,21 @@ parse_modify_transporting_field :: proc(
 		next := p.tokens[p.index + 1]
 		if dash.kind != .Minus ||
 		   !tokens_touch(tok, dash) ||
-		   !modify_transporting_segment_token(next) ||
+		   !transporting_segment_token(next) ||
 		   !tokens_touch(dash, next) {
 			break
 		}
 		bump_token(p)
 	}
 	end := path[len(path) - 1].name.range.end
-	return ast.Modify_Transporting_Field_Clause {
+	return ast.Transporting_Field_Clause {
 			name = parser_ast_token(parser_clone_range_text(p, tokenizer.text_range(start, end)), tokenizer.text_range(start, end)),
 			path = path,
 		},
 		true
 }
 
-modify_transporting_segment_token :: proc(tok: Token) -> bool {
+transporting_segment_token :: proc(tok: Token) -> bool {
 	return tok.kind == .Ident || tok.kind == .Number
 }
 

@@ -490,13 +490,60 @@ checker_check_loop_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Loop_Stmt) {
 	row_type := checker_type_row(ctx, source.type)
 	row_structure := checker_type_structure(row_type)
 	checker_check_table_line_target(ctx, stmt.target, row_type, stmt.target_kind)
+	checker_check_expr(ctx, stmt.target_casting_type)
 	checker_check_expr(ctx, stmt.from)
 	checker_check_expr(ctx, stmt.to)
 	checker_check_table_key_selector(ctx, stmt.using_key)
+	checker_check_loop_transporting_fields(ctx, stmt.transporting_fields[:], row_type, row_structure)
 	checker_check_internal_table_where_expr(ctx, stmt.where_cond, row_type, row_structure)
 	checker_check_expr(ctx, stmt.group_by)
 	checker_check_table_line_target(ctx, stmt.group_target, row_type, stmt.group_target_kind)
 	checker_check_stmt_list(ctx, stmt.body)
+}
+
+checker_check_loop_transporting_fields :: proc(
+	ctx: ^Checker_Context,
+	fields: []ast.Transporting_Field_Clause,
+	row_type: ^Type,
+	row_structure: ^Structure,
+) {
+	for field in fields {
+		checker_check_transporting_field(ctx, field, row_type, row_structure)
+	}
+}
+
+checker_check_transporting_field :: proc(
+	ctx: ^Checker_Context,
+	field: ast.Transporting_Field_Clause,
+	row_type: ^Type,
+	row_structure: ^Structure,
+) {
+	if len(field.path) == 0 {
+		return
+	}
+	current_type := row_type
+	current_structure := row_structure
+	for segment in field.path {
+		if checker_table_component_is_table_line(segment.name.text) {
+			current_structure = checker_type_structure(current_type)
+			continue
+		}
+		if current_structure == nil {
+			return
+		}
+		name := checker_intern_name(ctx.project, segment.name.text)
+		if !string_interner.is_valid(name) {
+			return
+		}
+		entity, ok := checker_lookup_structure_field(current_structure, name)
+		if !ok {
+			checker_add_diagnostic(ctx, .Unknown_Field, segment.name.range, checker_table_component_message(ctx, "unknown internal table field ", name))
+			return
+		}
+		checker_add_entity_use(ctx, nil, entity)
+		current_type = entity.type if entity.type != nil else project_type_unknown(ctx.project)
+		current_structure = checker_type_structure(current_type)
+	}
 }
 
 checker_check_read_table_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Read_Table_Stmt) {

@@ -536,6 +536,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Loop_Stmt:
 		walk(next, n.source)
 		walk(next, n.target)
+		walk(next, n.target_casting_type)
 		walk(next, n.from)
 		walk(next, n.to)
 		walk(next, n.where_cond)

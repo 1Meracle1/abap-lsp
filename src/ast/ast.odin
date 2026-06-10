@@ -2123,6 +2123,11 @@ Loop_Target_Kind :: enum {
 	Reference_Into,
 }
 
+Loop_Source_Kind :: enum {
+	Table,
+	Group,
+}
+
 Loop_Group_Order :: enum {
 	None,
 	Ascending,
@@ -2132,14 +2137,21 @@ Loop_Group_Order :: enum {
 // ABAP syntax: `LOOP AT source [INTO|ASSIGNING|REFERENCE INTO target] ... ENDLOOP.`
 Loop_Stmt :: struct {
 	using node:                  Stmt,
+	source_kind:                 Loop_Source_Kind,
 	source:                      ^Expr,
 	target:                      ^Expr,
 	target_kind:                 Loop_Target_Kind,
+	target_casting:              bool,
+	target_casting_type_keyword: bool,
+	target_casting_type:         ^Expr,
+	target_casting_range:        tokenizer.Range,
 	from:                        ^Expr,
 	to:                          ^Expr,
 	where_cond:                  ^Expr,
 	using_key:                   Table_Key_Selector,
 	transporting_no_fields:      bool,
+	transporting_fields:         [dynamic]Transporting_Field_Clause,
+	transporting_clause:         tokenizer.Range,
 	group_by:                    ^Expr,
 	group_by_clause:             tokenizer.Range,
 	group_order:                 Loop_Group_Order,
@@ -2150,7 +2162,6 @@ Loop_Stmt :: struct {
 	group_target_kind:           Loop_Target_Kind,
 	body:                        [dynamic]^Stmt,
 	header_range:                tokenizer.Range,
-	header_text:                 string,
 }
 
 At_Stmt_Kind :: enum {
@@ -2588,15 +2599,15 @@ Append_Stmt :: struct {
 	sorted:         bool,
 }
 
-// ABAP syntax: one component-name segment after `MODIFY ... TRANSPORTING`.
-Modify_Transporting_Field_Segment :: struct {
+// ABAP syntax: one component-name segment after `TRANSPORTING`.
+Transporting_Field_Segment :: struct {
 	name: Token_Text,
 }
 
-// ABAP syntax: one component path after `MODIFY ... TRANSPORTING`.
-Modify_Transporting_Field_Clause :: struct {
+// ABAP syntax: one component path after `TRANSPORTING`.
+Transporting_Field_Clause :: struct {
 	name: Token_Text,
-	path: [dynamic]Modify_Transporting_Field_Segment,
+	path: [dynamic]Transporting_Field_Segment,
 }
 
 // ABAP syntax: `MODIFY itab FROM wa ...` or database `MODIFY dbtab FROM wa`.
@@ -2607,7 +2618,7 @@ Modify_Stmt :: struct {
 	index:             ^Expr,
 	where_cond:        ^Expr,
 	where_clause:      tokenizer.Range,
-	transporting:      [dynamic]Modify_Transporting_Field_Clause,
+	transporting:      [dynamic]Transporting_Field_Clause,
 	from_table:        bool,
 	table_keyword:     bool,
 	dynamic_source:    bool,

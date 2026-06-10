@@ -404,7 +404,13 @@ collect_flat_stmt :: proc(out: ^Unit_Lints, stmt: ^ast.Stmt, allocator: mem.Allo
 		add_system_field_update(out, n.range, .Loop_At, "tleng")
 		collect_expr_lints(out, n.source, allocator)
 		collect_expr_lints(out, n.target, allocator)
+		collect_expr_lints(out, n.target_casting_type, allocator)
+		collect_expr_lints(out, n.from, allocator)
+		collect_expr_lints(out, n.to, allocator)
+		collect_expr_lints(out, n.using_key.dynamic_name, allocator)
 		collect_expr_lints(out, n.where_cond, allocator)
+		collect_expr_lints(out, n.group_by, allocator)
+		collect_expr_lints(out, n.group_target, allocator)
 		collect_flat_stmt_list(out, n.body[:], allocator)
 	case ^ast.At_Stmt:
 		collect_expr_lints(out, n.expr, allocator)

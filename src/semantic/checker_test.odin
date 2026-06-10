@@ -2419,6 +2419,8 @@ DATA lv_trnid TYPE string.
 SORT mt_event BY trnid evttime DESCENDING evtid docpos nested-part.
 LOOP AT mt_event INTO DATA(ls_event) WHERE trnid = lv_trnid AND item_ref IS INITIAL.
 ENDLOOP.
+LOOP AT mt_event INTO DATA(ls_transport) TRANSPORTING docnum nested-part.
+ENDLOOP.
 DELETE mt_event WHERE s4_status IS INITIAL.
 DELETE ADJACENT DUPLICATES FROM mt_event COMPARING docnum nested-part.`
 
@@ -2496,6 +2498,8 @@ DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
 DATA lv_id TYPE string.
 
 SORT lt_rows BY absent.
+LOOP AT lt_rows INTO DATA(ls_row) TRANSPORTING lost.
+ENDLOOP.
 DELETE lt_rows WHERE missing = lv_id.
 DELETE ADJACENT DUPLICATES FROM lt_rows COMPARING gone.`
 
@@ -2504,8 +2508,8 @@ DELETE ADJACENT DUPLICATES FROM lt_rows COMPARING gone.`
 
 	checker, _ := checker_test_check_source(t, &project, source, "mem://missing_internal_table_components.abap")
 
-	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 3)
-	missing_names := [?]string{"absent", "missing", "gone"}
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 4)
+	missing_names := [?]string{"absent", "lost", "missing", "gone"}
 	for name in missing_names {
 		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
 	}

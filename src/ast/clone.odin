@@ -677,10 +677,12 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.source = clone(n.source, allocator)
 		r.target = clone(n.target, allocator)
+		r.target_casting_type = clone(n.target_casting_type, allocator)
 		r.from = clone(n.from, allocator)
 		r.to = clone(n.to, allocator)
 		r.where_cond = clone(n.where_cond, allocator)
 		r.using_key = clone_table_key_selector(n.using_key, allocator)
+		r.transporting_fields = clone_transporting_fields(n.transporting_fields, allocator)
 		r.group_by = clone(n.group_by, allocator)
 		r.group_target = clone(n.group_target, allocator)
 		r.body = clone_stmt_list(n.body, allocator)
@@ -788,7 +790,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.source = clone(n.source, allocator)
 		r.index = clone(n.index, allocator)
 		r.where_cond = clone(n.where_cond, allocator)
-		r.transporting = clone_modify_transporting_fields(n.transporting, allocator)
+		r.transporting = clone_transporting_fields(n.transporting, allocator)
 		return r
 	case ^Sort_Stmt:
 		r := clone_shallow(n, allocator)
@@ -1375,16 +1377,16 @@ clone_sort_fields :: proc(list: [dynamic]Sort_Field_Clause, allocator: mem.Alloc
 	return res
 }
 
-clone_modify_transporting_fields :: proc(list: [dynamic]Modify_Transporting_Field_Clause, allocator: mem.Allocator) -> [dynamic]Modify_Transporting_Field_Clause {
-	res := make([dynamic]Modify_Transporting_Field_Clause, 0, len(list), allocator)
+clone_transporting_fields :: proc(list: [dynamic]Transporting_Field_Clause, allocator: mem.Allocator) -> [dynamic]Transporting_Field_Clause {
+	res := make([dynamic]Transporting_Field_Clause, 0, len(list), allocator)
 	for clause in list {
-		path := make([dynamic]Modify_Transporting_Field_Segment, 0, len(clause.path), allocator)
+		path := make([dynamic]Transporting_Field_Segment, 0, len(clause.path), allocator)
 		for segment in clause.path {
 			next := segment
 			clone_string_fields(&next, &next, allocator)
 			append(&path, next)
 		}
-		append(&res, Modify_Transporting_Field_Clause{name = clone_token_text(clause.name, allocator), path = path})
+		append(&res, Transporting_Field_Clause{name = clone_token_text(clause.name, allocator), path = path})
 	}
 	return res
 }

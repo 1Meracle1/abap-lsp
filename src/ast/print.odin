@@ -593,70 +593,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		}
 		emit_block(p, n.body, "ENDDO")
 	case ^Loop_Stmt:
-		if n.header_text != "" {
-			emit(p, n.header_text)
-		} else {
-			emit(p, "LOOP AT ")
-			emit_node(p, n.source)
-			switch n.target_kind {
-			case .Into:
-				emit(p, " INTO ")
-				emit_node(p, n.target)
-			case .Assigning:
-				emit(p, " ASSIGNING ")
-				emit_node(p, n.target)
-			case .Reference_Into:
-				emit(p, " REFERENCE INTO ")
-				emit_node(p, n.target)
-			case .None:
-			}
-			if n.from != nil {
-				emit(p, " FROM ")
-				emit_node(p, n.from)
-			}
-			if n.to != nil {
-				emit(p, " TO ")
-				emit_node(p, n.to)
-			}
-			if n.using_key.name.text != "" || n.using_key.dynamic_name != nil {
-				emit(p, " USING KEY ")
-				emit_table_key_selector(p, n.using_key)
-			}
-			if n.transporting_no_fields {
-				emit(p, " TRANSPORTING NO FIELDS")
-			}
-			if n.where_cond != nil {
-				emit(p, " WHERE ")
-				emit_node(p, n.where_cond)
-			}
-			if n.group_by != nil {
-				emit(p, " GROUP BY ")
-				emit_node(p, n.group_by)
-				switch n.group_order {
-				case .Ascending:
-					emit(p, " ASCENDING")
-				case .Descending:
-					emit(p, " DESCENDING")
-				case .None:
-				}
-				if n.group_without_members {
-					emit(p, " WITHOUT MEMBERS")
-				}
-				switch n.group_target_kind {
-				case .Into:
-					emit(p, " INTO ")
-					emit_node(p, n.group_target)
-				case .Assigning:
-					emit(p, " ASSIGNING ")
-					emit_node(p, n.group_target)
-				case .Reference_Into:
-					emit(p, " REFERENCE INTO ")
-					emit_node(p, n.group_target)
-				case .None:
-				}
-			}
-		}
-		emit_block(p, n.body, "ENDLOOP")
+		emit_loop_stmt(p, n)
 	case ^At_Stmt:
 		emit(p, "AT ")
 		switch n.kind {
@@ -818,8 +755,6 @@ trivia_is_in_printed_source_fragment :: proc(node: ^Node, trivia: Ast_Trivia) ->
 	#partial switch n in node.derived {
 	case ^Selection_Screen_Stmt:
 		return n.text != "" && range_contains(n.range, trivia.range)
-	case ^Loop_Stmt:
-		return range_contains(n.header_range, trivia.range)
 	case ^Class_Decl:
 		return range_contains(n.header_range, trivia.range)
 	case ^Interface_Decl:
@@ -864,6 +799,15 @@ emit_expr_list :: proc(p: ^Printer, list: [dynamic]^Expr, separator: string) {
 			emit(p, separator)
 		}
 		emit_node(p, expr)
+	}
+}
+
+emit_transporting_field_list :: proc(p: ^Printer, list: [dynamic]Transporting_Field_Clause) {
+	for field, i in list {
+		if i > 0 {
+			emit_space(p)
+		}
+		emit(p, field.name)
 	}
 }
 
@@ -2794,6 +2738,89 @@ emit_amdp_method :: proc(p: ^Printer, stmt: ^Method_Decl) {
 	emit(p, "ENDMETHOD.")
 }
 
+emit_loop_stmt :: proc(p: ^Printer, stmt: ^Loop_Stmt) {
+	emit(p, "LOOP AT ")
+	if stmt.source_kind == .Group {
+		emit(p, "GROUP ")
+	}
+	emit_node(p, stmt.source)
+	emit_loop_target_clause(p, stmt.target_kind, stmt.target)
+	if stmt.target_casting {
+		emit(p, " CASTING")
+		if stmt.target_casting_type_keyword {
+			emit(p, " TYPE")
+		}
+		if stmt.target_casting_type != nil {
+			emit_space(p)
+			emit_node(p, stmt.target_casting_type)
+		}
+	}
+	if stmt.from != nil {
+		emit(p, " FROM ")
+		emit_node(p, stmt.from)
+	}
+	if stmt.to != nil {
+		emit(p, " TO ")
+		emit_node(p, stmt.to)
+	}
+	if stmt.using_key.name.text != "" || stmt.using_key.dynamic_name != nil {
+		emit(p, " USING KEY ")
+		emit_table_key_selector(p, stmt.using_key)
+	}
+	if stmt.transporting_no_fields {
+		emit(p, " TRANSPORTING NO FIELDS")
+	} else if len(stmt.transporting_fields) > 0 {
+		emit(p, " TRANSPORTING ")
+		emit_transporting_field_list(p, stmt.transporting_fields)
+	}
+	if stmt.where_cond != nil {
+		emit(p, " WHERE ")
+		emit_node(p, stmt.where_cond)
+	}
+	if stmt.group_by != nil {
+		emit(p, " GROUP BY ")
+		emit_node(p, stmt.group_by)
+		switch stmt.group_order {
+		case .Ascending:
+			emit(p, " ASCENDING")
+		case .Descending:
+			emit(p, " DESCENDING")
+		case .None:
+		}
+		if stmt.group_without_members {
+			emit(p, " WITHOUT MEMBERS")
+		}
+		emit_loop_target_clause(p, stmt.group_target_kind, stmt.group_target)
+	}
+	emit_loop_header_trailing_pragmas(p, stmt)
+	emit_block(p, stmt.body, "ENDLOOP")
+}
+
+emit_loop_header_trailing_pragmas :: proc(p: ^Printer, stmt: ^Loop_Stmt) {
+	for trivia in stmt.trailing_trivia {
+		if trivia.kind != .Pragma || !range_contains(stmt.header_range, trivia.range) {
+			continue
+		}
+		emit_space(p)
+		emit(p, trivia.text)
+	}
+}
+
+emit_loop_target_clause :: proc(p: ^Printer, kind: Loop_Target_Kind, target: ^Expr) {
+	switch kind {
+	case .Into:
+		emit(p, " INTO ")
+		emit_node(p, target)
+	case .Assigning:
+		emit(p, " ASSIGNING ")
+		emit_node(p, target)
+	case .Reference_Into:
+		emit(p, " REFERENCE INTO ")
+		emit_node(p, target)
+	case .None:
+	}
+}
+
 emit_if_stmt :: proc(p: ^Printer, stmt: ^If_Stmt) {
 	emit(p, "IF ")
 	emit_node(p, stmt.condition)
@@ -3270,12 +3297,7 @@ emit_modify_stmt :: proc(p: ^Printer, stmt: ^Modify_Stmt) {
 	}
 	if len(stmt.transporting) > 0 {
 		emit(p, " TRANSPORTING ")
-		for field, i in stmt.transporting {
-			if i > 0 {
-				emit(p, " ")
-			}
-			emit(p, field.name)
-		}
+		emit_transporting_field_list(p, stmt.transporting)
 	}
 	if stmt.where_cond != nil {
 		emit(p, " WHERE ")
