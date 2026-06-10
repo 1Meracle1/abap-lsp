@@ -30,6 +30,19 @@ remote_dependency_requests_are_normalized_and_deduped :: proc(t: ^testing.T) {
 }
 
 @(test)
+typepool_macro_expansion_uses_ast_macro_expander :: proc(t: ^testing.T) {
+	source := `TYPE-POOL zfoo.
+DEFINE set_field.
+  &1 = &2.
+END-OF-DEFINITION.
+set_field lv_a 'B'.`
+
+	expanded := expanded_typepool_dependency_source(nil, source, context.allocator)
+
+	testing.expect_value(t, expanded, "lv_a = 'B'.")
+}
+
+@(test)
 remote_dependency_class_interface_prunes_private_and_implementation :: proc(t: ^testing.T) {
 	source := `CLASS zcl_demo DEFINITION.
   PUBLIC SECTION.

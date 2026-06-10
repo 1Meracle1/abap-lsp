@@ -142,11 +142,11 @@ Node_Semantic :: struct {
 }
 
 Node :: struct {
-	range:            tokenizer.Range,
-	derived:          Any_Node,
-	leading_trivia:   [dynamic]Ast_Trivia,
-	trailing_trivia:  [dynamic]Ast_Trivia,
-	sem:              Node_Semantic,
+	range:           tokenizer.Range,
+	derived:         Any_Node,
+	leading_trivia:  [dynamic]Ast_Trivia,
+	trailing_trivia: [dynamic]Ast_Trivia,
+	sem:             Node_Semantic,
 }
 
 Expr :: struct {
@@ -302,6 +302,13 @@ Literal_Expr :: struct {
 	value:      string,
 }
 
+// ABAP syntax: macro parameter reference inside `DEFINE`, for example `&1`.
+Macro_Arg_Ref_Expr :: struct {
+	using node: Expr,
+	name:       Token_Text,
+	slot:       int,
+}
+
 Type_Ref_Key_Kind :: enum {
 	Default,
 	Empty,
@@ -332,8 +339,8 @@ Raw_Operand_Inline_Decl_Kind :: enum {
 }
 
 Raw_Operand_Inline_Decl :: struct {
-	kind:  Raw_Operand_Inline_Decl_Kind,
-	name:  Token_Text,
+	kind: Raw_Operand_Inline_Decl_Kind,
+	name: Token_Text,
 }
 
 Raw_Operand_Path_Segment :: struct {
@@ -874,7 +881,7 @@ Tables_Decl :: struct {
 
 // ABAP syntax: one TABLES work-area entry, for example `mara`.
 Tables_Clause :: struct {
-	name:       Token_Text,
+	name: Token_Text,
 }
 
 // ABAP syntax: RANGES statement, for example `RANGES r FOR mara-matnr.`
@@ -1489,10 +1496,10 @@ Call_Transformation_Arg_Kind :: enum {
 }
 
 Call_Transformation_Arg :: struct {
-	kind:       Call_Transformation_Arg_Kind,
-	name:       Token_Text,
-	has_eq:     bool,
-	value:      ^Expr,
+	kind:   Call_Transformation_Arg_Kind,
+	name:   Token_Text,
+	has_eq: bool,
+	value:  ^Expr,
 }
 
 // ABAP syntax: `CALL METHOD target`, `CALL FUNCTION fm`, and related CALL variants; direct call statements use `call`.
@@ -1575,12 +1582,12 @@ Submit_Stmt :: struct {
 
 // ABAP syntax: MESSAGE head, for example `e001(id)` or `ID id TYPE type NUMBER number`.
 Message_Head_Clause :: struct {
-	code:                ^Expr,
-	id:                  ^Expr,
-	msg_type:            ^Expr,
-	number:              ^Expr,
-	compact_class_name:  Token_Text,
-	has_compact_class:   bool,
+	code:               ^Expr,
+	id:                 ^Expr,
+	msg_type:           ^Expr,
+	number:             ^Expr,
+	compact_class_name: Token_Text,
+	has_compact_class:  bool,
 }
 
 // ABAP syntax: `MESSAGE ... [WITH ...] [INTO target] [DISPLAY LIKE type] [RAISING cx].`
@@ -1706,19 +1713,19 @@ Data_Cluster_Medium_Kind :: enum {
 
 // ABAP syntax: data cluster medium such as `MEMORY ID id` or `DATABASE dbtab(ar) ID id`.
 Data_Cluster_Medium_Clause :: struct {
-	kind:        Data_Cluster_Medium_Kind,
-	object:      ^Expr,
-	dbtab:       Token_Text,
-	area:        Token_Text,
-	work_area:   ^Expr,
-	client:      ^Expr,
-	id:          ^Expr,
+	kind:      Data_Cluster_Medium_Kind,
+	object:    ^Expr,
+	dbtab:     Token_Text,
+	area:      Token_Text,
+	work_area: ^Expr,
+	client:    ^Expr,
+	id:        ^Expr,
 }
 
 // ABAP syntax: one data cluster parameter, for example `name = value`.
 Data_Cluster_Parameter_Clause :: struct {
-	name:       Token_Text,
-	value:      ^Expr,
+	name:  Token_Text,
+	value: ^Expr,
 }
 
 // ABAP syntax consumed here:
@@ -1971,25 +1978,28 @@ Line_Stmt :: struct {
 
 // ABAP syntax: `DEFINE name. ... END-OF-DEFINITION.`
 Macro_Def_Stmt :: struct {
-	using node: Stmt,
-	name:       string,
-	body:       string,
+	using node:   Stmt,
+	name:         Token_Text,
+	header_range: tokenizer.Range,
+	body_range:   tokenizer.Range,
+	body:         [dynamic]^Stmt,
+	end_range:    tokenizer.Range,
 }
 
 // ABAP syntax: macro invocation such as `macro arg1 arg2.`
 Macro_Call_Stmt :: struct {
 	using node: Stmt,
-	name:       string,
+	name:       Token_Text,
 	args:       [dynamic]^Expr,
 }
 
 // ABAP syntax: `SELECTION-SCREEN ...`, including COMMENT-generated text fields.
 Selection_Screen_Stmt :: struct {
-	using node:    Stmt,
-	text:          string,
-	title_name:    Token_Text,
-	comment_name:  Token_Text,
-	field_name:    Token_Text,
+	using node:   Stmt,
+	text:         string,
+	title_name:   Token_Text,
+	comment_name: Token_Text,
+	field_name:   Token_Text,
 }
 
 Oop_Simple_Kind :: enum {
@@ -2049,19 +2059,19 @@ Oop_Member_Flag :: enum {
 Oop_Member_Flags :: bit_set[Oop_Member_Flag]
 
 Oop_Member_Clause :: struct {
-	name:            Token_Text,
-	qualifier:       Token_Text,
-	member_name:     Token_Text,
-	flags:           Oop_Member_Flags,
-	signatures:      [dynamic]Oop_Signature_Clause,
-	event_handler:   Oop_Event_Handler_Clause,
+	name:          Token_Text,
+	qualifier:     Token_Text,
+	member_name:   Token_Text,
+	flags:         Oop_Member_Flags,
+	signatures:    [dynamic]Oop_Signature_Clause,
+	event_handler: Oop_Event_Handler_Clause,
 }
 
 Oop_Alias_Clause :: struct {
-	name:                   Token_Text,
-	target:                 ^Expr,
-	target_interface_name:  Token_Text,
-	target_member_name:     Token_Text,
+	name:                  Token_Text,
+	target:                ^Expr,
+	target_interface_name: Token_Text,
+	target_member_name:    Token_Text,
 }
 
 // ABAP syntax: class/interface member declarations handled as simple OOP statements.
@@ -2186,11 +2196,11 @@ At_Stmt_Kind :: enum {
 
 // ABAP syntax: group-processing block `AT FIRST. ... ENDAT.` or `AT NEW field. ... ENDAT.`
 At_Stmt :: struct {
-	using node:  Stmt,
-	kind:        At_Stmt_Kind,
-	expr:        ^Expr,
-	field_name:  Token_Text,
-	body:        [dynamic]^Stmt,
+	using node: Stmt,
+	kind:       At_Stmt_Kind,
+	expr:       ^Expr,
+	field_name: Token_Text,
+	body:       [dynamic]^Stmt,
 }
 
 // ABAP syntax: `CATCH cx_root [INTO target].` arm inside a TRY block.
@@ -2228,14 +2238,14 @@ Class_Friend_Clause :: struct {
 }
 
 Class_Decl :: struct {
-	using node:       Stmt,
-	name:             Token_Text,
-	body:             [dynamic]^Stmt,
-	header_range:     tokenizer.Range,
-	header_text:      string,
-	flags:            Class_Decl_Flags,
-	superclass_name:  Token_Text,
-	friends:          [dynamic]Class_Friend_Clause,
+	using node:      Stmt,
+	name:            Token_Text,
+	body:            [dynamic]^Stmt,
+	header_range:    tokenizer.Range,
+	header_text:     string,
+	flags:           Class_Decl_Flags,
+	superclass_name: Token_Text,
+	friends:         [dynamic]Class_Friend_Clause,
 }
 
 Interface_Decl :: struct {
@@ -2248,17 +2258,17 @@ Interface_Decl :: struct {
 }
 
 Method_Decl :: struct {
-	using node:      Stmt,
-	name:            Token_Text,
-	qualifier:       Token_Text,
-	member_name:     Token_Text,
-	body:            [dynamic]^Stmt,
-	header_range:    tokenizer.Range,
-	header_text:     string,
-	is_amdp:         bool,
-	amdp_body:       string,
-	is_kernel:       bool,
-	kernel_modules:  [dynamic]string,
+	using node:     Stmt,
+	name:           Token_Text,
+	qualifier:      Token_Text,
+	member_name:    Token_Text,
+	body:           [dynamic]^Stmt,
+	header_range:   tokenizer.Range,
+	header_text:    string,
+	is_amdp:        bool,
+	amdp_body:      string,
+	is_kernel:      bool,
+	kernel_modules: [dynamic]string,
 }
 
 Parameter_Passing_Kind :: enum {
@@ -2569,9 +2579,9 @@ Insert_Form :: enum {
 
 // ABAP syntax: SQL-style `name = value` assignment used by INSERT/UPDATE `SET`.
 Sql_Assignment_Clause :: struct {
-	name:         ^Expr,
-	value:        ^Expr,
-	column_name:  Token_Text,
+	name:        ^Expr,
+	value:       ^Expr,
+	column_name: Token_Text,
 }
 
 // ABAP syntax: `INSERT ...` for internal tables or database tables.
@@ -2620,7 +2630,7 @@ Modify_Transporting_Field_Segment :: struct {
 // ABAP syntax: one component path after `MODIFY ... TRANSPORTING`.
 Modify_Transporting_Field_Clause :: struct {
 	name: Token_Text,
-	path:  [dynamic]Modify_Transporting_Field_Segment,
+	path: [dynamic]Modify_Transporting_Field_Segment,
 }
 
 // ABAP syntax: `MODIFY itab FROM wa ...` or database `MODIFY dbtab FROM wa`.
@@ -2757,14 +2767,14 @@ Report_Kind :: enum {
 
 // ABAP syntax: `REPORT`, `PROGRAM`, `READ REPORT`, `INSERT REPORT`, or `DELETE REPORT`.
 Report_Stmt :: struct {
-	using node:       Stmt,
-	kind:             Report_Kind,
-	name:             ^Expr,
-	source:           ^Expr,
-	line_size:        ^Expr,
-	line_count:       ^Expr,
-	has_message_id:   bool,
-	message_id:       Token_Text,
+	using node:     Stmt,
+	kind:           Report_Kind,
+	name:           ^Expr,
+	source:         ^Expr,
+	line_size:      ^Expr,
+	line_count:     ^Expr,
+	has_message_id: bool,
+	message_id:     Token_Text,
 }
 
 Textpool_Kind :: enum {
@@ -2826,6 +2836,7 @@ Any_Node :: union {
 	^Paren_Expr,
 	^Ident_Expr,
 	^Literal_Expr,
+	^Macro_Arg_Ref_Expr,
 	^Type_Ref_Expr,
 	^Dynamic_Call_Method_Target_Expr,
 	^Ole_Call_Method_Target_Expr,
@@ -2989,6 +3000,7 @@ Any_Expr :: union {
 	^Paren_Expr,
 	^Ident_Expr,
 	^Literal_Expr,
+	^Macro_Arg_Ref_Expr,
 	^Type_Ref_Expr,
 	^Dynamic_Call_Method_Target_Expr,
 	^Ole_Call_Method_Target_Expr,

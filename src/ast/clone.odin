@@ -91,6 +91,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return clone_shallow(n, allocator)
 	case ^Literal_Expr:
 		return clone_shallow(n, allocator)
+	case ^Macro_Arg_Ref_Expr:
+		return clone_shallow(n, allocator)
 	case ^Type_Ref_Expr:
 		r := clone_shallow(n, allocator)
 		r.path = clone_type_ref_path(n.path, allocator)
@@ -638,7 +640,9 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.fields = clone_line_fields(n.fields, allocator)
 		return r
 	case ^Macro_Def_Stmt:
-		return clone_shallow(n, allocator)
+		r := clone_shallow(n, allocator)
+		r.body = clone_stmt_list(n.body, allocator)
+		return r
 	case ^Macro_Call_Stmt:
 		r := clone_shallow(n, allocator)
 		r.args = clone_expr_list(n.args, allocator)

@@ -28,6 +28,9 @@ checker_check_expr :: proc(
 		return checker_check_ident_expr(ctx, node, n.name, namespace, lhs)
 	case ^ast.Literal_Expr:
 		return checker_record_operand(ctx, node, .Constant, checker_type_for_literal(ctx, n.value), lhs = lhs)
+	case ^ast.Macro_Arg_Ref_Expr:
+		mode := ast.Addressing_Mode.Variable if lhs else ast.Addressing_Mode.Value
+		return checker_record_operand(ctx, node, mode, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Char_String_Template_Expr:
 		for part in n.parts {
 			checker_check_expr(ctx, part)

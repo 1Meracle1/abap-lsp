@@ -752,6 +752,8 @@ stmt_header_range :: proc(stmt: ^ast.Stmt) -> (Range, bool) {
 		return n.header_range, n.header_range.end > n.header_range.start
 	case ^ast.Test_Injection_Stmt:
 		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Macro_Def_Stmt:
+		return n.header_range, n.header_range.end > n.header_range.start
 	}
 	return {}, false
 }
@@ -1853,7 +1855,7 @@ keyword_like_assignment_lhs_continues :: proc(p: ^Parser, index: int) -> bool {
 
 expr_lead_token :: proc(tok: Token) -> bool {
 	#partial switch tok.kind {
-	case .Ident, .Number, .String, .StringTemplate, .Hash, .At, .LParen, .Plus, .Minus:
+	case .Ident, .Number, .String, .StringTemplate, .Hash, .At, .Ampersand, .LParen, .Plus, .Minus:
 		return true
 	}
 	return false

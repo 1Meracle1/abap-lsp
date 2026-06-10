@@ -40,6 +40,45 @@ new_clone_walk_and_print_cover_surface_nodes :: proc(t: ^testing.T) {
 }
 
 @(test)
+macro_expansion_emits_ast_body_with_call_arguments :: proc(t: ^testing.T) {
+	r := tokenizer.text_range(0, 1)
+	file := new(File, r, context.allocator)
+	file.stmts = make([dynamic]^Stmt, 0, 2, context.allocator)
+
+	def := new(Macro_Def_Stmt, r, context.allocator)
+	def.name = Token_Text{text = "set_field", range = r}
+	def.body = make([dynamic]^Stmt, 0, 1, context.allocator)
+
+	lhs := new(Macro_Arg_Ref_Expr, r, context.allocator)
+	lhs.name = Token_Text{text = "&1", range = r}
+	lhs.slot = 1
+	rhs := new(Macro_Arg_Ref_Expr, r, context.allocator)
+	rhs.name = Token_Text{text = "&2", range = r}
+	rhs.slot = 2
+	assign := new(Assign_Stmt, r, context.allocator)
+	assign.lhs = lhs
+	assign.rhs = rhs
+	append(&def.body, assign)
+	append(&file.stmts, def)
+
+	call := new(Macro_Call_Stmt, r, context.allocator)
+	call.name = Token_Text{text = "set_field", range = r}
+	call.args = make([dynamic]^Expr, 0, 2, context.allocator)
+	first := new(Ident_Expr, r, context.allocator)
+	first.name = "lv_a"
+	second := new(Literal_Expr, r, context.allocator)
+	second.value = "'B'"
+	append(&call.args, first)
+	append(&call.args, second)
+	append(&file.stmts, call)
+
+	expanded, ok := expand_macros_to_source(file, context.allocator)
+
+	testing.expect(t, ok)
+	testing.expect_value(t, expanded, "lv_a = 'B'.")
+}
+
+@(test)
 semantic_fields_clone_without_affecting_print :: proc(t: ^testing.T) {
 	r := tokenizer.text_range(0, 1)
 	provider := Provider_Handle{kind = .File, id = Provider_Id(1), revision = 2}

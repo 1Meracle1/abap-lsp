@@ -394,6 +394,8 @@ parse_primary_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		expr := ast.new(ast.Literal_Expr, tok.range, p.allocator)
 		expr.value = parser_clone_token_text(p, tok)
 		return expr
+	case .Ampersand:
+		return parse_macro_arg_ref_expr(p)
 	case .StringTemplate:
 		return parse_char_string_template_expr(p)
 	case .Hash:
@@ -415,6 +417,38 @@ parse_primary_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 	error_current(p, "syntax error: expected expression")
 	return nil
+}
+
+parse_macro_arg_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	amp := expect_token(p, .Ampersand)
+	if amp.kind != .Ampersand {
+		return nil
+	}
+	slot_tok := current_token(p)
+	if slot_tok.kind != .Number || !tokens_touch(amp, slot_tok) {
+		error(p, amp.range, "syntax error: expected macro parameter reference")
+		return nil
+	}
+	bump_token(p)
+
+	range := tokenizer.text_range(amp.range.start, slot_tok.range.end)
+	expr := ast.new(ast.Macro_Arg_Ref_Expr, range, p.allocator)
+	expr.name = parser_ast_token(parser_intern_name(p, p.source[range.start:range.end]), range)
+	expr.slot = macro_arg_slot(p, slot_tok)
+	return expr
+}
+
+macro_arg_slot :: proc(p: ^Parser, tok: Token) -> int {
+	text := tokenizer.token_lexeme(tok, p.source)
+	slot := 0
+	for i in 0 ..< len(text) {
+		ch := text[i]
+		if ch < '0' || ch > '9' {
+			break
+		}
+		slot = slot * 10 + int(ch - '0')
+	}
+	return slot
 }
 
 parse_paren_expr :: proc(p: ^Parser) -> ^ast.Expr {

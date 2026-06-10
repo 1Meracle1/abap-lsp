@@ -132,75 +132,11 @@ expanded_typepool_macro_source :: proc(source: string, allocator: mem.Allocator)
 	if parsed.root == nil {
 		return strings.clone(source, allocator)
 	}
-	macros := make(map[string]string, 8, context.temp_allocator)
-	out := strings.builder_make(allocator)
-	last := 0
-	for stmt in parsed.root.stmts {
-		#partial switch n in stmt.derived_stmt {
-		case ^ast.Macro_Def_Stmt:
-			if n.name != "" {
-				macros[strings.to_lower(n.name, context.temp_allocator)] = n.body
-			}
-			strings.write_string(&out, source[last:stmt.range.start])
-			last = stmt.range.end
-		case ^ast.Macro_Call_Stmt:
-			key := strings.to_lower(n.name, context.temp_allocator)
-			body, ok := macros[key]
-			if !ok {
-				continue
-			}
-			strings.write_string(&out, source[last:stmt.range.start])
-			args := typepool_macro_call_args(
-				source[stmt.range.start:stmt.range.end],
-				n.name,
-				context.temp_allocator,
-			)
-			write_expanded_typepool_macro_body(&out, body, args[:])
-			last = stmt.range.end
-		}
+	expanded, ok := ast.expand_macros_to_source(parsed.root, allocator)
+	if ok {
+		return expanded
 	}
-	strings.write_string(&out, source[last:])
-	return strings.to_string(out)
-}
-
-write_expanded_typepool_macro_body :: proc(out: ^strings.Builder, body: string, args: []string) {
-	for i := 0; i < len(body); {
-		if body[i] == '&' && i + 1 < len(body) && body[i + 1] >= '1' && body[i + 1] <= '9' {
-			arg_index := int(body[i + 1] - '1')
-			if arg_index < len(args) {
-				strings.write_string(out, args[arg_index])
-			}
-			i += 2
-			continue
-		}
-		strings.write_byte(out, body[i])
-		i += 1
-	}
-}
-
-typepool_macro_call_args :: proc(
-	call_source, name: string,
-	allocator: mem.Allocator,
-) -> [dynamic]string {
-	text := strings.trim_space(call_source)
-	if strings.has_suffix(text, ".") {
-		text = strings.trim_space(text[:len(text) - 1])
-	}
-	if starts_with_ignore_case(text, name) {
-		text = strings.trim_space(text[len(name):])
-	}
-	args := make([dynamic]string, 0, 4, allocator)
-	for len(text) > 0 {
-		end := 0
-		for end < len(text) && !strings.is_ascii_space(rune(text[end])) {
-			end += 1
-		}
-		if end > 0 {
-			append(&args, text[:end])
-		}
-		text = strings.trim_left_space(text[end:])
-	}
-	return args
+	return strings.clone(source, allocator)
 }
 
 typepool_source_symbols :: proc(source: string, allocator: mem.Allocator) -> [dynamic]string {

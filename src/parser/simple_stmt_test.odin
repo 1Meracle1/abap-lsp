@@ -635,6 +635,45 @@ set_field lv_a lv_b.`
 }
 
 @(test)
+macro_statements_keep_detailed_body_and_call_args :: proc(t: ^testing.T) {
+	source := `DEFINE set_field.
+  &1 = &2.
+  WRITE &1.
+END-OF-DEFINITION.
+set_field lv_a 'B'.`
+	parsed := parse(source, "macro_stmt.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.macro_def, 1)
+	testing.expect_value(t, counts.macro_call, 1)
+	testing.expect_value(t, counts.macro_arg_ref, 3)
+
+	macro := parsed.root.stmts[0].derived_stmt.(^ast.Macro_Def_Stmt)
+	testing.expect_value(t, macro.name.text, "set_field")
+	testing.expect_value(t, source[macro.name.range.start:macro.name.range.end], "set_field")
+	testing.expect_value(t, len(macro.body), 2)
+
+	assign := macro.body[0].derived_stmt.(^ast.Assign_Stmt)
+	lhs := assign.lhs.derived_expr.(^ast.Macro_Arg_Ref_Expr)
+	rhs := assign.rhs.derived_expr.(^ast.Macro_Arg_Ref_Expr)
+	testing.expect_value(t, lhs.name.text, "&1")
+	testing.expect_value(t, lhs.slot, 1)
+	testing.expect_value(t, rhs.name.text, "&2")
+	testing.expect_value(t, rhs.slot, 2)
+
+	write := macro.body[1].derived_stmt.(^ast.Write_Stmt)
+	write_arg := write.operands[0].value.derived_expr.(^ast.Macro_Arg_Ref_Expr)
+	testing.expect_value(t, write_arg.slot, 1)
+
+	call := parsed.root.stmts[1].derived_stmt.(^ast.Macro_Call_Stmt)
+	testing.expect_value(t, call.name.text, "set_field")
+	testing.expect_value(t, len(call.args), 2)
+	testing.expect_value(t, call.args[0].derived_expr.(^ast.Ident_Expr).name, "lv_a")
+	testing.expect_value(t, call.args[1].derived_expr.(^ast.Literal_Expr).value, "'B'")
+}
+
+@(test)
 wait_stmt_keeps_condition_and_duration :: proc(t: ^testing.T) {
 	source := `WAIT UP TO 1 SECONDS.
 WAIT UNTIL mv_free <> lv_free UP TO 120 SECONDS.`

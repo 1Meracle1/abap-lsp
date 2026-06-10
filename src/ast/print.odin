@@ -19,6 +19,7 @@ Printer :: struct {
 	out:          ^strings.Builder,
 	options:      Print_Options,
 	indent_level: int,
+	macro_args:   []^Expr,
 }
 
 print_node :: proc(node: ^Node, allocator: mem.Allocator, options := DEFAULT_PRINT_OPTIONS) -> string {
@@ -106,6 +107,12 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit(p, n.name)
 	case ^Literal_Expr:
 		emit(p, n.value)
+	case ^Macro_Arg_Ref_Expr:
+		if arg := macro_arg_replacement(p, n); arg != nil {
+			emit_macro_arg_replacement(p, arg)
+			break
+		}
+		emit(p, n.name)
 	case ^Type_Ref_Expr:
 		emit_type_ref_expr(p, n)
 	case ^Dynamic_Call_Method_Target_Expr:
@@ -2566,13 +2573,7 @@ emit_raise_stmt :: proc(p: ^Printer, stmt: ^Raise_Stmt) {
 emit_macro_def_stmt :: proc(p: ^Printer, stmt: ^Macro_Def_Stmt) {
 	emit(p, "DEFINE ")
 	emit(p, stmt.name)
-	emit(p, ".")
-	if stmt.body != "" {
-		emit_newline(p)
-		emit(p, stmt.body)
-	}
-	emit_newline(p)
-	emit(p, "END-OF-DEFINITION.")
+	emit_block(p, stmt.body, "END-OF-DEFINITION")
 }
 
 emit_oop_simple_stmt :: proc(p: ^Printer, stmt: ^Oop_Simple_Stmt) {

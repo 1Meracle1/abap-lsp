@@ -34,6 +34,7 @@ Node_Counts :: struct {
 	constructor_mapping_assignment: int,
 	constructor_except: int,
 	host_expr:      int,
+	macro_arg_ref:  int,
 	data_decl:     int,
 	data_inline:   int,
 	types_decl:    int,
@@ -281,6 +282,8 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.constructor_except += 1
 	case ^ast.Host_Expr:
 		counts.host_expr += 1
+	case ^ast.Macro_Arg_Ref_Expr:
+		counts.macro_arg_ref += 1
 	case ^ast.Data_Decl:
 		counts.data_decl += 1
 	case ^ast.Data_Inline_Decl:
@@ -990,8 +993,15 @@ DATA lv_date LIKE sy-datum.`
 	testing.expect_value(t, methods.members[0].name.text, "run")
 	testing.expect_value(t, method.header_text, "METHOD run BY DATABASE PROCEDURE FOR HDB LANGUAGE SQLSCRIPT OPTIONS READ-ONLY USING mara")
 	testing.expect(t, strings.contains(method.amdp_body, "lt_rows = SELECT matnr FROM mara;"))
-	testing.expect_value(t, macro.name, "set_field")
-	testing.expect(t, strings.contains(macro.body, "&1 = &2."))
+	testing.expect_value(t, macro.name.text, "set_field")
+	testing.expect_value(t, len(macro.body), 1)
+	macro_assign := macro.body[0].derived_stmt.(^ast.Assign_Stmt)
+	macro_lhs := macro_assign.lhs.derived_expr.(^ast.Macro_Arg_Ref_Expr)
+	macro_rhs := macro_assign.rhs.derived_expr.(^ast.Macro_Arg_Ref_Expr)
+	testing.expect_value(t, macro_lhs.name.text, "&1")
+	testing.expect_value(t, macro_lhs.slot, 1)
+	testing.expect_value(t, macro_rhs.name.text, "&2")
+	testing.expect_value(t, macro_rhs.slot, 2)
 	testing.expect(t, strings.contains(exec_sql.body, "SELECT * FROM mara"))
 	testing.expect_value(t, select_stmt.query.projection_clauses[0].alias, "mat_alias")
 	testing.expect_value(t, select_stmt.query.source_clause.alias, "a")

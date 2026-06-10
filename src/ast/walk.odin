@@ -50,6 +50,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.expr)
 	case ^Ident_Expr:
 	case ^Literal_Expr:
+	case ^Macro_Arg_Ref_Expr:
 	case ^Type_Ref_Expr:
 	case ^Dynamic_Call_Method_Target_Expr:
 		walk(next, n.base)
@@ -501,6 +502,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk(next, clause.target)
 		}
 	case ^Macro_Def_Stmt:
+		walk_stmt_list(next, n.body)
 	case ^Macro_Call_Stmt:
 		walk_expr_list(next, n.args)
 	case ^Selection_Screen_Stmt:

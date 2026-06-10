@@ -1916,9 +1916,7 @@ parse_macro_def_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return nil
 	}
 	body_start := current_token(p).range.start
-	for !at_eof(p) && !at_keyword_phrase(p, "END-OF-DEFINITION") {
-		bump_token(p)
-	}
+	body := parse_stmt_list_until(p, []string{"END-OF-DEFINITION"})
 	body_end := current_token(p).range.start
 	end := expect_keyword_phrase(p, "END-OF-DEFINITION")
 	if end.kind == .Eof {
@@ -1929,10 +1927,11 @@ parse_macro_def_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return nil
 	}
 	stmt := ast.new(ast.Macro_Def_Stmt, tokenizer.text_range(start.range.start, period.range.end), p.allocator)
-	stmt.name = parser_intern_token_name(p, name) if name.kind != .Eof else ""
-	if body_start < body_end {
-		stmt.body = parser_clone_range_text(p, tokenizer.text_range(body_start, body_end))
-	}
+	stmt.name = parser_ast_raw_name_token(p, name) if name.kind != .Eof else ast.Token_Text{}
+	stmt.header_range = tokenizer.text_range(start.range.start, header_period.range.end)
+	stmt.body_range = tokenizer.text_range(body_start, body_end)
+	stmt.body = body
+	stmt.end_range = tokenizer.text_range(end.range.start, period.range.end)
 	return stmt
 }
 
@@ -1949,10 +1948,33 @@ parse_macro_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := bump_token(p)
 	body_start := p.index
 	stmt := ast.new(ast.Macro_Call_Stmt, start.range, p.allocator)
-	stmt.name = parser_intern_token_name(p, start)
-	stmt.args = parse_generic_simple_operands(p, body_start, []string{})
+	stmt.name = parser_ast_raw_name_token(p, start)
+	stmt.args = parse_macro_call_args(p, body_start)
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
+}
+
+parse_macro_call_args :: proc(p: ^Parser, body_start: int) -> [dynamic]^ast.Expr {
+	args := make([dynamic]^ast.Expr, 0, 4, p.allocator)
+	for !simple_stmt_done(p, body_start) {
+		if allow_token(p, .Comma) || allow_token(p, .Colon) {
+			continue
+		}
+		start := p.index
+		if expr_lead_token(current_token(p)) {
+			arg := parse_expr(p)
+			if arg != nil {
+				append(&args, arg)
+			}
+		} else {
+			bump_token(p)
+			raw := type_ref_expr_from_tokens(p, start, p.index, -1, false, false)
+			populate_raw_operand_facts(p, raw, start, p.index)
+			append(&args, raw)
+		}
+		ensure_forward_progress(p, start)
+	}
+	return args
 }
 
 parse_selection_screen_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
