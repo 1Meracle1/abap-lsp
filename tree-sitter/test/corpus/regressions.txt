@@ -928,3 +928,20 @@ READ TABLE lt_docnum ASSIGNING FIELD-SYMBOL(<ls_docnum>)
       (qualified_name
         (identifier))
       (field_path))))
+
+==================
+Get time stamp field keyword
+==================
+
+GET TIME STAMP FIELD lv_now.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))))

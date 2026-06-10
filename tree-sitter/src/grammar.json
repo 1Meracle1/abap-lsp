@@ -3680,6 +3680,22 @@
                         "value": 2,
                         "content": {
                           "type": "PATTERN",
+                          "value": "[fF][iI][eE][lL][dD]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "keyword"
+                  },
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
                           "value": "[fF][iI][eE][lL][dD]-[sS][yY][mM][bB][oO][lL]"
                         }
                       }
@@ -19901,6 +19917,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[fF][iI][eE][lL][dD]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[fF][iI][eE][lL][dD]-[sS][yY][mM][bB][oO][lL]"
                   }
                 }
@@ -21304,6 +21336,22 @@
                   "content": {
                     "type": "PATTERN",
                     "value": "[eE][nN][tT][rR][iI][eE][sS]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[fF][iI][eE][lL][dD]"
                   }
                 }
               },
@@ -27647,6 +27695,22 @@
                   "content": {
                     "type": "PATTERN",
                     "value": "[eE][nN][tT][rR][iI][eE][sS]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[fF][iI][eE][lL][dD]"
                   }
                 }
               },
