@@ -368,7 +368,7 @@ checker_type_ref_data_from_expr :: proc(
 	case ^ast.Type_Ref_Expr:
 		base := n.base_name
 		if base.text == "" {
-			base = ast.Token_Text{text = n.name, range = n.range}
+			base = n.name
 		}
 		if base.text != "" {
 			data.base_name = checker_intern_name(ctx.project, base.text)

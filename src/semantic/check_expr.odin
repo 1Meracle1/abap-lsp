@@ -60,7 +60,7 @@ checker_check_expr :: proc(
 		}
 		name := n.base_name.text
 		if name == "" {
-			name = n.name
+			name = n.name.text
 		}
 		return checker_check_ident_expr(ctx, node, name, namespace, lhs)
 	case ^ast.Binary_Expr:
@@ -698,7 +698,7 @@ checker_expr_is_inferred_type_ref :: proc(expr: ^ast.Expr) -> bool {
 		return true
 	}
 	if ref, ok := expr.derived_expr.(^ast.Type_Ref_Expr); ok {
-		return ref.name == "#" || ref.base_name.text == "#"
+		return ref.name.text == "#" || ref.base_name.text == "#"
 	}
 	if ident, ok := expr.derived_expr.(^ast.Ident_Expr); ok {
 		return ident.name == "#"

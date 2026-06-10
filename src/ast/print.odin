@@ -916,8 +916,8 @@ emit_template_interpolation :: proc(p: ^Printer, expr: ^Template_Interpolation_E
 }
 
 emit_type_ref_expr :: proc(p: ^Printer, expr: ^Type_Ref_Expr) {
-	if expr.name == "" {
-		emit(p, expr.text)
+	if expr.name.text == "" {
+		emit(p, expr.source)
 		return
 	}
 	emit(p, expr.name)

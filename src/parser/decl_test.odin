@@ -209,7 +209,7 @@ structured_declaration_escaped_keyword_name_is_normal_field :: proc(t: ^testing.
 	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
 	testing.expect_value(t, types.types[1].kind, ast.Decl_Clause_Kind.Normal)
 	testing.expect_value(t, types.types[1].name.text, "include")
-	testing.expect_value(t, types.types[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name, "string")
+	testing.expect_value(t, types.types[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name.text, "string")
 }
 
 @(test)
@@ -234,7 +234,7 @@ TYPES ty_code_ranges TYPE SORTED TABLE OF ty_code_range WITH UNIQUE KEY begin.`
 	testing.expect_value(t, range_decl.types[3].kind, ast.Decl_Clause_Kind.End_Group)
 
 	table_ref := table_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, table_ref.name, "ty_code_range")
+	testing.expect_value(t, table_ref.name.text, "ty_code_range")
 	testing.expect(t, table_ref.key != nil)
 	testing.expect_value(t, table_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
 	testing.expect_value(t, table_ref.key.components[0].text, "begin")
@@ -254,7 +254,7 @@ table_type_key_clause_keeps_precise_identifier_ranges :: proc(t: ^testing.T) {
 	decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
 	ref := decl.types[3].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
-	testing.expect_value(t, ref.name, "ty_order_map")
+	testing.expect_value(t, ref.name.text, "ty_order_map")
 	testing.expect_value(t, source[ref.base_name.range.start:ref.base_name.range.end], "ty_order_map")
 	testing.expect(t, ref.key != nil)
 	if ref.key != nil {
@@ -284,7 +284,7 @@ END OF dd03p.`
 	testing.expect_value(t, len(types.types), 5)
 	testing.expect_value(t, types.types[0].kind, ast.Decl_Clause_Kind.Begin_Group)
 	testing.expect_value(t, types.types[1].depth, 1)
-	testing.expect_value(t, types.types[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name, "decimals")
+	testing.expect_value(t, types.types[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name.text, "decimals")
 	testing.expect_value(t, types.types[3].name.text, "valexi")
 	testing.expect_value(t, types.types[4].kind, ast.Decl_Clause_Kind.End_Group)
 }
@@ -316,7 +316,7 @@ TYPES:
 	testing.expect_value(t, types.types[5].name.text, "ty_bus_msgs")
 	testing.expect_value(t, types.types[5].depth, 0)
 	table_ref := types.types[5].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, table_ref.name, "ty_bus_msg")
+	testing.expect_value(t, table_ref.name.text, "ty_bus_msg")
 }
 
 @(test)
@@ -366,14 +366,14 @@ DATA mv_text TYPE string READ-ONLY.`
 	testing.expect_value(t, range_decl.types[0].type_clause.form, ast.Data_Type_Form.Range_Of)
 	testing.expect_value(t, table_decl.types[0].type_clause.form, ast.Data_Type_Form.Hashed_Table)
 	table_ref := table_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, table_ref.name, "string")
+	testing.expect_value(t, table_ref.name.text, "string")
 	testing.expect(t, table_ref.key != nil)
 	testing.expect_value(t, table_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
 	testing.expect_value(t, table_ref.key.components[0].text, "table_line")
 	testing.expect_value(t, any_type_decl.types[0].type_clause.form, ast.Data_Type_Form.Any_Table)
 	testing.expect(t, any_type_decl.types[0].type_clause.table_has_of)
 	any_type_ref := any_type_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, any_type_ref.name, "string")
+	testing.expect_value(t, any_type_ref.name.text, "string")
 	testing.expect_value(t, field_decl.field_symbols[0].type_clause.form, ast.Data_Type_Form.Like_Sorted_Table)
 	field_ref := field_decl.field_symbols[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, field_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
@@ -436,7 +436,9 @@ FIELD-SYMBOLS <item> LIKE LINE OF mr_source_tree->*.`
 	testing.expect_value(t, field_ref.path[0].selector, ast.Selector_Op.Dash)
 
 	table_ref := table_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, table_ref.name, "REF TO lif_demo=>ty_item")
+	testing.expect_value(t, table_ref.source.text, "REF TO lif_demo=>ty_item WITH KEY table_line")
+	testing.expect_value(t, table_ref.name.text, "REF TO lif_demo=>ty_item")
+	testing.expect_value(t, source[table_ref.name.range.start:table_ref.name.range.end], "REF TO lif_demo=>ty_item")
 	testing.expect(t, table_ref.is_ref)
 	testing.expect_value(t, table_ref.base_name.text, "lif_demo")
 	testing.expect_value(t, table_ref.path[0].name.text, "ty_item")
@@ -473,7 +475,7 @@ PARAMETERS p_count TYPE i DEFAULT 1.`
 	read_only_ref := read_only_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	default_ref := default_decl.parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
-	testing.expect_value(t, occurs_ref.name, "beket")
+	testing.expect_value(t, occurs_ref.name.text, "beket")
 	testing.expect_value(t, occurs_ref.base_name.text, "beket")
 	testing.expect_value(t, source[occurs_ref.range.start:occurs_ref.range.end], "beket")
 	testing.expect(t, occurs_decl.occurs != nil)
@@ -503,7 +505,7 @@ structure_component_like_occurs_keeps_bounded_type_ref :: proc(t: ^testing.T) {
 	ref := field.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
 	testing.expect_value(t, field.name.text, "dyns_fields")
-	testing.expect_value(t, ref.name, "rsdsfields")
+	testing.expect_value(t, ref.name.text, "rsdsfields")
 	testing.expect_value(t, source[ref.range.start:ref.range.end], "rsdsfields")
 	testing.expect(t, field.occurs != nil)
 	if field.occurs != nil {
@@ -534,14 +536,14 @@ DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.`
 	unique_ref := unique_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	header_ref := header_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
-	testing.expect_value(t, default_ref.name, "string")
+	testing.expect_value(t, default_ref.name.text, "string")
 	testing.expect_value(t, source[default_ref.range.start:default_ref.range.end], "string WITH DEFAULT KEY")
 	testing.expect_value(t, default_ref.key.kind, ast.Type_Ref_Key_Kind.Default)
-	testing.expect_value(t, unique_ref.name, "string")
+	testing.expect_value(t, unique_ref.name.text, "string")
 	testing.expect_value(t, source[unique_ref.range.start:unique_ref.range.end], "string WITH UNIQUE KEY table_line")
 	testing.expect_value(t, unique_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
 	testing.expect_value(t, unique_ref.key.components[0].text, "table_line")
-	testing.expect_value(t, header_ref.name, "i")
+	testing.expect_value(t, header_ref.name.text, "i")
 	testing.expect_value(t, source[header_ref.range.start:header_ref.range.end], "i")
 	testing.expect(t, .With_Header_Line in header_decl.flags)
 	testing.expect_value(t, ast.print_node(header_decl, context.allocator), "DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.")
@@ -557,7 +559,7 @@ table_initial_size_stays_outside_type_ref :: proc(t: ^testing.T) {
 	clause := decl.types[0].type_clause
 	ref := clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
-	testing.expect_value(t, ref.name, "prx_r3name")
+	testing.expect_value(t, ref.name.text, "prx_r3name")
 	testing.expect_value(t, source[ref.range.start:ref.range.end], "prx_r3name")
 	testing.expect(t, clause.initial_size != nil)
 	if clause.initial_size != nil {

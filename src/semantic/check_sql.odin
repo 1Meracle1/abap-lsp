@@ -311,7 +311,7 @@ checker_sql_projection_name :: proc(
 	case ^ast.Ident_Expr:
 		return checker_intern_name(ctx.project, n.name), n.range
 	case ^ast.Type_Ref_Expr:
-		return checker_intern_name(ctx.project, n.name), n.range
+		return checker_intern_name(ctx.project, n.name.text), n.name.range
 	}
 	return string_interner.String(0), range
 }
@@ -724,7 +724,7 @@ checker_sql_source_expr_name :: proc(
 	case ^ast.Ident_Expr:
 		return n.name, n.range, n.name != ""
 	case ^ast.Type_Ref_Expr:
-		return n.name, n.range, n.name != ""
+		return n.name.text, n.name.range, n.name.text != ""
 	case ^ast.Sql_Column_Expr:
 		if n.qualifier.text == "" {
 			return n.name.text, n.name.range, n.name.text != ""
@@ -756,7 +756,7 @@ checker_sql_simple_expr_name :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) -> 
 	case ^ast.Ident_Expr:
 		return checker_intern_name(ctx.project, n.name)
 	case ^ast.Type_Ref_Expr:
-		return checker_intern_name(ctx.project, n.name)
+		return checker_intern_name(ctx.project, n.name.text)
 	case ^ast.Sql_Column_Expr:
 		if n.qualifier.text == "" {
 			return checker_intern_name(ctx.project, n.name.text)
@@ -781,7 +781,7 @@ checker_sql_target_name :: proc(expr: ^ast.Expr) -> string {
 	case ^ast.Ident_Expr:
 		return n.name
 	case ^ast.Type_Ref_Expr:
-		return n.name
+		return n.name.text
 	}
 	return ""
 }

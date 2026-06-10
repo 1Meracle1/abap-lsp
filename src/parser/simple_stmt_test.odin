@@ -1283,8 +1283,8 @@ call_function_accepts_parameter_and_exception_tables :: proc(t: ^testing.T) {
 	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
 	param_table := stmt.function_parameter_table.derived_expr.(^ast.Type_Ref_Expr)
 	exception_table := stmt.function_exception_table.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, param_table.text, "lt_params")
-	testing.expect_value(t, exception_table.text, "lt_exceptions")
+	testing.expect_value(t, param_table.source.text, "lt_params")
+	testing.expect_value(t, exception_table.source.text, "lt_exceptions")
 	testing.expect_value(t, len(stmt.arg_sections), 0)
 	testing.expect_value(t, len(stmt.named_args), 0)
 }
@@ -1486,7 +1486,7 @@ call_transformation_id_carries_modeled_args :: proc(t: ^testing.T) {
 	result_value := stmt.transformation_args[2].value.derived_expr.(^ast.Type_Ref_Expr)
 
 	testing.expect_value(t, stmt.kind, ast.Call_Kind.Transformation)
-	testing.expect_value(t, target.name, "id")
+	testing.expect_value(t, target.name.text, "id")
 	testing.expect(t, !target.raw_operand)
 	testing.expect_value(t, len(stmt.transformation_args), 3)
 	testing.expect_value(t, stmt.transformation_args[0].kind, ast.Call_Transformation_Arg_Kind.Options)

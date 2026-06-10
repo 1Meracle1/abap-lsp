@@ -95,6 +95,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return clone_shallow(n, allocator)
 	case ^Type_Ref_Expr:
 		r := clone_shallow(n, allocator)
+		r.source = clone_token_text(n.source, allocator)
+		r.name = clone_token_text(n.name, allocator)
 		r.path = clone_type_ref_path(n.path, allocator)
 		r.key = clone_type_ref_key_clause(n.key, allocator)
 		r.keys = clone_type_ref_key_clauses(n.keys, allocator)

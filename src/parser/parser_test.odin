@@ -623,7 +623,8 @@ TYPES ty_tab TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line.`
 
 	testing.expect_value(t, date_ref.base_name.text, "sy")
 	testing.expect_value(t, date_ref.path[0].name.text, "datum")
-	testing.expect_value(t, table_ref.name, "string")
+	testing.expect_value(t, table_ref.source.text, "string WITH UNIQUE KEY table_line")
+	testing.expect_value(t, table_ref.name.text, "string")
 	testing.expect(t, table_ref.key != nil)
 	testing.expect_value(t, table_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
 	testing.expect_value(t, table_ref.key.components[0].text, "table_line")

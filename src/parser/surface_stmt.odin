@@ -393,8 +393,8 @@ sql_model_select_expr :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
 			return sql_column_expr(p, expr.range, "", tokenizer.Range{}, n.name, n.range)
 		}
 	case ^ast.Type_Ref_Expr:
-		if n.name != "" {
-			return sql_column_expr(p, expr.range, "", tokenizer.Range{}, n.name, n.range)
+		if n.name.text != "" {
+			return sql_column_expr(p, expr.range, "", tokenizer.Range{}, n.name.text, n.name.range)
 		}
 	case ^ast.Literal_Expr:
 		if n.value == "*" {
@@ -548,7 +548,7 @@ sql_expr_simple_name :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range, bool)
 	case ^ast.Ident_Expr:
 		return n.name, n.range, n.name != ""
 	case ^ast.Type_Ref_Expr:
-		return n.name, n.range, n.name != ""
+		return n.name.text, n.name.range, n.name.text != ""
 	}
 	return "", tokenizer.Range{}, false
 }
@@ -2347,7 +2347,7 @@ sql_assignment_column_fact :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range)
 	case ^ast.Ident_Expr:
 		return n.name, n.range
 	case ^ast.Type_Ref_Expr:
-		return n.name, n.range
+		return n.name.text, n.name.range
 	case ^ast.Selector_Expr:
 		return sql_assignment_column_fact(n.field)
 	}

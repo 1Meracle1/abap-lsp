@@ -1748,7 +1748,10 @@ checker_expr_name :: proc(expr: ^ast.Expr) -> (string, Range, bool) {
 	case ^ast.Ident_Expr:
 		return n.name, n.range, n.name != ""
 	case ^ast.Type_Ref_Expr:
-		return n.name, n.range, n.name != ""
+		if n.raw_operand {
+			return "", Range{}, false
+		}
+		return n.name.text, n.name.range, n.name.text != ""
 	case ^ast.Literal_Expr:
 		return n.value, n.range, n.value != ""
 	}

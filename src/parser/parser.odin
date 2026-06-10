@@ -1576,13 +1576,14 @@ type_ref_expr_from_tokens :: proc(
 	last := p.tokens[end - 1]
 	expr := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
 	expr.is_ref = type_ref_starts_with_ref_to(p, start, end)
-	expr.text = parser_clone_range_text(p, expr.range)
+	expr.source = parser_ast_token(parser_clone_range_text(p, expr.range), expr.range)
 	path_end := last.range.end
 	if name_end >= 0 {
 		path_end = name_end
 	}
 	if set_name {
-		expr.name = parser_clone_range_text(p, tokenizer.text_range(first.range.start, path_end))
+		name_range := tokenizer.text_range(first.range.start, path_end)
+		expr.name = parser_ast_token(parser_clone_range_text(p, name_range), name_range)
 	}
 	if fill_parts {
 		type_ref_fill_base_path(p, expr, start, end, path_end)

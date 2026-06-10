@@ -832,8 +832,8 @@ checker_collect_table_component_segments :: proc(
 		base_name := n.base_name.text
 		base_range := n.base_name.range
 		if base_name == "" {
-			base_name = n.name
-			base_range = n.range
+			base_name = n.name.text
+			base_range = n.name.range
 		}
 		if !checker_append_table_component_segment(segments, base_name, base_range, &expr.expr_base) {
 			return false
@@ -878,8 +878,8 @@ checker_append_table_component_leaf_segment :: proc(
 		if n.raw_operand || len(n.path) > 0 {
 			return false
 		}
-		name := n.base_name.text if n.base_name.text != "" else n.name
-		range := n.base_name.range if n.base_name.text != "" else n.range
+		name := n.base_name.text if n.base_name.text != "" else n.name.text
+		range := n.base_name.range if n.base_name.text != "" else n.name.range
 		return checker_append_table_component_segment(segments, name, range, &expr.expr_base)
 	case ^ast.Sql_Column_Expr:
 		if n.qualifier.text != "" {
@@ -1084,7 +1084,7 @@ checker_call_target_name :: proc(ctx: ^Checker_Context, target: ^ast.Expr) -> st
 		return ident.name
 	}
 	if ref, ok := target.derived_expr.(^ast.Type_Ref_Expr); ok {
-		return ref.name
+		return ref.name.text
 	}
 	return ""
 }
@@ -1828,8 +1828,8 @@ checker_dynamic_type_static_name :: proc(
 	}
 	#partial switch n in expr.derived_expr {
 	case ^ast.Type_Ref_Expr:
-		if name, ok := checker_dynamic_token_literal_name(n.text); ok {
-			return name, n.range, true
+		if name, range, ok := checker_dynamic_token_literal_name(n.source); ok {
+			return name, range, true
 		}
 		if len(n.raw_refs) == 1 {
 			if name, ok := checker_dynamic_type_constant_name(ctx, n.raw_refs[0]); ok {
@@ -1873,12 +1873,13 @@ checker_dynamic_type_constant_name :: proc(
 	return value.value, value.value != ""
 }
 
-checker_dynamic_token_literal_name :: proc(text: string) -> (string, bool) {
-	value := strings.trim_space(text)
+checker_dynamic_token_literal_name :: proc(token: ast.Token_Text) -> (string, Range, bool) {
+	value := strings.trim_space(token.text)
 	if len(value) >= 2 && value[0] == '(' && value[len(value) - 1] == ')' {
 		value = strings.trim_space(value[1:len(value) - 1])
 	}
-	return checker_literal_text_value(value)
+	name, ok := checker_literal_text_value(value)
+	return name, token.range, ok
 }
 
 checker_check_line_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Line_Stmt) {
