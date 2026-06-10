@@ -2624,6 +2624,57 @@ lv_copy = lv_value + 1.`
 }
 
 @(test)
+root_semantic_query_finds_named_call_argument_parameter_reference_range :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING iv_value TYPE i.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+lcl_demo=>run( iv_value = 1 ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://query_named_call_argument.abap")
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Named_Parameter), 0)
+
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_demo", .Class)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	method := checker_test_lookup(t, &project, class_payload.definition_scope, .Routine, "run", .Method)
+	if method == nil {
+		return
+	}
+	method_payload := method.payload.(^Entity_Routine_Payload)
+	parameter := checker_test_lookup(t, &project, method_payload.signature_scope, .Value, "iv_value", .Parameter)
+	if parameter == nil {
+		return
+	}
+
+	arg_offset := checker_test_find_text(source, "iv_value =")
+	testing.expect(t, arg_offset >= 0)
+	if arg_offset < 0 {
+		return
+	}
+
+	query := semantic_query(&project, &checker, file)
+	use := semantic_ref_use_at_offset(semantic_query_refs(query), arg_offset)
+	testing.expect(t, use != nil)
+	if use == nil {
+		return
+	}
+	testing.expect(t, use.entity == parameter)
+	range := semantic_entity_use_range(use^)
+	testing.expect_value(t, source[range.start:range.end], "iv_value")
+	testing.expect(t, semantic_ref_use_at_range(semantic_query_refs(query), range) == use)
+}
+
+@(test)
 root_semantic_query_uses_precise_class_header_ranges :: proc(t: ^testing.T) {
 	source := `CLASS lcl_parent DEFINITION.
 ENDCLASS.

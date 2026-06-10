@@ -335,7 +335,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return r
 	case ^Type_Pools_Decl:
 		r := clone_shallow(n, allocator)
-		r.pools = clone_string_list(n.pools, allocator)
+		r.pools = clone_token_text_list(n.pools, allocator)
 		return r
 	case ^Function_Pool_Decl:
 		return clone_shallow(n, allocator)
@@ -901,6 +901,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "alias")) {
 			dst.alias = strings.clone(src.alias, allocator)
 		}
+		when intrinsics.type_field_type(T, "alias") == Token_Text {
+			dst.alias = clone_token_text(src.alias, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "amdp_body") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "amdp_body")) {
@@ -1026,6 +1029,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "key_name")) {
 			dst.key_name = strings.clone(src.key_name, allocator)
 		}
+		when intrinsics.type_field_type(T, "key_name") == Token_Text {
+			dst.key_name = clone_token_text(src.key_name, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "kind") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "kind")) {
@@ -1096,6 +1102,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "target")) {
 			dst.target = strings.clone(src.target, allocator)
 		}
+		when intrinsics.type_field_type(T, "target") == Token_Text {
+			dst.target = clone_token_text(src.target, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "target_interface_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "target_interface_name")) {
@@ -1129,6 +1138,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "using_key") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "using_key")) {
 			dst.using_key = strings.clone(src.using_key, allocator)
+		}
+		when intrinsics.type_field_type(T, "using_key") == Token_Text {
+			dst.using_key = clone_token_text(src.using_key, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "value") {
@@ -1576,7 +1588,7 @@ clone_submit_options :: proc(list: [dynamic]Submit_Option_Clause, allocator: mem
 	for clause in list {
 		append(&res, Submit_Option_Clause {
 			kind       = clause.kind,
-			name = strings.clone(clause.name, allocator),
+			name       = clone_token_text(clause.name, allocator),
 			operator   = clause.operator,
 			value      = clone(clause.value, allocator),
 			high_value = clone(clause.high_value, allocator),
@@ -1621,7 +1633,7 @@ clone_select_query :: proc(clause: Select_Query_Clause, allocator: mem.Allocator
 		having_clause          = clause.having_clause,
 		order_by_clause        = clause.order_by_clause,
 		order_by_primary_key   = clause.order_by_primary_key,
-		order_by_fields        = clone_string_list(clause.order_by_fields, allocator),
+		order_by_fields        = clone_token_text_list(clause.order_by_fields, allocator),
 		for_all_entries_clause = clause.for_all_entries_clause,
 		for_update_clause      = clause.for_update_clause,
 		up_to_clause           = clause.up_to_clause,
@@ -1645,7 +1657,7 @@ clone_select_with :: proc(clause: ^Select_With_Clause, allocator: mem.Allocator)
 clone_select_ctes :: proc(list: [dynamic]Select_Cte_Clause, allocator: mem.Allocator) -> [dynamic]Select_Cte_Clause {
 	res := make([dynamic]Select_Cte_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Select_Cte_Clause{name = strings.clone(clause.name, allocator), query = clone_select_query(clause.query, allocator)})
+		append(&res, Select_Cte_Clause{name = clone_token_text(clause.name, allocator), query = clone_select_query(clause.query, allocator)})
 	}
 	return res
 }
@@ -1653,7 +1665,7 @@ clone_select_ctes :: proc(list: [dynamic]Select_Cte_Clause, allocator: mem.Alloc
 clone_select_projections :: proc(list: [dynamic]Select_Projection_Clause, allocator: mem.Allocator) -> [dynamic]Select_Projection_Clause {
 	res := make([dynamic]Select_Projection_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Select_Projection_Clause{value = clone(clause.value, allocator), alias = strings.clone(clause.alias, allocator), is_dynamic = clause.is_dynamic, range = clause.range})
+		append(&res, Select_Projection_Clause{value = clone(clause.value, allocator), alias = clone_token_text(clause.alias, allocator), is_dynamic = clause.is_dynamic, range = clause.range})
 	}
 	return res
 }
@@ -1665,7 +1677,7 @@ clone_select_source :: proc(clause: ^Select_Source_Clause, allocator: mem.Alloca
 	res, _ := mem.new(Select_Source_Clause, allocator)
 	res.range = clause.range
 	res.source = clone(clause.source, allocator)
-	res.alias = strings.clone(clause.alias, allocator)
+	res.alias = clone_token_text(clause.alias, allocator)
 	res.dynamic_source = clause.dynamic_source
 	res.joins = clone_select_joins(clause.joins, allocator)
 	return res
@@ -1674,7 +1686,7 @@ clone_select_source :: proc(clause: ^Select_Source_Clause, allocator: mem.Alloca
 clone_select_joins :: proc(list: [dynamic]Select_Join_Clause, allocator: mem.Allocator) -> [dynamic]Select_Join_Clause {
 	res := make([dynamic]Select_Join_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Select_Join_Clause{kind = clause.kind, source = clone(clause.source, allocator), alias = strings.clone(clause.alias, allocator), on = clone(clause.on, allocator)})
+		append(&res, Select_Join_Clause{kind = clause.kind, source = clone(clause.source, allocator), alias = clone_token_text(clause.alias, allocator), on = clone(clause.on, allocator)})
 	}
 	return res
 }
@@ -1696,7 +1708,7 @@ clone_read_table_entries :: proc(list: [dynamic]Read_Table_Entry_Clause, allocat
 			assigning              = clone(clause.assigning, allocator),
 			reference_into         = clone(clause.reference_into, allocator),
 			key_kind               = clause.key_kind,
-			key_name = strings.clone(clause.key_name, allocator),
+			key_name               = clone_token_text(clause.key_name, allocator),
 			key_values             = clone_read_table_key_values(clause.key_values, allocator),
 			index                  = clone(clause.index, allocator),
 			using_key              = clone_table_key_selector(clause.using_key, allocator),

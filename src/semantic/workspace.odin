@@ -602,7 +602,7 @@ workspace_collect_type_pool_candidates :: proc(
 ) {
 	if pools, pools_ok := stmt.derived_stmt.(^ast.Type_Pools_Decl); pools_ok {
 		for pool in pools.pools {
-			name := checker_intern_name(ctx.project, pool)
+			name := checker_intern_name(ctx.project, pool.text)
 			if !string_interner.is_valid(name) {
 				continue
 			}

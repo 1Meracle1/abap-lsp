@@ -601,12 +601,13 @@ rv_value = lo_obj->method( EXPORTING iv_value = DATA(lv_inline) CHANGING cv_any 
 
 	testing.expect_value(t, selector_base.name, "ls_row")
 	testing.expect_value(t, selector_field.value, "1")
-	testing.expect_value(t, exporting.name, "EXPORTING")
-	testing.expect_value(t, data_arg.name, "iv_value")
+	testing.expect_value(t, exporting.name.text, "EXPORTING")
+	testing.expect_value(t, data_arg.name.text, "iv_value")
 	testing.expect_value(t, data_inline.name.text, "lv_inline")
-	testing.expect_value(t, changing.name, "CHANGING")
-	testing.expect_value(t, field_arg.name, "cv_any")
+	testing.expect_value(t, changing.name.text, "CHANGING")
+	testing.expect_value(t, field_arg.name.text, "cv_any")
 	testing.expect_value(t, field_inline.name.text, "<fs_any>")
+	testing.expect_value(t, source[data_arg.name.range.start:data_arg.name.range.end], "iv_value")
 }
 
 @(test)
@@ -688,12 +689,12 @@ DATA(ls_dst) = CORRESPONDING #( ls_src MAPPING dst_field = src_field EXCEPT skip
 	except_name := except.names[0].derived_expr.(^ast.Ident_Expr)
 
 	testing.expect_value(t, let_binding.name.text, "lv_item")
-	testing.expect_value(t, let_assignment.name, "comp")
+	testing.expect_value(t, let_assignment.name.text, "comp")
 	testing.expect_value(t, for_clause.variable.text, "ls_row")
 	testing.expect_value(t, for_clause.group_source.text, "lg_source")
-	testing.expect_value(t, group_assignment.name, "item-field")
-	testing.expect_value(t, lines_clause.using_key, "sec_key")
-	testing.expect_value(t, mapping_assignment.target, "dst_field")
+	testing.expect_value(t, group_assignment.name.text, "item-field")
+	testing.expect_value(t, lines_clause.using_key.text, "sec_key")
+	testing.expect_value(t, mapping_assignment.target.text, "dst_field")
 	testing.expect_value(t, except_name.name, "skip")
 }
 
@@ -710,7 +711,7 @@ READ TABLE rt_item INTO lr_item WITH KEY item-obj_type = lv_type.`
 	component_key_read := parsed.root.stmts[2].derived_stmt.(^ast.Read_Table_Stmt)
 
 	testing.expect_value(t, static_read.entries[0].using_key.name.text, "array_index")
-	testing.expect_value(t, table_key_read.entries[0].key_name, "iso2")
+	testing.expect_value(t, table_key_read.entries[0].key_name.text, "iso2")
 	testing.expect_value(t, table_key_read.entries[0].key_values[0].name.text, "langshort")
 	testing.expect_value(t, table_key_read.entries[0].key_values[0].path[0].name.text, "langshort")
 	testing.expect_value(t, component_key_read.entries[0].key_values[0].name.text, "item-obj_type")
@@ -784,9 +785,9 @@ INCLUDE zinc IF FOUND.`
 	testing.expect_value(t, select_options_decl.options[0].help_request.target, "LOW")
 	testing.expect_value(t, select_options_decl.options[0].value_request.target, "HIGH")
 	testing.expect_value(t, controls_decl.controls[0].name.text, "tc_one")
-	testing.expect_value(t, type_pools_decl.pools[0], "abap")
+	testing.expect_value(t, type_pools_decl.pools[0].text, "abap")
 	testing.expect_value(t, function_pool_decl.name.text, "zfg")
-	testing.expect_value(t, function_pool_decl.message_id, "zmsg")
+	testing.expect_value(t, function_pool_decl.message_id.text, "zmsg")
 	testing.expect_value(t, include_stmt.names[0].name.text, "zinc")
 }
 
@@ -889,7 +890,7 @@ MESSAGE e001(zmsg) WITH lv_msg.`
 	testing.expect_value(t, call_method.named_args[1].name.text, "iv_named")
 	testing.expect_value(t, call_transformation.transformation_args[0].name.text, "XML")
 	testing.expect_value(t, call_transformation.transformation_args[1].name.text, "rv_result")
-	testing.expect_value(t, submit.options[0].name, "p_matnr")
+	testing.expect_value(t, submit.options[0].name.text, "p_matnr")
 	testing.expect_value(t, message.head.compact_class_name.text, "zmsg")
 }
 
@@ -917,12 +918,12 @@ REPORT zrep MESSAGE-ID zmsg.`
 
 	testing.expect_value(t, first_column.qualifier.text, "a")
 	testing.expect_value(t, first_column.name.text, "matnr")
-	testing.expect_value(t, select_stmt.query.projection_clauses[0].alias, "mat_alias")
+	testing.expect_value(t, select_stmt.query.projection_clauses[0].alias.text, "mat_alias")
 	testing.expect_value(t, sql_call.name.text, "count")
-	testing.expect_value(t, select_stmt.query.projection_clauses[1].alias, "cnt_alias")
-	testing.expect_value(t, select_stmt.query.source_clause.alias, "a")
-	testing.expect_value(t, select_stmt.query.source_clause.joins[0].alias, "b")
-	testing.expect_value(t, select_stmt.query.order_by_fields[0], "matnr")
+	testing.expect_value(t, select_stmt.query.projection_clauses[1].alias.text, "cnt_alias")
+	testing.expect_value(t, select_stmt.query.source_clause.alias.text, "a")
+	testing.expect_value(t, select_stmt.query.source_clause.joins[0].alias.text, "b")
+	testing.expect_value(t, select_stmt.query.order_by_fields[0].text, "matnr")
 	testing.expect_value(t, modify_stmt.transporting[0].name.text, "comp")
 	testing.expect_value(t, modify_stmt.transporting[0].path[0].name.text, "comp")
 	testing.expect_value(t, modify_stmt.transporting[1].name.text, "sub-comp")
@@ -1004,9 +1005,9 @@ DATA lv_date LIKE sy-datum.`
 	testing.expect_value(t, macro_rhs.name.text, "&2")
 	testing.expect_value(t, macro_rhs.slot, 2)
 	testing.expect(t, strings.contains(exec_sql.body, "SELECT * FROM mara"))
-	testing.expect_value(t, select_stmt.query.projection_clauses[0].alias, "mat_alias")
-	testing.expect_value(t, select_stmt.query.source_clause.alias, "a")
-	testing.expect_value(t, select_stmt.query.order_by_fields[0], "matnr")
+	testing.expect_value(t, select_stmt.query.projection_clauses[0].alias.text, "mat_alias")
+	testing.expect_value(t, select_stmt.query.source_clause.alias.text, "a")
+	testing.expect_value(t, select_stmt.query.order_by_fields[0].text, "matnr")
 	testing.expect_value(t, read_table.entries[0].key_values[0].name.text, "item-obj_type")
 	testing.expect_value(t, read_table.entries[0].key_values[0].path[0].name.text, "item")
 	testing.expect_value(t, read_table.entries[0].key_values[0].path[1].name.text, "obj_type")

@@ -1814,8 +1814,8 @@ create_object_models_exporting_as_call_args :: proc(t: ^testing.T) {
 	arg := section.args[0].derived_expr.(^ast.Call_Named_Arg_Expr)
 
 	testing.expect_value(t, section.kind, ast.Call_Arg_Section_Kind.Exporting)
-	testing.expect_value(t, arg.name, "io_field_rules")
-	testing.expect_value(t, section.args[1].derived_expr.(^ast.Call_Named_Arg_Expr).name, "tables")
+	testing.expect_value(t, arg.name.text, "io_field_rules")
+	testing.expect_value(t, section.args[1].derived_expr.(^ast.Call_Named_Arg_Expr).name.text, "tables")
 	_, ok := arg.value.derived_expr.(^ast.Call_Expr)
 	testing.expect(t, ok)
 }

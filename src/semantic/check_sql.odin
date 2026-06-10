@@ -46,7 +46,7 @@ checker_check_sql_select_query :: proc(ctx: ^Checker_Context, query: ast.Select_
 			checker_check_sql_expr(ctx, &sql, join.on, true)
 		}
 	} else {
-		checker_sql_add_select_source(ctx, &sql, query.source, "", checker_expr_range(query.source), false)
+		checker_sql_add_select_source(ctx, &sql, query.source, {}, checker_expr_range(query.source), false)
 	}
 
 	fields := checker_sql_check_projection_list(ctx, &sql, query)
@@ -128,7 +128,7 @@ checker_sql_add_select_source :: proc(
 	ctx: ^Checker_Context,
 	sql: ^Sql_Source_Scope,
 	expr: ^ast.Expr,
-	alias: string,
+	alias: ast.Token_Text,
 	range: Range,
 	is_join: bool,
 	is_dynamic := false,
@@ -145,7 +145,7 @@ checker_sql_add_select_source :: proc(
 	if host, ok := expr.derived_expr.(^ast.Host_Expr); ok {
 		operand := checker_check_expr(ctx, host.value)
 		source := Sql_Source_Info {
-			alias     = checker_intern_name(ctx.project, alias),
+			alias     = checker_intern_name(ctx.project, alias.text),
 			range     = expr.range,
 			typ       = operand.type,
 			row_type  = checker_type_row(ctx, operand.type),
@@ -163,7 +163,7 @@ checker_sql_add_select_source :: proc(
 		return nil
 	}
 	source := checker_sql_resolve_source(ctx, name, name_range)
-	source.alias = checker_intern_name(ctx.project, alias)
+	source.alias = checker_intern_name(ctx.project, alias.text)
 	if range.end > range.start {
 		source.range = range
 	}
@@ -224,7 +224,7 @@ checker_sql_resolve_source :: proc(ctx: ^Checker_Context, name: string, range: R
 		)
 		return source
 	}
-	checker_add_entity_use(ctx, nil, entity)
+	checker_add_entity_use_at_range(ctx, nil, entity, range)
 	checker_check_entity_for_operand(ctx, entity)
 	source.entity = entity
 	source.typ = entity.type if entity.type != nil else project_type_unknown(ctx.project)
@@ -250,7 +250,7 @@ checker_sql_check_projection_list :: proc(
 		return fields
 	}
 	for projection in query.projections {
-		checker_sql_append_projection(ctx, sql, &fields, projection, "", checker_expr_range(projection), false)
+		checker_sql_append_projection(ctx, sql, &fields, projection, {}, checker_expr_range(projection), false)
 	}
 	return fields
 }
@@ -260,7 +260,7 @@ checker_sql_append_projection :: proc(
 	sql: ^Sql_Source_Scope,
 	fields: ^[dynamic]Sql_Output_Field,
 	expr: ^ast.Expr,
-	alias: string,
+	alias: ast.Token_Text,
 	range: Range,
 	is_dynamic: bool,
 ) {
@@ -294,11 +294,11 @@ checker_sql_append_projection :: proc(
 checker_sql_projection_name :: proc(
 	ctx: ^Checker_Context,
 	expr: ^ast.Expr,
-	alias: string,
+	alias: ast.Token_Text,
 	range: Range,
 ) -> (string_interner.String, Range) {
-	if alias != "" {
-		return checker_intern_name(ctx.project, alias), range
+	if alias.text != "" {
+		return checker_intern_name(ctx.project, alias.text), alias.range
 	}
 	if expr == nil {
 		return string_interner.String(0), range

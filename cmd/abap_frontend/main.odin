@@ -232,7 +232,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	when trace.ENABLED {
 		trace.eprintf(
 			"[trace - main] run_analyze - elapsed_ms=%.3f\n",
-			trace.duration_ms_since(trace_start),
+			trace.duration_ms_since(start_time),
 		)
 		print_analyze_memory_report(&tracker)
 		mem.tracking_allocator_destroy(&tracker)
@@ -263,11 +263,7 @@ analyze_cli_path :: proc(
 		return workspace.Analysis_Result{ok = false, error = "invalid path"}
 	}
 	if info.type == .Directory {
-		opened, workspace_ok, workspace_error := workspace.open(
-			abs_path,
-			options,
-			allocator,
-		)
+		opened, workspace_ok, workspace_error := workspace.open(abs_path, options, allocator)
 		if !workspace_ok {
 			return workspace.Analysis_Result{ok = false, error = workspace_error}
 		}

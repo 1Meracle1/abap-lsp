@@ -806,7 +806,7 @@ collect_select_order :: proc(
 	}
 	keys := make([dynamic]string, 0, len(query.order_by_fields), allocator)
 	for field in query.order_by_fields {
-		append(&keys, canonical_name(field, allocator))
+		append(&keys, canonical_name(field.text, allocator))
 	}
 	append(
 		&out.internal_table_orders,

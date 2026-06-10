@@ -710,16 +710,17 @@ parse_select_with_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_Wit
 	return clause
 }
 
-parse_cte_name :: proc(p: ^Parser) -> string {
+parse_cte_name :: proc(p: ^Parser) -> ast.Token_Text {
 	start_index := p.index
 	start := current_token(p)
 	for !at_eof(p) && !at_keyword(p, "AS") && current_token(p).kind != .Comma {
 		bump_token(p)
 	}
 	if p.index == start_index {
-		return ""
+		return {}
 	}
-	return parser_intern_name(p, p.source[start.range.start:previous_token(p).range.end])
+	range := tokenizer.text_range(start.range.start, previous_token(p).range.end)
+	return parser_ast_token(parser_intern_name(p, p.source[range.start:range.end]), range)
 }
 
 Select_Clause_State :: struct {
@@ -769,7 +770,7 @@ parse_select_query_clause :: proc(
 	query.projections = make([dynamic]^ast.Expr, 0, 4, p.allocator)
 	query.projection_clauses = make([dynamic]ast.Select_Projection_Clause, 0, 4, p.allocator)
 	query.set_ops = make([dynamic]ast.Select_Set_Clause, 0, 1, p.allocator)
-	query.order_by_fields = make([dynamic]string, 0, 2, p.allocator)
+	query.order_by_fields = make([dynamic]ast.Token_Text, 0, 2, p.allocator)
 	if !allow_keyword(p, "SELECT") {
 		return query
 	}
@@ -1528,7 +1529,7 @@ parse_select_order_by_clause :: proc(
 				if !descending {
 					append(
 						&query.order_by_fields,
-						parser_intern_token_name(p, p.tokens[p.index + 2]),
+						parser_ast_name_token(p, p.tokens[p.index + 2]),
 					)
 				}
 				bump_token(p)
@@ -1538,7 +1539,7 @@ parse_select_order_by_clause :: proc(
 				if !descending {
 					append(
 						&query.order_by_fields,
-						parser_intern_token_name(p, current_token(p)),
+						parser_ast_name_token(p, current_token(p)),
 					)
 				}
 				bump_token(p)
@@ -1548,7 +1549,7 @@ parse_select_order_by_clause :: proc(
 		bump_token(p)
 	}
 	if descending {
-		query.order_by_fields = make([dynamic]string, 0, 0, p.allocator)
+		query.order_by_fields = make([dynamic]ast.Token_Text, 0, 0, p.allocator)
 	}
 	query.order_by_clause = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 }
@@ -1713,17 +1714,17 @@ parse_select_source_expr :: proc(
 	return expr
 }
 
-parse_select_alias :: proc(p: ^Parser) -> string {
+parse_select_alias :: proc(p: ^Parser) -> ast.Token_Text {
 	if !allow_keyword(p, "AS") {
-		return ""
+		return {}
 	}
 	tok := current_token(p)
 	if tok.kind != .Ident || select_reserved_name_at(p, p.index) {
 		error(p, tok.range, "syntax error: expected alias after AS")
-		return ""
+		return {}
 	}
 	bump_token(p)
-	return parser_intern_token_name(p, tok)
+	return parser_ast_name_token(p, tok)
 }
 
 select_join_kind :: proc(p: ^Parser) -> (ast.Select_Join_Kind, bool) {
@@ -2232,8 +2233,8 @@ parse_read_table_key_values :: proc(
 			bump_token(p)
 			continue
 		}
-		if entry.key_name == "" && current_token(p).kind == .Ident {
-			entry.key_name = parser_intern_token_name(p, bump_token(p))
+		if entry.key_name.text == "" && current_token(p).kind == .Ident {
+			entry.key_name = parser_ast_name_token(p, bump_token(p))
 			continue
 		}
 		bump_token(p)

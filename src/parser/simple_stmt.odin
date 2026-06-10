@@ -5096,7 +5096,7 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				bump_token(p)
 				option := ast.Submit_Option_Clause {
 					kind = .With_Parameter,
-					name = parser_intern_token_name(p, name),
+					name = parser_ast_name_token(p, name),
 				}
 				if current_token(p).kind == .Eq || current_token(p).kind == .Ident {
 					op := bump_token(p)

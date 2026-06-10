@@ -455,14 +455,14 @@ Call_Arg_Section_Kind :: enum {
 Call_Arg_Section_Expr :: struct {
 	using node: Expr,
 	kind:       Call_Arg_Section_Kind,
-	name:       string,
+	name:       Token_Text,
 	args:       [dynamic]^Expr,
 }
 
 // ABAP syntax: named actual parameter `name = value`.
 Call_Named_Arg_Expr :: struct {
 	using node: Expr,
-	name:       string,
+	name:       Token_Text,
 	value:      ^Expr,
 }
 
@@ -646,7 +646,7 @@ Constructor_Next_Clause_Expr :: struct {
 // ABAP syntax: constructor component assignment `name = value`.
 Constructor_Named_Assignment_Expr :: struct {
 	using node: Expr,
-	name:       string,
+	name:       Token_Text,
 	value:      ^Expr,
 }
 
@@ -662,7 +662,7 @@ Constructor_Lines_Of_Clause_Expr :: struct {
 	source:     ^Expr,
 	from:       ^Expr,
 	to:         ^Expr,
-	using_key:  string,
+	using_key:  Token_Text,
 }
 
 // ABAP syntax: `expr OPTIONAL` inside constructor expressions.
@@ -680,7 +680,7 @@ Constructor_Corresponding_Mapping_Clause_Expr :: struct {
 // ABAP syntax: one `dst = src [DEFAULT value] [MAPPING ...] [EXCEPT ...]` mapping entry.
 Constructor_Corresponding_Mapping_Assignment_Expr :: struct {
 	using node:            Expr,
-	target:                string,
+	target:                Token_Text,
 	source:                ^Expr,
 	default_value:         ^Expr,
 	discarding_duplicates: bool,
@@ -1010,14 +1010,14 @@ Class_Data_Clause :: struct {
 // ABAP syntax: TYPE-POOLS statement, for example `TYPE-POOLS abap.`
 Type_Pools_Decl :: struct {
 	using node: Decl,
-	pools:      [dynamic]string,
+	pools:      [dynamic]Token_Text,
 }
 
 // ABAP syntax: FUNCTION-POOL statement, for example `FUNCTION-POOL zfg MESSAGE-ID sv.`
 Function_Pool_Decl :: struct {
 	using node: Decl,
 	name:       Token_Text,
-	message_id: string,
+	message_id: Token_Text,
 }
 
 Include_Name :: struct {
@@ -1561,7 +1561,7 @@ Submit_Target_Kind :: enum {
 // ABAP syntax: one SUBMIT option with a compact operand, for example `WITH p = v` or `LINE-SIZE n`.
 Submit_Option_Clause :: struct {
 	kind:       Submit_Option_Kind,
-	name:       string,
+	name:       Token_Text,
 	operator:   Submit_Option_Operator,
 	value:      ^Expr,
 	high_value: ^Expr,
@@ -2385,7 +2385,7 @@ Test_Injection_Stmt :: struct {
 // ABAP syntax: one SELECT projection, optionally with `AS alias`.
 Select_Projection_Clause :: struct {
 	value:      ^Expr,
-	alias:      string,
+	alias:      Token_Text,
 	is_dynamic: bool,
 	range:      tokenizer.Range,
 }
@@ -2402,7 +2402,7 @@ Select_Join_Kind :: enum {
 Select_Join_Clause :: struct {
 	kind:   Select_Join_Kind,
 	source: ^Expr,
-	alias:  string,
+	alias:  Token_Text,
 	on:     ^Expr,
 }
 
@@ -2410,7 +2410,7 @@ Select_Join_Clause :: struct {
 Select_Source_Clause :: struct {
 	range:          tokenizer.Range,
 	source:         ^Expr,
-	alias:          string,
+	alias:          Token_Text,
 	dynamic_source: bool,
 	joins:          [dynamic]Select_Join_Clause,
 }
@@ -2453,7 +2453,7 @@ Select_Query_Clause :: struct {
 	having_clause:          tokenizer.Range,
 	order_by_clause:        tokenizer.Range,
 	order_by_primary_key:   bool,
-	order_by_fields:        [dynamic]string,
+	order_by_fields:        [dynamic]Token_Text,
 	for_all_entries_clause: tokenizer.Range,
 	for_update_clause:      tokenizer.Range,
 	up_to_clause:           tokenizer.Range,
@@ -2478,7 +2478,7 @@ Select_Set_Clause :: struct {
 
 // ABAP syntax: one `WITH name AS ( SELECT ... )` common table expression.
 Select_Cte_Clause :: struct {
-	name:  string,
+	name:  Token_Text,
 	query: Select_Query_Clause,
 }
 
@@ -2554,7 +2554,7 @@ Read_Table_Entry_Clause :: struct {
 	assigning:              ^Expr,
 	reference_into:         ^Expr,
 	key_kind:               Read_Table_Key_Kind,
-	key_name:               string,
+	key_name:               Token_Text,
 	key_values:             [dynamic]Read_Table_Key_Value_Clause,
 	index:                  ^Expr,
 	using_key:              Table_Key_Selector,

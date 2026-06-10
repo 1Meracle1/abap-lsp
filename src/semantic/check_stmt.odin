@@ -966,9 +966,9 @@ checker_collect_call_expr_argument :: proc(
 		value_range = expr.range,
 	}
 	if named, named_ok := expr.derived_expr.(^ast.Call_Named_Arg_Expr); named_ok {
-		arg.name_text = named.name
-		arg.name = checker_intern_name(ctx.project, named.name)
-		arg.name_range = named.range
+		arg.name_text = named.name.text
+		arg.name = checker_intern_name(ctx.project, named.name.text)
+		arg.name_range = named.name.range
 		arg.value = named.value
 		arg.value_range = checker_expr_range(named.value)
 	} else if positional, positional_ok := expr.derived_expr.(^ast.Call_Positional_Arg_Expr); positional_ok {
@@ -1234,6 +1234,9 @@ checker_check_call_argument_with_parameter :: proc(
 	formal: ^Entity,
 ) {
 	checker_check_entity_for_operand(ctx, formal)
+	if formal != nil && string_interner.is_valid(arg.name) && arg.name_range.end > arg.name_range.start {
+		checker_add_entity_use_at_range(ctx, nil, formal, arg.name_range)
+	}
 	formal_type := formal.type if formal != nil && formal.type != nil else project_type_unknown(ctx.project)
 	receives := checker_call_arg_receives_from_formal(actual_section)
 	writable := checker_call_arg_requires_writable(actual_section)

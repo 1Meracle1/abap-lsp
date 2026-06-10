@@ -166,7 +166,7 @@ project_discovery_scan_file :: proc(
 			}
 		case ^ast.Type_Pools_Decl:
 			for pool in n.pools {
-				name := project_discovery_intern_name(discovery, pool)
+				name := project_discovery_intern_name(discovery, pool.text)
 				if string_interner.is_valid(name) {
 					append(&facts.type_pool_imports, name)
 				}

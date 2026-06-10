@@ -416,13 +416,13 @@ parse_type_pools_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword_phrase(p, "TYPE-POOLS")
 	allow_token(p, .Colon)
 	stmt := ast.new(ast.Type_Pools_Decl, start.range, p.allocator)
-	stmt.pools = make([dynamic]string, 0, 2, p.allocator)
+	stmt.pools = make([dynamic]ast.Token_Text, 0, 2, p.allocator)
 	for !decl_clause_boundary(p) {
 		name, _, ok := parse_decl_name(p)
 		if !ok {
 			return nil
 		}
-		append(&stmt.pools, parser_intern_token_name(p, name))
+		append(&stmt.pools, parser_ast_name_token(p, name))
 		if !allow_token(p, .Comma) {
 			break
 		}
@@ -460,7 +460,7 @@ parse_function_pool_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	for !decl_clause_boundary(p) {
 		if at_keyword_phrase(p, "MESSAGE-ID") {
 			expect_keyword_phrase(p, "MESSAGE-ID")
-			id, id_ok := parse_required_addition_name(p)
+			id, id_ok := parse_required_addition_token_text(p)
 			if !id_ok {
 				return nil
 			}
@@ -1801,6 +1801,15 @@ parse_required_addition_name :: proc(
 	max_length := 0,
 	limit_message := "",
 ) -> (string, bool) {
+	token, ok := parse_required_addition_token_text(p, max_length, limit_message)
+	return token.text, ok
+}
+
+parse_required_addition_token_text :: proc(
+	p: ^Parser,
+	max_length := 0,
+	limit_message := "",
+) -> (ast.Token_Text, bool) {
 	tok := current_token(p)
 	if tok.kind == .Ident || tok.kind == .Number || tok.kind == .String {
 		if max_length > 0 {
@@ -1808,12 +1817,12 @@ parse_required_addition_name :: proc(
 		}
 		bump_token(p)
 		if tok.kind == .String {
-			return parser_clone_token_text(p, tok), true
+			return parser_ast_token(parser_clone_token_text(p, tok), tok.range), true
 		}
-		return parser_intern_token_name(p, tok), true
+		return parser_ast_name_token(p, tok), true
 	}
 	error_current(p, "syntax error: expected addition value")
-	return "", false
+	return ast.Token_Text{}, false
 }
 
 at_length_keyword :: proc(p: ^Parser) -> bool {

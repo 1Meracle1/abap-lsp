@@ -1037,7 +1037,7 @@ emit_constructor_lines_of_clause :: proc(p: ^Printer, expr: ^Constructor_Lines_O
 		emit(p, " TO ")
 		emit_node(p, expr.to)
 	}
-	if expr.using_key != "" {
+	if expr.using_key.text != "" {
 		emit(p, " USING KEY ")
 		emit(p, expr.using_key)
 	}
@@ -1320,7 +1320,7 @@ emit_type_pools_decl :: proc(p: ^Printer, decl: ^Type_Pools_Decl) {
 emit_function_pool_decl :: proc(p: ^Printer, decl: ^Function_Pool_Decl) {
 	emit(p, "FUNCTION-POOL ")
 	emit(p, decl.name)
-	if decl.message_id != "" {
+	if decl.message_id.text != "" {
 		emit(p, " MESSAGE-ID ")
 		emit(p, decl.message_id)
 	}
@@ -2892,7 +2892,7 @@ emit_select_projections :: proc(p: ^Printer, clauses: [dynamic]Select_Projection
 			emit(p, ", ")
 		}
 		emit_node(p, clause.value)
-		if clause.alias != "" {
+		if clause.alias.text != "" {
 			emit(p, " AS ")
 			emit(p, clause.alias)
 		}
@@ -2901,7 +2901,7 @@ emit_select_projections :: proc(p: ^Printer, clauses: [dynamic]Select_Projection
 
 emit_select_source :: proc(p: ^Printer, clause: ^Select_Source_Clause) {
 	emit_node(p, clause.source)
-	if clause.alias != "" {
+	if clause.alias.text != "" {
 		emit(p, " AS ")
 		emit(p, clause.alias)
 	}
@@ -2910,7 +2910,7 @@ emit_select_source :: proc(p: ^Printer, clause: ^Select_Source_Clause) {
 		emit(p, select_join_kind_text(join.kind))
 		emit(p, " JOIN ")
 		emit_node(p, join.source)
-		if join.alias != "" {
+		if join.alias.text != "" {
 			emit(p, " AS ")
 			emit(p, join.alias)
 		}
@@ -2999,11 +2999,11 @@ emit_read_table_stmt :: proc(p: ^Printer, stmt: ^Read_Table_Stmt) {
 				emit(p, " TABLE")
 			}
 			emit(p, " KEY")
-			if entry.key_name != "" {
+			if entry.key_name.text != "" {
 				emit_space(p)
 				emit(p, entry.key_name)
 			}
-			if entry.key_name != "" && len(entry.key_values) > 0 {
+			if entry.key_name.text != "" && len(entry.key_values) > 0 {
 				emit(p, " COMPONENTS")
 			}
 			for key in entry.key_values {

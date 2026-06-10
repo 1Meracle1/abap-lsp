@@ -162,9 +162,9 @@ FUNCTION-POOL zfg MESSAGE-ID sv.`
 	pools := parsed.root.stmts[0].derived_stmt.(^ast.Type_Pools_Decl)
 	pool := parsed.root.stmts[1].derived_stmt.(^ast.Function_Pool_Decl)
 	testing.expect_value(t, len(pools.pools), 2)
-	testing.expect_value(t, pools.pools[0], "cxtab")
+	testing.expect_value(t, pools.pools[0].text, "cxtab")
 	testing.expect_value(t, pool.name.text, "zfg")
-	testing.expect_value(t, pool.message_id, "sv")
+	testing.expect_value(t, pool.message_id.text, "sv")
 }
 
 @(test)

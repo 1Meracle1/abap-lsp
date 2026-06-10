@@ -711,7 +711,7 @@ parse_call_arg_section_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	name := bump_token(p)
 	section := ast.new(ast.Call_Arg_Section_Expr, name.range, p.allocator)
 	section.kind = call_argument_section_kind(p, name)
-	section.name = parser_intern_token_name(p, name)
+	section.name = parser_ast_raw_name_token(p, name)
 	section.args = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	for current_token(p).kind != .RParen &&
 	    current_token(p).kind != .Period &&
@@ -749,7 +749,7 @@ parse_call_arg_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			tokenizer.text_range(name.range.start, value.range.end),
 			p.allocator,
 		)
-		arg.name = parser_intern_token_name(p, name)
+		arg.name = parser_ast_name_token(p, name)
 		arg.value = value
 		return arg
 	}
@@ -1288,7 +1288,7 @@ parse_constructor_named_assignment_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if target == nil {
 		return nil
 	}
-	name := parser_clone_range_text(p, target.range)
+	name := parser_ast_token(parser_clone_range_text(p, target.range), target.range)
 	expect_token(p, .Eq)
 	value := parse_constructor_value_expr(p)
 	if value == nil {
@@ -1370,7 +1370,7 @@ parse_constructor_lines_of_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			allow_keyword(p, "KEY")
 			key := expect_token(p, .Ident)
 			if key.kind == .Ident {
-				expr.using_key = parser_intern_token_name(p, key)
+				expr.using_key = parser_ast_raw_name_token(p, key)
 			}
 		} else {
 			break
@@ -1405,7 +1405,7 @@ parse_constructor_mapping_assignment_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 	expect_token(p, .Eq)
 	expr := ast.new(ast.Constructor_Corresponding_Mapping_Assignment_Expr, name.range, p.allocator)
-	expr.target = parser_intern_token_name(p, name)
+	expr.target = parser_ast_name_token(p, name)
 
 	if allow_keyword(p, "DEFAULT") {
 		expr.default_value = parse_expr(p)
