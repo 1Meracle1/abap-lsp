@@ -197,23 +197,23 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Tables_Decl:
 	case ^Ranges_Decl:
 		for clause in n.ranges {
-			walk_for_clause(next, clause.for_clause)
+			walk(next, clause.for_expr)
 		}
 	case ^Parameters_Decl:
 		for clause in n.parameters {
 			walk_paren_length_clause(next, clause.paren_length)
 			walk_length_clauses(next, clause.length_clauses)
 			walk_data_type_clause(next, clause.type_clause)
-			walk_default_clause(next, clause.default_clause)
+			walk(next, clause.default_expr)
 			walk(next, clause.memory_id)
 			walk(next, clause.matchcode_object)
 			walk(next, clause.visible_length)
 		}
 	case ^Select_Options_Decl:
 		for clause in n.options {
-			walk_for_clause(next, clause.for_clause)
-			walk_default_clause(next, clause.default_clause)
-			walk_to_clause(next, clause.to_clause)
+			walk(next, clause.for_expr)
+			walk(next, clause.default_expr)
+			walk(next, clause.to_expr)
 			walk(next, clause.memory_id)
 			walk(next, clause.matchcode_object)
 			walk(next, clause.visible_length)
@@ -756,27 +756,9 @@ walk_value_clause :: proc(v: ^Visitor, clause: ^Value_Clause) {
 	}
 }
 
-walk_default_clause :: proc(v: ^Visitor, clause: ^Default_Clause) {
-	if clause != nil {
-		walk(v, clause.expr)
-	}
-}
-
-walk_for_clause :: proc(v: ^Visitor, clause: ^For_Clause) {
-	if clause != nil {
-		walk(v, clause.expr)
-	}
-}
-
 walk_using_screen_clause :: proc(v: ^Visitor, clause: ^Using_Screen_Clause) {
 	if clause != nil {
 		walk(v, clause.screen)
-	}
-}
-
-walk_to_clause :: proc(v: ^Visitor, clause: ^To_Clause) {
-	if clause != nil {
-		walk(v, clause.expr)
 	}
 }
 

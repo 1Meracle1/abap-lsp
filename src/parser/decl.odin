@@ -844,8 +844,8 @@ parse_ranges_clause :: proc(p: ^Parser) -> (ast.Ranges_Clause, bool) {
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "FOR") {
-			clause.for_clause = parse_required_for_clause(p)
-			if clause.for_clause == nil {
+			clause.for_expr = parse_required_for_expr(p)
+			if clause.for_expr == nil {
 				return ast.Ranges_Clause{}, false
 			}
 			continue
@@ -885,8 +885,8 @@ parse_parameters_clause :: proc(p: ^Parser) -> (ast.Parameters_Clause, bool) {
 			continue
 		}
 		if at_keyword(p, "DEFAULT") {
-			clause.default_clause = parse_required_default_clause(p)
-			if clause.default_clause == nil {
+			clause.default_expr = parse_required_default_expr(p)
+			if clause.default_expr == nil {
 				return ast.Parameters_Clause{}, false
 			}
 			append(&clause.parts, ast.Parameter_Clause_Part.Default_Clause)
@@ -918,15 +918,15 @@ parse_select_options_clause :: proc(p: ^Parser) -> (ast.Select_Options_Clause, b
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "FOR") {
-			clause.for_clause = parse_required_for_clause(p)
-			if clause.for_clause == nil {
+			clause.for_expr = parse_required_for_expr(p)
+			if clause.for_expr == nil {
 				return ast.Select_Options_Clause{}, false
 			}
 			continue
 		}
 		if at_keyword(p, "DEFAULT") {
-			clause.default_clause = parse_required_default_clause(p)
-			if clause.default_clause == nil {
+			clause.default_expr = parse_required_default_expr(p)
+			if clause.default_expr == nil {
 				return ast.Select_Options_Clause{}, false
 			}
 			continue
@@ -1452,26 +1452,22 @@ parse_required_value_clause :: proc(p: ^Parser) -> ^ast.Value_Clause {
 	return clause
 }
 
-parse_required_default_clause :: proc(p: ^Parser) -> ^ast.Default_Clause {
+parse_required_default_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_keyword(p, "DEFAULT")
 	value := parse_expr(p)
 	if value == nil {
 		return nil
 	}
-	clause, _ := mem.new(ast.Default_Clause, p.allocator)
-	clause.expr = value
-	return clause
+	return value
 }
 
-parse_required_for_clause :: proc(p: ^Parser) -> ^ast.For_Clause {
+parse_required_for_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_keyword(p, "FOR")
 	value := parse_expr(p)
 	if value == nil {
 		return nil
 	}
-	clause, _ := mem.new(ast.For_Clause, p.allocator)
-	clause.expr = value
-	return clause
+	return value
 }
 
 parse_required_using_screen_clause :: proc(p: ^Parser) -> ^ast.Using_Screen_Clause {
@@ -1602,16 +1598,22 @@ parse_select_option_addition :: proc(
 	bool,
 ) {
 	if at_keyword(p, "TO") {
-		clause.to_clause = parse_required_to_clause(p)
-		return true, clause.to_clause != nil
+		clause.to_expr = parse_required_to_expr(p)
+		return true, clause.to_expr != nil
 	}
 	if at_keyword(p, "OPTION") {
-		clause.option_clause = parse_required_option_clause(p)
-		return true, clause.option_clause != nil
+		option, ok := parse_required_option(p)
+		if ok {
+			clause.option = option
+		}
+		return true, ok
 	}
 	if at_keyword(p, "SIGN") {
-		clause.sign_clause = parse_required_sign_clause(p)
-		return true, clause.sign_clause != nil
+		sign, ok := parse_required_sign(p)
+		if ok {
+			clause.sign = sign
+		}
+		return true, ok
 	}
 	if at_keyword_phrase(p, "LOWER CASE") {
 		expect_keyword_phrase(p, "LOWER CASE")
@@ -1672,37 +1674,23 @@ parse_select_option_addition :: proc(
 	return false, true
 }
 
-parse_required_to_clause :: proc(p: ^Parser) -> ^ast.To_Clause {
+parse_required_to_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_keyword(p, "TO")
 	value := parse_expr(p)
 	if value == nil {
 		return nil
 	}
-	clause, _ := mem.new(ast.To_Clause, p.allocator)
-	clause.expr = value
-	return clause
+	return value
 }
 
-parse_required_option_clause :: proc(p: ^Parser) -> ^ast.Option_Clause {
+parse_required_option :: proc(p: ^Parser) -> (ast.Token_Text, bool) {
 	expect_keyword(p, "OPTION")
-	option, ok := parse_required_addition_name(p)
-	if !ok {
-		return nil
-	}
-	clause, _ := mem.new(ast.Option_Clause, p.allocator)
-	clause.option = option
-	return clause
+	return parse_required_addition_token_text(p)
 }
 
-parse_required_sign_clause :: proc(p: ^Parser) -> ^ast.Sign_Clause {
+parse_required_sign :: proc(p: ^Parser) -> (ast.Token_Text, bool) {
 	expect_keyword(p, "SIGN")
-	sign, ok := parse_required_addition_name(p)
-	if !ok {
-		return nil
-	}
-	clause, _ := mem.new(ast.Sign_Clause, p.allocator)
-	clause.sign = sign
-	return clause
+	return parse_required_addition_token_text(p)
 }
 
 parse_required_radiobutton_group :: proc(p: ^Parser) -> (ast.Token_Text, bool) {

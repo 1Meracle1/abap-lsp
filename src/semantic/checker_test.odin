@@ -1598,7 +1598,7 @@ CONSTANTS: BEGIN OF gc_pair,
 	}
 	testing.expect(t, statics != nil && .Static in statics.flags)
 	testing.expect(t, tables != nil && .Has_Declared_Type in tables.flags)
-	testing.expect(t, param != nil && param.decl_info.default_clause != nil)
+	testing.expect(t, param != nil && param.decl_info.default_expr != nil)
 	if ranges != nil && ranges.type != nil {
 		testing.expect_value(t, ranges.type.kind, Type_Kind.Structure)
 		testing.expect_value(t, len(ranges.type.structure.fields), 4)

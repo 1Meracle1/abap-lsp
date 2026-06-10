@@ -220,7 +220,7 @@ project_new_decl_info :: proc(
 	type_clause: ^ast.Data_Type_Clause = nil,
 	occurs: ^ast.Expr = nil,
 	value_clause: ^ast.Value_Clause = nil,
-	default_clause: ^ast.Default_Clause = nil,
+	default_expr: ^ast.Expr = nil,
 	docs: []ast.Ast_Trivia = nil,
 	comment: []ast.Ast_Trivia = nil,
 ) -> ^Decl_Info {
@@ -231,7 +231,7 @@ project_new_decl_info :: proc(
 		type_clause    = type_clause,
 		occurs         = occurs,
 		value_clause   = value_clause,
-		default_clause = default_clause,
+		default_expr   = default_expr,
 		docs           = docs,
 		comment        = comment,
 	}

@@ -68,7 +68,7 @@ Decl_Info :: struct {
 	type_clause:    ^ast.Data_Type_Clause,
 	occurs:         ^ast.Expr,
 	value_clause:   ^ast.Value_Clause,
-	default_clause: ^ast.Default_Clause,
+	default_expr:   ^ast.Expr,
 	docs:           []ast.Ast_Trivia,
 	comment:        []ast.Ast_Trivia,
 	state:          Decl_Info_State,

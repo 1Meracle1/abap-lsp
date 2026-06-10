@@ -516,7 +516,7 @@ checker_collect_variable_decl :: proc(
 	node: ^ast.Node,
 	type_clause: ^ast.Data_Type_Clause,
 	value_clause: ^ast.Value_Clause,
-	default_clause: ^ast.Default_Clause = nil,
+	default_expr: ^ast.Expr = nil,
 	occurs: ^ast.Expr = nil,
 ) -> ^Entity {
 	if name == "" {
@@ -525,7 +525,7 @@ checker_collect_variable_decl :: proc(
 	entity := project_new_entity(ctx.project, kind)
 	entity.node = node
 	interned := checker_intern_name(ctx.project, name)
-	decl := project_new_decl_info(ctx.project, entity, scope, interned, kind, range, node, type_clause, occurs, value_clause, default_clause)
+	decl := project_new_decl_info(ctx.project, entity, scope, interned, kind, range, node, type_clause, occurs, value_clause, default_expr)
 	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
 	checker_note_variable_decl_flags(entity, has_type = type_clause != nil)
 	return entity
@@ -634,7 +634,7 @@ checker_collect_select_options_decl :: proc(
 	visibility: Visibility = .Public,
 ) {
 	for clause in decl.options {
-		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name.text, .Variable, clause.name.range, &decl.node.decl_base.stmt_base, nil, nil, clause.default_clause)
+		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name.text, .Variable, clause.name.range, &decl.node.decl_base.stmt_base, nil, nil, clause.default_expr)
 		if entity != nil {
 			structure, scope := checker_attach_structure_to_entity(ctx, entity, decl.range)
 			checker_collect_range_component(ctx, structure, scope, entity, "sign", Range{}, &decl.node.decl_base.stmt_base)
@@ -674,7 +674,7 @@ checker_collect_parameters_decl :: proc(
 			&decl.node.decl_base.stmt_base,
 			clause.type_clause,
 			nil,
-			clause.default_clause,
+			clause.default_expr,
 		)
 		if entity != nil && .As_Checkbox in clause.flags {
 			entity.flags += {.Has_Declared_Type}
@@ -1360,7 +1360,7 @@ checker_check_variable_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl
 		entity.type = typ
 	}
 	checker_check_value_clause(ctx, decl.value_clause)
-	checker_check_default_clause(ctx, decl.default_clause)
+	checker_check_default_expr(ctx, decl.default_expr)
 	if entity.type == nil {
 		entity.type = project_type_unknown(ctx.project)
 	}
@@ -1530,7 +1530,7 @@ checker_check_metadata_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl
 		entity.type = typ
 	}
 	checker_check_value_clause(ctx, decl.value_clause)
-	checker_check_default_clause(ctx, decl.default_clause)
+	checker_check_default_expr(ctx, decl.default_expr)
 	if entity.type == nil {
 		entity.type = project_type_unknown(ctx.project)
 	}
@@ -1543,11 +1543,11 @@ checker_check_value_clause :: proc(ctx: ^Checker_Context, clause: ^ast.Value_Cla
 	checker_check_expr(ctx, clause.expr)
 }
 
-checker_check_default_clause :: proc(ctx: ^Checker_Context, clause: ^ast.Default_Clause) {
-	if clause == nil {
+checker_check_default_expr :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) {
+	if expr == nil {
 		return
 	}
-	checker_check_expr(ctx, clause.expr)
+	checker_check_expr(ctx, expr)
 }
 
 checker_entity_tracks_type_path :: proc(entity: ^Entity) -> bool {

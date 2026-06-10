@@ -62,9 +62,9 @@ CLASS-DATA gv TYPE i VALUE 0.`
 	testing.expect_value(t, types.types[0].type_clause.form, ast.Data_Type_Form.Type)
 	testing.expect_value(t, len(constants.constants), 1)
 	testing.expect(t, constants.constants[0].value_clause != nil)
-	testing.expect(t, ranges.ranges[0].for_clause != nil)
-	testing.expect(t, parameters.parameters[0].default_clause != nil)
-	testing.expect(t, options.options[0].for_clause != nil)
+	testing.expect(t, ranges.ranges[0].for_expr != nil)
+	testing.expect(t, parameters.parameters[0].default_expr != nil)
+	testing.expect(t, options.options[0].for_expr != nil)
 	testing.expect(t, controls.controls[0].using_screen != nil)
 	testing.expect(t, class_data.decls[0].value_clause != nil)
 }
@@ -132,7 +132,7 @@ SELECT-OPTIONS s_matnr FOR mara-matnr NO-DISPLAY VISIBLE LENGTH 20 DEFAULT 'A' T
 	testing.expect_value(t, field_line.field_symbols[0].type_clause.form, ast.Data_Type_Form.Like_Line_Of)
 	testing.expect_value(t, field_table.field_symbols[0].type_clause.form, ast.Data_Type_Form.Standard_Table)
 	testing.expect(t, .As_Checkbox in checkbox.parameters[0].flags)
-	testing.expect(t, checkbox.parameters[0].default_clause != nil)
+	testing.expect(t, checkbox.parameters[0].default_expr != nil)
 	checkbox_modif_id, checkbox_has_modif_id := checkbox.parameters[0].modif_id.?
 	radio_group, radio_has_group := radio.parameters[0].radiobutton_group.?
 	radio_command, radio_has_command := radio.parameters[0].user_command.?
@@ -146,9 +146,13 @@ SELECT-OPTIONS s_matnr FOR mara-matnr NO-DISPLAY VISIBLE LENGTH 20 DEFAULT 'A' T
 	testing.expect(t, .Obligatory in radio.parameters[0].flags)
 	testing.expect(t, .No_Display in options.options[0].flags)
 	testing.expect(t, options.options[0].visible_length != nil)
-	testing.expect(t, options.options[0].to_clause != nil)
-	testing.expect_value(t, options.options[0].option_clause.option, "BT")
-	testing.expect_value(t, options.options[0].sign_clause.sign, "I")
+	testing.expect(t, options.options[0].to_expr != nil)
+	option, has_option := options.options[0].option.?
+	sign, has_sign := options.options[0].sign.?
+	testing.expect(t, has_option)
+	testing.expect(t, has_sign)
+	testing.expect_value(t, option.text, "BT")
+	testing.expect_value(t, sign.text, "I")
 	testing.expect(t, options.options[0].matchcode_object != nil)
 	testing.expect(t, options.options[0].memory_id != nil)
 	option_modif_id, option_has_modif_id := options.options[0].modif_id.?
@@ -524,7 +528,7 @@ PARAMETERS p_count TYPE i DEFAULT 1.`
 	testing.expect_value(t, source[read_only_ref.range.start:read_only_ref.range.end], "string")
 	testing.expect(t, .Read_Only in read_only_decl.flags)
 	testing.expect_value(t, source[default_ref.range.start:default_ref.range.end], "i")
-	testing.expect(t, default_decl.parameters[0].default_clause != nil)
+	testing.expect(t, default_decl.parameters[0].default_expr != nil)
 }
 
 @(test)

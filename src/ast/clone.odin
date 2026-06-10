@@ -2057,7 +2057,7 @@ clone_ranges_clauses :: proc(list: [dynamic]Ranges_Clause, allocator: mem.Alloca
 			&res,
 			Ranges_Clause {
 				name = clone_token_text(clause.name, allocator),
-				for_clause = clone_for_clause(clause.for_clause, allocator),
+				for_expr = clone(clause.for_expr, allocator),
 			},
 		)
 	}
@@ -2073,7 +2073,7 @@ clone_parameters_clauses :: proc(list: [dynamic]Parameters_Clause, allocator: me
 			parts             = clone_parameter_clause_parts(clause.parts, allocator),
 			length_clauses    = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause       = clone_type_clause(clause.type_clause, allocator),
-			default_clause    = clone_default_clause(clause.default_clause, allocator),
+			default_expr      = clone(clause.default_expr, allocator),
 			flags             = clause.flags,
 			radiobutton_group = clone_optional_token_text(clause.radiobutton_group, allocator),
 			user_command      = clone_optional_token_text(clause.user_command, allocator),
@@ -2091,11 +2091,11 @@ clone_select_options_clauses :: proc(list: [dynamic]Select_Options_Clause, alloc
 	for clause in list {
 		append(&res, Select_Options_Clause {
 			name             = clone_token_text(clause.name, allocator),
-			for_clause       = clone_for_clause(clause.for_clause, allocator),
-			default_clause   = clone_default_clause(clause.default_clause, allocator),
-			to_clause        = clone_to_clause(clause.to_clause, allocator),
-			option_clause    = clone_option_clause(clause.option_clause, allocator),
-			sign_clause      = clone_sign_clause(clause.sign_clause, allocator),
+			for_expr         = clone(clause.for_expr, allocator),
+			default_expr     = clone(clause.default_expr, allocator),
+			to_expr          = clone(clause.to_expr, allocator),
+			option           = clone_optional_token_text(clause.option, allocator),
+			sign             = clone_optional_token_text(clause.sign, allocator),
 			flags            = clause.flags,
 			modif_id         = clone_optional_token_text(clause.modif_id, allocator),
 			memory_id        = clone(clause.memory_id, allocator),
@@ -2194,57 +2194,12 @@ clone_value_clause :: proc(clause: ^Value_Clause, allocator: mem.Allocator) -> ^
 	return res
 }
 
-clone_default_clause :: proc(clause: ^Default_Clause, allocator: mem.Allocator) -> ^Default_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(Default_Clause, allocator)
-	res.expr = clone(clause.expr, allocator)
-	return res
-}
-
-clone_for_clause :: proc(clause: ^For_Clause, allocator: mem.Allocator) -> ^For_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(For_Clause, allocator)
-	res.expr = clone(clause.expr, allocator)
-	return res
-}
-
 clone_using_screen_clause :: proc(clause: ^Using_Screen_Clause, allocator: mem.Allocator) -> ^Using_Screen_Clause {
 	if clause == nil {
 		return nil
 	}
 	res, _ := mem.new(Using_Screen_Clause, allocator)
 	res.screen = clone(clause.screen, allocator)
-	return res
-}
-
-clone_to_clause :: proc(clause: ^To_Clause, allocator: mem.Allocator) -> ^To_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(To_Clause, allocator)
-	res.expr = clone(clause.expr, allocator)
-	return res
-}
-
-clone_option_clause :: proc(clause: ^Option_Clause, allocator: mem.Allocator) -> ^Option_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(Option_Clause, allocator)
-	res.option = strings.clone(clause.option, allocator)
-	return res
-}
-
-clone_sign_clause :: proc(clause: ^Sign_Clause, allocator: mem.Allocator) -> ^Sign_Clause {
-	if clause == nil {
-		return nil
-	}
-	res, _ := mem.new(Sign_Clause, allocator)
-	res.sign = strings.clone(clause.sign, allocator)
 	return res
 }
 

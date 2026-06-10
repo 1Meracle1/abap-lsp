@@ -1188,9 +1188,9 @@ emit_ranges_decl :: proc(p: ^Printer, decl: ^Ranges_Decl) {
 			emit(p, ", ")
 		}
 		emit(p, clause.name)
-		if clause.for_clause != nil {
+		if clause.for_expr != nil {
 			emit(p, " FOR ")
-			emit_node(p, clause.for_clause.expr)
+			emit_node(p, clause.for_expr)
 		}
 	}
 	emit(p, ".")
@@ -1222,22 +1222,22 @@ emit_select_options_decl :: proc(p: ^Printer, decl: ^Select_Options_Decl) {
 			emit(p, ", ")
 		}
 		emit(p, clause.name)
-		if clause.for_clause != nil {
+		if clause.for_expr != nil {
 			emit(p, " FOR ")
-			emit_node(p, clause.for_clause.expr)
+			emit_node(p, clause.for_expr)
 		}
-		emit_default_clause(p, clause.default_clause)
-		if clause.to_clause != nil {
+		emit_default_expr(p, clause.default_expr)
+		if clause.to_expr != nil {
 			emit(p, " TO ")
-			emit_node(p, clause.to_clause.expr)
+			emit_node(p, clause.to_expr)
 		}
-		if clause.option_clause != nil {
+		if option, ok := clause.option.?; ok {
 			emit(p, " OPTION ")
-			emit(p, clause.option_clause.option)
+			emit(p, option)
 		}
-		if clause.sign_clause != nil {
+		if sign, ok := clause.sign.?; ok {
 			emit(p, " SIGN ")
-			emit(p, clause.sign_clause.sign)
+			emit(p, sign)
 		}
 		emit_select_option_additions(p, clause)
 	}
@@ -1482,10 +1482,10 @@ emit_value_clause :: proc(p: ^Printer, clause: ^Value_Clause) {
 	}
 }
 
-emit_default_clause :: proc(p: ^Printer, clause: ^Default_Clause) {
-	if clause != nil {
+emit_default_expr :: proc(p: ^Printer, expr: ^Expr) {
+	if expr != nil {
 		emit(p, " DEFAULT ")
-		emit_node(p, clause.expr)
+		emit_node(p, expr)
 	}
 }
 
@@ -1493,7 +1493,7 @@ emit_parameter_clause_tail :: proc(p: ^Printer, clause: Parameters_Clause) {
 	if len(clause.parts) == 0 {
 		emit_type_clause(p, clause.type_clause)
 		emit_length_clauses(p, clause.length_clauses)
-		emit_default_clause(p, clause.default_clause)
+		emit_default_expr(p, clause.default_expr)
 		emit_parameter_additions(p, clause)
 		return
 	}
@@ -1509,7 +1509,7 @@ emit_parameter_clause_tail :: proc(p: ^Printer, clause: Parameters_Clause) {
 				length_index += 1
 			}
 		case .Default_Clause:
-			emit_default_clause(p, clause.default_clause)
+			emit_default_expr(p, clause.default_expr)
 		case .As_Checkbox:
 			if .As_Checkbox in clause.flags {
 				emit(p, " AS CHECKBOX")

@@ -877,7 +877,7 @@ Ranges_Decl :: struct {
 // ABAP syntax: one RANGES entry, for example `r_matnr FOR mara-matnr`.
 Ranges_Clause :: struct {
 	name:       Token_Text,
-	for_clause: ^For_Clause,
+	for_expr:   ^Expr,
 }
 
 // ABAP syntax: PARAMETERS statement, for example `PARAMETERS p TYPE i.`
@@ -927,7 +927,7 @@ Parameters_Clause :: struct {
 	parts:             [dynamic]Parameter_Clause_Part,
 	length_clauses:    [dynamic]Length_Clause,
 	type_clause:       ^Data_Type_Clause,
-	default_clause:    ^Default_Clause,
+	default_expr:      ^Expr,
 	flags:             Parameter_Flags,
 	radiobutton_group: Maybe(Token_Text),
 	user_command:      Maybe(Token_Text),
@@ -963,11 +963,11 @@ Selection_Request_Kind :: enum {
 // ABAP syntax: one SELECT-OPTIONS entry, for example `s_matnr FOR mara-matnr DEFAULT 'A' TO 'Z'`.
 Select_Options_Clause :: struct {
 	name:             Token_Text,
-	for_clause:       ^For_Clause,
-	default_clause:   ^Default_Clause,
-	to_clause:        ^To_Clause,
-	option_clause:    ^Option_Clause,
-	sign_clause:      ^Sign_Clause,
+	for_expr:         ^Expr,
+	default_expr:     ^Expr,
+	to_expr:          ^Expr,
+	option:           Maybe(Token_Text),
+	sign:             Maybe(Token_Text),
 	flags:            Select_Option_Flags,
 	modif_id:         Maybe(Token_Text),
 	memory_id:        ^Expr,
@@ -1058,34 +1058,9 @@ Value_Clause :: struct {
 	is_initial: bool,
 }
 
-// ABAP syntax: selection parameter default addition, for example `DEFAULT 'X'`.
-Default_Clause :: struct {
-	expr: ^Expr,
-}
-
-// ABAP syntax: declaration reference addition, for example `FOR mara-matnr` in RANGES or SELECT-OPTIONS.
-For_Clause :: struct {
-	expr: ^Expr,
-}
-
 // ABAP syntax: CONTROLS screen binding addition, for example `USING SCREEN 100`.
 Using_Screen_Clause :: struct {
 	screen: ^Expr,
-}
-
-// ABAP syntax: SELECT-OPTIONS upper-bound default addition, for example `TO 'Z'`.
-To_Clause :: struct {
-	expr: ^Expr,
-}
-
-// ABAP syntax: SELECT-OPTIONS option addition, for example `OPTION BT`.
-Option_Clause :: struct {
-	option: string,
-}
-
-// ABAP syntax: SELECT-OPTIONS sign addition, for example `SIGN I`.
-Sign_Clause :: struct {
-	sign: string,
 }
 
 // ABAP syntax: selection-screen request addition, for example `HELP-REQUEST FOR LOW` or `VALUE-REQUEST FOR HIGH`.

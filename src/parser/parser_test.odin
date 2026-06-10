@@ -794,8 +794,12 @@ INCLUDE zinc IF FOUND.`
 	testing.expect_value(t, parameter_command.text, "go")
 	testing.expect_value(t, parameter_modif_id.text, "mid")
 	testing.expect_value(t, select_options_decl.options[0].name.text, "s_date")
-	testing.expect_value(t, select_options_decl.options[0].option_clause.option, "EQ")
-	testing.expect_value(t, select_options_decl.options[0].sign_clause.sign, "I")
+	select_option, select_option_has_option := select_options_decl.options[0].option.?
+	select_sign, select_option_has_sign := select_options_decl.options[0].sign.?
+	testing.expect(t, select_option_has_option)
+	testing.expect(t, select_option_has_sign)
+	testing.expect_value(t, select_option.text, "EQ")
+	testing.expect_value(t, select_sign.text, "I")
 	select_option_modif_id, select_option_has_modif_id := select_options_decl.options[0].modif_id.?
 	testing.expect(t, select_option_has_modif_id)
 	testing.expect_value(t, select_option_modif_id.text, "sid")
