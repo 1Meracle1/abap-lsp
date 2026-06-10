@@ -89,9 +89,9 @@ SELECTION-SCREEN END OF SCREEN 1002.`
 	_, macro := parsed.root.stmts[1].derived_stmt.(^ast.Macro_Call_Stmt)
 
 	testing.expect(t, !macro)
-	testing.expect_value(t, begin.title_name, "sc_title")
-	testing.expect_value(t, comment.comment_name, "sc_url")
-	testing.expect_value(t, comment.field_name, "p_url")
+	testing.expect_value(t, begin.title_name.text, "sc_title")
+	testing.expect_value(t, comment.comment_name.text, "sc_url")
+	testing.expect_value(t, comment.field_name.text, "p_url")
 }
 
 @(test)
@@ -185,7 +185,7 @@ call_selection_screen_clauses_are_not_target_refs :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, stmt.kind, ast.Call_Kind.Selection_Screen)
 	testing.expect_value(t, len(target.raw_refs), 1)
-	testing.expect_value(t, target.raw_refs[0].name, "c_dynnr")
+	testing.expect_value(t, target.raw_refs[0].name.text, "c_dynnr")
 }
 
 @(test)
@@ -554,10 +554,10 @@ MESSAGE e001.`
 	default_form := parsed.root.stmts[2].derived_stmt.(^ast.Message_Stmt)
 
 	testing.expect(t, compact.head.has_compact_class)
-	testing.expect_value(t, compact.head.compact_class_name, "zmsg")
+	testing.expect_value(t, compact.head.compact_class_name.text, "zmsg")
 	testing.expect_value(
 		t,
-		source[compact.head.compact_class_range.start:compact.head.compact_class_range.end],
+		source[compact.head.compact_class_name.range.start:compact.head.compact_class_name.range.end],
 		"zmsg",
 	)
 	testing.expect(t, compact.head.code != nil)
@@ -825,9 +825,9 @@ receive_results_from_function_keeps_target_and_arguments :: proc(t: ^testing.T) 
 	testing.expect(t, stmt.target != nil)
 	testing.expect_value(t, len(stmt.arg_sections), 3)
 	testing.expect_value(t, len(stmt.named_args), 3)
-	testing.expect_value(t, stmt.named_args[0].name, "ev_value")
-	testing.expect_value(t, stmt.named_args[1].name, "et_rows")
-	testing.expect_value(t, stmt.named_args[2].name, "failed")
+	testing.expect_value(t, stmt.named_args[0].name.text, "ev_value")
+	testing.expect_value(t, stmt.named_args[1].name.text, "et_rows")
+	testing.expect_value(t, stmt.named_args[2].name.text, "failed")
 }
 
 @(test)
@@ -855,27 +855,27 @@ ENDCLASS.`
 	events := class_decl.body[3].derived_stmt.(^ast.Oop_Simple_Stmt)
 	methods := class_decl.body[5].derived_stmt.(^ast.Oop_Simple_Stmt)
 	class_methods := class_decl.body[6].derived_stmt.(^ast.Oop_Simple_Stmt)
-	testing.expect_value(t, interfaces.members[0].name, "if_demo")
-	testing.expect_value(t, aliases.members[0].name, "set")
+	testing.expect_value(t, interfaces.members[0].name.text, "if_demo")
+	testing.expect_value(t, aliases.members[0].name.text, "set")
 	testing.expect_value(t, len(aliases.aliases), 1)
-	testing.expect_value(t, aliases.aliases[0].name, "set")
-	testing.expect_value(t, aliases.aliases[0].target_interface_name, "if_demo")
-	testing.expect_value(t, aliases.aliases[0].target_member_name, "set")
+	testing.expect_value(t, aliases.aliases[0].name.text, "set")
+	testing.expect_value(t, aliases.aliases[0].target_interface_name.text, "if_demo")
+	testing.expect_value(t, aliases.aliases[0].target_member_name.text, "set")
 	testing.expect_value(t, aliases.members[0].signatures[0].kind, ast.Oop_Signature_Kind.For)
 	alias_target := aliases.members[0].signatures[0].values[0].derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, alias_target.base_name, "if_demo")
-	testing.expect_value(t, alias_target.path[0].name, "set")
+	testing.expect_value(t, alias_target.base_name.text, "if_demo")
+	testing.expect_value(t, alias_target.path[0].name.text, "set")
 	testing.expect_value(t, events.members[0].signatures[0].kind, ast.Oop_Signature_Kind.Exporting)
-	testing.expect_value(t, events.members[0].signatures[0].parameters[0].name, "value")
+	testing.expect_value(t, events.members[0].signatures[0].parameters[0].name.text, "value")
 	testing.expect_value(t, len(methods.members), 1)
-	testing.expect_value(t, methods.members[0].name, "run")
+	testing.expect_value(t, methods.members[0].name.text, "run")
 	testing.expect_value(t, len(methods.members[0].signatures), 1)
 	testing.expect_value(t, methods.members[0].signatures[0].kind, ast.Oop_Signature_Kind.Importing)
-	testing.expect_value(t, methods.members[0].signatures[0].parameters[0].name, "iv_value")
+	testing.expect_value(t, methods.members[0].signatures[0].parameters[0].name.text, "iv_value")
 	testing.expect_value(t, len(class_methods.members), 1)
-	testing.expect_value(t, class_methods.members[0].name, "create")
+	testing.expect_value(t, class_methods.members[0].name.text, "create")
 	testing.expect_value(t, class_methods.members[0].signatures[0].kind, ast.Oop_Signature_Kind.Returning)
-	testing.expect_value(t, class_methods.members[0].signatures[0].parameters[0].name, "ro_obj")
+	testing.expect_value(t, class_methods.members[0].signatures[0].parameters[0].name.text, "ro_obj")
 }
 
 @(test)
@@ -891,13 +891,13 @@ ENDCLASS.`
 	methods := class_decl.body[1].derived_stmt.(^ast.Oop_Simple_Stmt)
 	handler := methods.members[0].event_handler
 
-	testing.expect_value(t, handler.event_name, "changed")
+	testing.expect_value(t, handler.event_name.text, "changed")
 	testing.expect(t, handler.source_type != nil)
 	source_ref := handler.source_type.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, source_ref.base_name, "lcl_source")
+	testing.expect_value(t, source_ref.base_name.text, "lcl_source")
 	testing.expect_value(t, len(methods.members[0].signatures), 1)
 	testing.expect_value(t, methods.members[0].signatures[0].kind, ast.Oop_Signature_Kind.Importing)
-	testing.expect_value(t, methods.members[0].signatures[0].parameters[0].name, "ev_object")
+	testing.expect_value(t, methods.members[0].signatures[0].parameters[0].name.text, "ev_object")
 }
 
 @(test)
@@ -935,11 +935,11 @@ ENDCLASS.`
 	testing.expect_value(t, len(parsed.errors), 0)
 	methods := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[1].derived_stmt.(^ast.Oop_Simple_Stmt)
 	testing.expect_value(t, len(methods.members), 1)
-	testing.expect_value(t, methods.members[0].name, "if_demo~run")
-	testing.expect_value(t, methods.members[0].qualifier, "if_demo")
-	testing.expect_value(t, methods.members[0].member_name, "run")
-	testing.expect_value(t, source[methods.members[0].qualifier_range.start:methods.members[0].qualifier_range.end], "if_demo")
-	testing.expect_value(t, source[methods.members[0].member_range.start:methods.members[0].member_range.end], "run")
+	testing.expect_value(t, methods.members[0].name.text, "if_demo~run")
+	testing.expect_value(t, methods.members[0].qualifier.text, "if_demo")
+	testing.expect_value(t, methods.members[0].member_name.text, "run")
+	testing.expect_value(t, source[methods.members[0].qualifier.range.start:methods.members[0].qualifier.range.end], "if_demo")
+	testing.expect_value(t, source[methods.members[0].member_name.range.start:methods.members[0].member_name.range.end], "run")
 	testing.expect(t, .Redefinition in methods.members[0].flags)
 }
 
@@ -979,25 +979,25 @@ ENDCLASS.`
 	importing := methods.members[0].signatures[0]
 	returning := methods.members[0].signatures[1]
 	testing.expect_value(t, len(importing.parameters), 6)
-	testing.expect_value(t, importing.parameters[0].name, "it_source")
+	testing.expect_value(t, importing.parameters[0].name.text, "it_source")
 	testing.expect_value(t, importing.parameters[0].type_clause.form, ast.Data_Type_Form.Standard_Table)
 	testing.expect(t, importing.parameters[0].type_clause.type_ref == nil)
-	testing.expect_value(t, importing.parameters[1].name, "it_any")
+	testing.expect_value(t, importing.parameters[1].name.text, "it_any")
 	testing.expect_value(t, importing.parameters[1].type_clause.form, ast.Data_Type_Form.Any_Table)
 	testing.expect(t, importing.parameters[1].type_clause.type_ref == nil)
-	testing.expect_value(t, importing.parameters[2].name, "it_index")
+	testing.expect_value(t, importing.parameters[2].name.text, "it_index")
 	testing.expect_value(t, importing.parameters[2].type_clause.form, ast.Data_Type_Form.Index_Table)
 	testing.expect(t, importing.parameters[2].type_clause.type_ref == nil)
-	testing.expect_value(t, importing.parameters[3].name, "iv_state")
+	testing.expect_value(t, importing.parameters[3].name.text, "iv_state")
 	testing.expect_value(t, importing.parameters[3].passing, ast.Parameter_Passing_Kind.Direct)
 	testing.expect(t, importing.parameters[3].optional)
-	testing.expect_value(t, importing.parameters[4].name, "iv_date")
+	testing.expect_value(t, importing.parameters[4].name.text, "iv_date")
 	date_ref := importing.parameters[4].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, date_ref.base_name, "sy")
-	testing.expect_value(t, date_ref.path[0].name, "datum")
-	testing.expect_value(t, importing.parameters[5].name, "iv_text")
+	testing.expect_value(t, date_ref.base_name.text, "sy")
+	testing.expect_value(t, date_ref.path[0].name.text, "datum")
+	testing.expect_value(t, importing.parameters[5].name.text, "iv_text")
 	testing.expect(t, importing.parameters[5].type_clause != nil)
-	testing.expect_value(t, returning.parameters[0].name, "rv_ok")
+	testing.expect_value(t, returning.parameters[0].name.text, "rv_ok")
 	testing.expect_value(t, returning.parameters[0].passing, ast.Parameter_Passing_Kind.Value)
 }
 
@@ -1021,7 +1021,7 @@ ENDINTERFACE.`
 	testing.expect_value(t, exporting.parameters[1].type_clause.form, ast.Data_Type_Form.Table)
 	testing.expect(t, exporting.parameters[1].type_clause.table_has_of)
 	row_ref := exporting.parameters[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, row_ref.base_name, "string")
+	testing.expect_value(t, row_ref.base_name.text, "string")
 }
 
 @(test)
@@ -1038,15 +1038,15 @@ ENDINTERFACE.`
 	methods := parsed.root.stmts[0].derived_stmt.(^ast.Interface_Decl).body[0].derived_stmt.(^ast.Oop_Simple_Stmt)
 	importing := methods.members[0].signatures[0]
 	testing.expect_value(t, len(importing.parameters), 2)
-	testing.expect_value(t, importing.parameters[0].name, "OPTION")
+	testing.expect_value(t, importing.parameters[0].name.text, "OPTION")
 	testing.expect_value(t, importing.parameters[0].passing, ast.Parameter_Passing_Kind.Direct)
 	option_type := importing.parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, option_type.base_name, "I")
-	testing.expect_value(t, importing.parameters[1].name, "VALUE")
+	testing.expect_value(t, option_type.base_name.text, "I")
+	testing.expect_value(t, importing.parameters[1].name.text, "VALUE")
 	testing.expect_value(t, importing.parameters[1].passing, ast.Parameter_Passing_Kind.Direct)
 	testing.expect(t, importing.parameters[1].has_default)
 	value_type := importing.parameters[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, value_type.base_name, "ABAP_BOOL")
+	testing.expect_value(t, value_type.base_name.text, "ABAP_BOOL")
 }
 
 @(test)
@@ -1060,10 +1060,10 @@ ENDINTERFACE.`
 	methods := parsed.root.stmts[0].derived_stmt.(^ast.Interface_Decl).body[0].derived_stmt.(^ast.Oop_Simple_Stmt)
 	importing := methods.members[0].signatures[0]
 	testing.expect_value(t, len(importing.parameters), 1)
-	testing.expect_value(t, importing.parameters[0].name, "value")
+	testing.expect_value(t, importing.parameters[0].name.text, "value")
 	testing.expect_value(t, importing.parameters[0].passing, ast.Parameter_Passing_Kind.Direct)
 	value_type := importing.parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, value_type.base_name, "numeric")
+	testing.expect_value(t, value_type.base_name.text, "numeric")
 }
 
 @(test)
@@ -1082,11 +1082,11 @@ ENDINTERFACE.`
 	testing.expect_value(t, len(importing.parameters), 2)
 	length_ref := importing.parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	decimals_ref := importing.parameters[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, length_ref.base_name, "IF_FDT_ELEMENT")
-	testing.expect_value(t, length_ref.path[0].name, "LENGTH")
+	testing.expect_value(t, length_ref.base_name.text, "IF_FDT_ELEMENT")
+	testing.expect_value(t, length_ref.path[0].name.text, "LENGTH")
 	testing.expect_value(t, length_ref.path[0].selector, ast.Selector_Op.Fat_Arrow)
-	testing.expect_value(t, decimals_ref.base_name, "IF_FDT_ELEMENT")
-	testing.expect_value(t, decimals_ref.path[0].name, "DECIMALS")
+	testing.expect_value(t, decimals_ref.base_name.text, "IF_FDT_ELEMENT")
+	testing.expect_value(t, decimals_ref.path[0].name.text, "DECIMALS")
 	testing.expect(t, importing.parameters[0].optional)
 	testing.expect(t, importing.parameters[1].optional)
 }
@@ -1193,18 +1193,18 @@ CALL METHOD lo->run
 	testing.expect_value(t, method.named_args[1].section, ast.Call_Arg_Section_Kind.Receiving)
 	testing.expect_value(t, source[function.named_args[1].value_range.start:function.named_args[1].value_range.end], "DATA(lv_out)")
 	testing.expect_value(t, len(function.named_args[0].raw_refs), 1)
-	testing.expect_value(t, function.named_args[0].raw_refs[0].name, "lv_in")
+	testing.expect_value(t, function.named_args[0].raw_refs[0].name.text, "lv_in")
 	testing.expect_value(t, len(function.named_args[1].raw_decls), 1)
-	testing.expect_value(t, function.named_args[1].raw_decls[0].name, "lv_out")
+	testing.expect_value(t, function.named_args[1].raw_decls[0].name.text, "lv_out")
 	testing.expect_value(t, len(function.named_args[2].raw_refs), 1)
-	testing.expect_value(t, function.named_args[2].raw_refs[0].name, "lt_rows")
+	testing.expect_value(t, function.named_args[2].raw_refs[0].name.text, "lt_rows")
 	testing.expect_value(t, len(function.named_args[3].raw_decls), 1)
 	testing.expect_value(t, function.named_args[3].raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Field_Symbol)
-	testing.expect_value(t, function.named_args[3].raw_decls[0].name, "<fs_any>")
+	testing.expect_value(t, function.named_args[3].raw_decls[0].name.text, "<fs_any>")
 	testing.expect_value(t, len(function.named_args[4].raw_refs), 0)
 	testing.expect_value(t, len(method.named_args[0].raw_refs), 0)
 	testing.expect_value(t, len(method.named_args[1].raw_decls), 1)
-	testing.expect_value(t, method.named_args[1].raw_decls[0].name, "lv_result")
+	testing.expect_value(t, method.named_args[1].raw_decls[0].name.text, "lv_result")
 }
 
 @(test)
@@ -1227,10 +1227,10 @@ call_function_argument_values_accept_section_keyword_selectors :: proc(t: ^testi
 	testing.expect_value(t, source[second.value_range.start:second.value_range.end], "<ls_func>-changing")
 	testing.expect_value(t, len(first.raw_refs), 1)
 	testing.expect_value(t, len(second.raw_refs), 1)
-	testing.expect_value(t, first.raw_refs[0].name, "<ls_func>")
-	testing.expect_value(t, second.raw_refs[0].name, "<ls_func>")
-	testing.expect_value(t, first.raw_refs[0].path[0].name, "tables")
-	testing.expect_value(t, second.raw_refs[0].path[0].name, "changing")
+	testing.expect_value(t, first.raw_refs[0].name.text, "<ls_func>")
+	testing.expect_value(t, second.raw_refs[0].name.text, "<ls_func>")
+	testing.expect_value(t, first.raw_refs[0].path[0].name.text, "tables")
+	testing.expect_value(t, second.raw_refs[0].path[0].name.text, "changing")
 }
 
 @(test)
@@ -1277,11 +1277,11 @@ call_function_models_destination_sections_and_exception_messages :: proc(t: ^tes
 	testing.expect_value(t, stmt.arg_sections[3].kind, ast.Call_Arg_Section_Kind.Changing)
 	testing.expect_value(t, stmt.arg_sections[4].kind, ast.Call_Arg_Section_Kind.Exceptions)
 	testing.expect_value(t, len(stmt.named_args), 7)
-	testing.expect_value(t, stmt.named_args[4].name, "system_failure")
+	testing.expect_value(t, stmt.named_args[4].name.text, "system_failure")
 	testing.expect(t, stmt.named_args[4].message != nil)
-	testing.expect_value(t, stmt.named_args[5].name, "communication_failure")
+	testing.expect_value(t, stmt.named_args[5].name.text, "communication_failure")
 	testing.expect(t, stmt.named_args[5].message != nil)
-	testing.expect_value(t, stmt.named_args[6].name, "OTHERS")
+	testing.expect_value(t, stmt.named_args[6].name.text, "OTHERS")
 	testing.expect(t, stmt.named_args[6].message == nil)
 }
 
@@ -1327,15 +1327,15 @@ CALL METHOD /sttp/cl_dm_query=>query_objectdata_item(
 	testing.expect_value(t, stmt.arg_sections[0].kind, ast.Call_Arg_Section_Kind.Exporting)
 	testing.expect_value(t, stmt.arg_sections[1].kind, ast.Call_Arg_Section_Kind.Changing)
 	testing.expect_value(t, stmt.named_args[0].section, ast.Call_Arg_Section_Kind.Exporting)
-	testing.expect_value(t, stmt.named_args[0].name, "tables")
+	testing.expect_value(t, stmt.named_args[0].name.text, "tables")
 	_, is_call := stmt.named_args[0].value.derived_expr.(^ast.Call_Expr)
 	testing.expect(t, is_call)
 	testing.expect(t, stmt.named_args[1].value != nil)
 	testing.expect_value(t, ast.print_node(parenthesized.target, context.allocator), "/sttp/cl_dm_query=>query_objectdata_item")
 	testing.expect_value(t, len(parenthesized.named_args), 2)
-	testing.expect_value(t, parenthesized.named_args[0].name, "iv_objcode")
+	testing.expect_value(t, parenthesized.named_args[0].name.text, "iv_objcode")
 	testing.expect(t, parenthesized.named_args[0].value != nil)
-	testing.expect_value(t, parenthesized.named_args[1].name, "co_messages")
+	testing.expect_value(t, parenthesized.named_args[1].name.text, "co_messages")
 	testing.expect(t, parenthesized.named_args[1].value != nil)
 }
 
@@ -1367,11 +1367,11 @@ CALL METHOD (lv_class)=>if_demo~create_instance.`
 	dynamic_static_qualified_target := dynamic_static_qualified.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr)
 
 	testing.expect(t, instance_target.raw_operand)
-	testing.expect_value(t, instance_target.raw_refs[0].name, "lo_client")
-	testing.expect_value(t, instance_target.raw_refs[0].path[0].name, "run")
+	testing.expect_value(t, instance_target.raw_refs[0].name.text, "lo_client")
+	testing.expect_value(t, instance_target.raw_refs[0].path[0].name.text, "run")
 	testing.expect(t, static_target.raw_refs[0].type_base)
-	testing.expect_value(t, static_target.raw_refs[0].name, "lcl_demo")
-	testing.expect_value(t, static_target.raw_refs[0].path[0].name, "class_run")
+	testing.expect_value(t, static_target.raw_refs[0].name.text, "lcl_demo")
+	testing.expect_value(t, static_target.raw_refs[0].path[0].name.text, "class_run")
 	testing.expect(t, !dynamic_target.base_dynamic)
 	testing.expect(t, dynamic_target.method_dynamic)
 	testing.expect_value(t, ast.print_node(dynamic_target, context.allocator), "lo_client->('RUN')")
@@ -1414,11 +1414,11 @@ CALL METHOD OF lv_excel 'Quit'.`
 	testing.expect_value(t, ast.print_node(cells_target.member, context.allocator), "'Cells'")
 	testing.expect_value(t, ast.print_node(cells_target.result, context.allocator), "lv_cell")
 	testing.expect_value(t, len(cells.named_args), 2)
-	testing.expect_value(t, cells.named_args[0].name, "#1")
-	testing.expect_value(t, cells.named_args[1].name, "#2")
+	testing.expect_value(t, cells.named_args[0].name.text, "#1")
+	testing.expect_value(t, cells.named_args[1].name.text, "#2")
 	testing.expect(t, save_as_target.result == nil)
 	testing.expect_value(t, len(save_as.named_args), 1)
-	testing.expect_value(t, save_as.named_args[0].name, "#1")
+	testing.expect_value(t, save_as.named_args[0].name.text, "#1")
 	testing.expect(t, quit_target.result == nil)
 }
 
@@ -1451,13 +1451,13 @@ call_transformation_id_carries_modeled_args :: proc(t: ^testing.T) {
 	testing.expect(t, !target.raw_operand)
 	testing.expect_value(t, len(stmt.transformation_args), 3)
 	testing.expect_value(t, stmt.transformation_args[0].kind, ast.Call_Transformation_Arg_Kind.Options)
-	testing.expect_value(t, stmt.transformation_args[0].name, "initial_components")
+	testing.expect_value(t, stmt.transformation_args[0].name.text, "initial_components")
 	testing.expect(t, stmt.transformation_args[0].has_eq)
 	testing.expect_value(t, stmt.transformation_args[1].kind, ast.Call_Transformation_Arg_Kind.Source)
-	testing.expect_value(t, source_value.raw_refs[0].name, "lt_stab")
+	testing.expect_value(t, source_value.raw_refs[0].name.text, "lt_stab")
 	testing.expect_value(t, stmt.transformation_args[2].kind, ast.Call_Transformation_Arg_Kind.Result)
-	testing.expect_value(t, stmt.transformation_args[2].name, "XML")
-	testing.expect_value(t, result_value.raw_refs[0].name, "li_doc")
+	testing.expect_value(t, stmt.transformation_args[2].name.text, "XML")
+	testing.expect_value(t, result_value.raw_refs[0].name.text, "li_doc")
 }
 
 @(test)
@@ -1476,17 +1476,17 @@ CALL TRANSACTION tcode WITHOUT AUTHORITY-CHECK USING bdc_tab OPTIONS FROM opt ME
 
 	testing.expect_value(t, first.kind, ast.Call_Kind.Transaction)
 	testing.expect_value(t, second.kind, ast.Call_Kind.Transaction)
-	testing.expect_value(t, first_target.raw_refs[0].name, "tcode")
-	testing.expect_value(t, second_target.raw_refs[0].name, "tcode")
+	testing.expect_value(t, first_target.raw_refs[0].name.text, "tcode")
+	testing.expect_value(t, second_target.raw_refs[0].name.text, "tcode")
 	testing.expect_value(t, len(first.transaction_operands), len(expected_first))
 	testing.expect_value(t, len(second.transaction_operands), len(expected_second))
 	for value, i in expected_first {
 		operand := first.transaction_operands[i].derived_expr.(^ast.Type_Ref_Expr)
-		testing.expect_value(t, operand.raw_refs[0].name, value)
+		testing.expect_value(t, operand.raw_refs[0].name.text, value)
 	}
 	for value, i in expected_second {
 		operand := second.transaction_operands[i].derived_expr.(^ast.Type_Ref_Expr)
-		testing.expect_value(t, operand.raw_refs[0].name, value)
+		testing.expect_value(t, operand.raw_refs[0].name.text, value)
 	}
 }
 
@@ -1537,20 +1537,20 @@ DATA lv_typed TYPE sy-datum.`
 
 	testing.expect(t, raise_target.raw_operand)
 	testing.expect_value(t, len(raise_target.raw_refs), 1)
-	testing.expect_value(t, raise_target.raw_refs[0].name, "changed")
+	testing.expect_value(t, raise_target.raw_refs[0].name.text, "changed")
 	testing.expect_value(t, len(raise_args.raw_decls), 1)
 	testing.expect_value(t, raise_args.raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Data)
-	testing.expect_value(t, raise_args.raw_decls[0].name, "lv_raw")
+	testing.expect_value(t, raise_args.raw_decls[0].name.text, "lv_raw")
 	testing.expect_value(t, len(raise_args.raw_refs), 1)
-	testing.expect_value(t, raise_args.raw_refs[0].name, "ls_row")
-	testing.expect_value(t, raise_args.raw_refs[0].path[0].name, "field")
+	testing.expect_value(t, raise_args.raw_refs[0].name.text, "ls_row")
+	testing.expect_value(t, raise_args.raw_refs[0].path[0].name.text, "field")
 	testing.expect_value(t, len(assign_component.raw_refs), 1)
-	testing.expect_value(t, assign_component.raw_refs[0].name, "lv_name")
+	testing.expect_value(t, assign_component.raw_refs[0].name.text, "lv_name")
 	testing.expect_value(t, len(assign_structure.raw_refs), 1)
-	testing.expect_value(t, assign_structure.raw_refs[0].name, "ls_row")
+	testing.expect_value(t, assign_structure.raw_refs[0].name.text, "ls_row")
 	testing.expect_value(t, len(assign_target.raw_decls), 1)
 	testing.expect_value(t, assign_target.raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Field_Symbol)
-	testing.expect_value(t, assign_target.raw_decls[0].name, "<fs_raw>")
+	testing.expect_value(t, assign_target.raw_decls[0].name.text, "<fs_raw>")
 	testing.expect(t, !type_ref.raw_operand)
 	testing.expect_value(t, len(type_ref.raw_refs), 0)
 }
@@ -1564,8 +1564,8 @@ raw_assign_deref_path_keeps_arrow_selector :: proc(t: ^testing.T) {
 	operand := assign.source.derived_expr.(^ast.Type_Ref_Expr)
 
 	testing.expect(t, operand.raw_operand)
-	testing.expect_value(t, operand.raw_refs[0].name, "lr_data")
-	testing.expect_value(t, operand.raw_refs[0].path[0].name, "*")
+	testing.expect_value(t, operand.raw_refs[0].name.text, "lr_data")
+	testing.expect_value(t, operand.raw_refs[0].path[0].name.text, "*")
 	testing.expect_value(t, operand.raw_refs[0].path[0].selector, ast.Selector_Op.Arrow)
 }
 
@@ -1579,7 +1579,7 @@ raw_assign_dynamic_path_marks_reference_source :: proc(t: ^testing.T) {
 
 	testing.expect(t, operand.raw_operand)
 	testing.expect_value(t, len(operand.raw_refs), 1)
-	testing.expect_value(t, operand.raw_refs[0].name, "lo_object")
+	testing.expect_value(t, operand.raw_refs[0].name.text, "lo_object")
 	testing.expect(t, operand.raw_refs[0].dynamic_path)
 	testing.expect_value(t, len(operand.raw_refs[0].path), 0)
 }
@@ -1595,9 +1595,9 @@ raw_assign_casting_does_not_reference_clause_keyword :: proc(t: ^testing.T) {
 
 	testing.expect(t, assign.casting)
 	testing.expect_value(t, len(source.raw_refs), 1)
-	testing.expect_value(t, source.raw_refs[0].name, "lv_x")
+	testing.expect_value(t, source.raw_refs[0].name.text, "lv_x")
 	testing.expect_value(t, len(target.raw_refs), 1)
-	testing.expect_value(t, target.raw_refs[0].name, "<lv_y>")
+	testing.expect_value(t, target.raw_refs[0].name.text, "<lv_y>")
 }
 
 @(test)
@@ -1646,10 +1646,10 @@ EXPORT variscreens = lt_variscreens TO MEMORY ID '%_SCRNR_%'.`
 	memory_id := import_stmt.medium.id.derived_expr.(^ast.Literal_Expr)
 
 	testing.expect_value(t, len(import_stmt.parameters), 1)
-	testing.expect_value(t, import_stmt.parameters[0].name, "variscreens")
+	testing.expect_value(t, import_stmt.parameters[0].name.text, "variscreens")
 	testing.expect_value(t, import_stmt.medium.kind, ast.Data_Cluster_Medium_Kind.Memory_ID)
 	testing.expect_value(t, len(export_stmt.parameters), 1)
-	testing.expect_value(t, export_stmt.parameters[0].name, "variscreens")
+	testing.expect_value(t, export_stmt.parameters[0].name.text, "variscreens")
 	testing.expect_value(t, export_stmt.medium.kind, ast.Data_Cluster_Medium_Kind.Memory_ID)
 	testing.expect_value(t, value.name, "lt_variscreens")
 	testing.expect_value(t, memory_id.value, "'%_SCRNR_%'")
@@ -1666,8 +1666,8 @@ export_to_memory_accepts_multiline_parameters_without_commas :: proc(t: ^testing
 	testing.expect_value(t, len(parsed.errors), 0)
 	export_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Export_Stmt)
 	testing.expect_value(t, len(export_stmt.parameters), 2)
-	testing.expect_value(t, export_stmt.parameters[0].name, "scpr3_display_only")
-	testing.expect_value(t, export_stmt.parameters[1].name, "scpr3_bcset_id")
+	testing.expect_value(t, export_stmt.parameters[0].name.text, "scpr3_display_only")
+	testing.expect_value(t, export_stmt.parameters[1].name.text, "scpr3_bcset_id")
 	testing.expect_value(t, export_stmt.medium.kind, ast.Data_Cluster_Medium_Kind.Memory_ID)
 }
 
@@ -1701,8 +1701,8 @@ EXPORT row = ls_row TO SHARED BUFFER demo_indx_blob(sc) FROM ls_indx CLIENT lv_c
 	testing.expect_value(t, export_database.medium.kind, ast.Data_Cluster_Medium_Kind.Database)
 	testing.expect_value(t, import_shared.medium.kind, ast.Data_Cluster_Medium_Kind.Shared_Memory)
 	testing.expect_value(t, export_shared.medium.kind, ast.Data_Cluster_Medium_Kind.Shared_Buffer)
-	testing.expect_value(t, import_database.medium.dbtab, "demo_indx_blob")
-	testing.expect_value(t, import_database.medium.area, "sc")
+	testing.expect_value(t, import_database.medium.dbtab.text, "demo_indx_blob")
+	testing.expect_value(t, import_database.medium.area.text, "sc")
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
@@ -1718,8 +1718,8 @@ EXPORT row FROM ls_row TO MEMORY ID lv_id.`
 	import_value := import_stmt.parameters[0].value.derived_expr.(^ast.Ident_Expr)
 	export_value := export_stmt.parameters[0].value.derived_expr.(^ast.Ident_Expr)
 
-	testing.expect_value(t, import_stmt.parameters[0].name, "row")
-	testing.expect_value(t, export_stmt.parameters[0].name, "row")
+	testing.expect_value(t, import_stmt.parameters[0].name.text, "row")
+	testing.expect_value(t, export_stmt.parameters[0].name.text, "row")
 	testing.expect_value(t, import_value.name, "ls_row")
 	testing.expect_value(t, export_value.name, "ls_row")
 }
@@ -1750,14 +1750,14 @@ CREATE OBJECT ri_dyn TYPE (lv_class).`
 	dynamic_type := dynamic_stmt.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
 	testing.expect_value(t, len(static_target.raw_refs), 1)
-	testing.expect_value(t, static_target.raw_refs[0].name, "ri_html")
+	testing.expect_value(t, static_target.raw_refs[0].name.text, "ri_html")
 	testing.expect(t, !static_stmt.type_dynamic)
 	testing.expect(t, !static_type.raw_operand)
 	testing.expect_value(t, ast.print_node(static_stmt.type_ref, context.allocator), "zcl_abapgit_html")
 	testing.expect(t, dynamic_stmt.type_dynamic)
 	testing.expect(t, dynamic_type.raw_operand)
 	testing.expect_value(t, len(dynamic_type.raw_refs), 1)
-	testing.expect_value(t, dynamic_type.raw_refs[0].name, "lv_class")
+	testing.expect_value(t, dynamic_type.raw_refs[0].name.text, "lv_class")
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
@@ -1811,7 +1811,7 @@ CREATE DATA lr_var TYPE REF TO (lv_class).`
 	testing.expect(t, lit_type.is_ref)
 	testing.expect_value(t, len(lit_type.raw_refs), 0)
 	testing.expect_value(t, len(var_type.raw_refs), 1)
-	testing.expect_value(t, var_type.raw_refs[0].name, "lv_class")
+	testing.expect_value(t, var_type.raw_refs[0].name.text, "lv_class")
 }
 
 @(test)
@@ -1831,12 +1831,12 @@ CREATE DATA lr_var TYPE STANDARD TABLE OF (lv_primary).`
 	testing.expect(t, field_stmt.type_dynamic)
 	testing.expect(t, field_type.raw_operand)
 	testing.expect_value(t, len(field_type.raw_refs), 1)
-	testing.expect_value(t, field_type.raw_refs[0].name, "<ls_table>")
-	testing.expect_value(t, field_type.raw_refs[0].path[0].name, "tobj_name")
+	testing.expect_value(t, field_type.raw_refs[0].name.text, "<ls_table>")
+	testing.expect_value(t, field_type.raw_refs[0].path[0].name.text, "tobj_name")
 	testing.expect_value(t, len(field_dynamic.raw_refs), 1)
 	testing.expect_value(t, var_stmt.type_clause.form, ast.Data_Type_Form.Standard_Table)
 	testing.expect_value(t, len(var_type.raw_refs), 1)
-	testing.expect_value(t, var_type.raw_refs[0].name, "lv_primary")
+	testing.expect_value(t, var_type.raw_refs[0].name.text, "lv_primary")
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
@@ -1853,7 +1853,7 @@ create_data_type_handle_tracks_value_operand :: proc(t: ^testing.T) {
 	testing.expect(t, stmt.type_clause == nil)
 	testing.expect(t, handle.raw_operand)
 	testing.expect_value(t, len(handle.raw_refs), 1)
-	testing.expect_value(t, handle.raw_refs[0].name, "lo_table")
+	testing.expect_value(t, handle.raw_refs[0].name.text, "lo_table")
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 

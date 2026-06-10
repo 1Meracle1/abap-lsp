@@ -75,8 +75,7 @@ parse_oop_load_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return nil
 	}
 	bump_token(p)
-	stmt.name = parser_intern_token_name(p, name)
-	stmt.name_range = name.range
+	stmt.name = parser_ast_raw_name_token(p, name)
 
 	if stmt.kind == .Class {
 		if !allow_keyword(p, "DEFINITION") {
@@ -777,8 +776,7 @@ parse_at_group_field :: proc(p: ^Parser, stmt: ^ast.At_Stmt) -> bool {
 	if name.kind != .Ident {
 		return false
 	}
-	stmt.field_name = parser_intern_token_name(p, name)
-	stmt.field_range = name.range
+	stmt.field_name = parser_ast_raw_name_token(p, name)
 	return true
 }
 
@@ -966,12 +964,9 @@ parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return nil
 	}
 	stmt := ast.new(ast.Method_Decl, start.range, p.allocator)
-	stmt.name = name
-	stmt.name_range = name_range
-	stmt.qualifier = qualifier
-	stmt.qualifier_range = qualifier_range
-	stmt.member_name = member_name
-	stmt.member_range = member_range
+	stmt.name = parser_ast_token(name, name_range)
+	stmt.qualifier = parser_ast_token(qualifier, qualifier_range)
+	stmt.member_name = parser_ast_token(member_name, member_range)
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
 	stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
 	stmt.kernel_modules, stmt.is_kernel = method_header_kernel_modules(p, start_index, p.previous_index, name_range)
@@ -1078,9 +1073,10 @@ parse_named_block_stmt :: proc(
 		return nil
 	}
 	stmt := ast.new(T, start.range, p.allocator)
-	stmt.name = parser_intern_token_name(p, name) if name.kind != .Eof else ""
-	when intrinsics.type_has_field(T, "name_range") {
-		stmt.name_range = parser_token_name_range(p, name) if name.kind != .Eof else tokenizer.Range{}
+	when intrinsics.type_field_type(T, "name") == ast.Token_Text {
+		stmt.name = parser_ast_name_token(p, name) if name.kind != .Eof else ast.Token_Text{}
+	} else {
+		stmt.name = parser_intern_token_name(p, name) if name.kind != .Eof else ""
 	}
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
 	stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
@@ -1099,7 +1095,7 @@ parse_named_block_stmt :: proc(
 		if named_block_header_has_keyword(p, start_index, period_index, "ABSTRACT") {
 			stmt.flags += {.Abstract}
 		}
-		stmt.superclass_name, stmt.superclass_range = named_block_header_superclass(p, start_index, period_index)
+		stmt.superclass_name = named_block_header_superclass(p, start_index, period_index)
 		stmt.friends = named_block_header_friends(p, start_index, period_index)
 	}
 	when intrinsics.type_has_field(T, "form_parameters") {
@@ -1164,7 +1160,7 @@ named_block_header_has_keyword :: proc(
 named_block_header_superclass :: proc(
 	p: ^Parser,
 	start_index, period_index: int,
-) -> (string, tokenizer.Range) {
+) -> ast.Token_Text {
 	for i in start_index ..< period_index {
 		if i + 2 >= period_index {
 			break
@@ -1173,12 +1169,12 @@ named_block_header_superclass :: proc(
 		   token_is_keyword(p, p.tokens[i + 1], "FROM") {
 			tok := p.tokens[i + 2]
 			if tok.kind == .Ident || tok.kind == .Number {
-				return parser_intern_token_name(p, tok), tok.range
+				return parser_ast_raw_name_token(p, tok)
 			}
-			return "", tokenizer.text_range(tok.range.start, tok.range.start)
+			return parser_ast_token("", tokenizer.text_range(tok.range.start, tok.range.start))
 		}
 	}
-	return "", tokenizer.text_range(0, 0)
+	return {}
 }
 
 named_block_header_friends :: proc(
@@ -1206,8 +1202,7 @@ named_block_header_friends :: proc(
 			append(
 				&friends,
 				ast.Class_Friend_Clause {
-					name = parser_intern_token_name(p, tok),
-					range = tok.range,
+					name = parser_ast_raw_name_token(p, tok),
 				},
 			)
 			i += 1
@@ -1240,8 +1235,7 @@ parse_form_header_parameters :: proc(
 		validate_abap_name_text_length(p, name, name_range)
 		param := ast.Form_Parameter_Clause {
 			section = section,
-			name    = name,
-			range   = name_range,
+			name    = parser_ast_token(name, name_range),
 			passing = passing,
 		}
 		i = next
@@ -1279,7 +1273,7 @@ parse_function_header_parameters :: proc(
 		validate_abap_name_text_length(p, name, name_range)
 		i = next
 		if in_exceptions {
-			append(&exceptions, ast.Function_Exception_Clause{name, name_range})
+			append(&exceptions, ast.Function_Exception_Clause{name = parser_ast_token(name, name_range)})
 			if i + 1 < period_index && p.tokens[i].kind == .Eq {
 				i += 2
 			}
@@ -1287,8 +1281,7 @@ parse_function_header_parameters :: proc(
 		}
 		param := ast.Function_Parameter_Clause {
 			section = section,
-			name    = name,
-			range   = name_range,
+			name    = parser_ast_token(name, name_range),
 			passing = passing,
 		}
 		if header_type_clause_starts(p, i, period_index) {

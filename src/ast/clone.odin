@@ -876,6 +876,20 @@ clone_shallow :: proc(src: ^$T, allocator: mem.Allocator) -> ^T {
 	return dst
 }
 
+clone_token_text :: proc(token: Token_Text, allocator: mem.Allocator) -> Token_Text {
+	res := token
+	res.text = strings.clone(token.text, allocator)
+	return res
+}
+
+clone_token_text_list :: proc(list: [dynamic]Token_Text, allocator: mem.Allocator) -> [dynamic]Token_Text {
+	res := make([dynamic]Token_Text, 0, len(list), allocator)
+	for token in list {
+		append(&res, clone_token_text(token, allocator))
+	}
+	return res
+}
+
 clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "alias") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "alias")) {
@@ -891,6 +905,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "area")) {
 			dst.area = strings.clone(src.area, allocator)
 		}
+		when intrinsics.type_field_type(T, "area") == Token_Text {
+			dst.area = clone_token_text(src.area, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "as_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "as_name")) {
@@ -900,6 +917,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "base_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "base_name")) {
 			dst.base_name = strings.clone(src.base_name, allocator)
+		}
+		when intrinsics.type_field_type(T, "base_name") == Token_Text {
+			dst.base_name = clone_token_text(src.base_name, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "body") {
@@ -911,6 +931,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "column_name")) {
 			dst.column_name = strings.clone(src.column_name, allocator)
 		}
+		when intrinsics.type_field_type(T, "column_name") == Token_Text {
+			dst.column_name = clone_token_text(src.column_name, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "command") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "command")) {
@@ -921,20 +944,32 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "comment_name")) {
 			dst.comment_name = strings.clone(src.comment_name, allocator)
 		}
+		when intrinsics.type_field_type(T, "comment_name") == Token_Text {
+			dst.comment_name = clone_token_text(src.comment_name, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "compact_class_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "compact_class_name")) {
 			dst.compact_class_name = strings.clone(src.compact_class_name, allocator)
+		}
+		when intrinsics.type_field_type(T, "compact_class_name") == Token_Text {
+			dst.compact_class_name = clone_token_text(src.compact_class_name, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "db_table_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "db_table_name")) {
 			dst.db_table_name = strings.clone(src.db_table_name, allocator)
 		}
+		when intrinsics.type_field_type(T, "db_table_name") == Token_Text {
+			dst.db_table_name = clone_token_text(src.db_table_name, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "dbtab") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "dbtab")) {
 			dst.dbtab = strings.clone(src.dbtab, allocator)
+		}
+		when intrinsics.type_field_type(T, "dbtab") == Token_Text {
+			dst.dbtab = clone_token_text(src.dbtab, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "encoding") {
@@ -946,10 +981,16 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "event_name")) {
 			dst.event_name = strings.clone(src.event_name, allocator)
 		}
+		when intrinsics.type_field_type(T, "event_name") == Token_Text {
+			dst.event_name = clone_token_text(src.event_name, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "field_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "field_name")) {
 			dst.field_name = strings.clone(src.field_name, allocator)
+		}
+		when intrinsics.type_field_type(T, "field_name") == Token_Text {
+			dst.field_name = clone_token_text(src.field_name, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "group") {
@@ -960,6 +1001,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "group_source") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "group_source")) {
 			dst.group_source = strings.clone(src.group_source, allocator)
+		}
+		when intrinsics.type_field_type(T, "group_source") == Token_Text {
+			dst.group_source = clone_token_text(src.group_source, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "header_text") {
@@ -991,15 +1035,24 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "member_name")) {
 			dst.member_name = strings.clone(src.member_name, allocator)
 		}
+		when intrinsics.type_field_type(T, "member_name") == Token_Text {
+			dst.member_name = clone_token_text(src.member_name, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "message_id") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "message_id")) {
 			dst.message_id = strings.clone(src.message_id, allocator)
 		}
+		when intrinsics.type_field_type(T, "message_id") == Token_Text {
+			dst.message_id = clone_token_text(src.message_id, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "name")) {
 			dst.name = strings.clone(src.name, allocator)
+		}
+		when intrinsics.type_field_type(T, "name") == Token_Text {
+			dst.name = clone_token_text(src.name, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "option") {
@@ -1010,6 +1063,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "qualifier") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "qualifier")) {
 			dst.qualifier = strings.clone(src.qualifier, allocator)
+		}
+		when intrinsics.type_field_type(T, "qualifier") == Token_Text {
+			dst.qualifier = clone_token_text(src.qualifier, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "renaming_suffix") {
@@ -1026,6 +1082,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "superclass_name")) {
 			dst.superclass_name = strings.clone(src.superclass_name, allocator)
 		}
+		when intrinsics.type_field_type(T, "superclass_name") == Token_Text {
+			dst.superclass_name = clone_token_text(src.superclass_name, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "target") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "target")) {
@@ -1036,10 +1095,16 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "target_interface_name")) {
 			dst.target_interface_name = strings.clone(src.target_interface_name, allocator)
 		}
+		when intrinsics.type_field_type(T, "target_interface_name") == Token_Text {
+			dst.target_interface_name = clone_token_text(src.target_interface_name, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "target_member_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "target_member_name")) {
 			dst.target_member_name = strings.clone(src.target_member_name, allocator)
+		}
+		when intrinsics.type_field_type(T, "target_member_name") == Token_Text {
+			dst.target_member_name = clone_token_text(src.target_member_name, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "text") {
@@ -1050,6 +1115,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "title_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "title_name")) {
 			dst.title_name = strings.clone(src.title_name, allocator)
+		}
+		when intrinsics.type_field_type(T, "title_name") == Token_Text {
+			dst.title_name = clone_token_text(src.title_name, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "using_key") {
@@ -1065,6 +1133,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "variable") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "variable")) {
 			dst.variable = strings.clone(src.variable, allocator)
+		}
+		when intrinsics.type_field_type(T, "variable") == Token_Text {
+			dst.variable = clone_token_text(src.variable, allocator)
 		}
 	}
 }
@@ -1226,10 +1297,8 @@ clone_type_ref_key_clause :: proc(clause: ^Type_Ref_Key_Clause, allocator: mem.A
 	res.default_key = clause.default_key
 	res.sorted = clause.sorted
 	res.hashed = clause.hashed
-	res.name = strings.clone(clause.name, allocator)
-	res.name_range = clause.name_range
-	res.components = clone_string_list(clause.components, allocator)
-	res.component_ranges = clone_range_list(clause.component_ranges, allocator)
+	res.name = clone_token_text(clause.name, allocator)
+	res.components = clone_token_text_list(clause.components, allocator)
 	return res
 }
 
@@ -1277,7 +1346,7 @@ clone_modify_transporting_fields :: proc(list: [dynamic]Modify_Transporting_Fiel
 			clone_string_fields(&next, &next, allocator)
 			append(&path, next)
 		}
-		append(&res, Modify_Transporting_Field_Clause{name = strings.clone(clause.name, allocator), range = clause.range, path = path})
+		append(&res, Modify_Transporting_Field_Clause{name = clone_token_text(clause.name, allocator), path = path})
 	}
 	return res
 }
@@ -1303,8 +1372,7 @@ clone_oop_parameters :: proc(list: [dynamic]Oop_Parameter_Clause, allocator: mem
 		append(
 			&res,
 			Oop_Parameter_Clause {
-				name = strings.clone(clause.name, allocator),
-				range = clause.range,
+				name = clone_token_text(clause.name, allocator),
 				passing = clause.passing,
 				type_clause = clone_type_clause(clause.type_clause, allocator),
 				optional = clause.optional,
@@ -1322,8 +1390,7 @@ clone_form_parameters :: proc(list: [dynamic]Form_Parameter_Clause, allocator: m
 			&res,
 			Form_Parameter_Clause {
 				section = clause.section,
-				name = strings.clone(clause.name, allocator),
-				range = clause.range,
+				name = clone_token_text(clause.name, allocator),
 				passing = clause.passing,
 				type_clause = clone_type_clause(clause.type_clause, allocator),
 			},
@@ -1339,8 +1406,7 @@ clone_function_parameters :: proc(list: [dynamic]Function_Parameter_Clause, allo
 			&res,
 			Function_Parameter_Clause {
 				section = clause.section,
-				name = strings.clone(clause.name, allocator),
-				range = clause.range,
+				name = clone_token_text(clause.name, allocator),
 				passing = clause.passing,
 				type_clause = clone_type_clause(clause.type_clause, allocator),
 				flags = clause.flags,
@@ -1366,7 +1432,7 @@ clone_oop_members :: proc(list: [dynamic]Oop_Member_Clause, allocator: mem.Alloc
 		next := clause
 		clone_string_fields(&next, &next, allocator)
 		next.signatures = clone_oop_signatures(clause.signatures, allocator)
-		next.event_handler.event_name = strings.clone(clause.event_handler.event_name, allocator)
+		next.event_handler.event_name = clone_token_text(clause.event_handler.event_name, allocator)
 		next.event_handler.source_type = clone(clause.event_handler.source_type, allocator)
 		append(&res, next)
 	}
@@ -1647,7 +1713,7 @@ clone_table_key_selector :: proc(selector: Table_Key_Selector, allocator: mem.Al
 clone_delete_comparing_clauses :: proc(list: [dynamic]Delete_Comparing_Clause, allocator: mem.Allocator) -> [dynamic]Delete_Comparing_Clause {
 	res := make([dynamic]Delete_Comparing_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Delete_Comparing_Clause{all_fields = clause.all_fields, expr = clone(clause.expr, allocator), name = strings.clone(clause.name, allocator), range = clause.range})
+		append(&res, Delete_Comparing_Clause{all_fields = clause.all_fields, expr = clone(clause.expr, allocator), name = clone_token_text(clause.name, allocator)})
 	}
 	return res
 }
@@ -1661,7 +1727,7 @@ clone_read_table_key_values :: proc(list: [dynamic]Read_Table_Key_Value_Clause, 
 			clone_string_fields(&next, &next, allocator)
 			append(&path, next)
 		}
-		append(&res, Read_Table_Key_Value_Clause{name = strings.clone(clause.name, allocator), name_range = clause.name_range, path = path, dynamic_name = clone(clause.dynamic_name, allocator), is_dynamic = clause.is_dynamic, table_line = clause.table_line, value = clone(clause.value, allocator)})
+		append(&res, Read_Table_Key_Value_Clause{name = clone_token_text(clause.name, allocator), path = path, dynamic_name = clone(clause.dynamic_name, allocator), is_dynamic = clause.is_dynamic, table_line = clause.table_line, value = clone(clause.value, allocator)})
 	}
 	return res
 }
@@ -1672,8 +1738,7 @@ clone_sql_assignments :: proc(list: [dynamic]Sql_Assignment_Clause, allocator: m
 		append(&res, Sql_Assignment_Clause{
 			name = clone(clause.name, allocator),
 			value = clone(clause.value, allocator),
-			column_name = strings.clone(clause.column_name, allocator),
-			column_range = clause.column_range,
+			column_name = clone_token_text(clause.column_name, allocator),
 		})
 	}
 	return res
@@ -1688,8 +1753,7 @@ clone_message_head :: proc(clause: ^Message_Head_Clause, allocator: mem.Allocato
 	res.id = clone(clause.id, allocator)
 	res.msg_type = clone(clause.msg_type, allocator)
 	res.number = clone(clause.number, allocator)
-	res.compact_class_name = strings.clone(clause.compact_class_name, allocator)
-	res.compact_class_range = clause.compact_class_range
+	res.compact_class_name = clone_token_text(clause.compact_class_name, allocator)
 	res.has_compact_class = clause.has_compact_class
 	return res
 }
@@ -1737,10 +1801,8 @@ clone_data_cluster_medium :: proc(
 	return Data_Cluster_Medium_Clause {
 		kind        = medium.kind,
 		object      = clone(medium.object, allocator),
-		dbtab       = strings.clone(medium.dbtab, allocator),
-		dbtab_range = medium.dbtab_range,
-		area        = strings.clone(medium.area, allocator),
-		area_range  = medium.area_range,
+		dbtab       = clone_token_text(medium.dbtab, allocator),
+		area        = clone_token_text(medium.area, allocator),
 		work_area   = clone(medium.work_area, allocator),
 		client      = clone(medium.client, allocator),
 		id          = clone(medium.id, allocator),
@@ -1754,8 +1816,7 @@ clone_data_cluster_parameters :: proc(
 	res := make([dynamic]Data_Cluster_Parameter_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Data_Cluster_Parameter_Clause {
-			name = strings.clone(clause.name, allocator),
-			name_range = clause.name_range,
+			name = clone_token_text(clause.name, allocator),
 			value      = clone(clause.value, allocator),
 		})
 	}
@@ -1774,8 +1835,7 @@ clone_data_chained_branches :: proc(
 				kind            = branch.kind,
 				flags           = branch.flags,
 				depth           = branch.depth,
-				name            = strings.clone(branch.name, allocator),
-				name_range      = branch.name_range,
+				name            = clone_token_text(branch.name, allocator),
 				paren_length    = clone_paren_length_clause(branch.paren_length, allocator),
 				length_clauses  = clone_length_clauses(branch.length_clauses, allocator),
 				type_clause     = clone_type_clause(branch.type_clause, allocator),
@@ -1886,8 +1946,7 @@ clone_types_clauses :: proc(list: [dynamic]Types_Clause, allocator: mem.Allocato
 			kind           = clause.kind,
 			flags          = clause.flags,
 			depth          = clause.depth,
-			name = strings.clone(clause.name, allocator),
-			name_range     = clause.name_range,
+			name           = clone_token_text(clause.name, allocator),
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
@@ -1907,8 +1966,7 @@ clone_constants_clauses :: proc(list: [dynamic]Constants_Clause, allocator: mem.
 			kind           = clause.kind,
 			flags          = clause.flags,
 			depth          = clause.depth,
-			name = strings.clone(clause.name, allocator),
-			name_range     = clause.name_range,
+			name           = clone_token_text(clause.name, allocator),
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
@@ -1928,8 +1986,7 @@ clone_field_symbols_clauses :: proc(list: [dynamic]Field_Symbols_Clause, allocat
 		append(
 			&res,
 			Field_Symbols_Clause {
-				name = strings.clone(clause.name, allocator),
-				name_range = clause.name_range,
+				name = clone_token_text(clause.name, allocator),
 				type_clause = clone_type_clause(clause.type_clause, allocator),
 			},
 		)
@@ -1944,8 +2001,7 @@ clone_statics_clauses :: proc(list: [dynamic]Statics_Clause, allocator: mem.Allo
 			kind           = clause.kind,
 			flags          = clause.flags,
 			depth          = clause.depth,
-			name = strings.clone(clause.name, allocator),
-			name_range     = clause.name_range,
+			name           = clone_token_text(clause.name, allocator),
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
@@ -1965,8 +2021,7 @@ clone_tables_clauses :: proc(list: [dynamic]Tables_Clause, allocator: mem.Alloca
 		append(
 			&res,
 			Tables_Clause {
-				name = strings.clone(clause.name, allocator),
-				name_range = clause.name_range,
+				name = clone_token_text(clause.name, allocator),
 			},
 		)
 	}
@@ -1979,8 +2034,7 @@ clone_ranges_clauses :: proc(list: [dynamic]Ranges_Clause, allocator: mem.Alloca
 		append(
 			&res,
 			Ranges_Clause {
-				name = strings.clone(clause.name, allocator),
-				name_range = clause.name_range,
+				name = clone_token_text(clause.name, allocator),
 				for_clause = clone_for_clause(clause.for_clause, allocator),
 			},
 		)
@@ -1992,8 +2046,7 @@ clone_parameters_clauses :: proc(list: [dynamic]Parameters_Clause, allocator: me
 	res := make([dynamic]Parameters_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Parameters_Clause {
-			name = strings.clone(clause.name, allocator),
-			name_range        = clause.name_range,
+			name              = clone_token_text(clause.name, allocator),
 			paren_length      = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses    = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause       = clone_type_clause(clause.type_clause, allocator),
@@ -2014,8 +2067,7 @@ clone_select_options_clauses :: proc(list: [dynamic]Select_Options_Clause, alloc
 	res := make([dynamic]Select_Options_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Select_Options_Clause {
-			name = strings.clone(clause.name, allocator),
-			name_range       = clause.name_range,
+			name             = clone_token_text(clause.name, allocator),
 			for_clause       = clone_for_clause(clause.for_clause, allocator),
 			default_clause   = clone_default_clause(clause.default_clause, allocator),
 			to_clause        = clone_to_clause(clause.to_clause, allocator),
@@ -2039,8 +2091,7 @@ clone_controls_clauses :: proc(list: [dynamic]Controls_Clause, allocator: mem.Al
 		append(
 			&res,
 			Controls_Clause {
-				name = strings.clone(clause.name, allocator),
-				name_range = clause.name_range,
+				name = clone_token_text(clause.name, allocator),
 				type_clause = clone_type_clause(clause.type_clause, allocator),
 				using_screen = clone_using_screen_clause(clause.using_screen, allocator),
 			},
@@ -2056,8 +2107,7 @@ clone_class_data_clauses :: proc(list: [dynamic]Class_Data_Clause, allocator: me
 			kind           = clause.kind,
 			flags          = clause.flags,
 			depth          = clause.depth,
-			name = strings.clone(clause.name, allocator),
-			name_range     = clause.name_range,
+			name           = clone_token_text(clause.name, allocator),
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),

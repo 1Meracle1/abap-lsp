@@ -401,14 +401,14 @@ workspace_collect_include_targets :: proc(
 	include: ^ast.Include_Stmt,
 ) {
 	for include_name in include.names {
-		name := checker_intern_name(ctx.project, include_name.name)
-		edge, edge_ok := project_discovery_edge_for_include(facts, name, include_name.range)
+		name := checker_intern_name(ctx.project, include_name.name.text)
+		edge, edge_ok := project_discovery_edge_for_include(facts, name, include_name.name.range)
 		if !edge_ok || !edge.has_target {
 			workspace_note_unresolved_include(
 				state,
 				ctx,
 				name,
-				include_name.range,
+				include_name.name.range,
 				include,
 				include.if_found,
 			)
@@ -427,7 +427,7 @@ workspace_collect_include_targets :: proc(
 				state,
 				ctx,
 				.Root_File_Included,
-				include_name.range,
+				include_name.name.range,
 				"include target is an explicit root",
 			)
 		}
@@ -436,7 +436,7 @@ workspace_collect_include_targets :: proc(
 				state,
 				ctx,
 				.Include_Cycle,
-				include_name.range,
+				include_name.name.range,
 				"include cycle",
 			)
 			continue
@@ -466,7 +466,7 @@ workspace_collect_external_source_entities :: proc(
 		if include, ok := stmt.derived_stmt.(^ast.Include_Stmt); ok {
 			checker_collect_include_stmt(ctx, include)
 			for include_name in include.names {
-				name := checker_intern_name(ctx.project, include_name.name)
+				name := checker_intern_name(ctx.project, include_name.name.text)
 				if target_index, local_ok := project_discovery_find_local_provided_name(
 					state.discovery,
 					name,
@@ -489,7 +489,7 @@ workspace_collect_external_source_entities :: proc(
 					state,
 					ctx,
 					name,
-					include_name.range,
+					include_name.name.range,
 					include,
 					include.if_found,
 				)
@@ -536,8 +536,8 @@ workspace_check_include_targets :: proc(
 	include: ^ast.Include_Stmt,
 ) {
 	for include_name in include.names {
-		name := checker_intern_name(ctx.project, include_name.name)
-		edge, edge_ok := project_discovery_edge_for_include(facts, name, include_name.range)
+		name := checker_intern_name(ctx.project, include_name.name.text)
+		edge, edge_ok := project_discovery_edge_for_include(facts, name, include_name.name.range)
 		if !edge_ok || !edge.has_target {
 			continue
 		}
@@ -574,7 +574,7 @@ workspace_check_external_source_stmts :: proc(
 	for stmt in file.root.stmts {
 		if include, ok := stmt.derived_stmt.(^ast.Include_Stmt); ok {
 			for include_name in include.names {
-				name := checker_intern_name(ctx.project, include_name.name)
+				name := checker_intern_name(ctx.project, include_name.name.text)
 				if target_index, local_ok := project_discovery_find_local_provided_name(
 					state.discovery,
 					name,

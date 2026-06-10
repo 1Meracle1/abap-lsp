@@ -131,32 +131,32 @@ project_discovery_scan_file :: proc(
 				}
 			}
 		case ^ast.Function_Pool_Decl:
-			project_discovery_add_provided_name(discovery, &facts, n.name)
+			project_discovery_add_provided_name(discovery, &facts, n.name.text)
 			facts.kind = .Function_Group
 			facts.explicit_root = true
 		case ^ast.Class_Decl:
-			if facts.kind == .Unknown && workspace_global_object_name_matches_file(file.path, n.name, .Class) {
+			if facts.kind == .Unknown && workspace_global_object_name_matches_file(file.path, n.name.text, .Class) {
 				facts.kind = .Class
 			}
 			if facts.kind == .Class {
-				project_discovery_add_provided_name(discovery, &facts, n.name)
+				project_discovery_add_provided_name(discovery, &facts, n.name.text)
 			}
 		case ^ast.Interface_Decl:
-			if facts.kind == .Unknown && workspace_global_object_name_matches_file(file.path, n.name, .Interface) {
+			if facts.kind == .Unknown && workspace_global_object_name_matches_file(file.path, n.name.text, .Interface) {
 				facts.kind = .Interface
 			}
 			if facts.kind == .Interface {
-				project_discovery_add_provided_name(discovery, &facts, n.name)
+				project_discovery_add_provided_name(discovery, &facts, n.name.text)
 			}
 		case ^ast.Include_Stmt:
 			for include in n.names {
-				name := project_discovery_intern_name(discovery, include.name)
+				name := project_discovery_intern_name(discovery, include.name.text)
 				if string_interner.is_valid(name) {
 					append(
 						&facts.include_edges,
 						Workspace_Include_Edge {
 							name           = name,
-							name_range     = include.range,
+							name_range     = include.name.range,
 							if_found       = n.if_found,
 							target_index   = -1,
 							external_index = -1,

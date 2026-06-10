@@ -137,6 +137,18 @@ parser_intern_token_name :: proc(p: ^Parser, token: Token) -> string {
 	return parser_intern_name(p, parser_token_name_text(p, token))
 }
 
+parser_ast_token :: proc(text: string, range: tokenizer.Range) -> ast.Token_Text {
+	return ast.Token_Text{text = text, range = range}
+}
+
+parser_ast_name_token :: proc(p: ^Parser, token: Token) -> ast.Token_Text {
+	return parser_ast_token(parser_intern_token_name(p, token), parser_token_name_range(p, token))
+}
+
+parser_ast_raw_name_token :: proc(p: ^Parser, token: Token) -> ast.Token_Text {
+	return parser_ast_token(parser_intern_token_name(p, token), token.range)
+}
+
 parser_token_name_text :: proc(p: ^Parser, token: Token) -> string {
 	text := tokenizer.token_lexeme(token, p.source)
 	if len(text) > 0 && text[0] == '!' {
@@ -1613,8 +1625,7 @@ type_ref_fill_base_path :: proc(
 				append(
 					&expr.path,
 					ast.Type_Ref_Path_Segment {
-						name = parser_intern_token_name(p, field),
-						range = field.range,
+						name = parser_ast_raw_name_token(p, field),
 						selector = selector_op(tok.kind),
 						selector_range = tok.range,
 					},
@@ -1640,8 +1651,8 @@ type_ref_fill_base_path :: proc(
 	}
 	if path_start < end && p.tokens[path_start].range.start < base_end {
 		first := p.tokens[path_start]
-		expr.base_range = tokenizer.text_range(first.range.start, base_end)
-		expr.base_name = parser_intern_name(p, p.source[expr.base_range.start:expr.base_range.end])
+		base_range := tokenizer.text_range(first.range.start, base_end)
+		expr.base_name = parser_ast_token(parser_intern_name(p, p.source[base_range.start:base_range.end]), base_range)
 	}
 }
 

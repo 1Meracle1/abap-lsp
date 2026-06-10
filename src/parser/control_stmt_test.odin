@@ -109,8 +109,8 @@ ENDLOOP.`
 	testing.expect_value(t, end_of.kind, ast.At_Stmt_Kind.End_Of)
 	testing.expect(t, first.expr == nil)
 	testing.expect(t, last.expr == nil)
-	testing.expect_value(t, new_.field_name, "field")
-	testing.expect_value(t, end_of.field_name, "field")
+	testing.expect_value(t, new_.field_name.text, "field")
+	testing.expect_value(t, end_of.field_name.text, "field")
 }
 
 @(test)
@@ -176,32 +176,32 @@ ENDFUNCTION.`
 	testing.expect_value(t, form.form_parameters[0].section, ast.Form_Parameter_Section.Tables)
 	testing.expect_value(t, form.form_parameters[0].passing, ast.Parameter_Passing_Kind.Direct)
 	testing.expect_value(t, form.form_parameters[0].type_clause.form, ast.Data_Type_Form.Structure)
-	testing.expect_value(t, source[form.form_parameters[0].range.start:form.form_parameters[0].range.end], "ct_rows")
-	testing.expect_value(t, form.form_parameters[1].name, "iv_text")
+	testing.expect_value(t, source[form.form_parameters[0].name.range.start:form.form_parameters[0].name.range.end], "ct_rows")
+	testing.expect_value(t, form.form_parameters[1].name.text, "iv_text")
 	testing.expect_value(t, form.form_parameters[1].passing, ast.Parameter_Passing_Kind.Value)
-	testing.expect_value(t, form.form_parameters[2].name, "iv_ref")
+	testing.expect_value(t, form.form_parameters[2].name.text, "iv_ref")
 	testing.expect_value(t, form.form_parameters[2].passing, ast.Parameter_Passing_Kind.Reference)
 	form_ref := form.form_parameters[2].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, form_ref.base_name, "sy")
-	testing.expect_value(t, form_ref.path[0].name, "uname")
+	testing.expect_value(t, form_ref.base_name.text, "sy")
+	testing.expect_value(t, form_ref.path[0].name.text, "uname")
 	testing.expect_value(t, form.form_parameters[3].section, ast.Form_Parameter_Section.Changing)
 
 	function := parsed.root.stmts[1].derived_stmt.(^ast.Function_Decl)
 	testing.expect_value(t, len(function.function_parameters), 5)
-	testing.expect_value(t, function.function_parameters[0].name, "iv_value")
+	testing.expect_value(t, function.function_parameters[0].name.text, "iv_value")
 	testing.expect(t, .Is_Optional in function.function_parameters[0].flags)
-	testing.expect_value(t, function.function_parameters[1].name, "iv_text")
+	testing.expect_value(t, function.function_parameters[1].name.text, "iv_text")
 	testing.expect(t, .Has_Default_Value in function.function_parameters[1].flags)
 	testing.expect_value(t, function.function_parameters[2].section, ast.Function_Parameter_Section.Exporting)
 	function_ref := function.function_parameters[2].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, function_ref.base_name, "sy")
-	testing.expect_value(t, function_ref.path[0].name, "uname")
+	testing.expect_value(t, function_ref.base_name.text, "sy")
+	testing.expect_value(t, function_ref.path[0].name.text, "uname")
 	testing.expect_value(t, function.function_parameters[3].passing, ast.Parameter_Passing_Kind.Reference)
 	testing.expect_value(t, function.function_parameters[3].type_clause.form, ast.Data_Type_Form.Ref_To)
 	testing.expect_value(t, function.function_parameters[4].type_clause.form, ast.Data_Type_Form.Structure)
 	testing.expect_value(t, len(function.exceptions), 2)
-	testing.expect_value(t, function.exceptions[0].name, "failed")
-	testing.expect_value(t, function.exceptions[1].name, "not_found")
+	testing.expect_value(t, function.exceptions[0].name.text, "failed")
+	testing.expect_value(t, function.exceptions[1].name.text, "not_found")
 }
 
 @(test)
@@ -215,16 +215,16 @@ ENDFORM.`
 	testing.expect_value(t, len(parsed.errors), 0)
 	form := parsed.root.stmts[0].derived_stmt.(^ast.Form_Decl)
 	testing.expect_value(t, len(form.form_parameters), 4)
-	testing.expect_value(t, form.form_parameters[0].name, "resulttab")
+	testing.expect_value(t, form.form_parameters[0].name.text, "resulttab")
 	testing.expect_value(t, form.form_parameters[0].section, ast.Form_Parameter_Section.Tables)
 	testing.expect_value(t, form.form_parameters[0].type_clause.form, ast.Data_Type_Form.Structure)
 	ref := form.form_parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, ref.base_name, "ddsymtab")
-	testing.expect_value(t, form.form_parameters[1].name, "rangetab")
+	testing.expect_value(t, ref.base_name.text, "ddsymtab")
+	testing.expect_value(t, form.form_parameters[1].name.text, "rangetab")
 	testing.expect_value(t, form.form_parameters[1].section, ast.Form_Parameter_Section.Tables)
 	testing.expect(t, form.form_parameters[1].type_clause == nil)
 	testing.expect_value(t, form.form_parameters[2].section, ast.Form_Parameter_Section.Using)
-	testing.expect_value(t, form.form_parameters[3].name, "par2")
+	testing.expect_value(t, form.form_parameters[3].name.text, "par2")
 }
 
 @(test)
@@ -236,10 +236,10 @@ ENDFORM.`
 	testing.expect_value(t, len(parsed.errors), 0)
 	form := parsed.root.stmts[0].derived_stmt.(^ast.Form_Decl)
 	testing.expect_value(t, len(form.form_parameters), 4)
-	testing.expect_value(t, form.form_parameters[2].name, "cnt")
+	testing.expect_value(t, form.form_parameters[2].name.text, "cnt")
 	cnt_ref := form.form_parameters[2].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, cnt_ref.base_name, "i")
-	testing.expect_value(t, form.form_parameters[3].name, "prid")
+	testing.expect_value(t, cnt_ref.base_name.text, "i")
+	testing.expect_value(t, form.form_parameters[3].name.text, "prid")
 	testing.expect(t, form.form_parameters[3].type_clause == nil)
 }
 
@@ -254,7 +254,7 @@ ENDFORM.`
 	form := parsed.root.stmts[0].derived_stmt.(^ast.Form_Decl)
 	testing.expect_value(t, len(form.form_parameters), 2)
 	testing.expect_value(t, form.form_parameters[1].section, ast.Form_Parameter_Section.Using)
-	testing.expect_value(t, form.form_parameters[1].name, "par1")
+	testing.expect_value(t, form.form_parameters[1].name.text, "par1")
 }
 
 @(test)
@@ -266,7 +266,7 @@ ENDFORM.`
 	testing.expect_value(t, len(parsed.errors), 0)
 	form := parsed.root.stmts[0].derived_stmt.(^ast.Form_Decl)
 	testing.expect_value(t, len(form.form_parameters), 1)
-	testing.expect_value(t, form.form_parameters[0].name, "iv_value")
+	testing.expect_value(t, form.form_parameters[0].name.text, "iv_value")
 }
 
 @(test)
@@ -279,9 +279,9 @@ ENDFUNCTION.`
 	testing.expect_value(t, len(parsed.errors), 0)
 	function := parsed.root.stmts[0].derived_stmt.(^ast.Function_Decl)
 	testing.expect_value(t, len(function.function_parameters), 2)
-	testing.expect_value(t, function.function_parameters[0].name, "VALUE")
+	testing.expect_value(t, function.function_parameters[0].name.text, "VALUE")
 	testing.expect_value(t, function.function_parameters[0].passing, ast.Parameter_Passing_Kind.Direct)
-	testing.expect_value(t, function.function_parameters[1].name, "REFERENCE")
+	testing.expect_value(t, function.function_parameters[1].name.text, "REFERENCE")
 	testing.expect_value(t, function.function_parameters[1].passing, ast.Parameter_Passing_Kind.Direct)
 }
 
@@ -300,13 +300,13 @@ ENDFUNCTION.`
 	testing.expect_value(t, len(function.function_parameters), 1)
 	param := function.function_parameters[0]
 	testing.expect_value(t, param.section, ast.Function_Parameter_Section.Tables)
-	testing.expect_value(t, param.name, "EXISTENCE")
+	testing.expect_value(t, param.name.text, "EXISTENCE")
 	testing.expect_value(t, param.type_clause.form, ast.Data_Type_Form.Like)
 	testing.expect(t, .Is_Optional in param.flags)
 	ref := param.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, ref.base_name, "HROEXIST")
+	testing.expect_value(t, ref.base_name.text, "HROEXIST")
 	testing.expect_value(t, len(function.exceptions), 1)
-	testing.expect_value(t, function.exceptions[0].name, "NOT_FOUND")
+	testing.expect_value(t, function.exceptions[0].name.text, "NOT_FOUND")
 }
 
 @(test)
@@ -347,11 +347,11 @@ CLASS lcl_deferred DEFINITION DEFERRED.`
 	testing.expect(t, .Abstract in abs.flags)
 	testing.expect(t, !(.Implementation in abs.flags))
 	testing.expect(t, !(.Bodyless in abs.flags))
-	testing.expect_value(t, source[child.name_range.start:child.name_range.end], "lcl_child")
-	testing.expect_value(t, child.superclass_name, "lcl_super")
+	testing.expect_value(t, source[child.name.range.start:child.name.range.end], "lcl_child")
+	testing.expect_value(t, child.superclass_name.text, "lcl_super")
 	testing.expect_value(
 		t,
-		source[child.superclass_range.start:child.superclass_range.end],
+		source[child.superclass_name.range.start:child.superclass_name.range.end],
 		"lcl_super",
 	)
 	testing.expect(t, .Implementation in impl.flags)
@@ -377,9 +377,9 @@ INTERFACE if_sxml LOAD.`
 	class_load := iface.body[0].derived_stmt.(^ast.Oop_Load_Stmt)
 	interface_load := parsed.root.stmts[1].derived_stmt.(^ast.Oop_Load_Stmt)
 	testing.expect_value(t, class_load.kind, ast.Oop_Load_Kind.Class)
-	testing.expect_value(t, class_load.name, "cl_gui_column_tree")
+	testing.expect_value(t, class_load.name.text, "cl_gui_column_tree")
 	testing.expect_value(t, interface_load.kind, ast.Oop_Load_Kind.Interface)
-	testing.expect_value(t, interface_load.name, "if_sxml")
+	testing.expect_value(t, interface_load.name.text, "if_sxml")
 }
 
 @(test)
@@ -395,11 +395,11 @@ ENDCLASS.`
 
 	class := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl)
 	testing.expect_value(t, len(class.friends), 2)
-	testing.expect_value(t, class.friends[0].name, "lcl_friend")
-	testing.expect_value(t, class.friends[1].name, "zcl_global")
+	testing.expect_value(t, class.friends[0].name.text, "lcl_friend")
+	testing.expect_value(t, class.friends[1].name.text, "zcl_global")
 	testing.expect_value(
 		t,
-		source[class.friends[0].range.start:class.friends[0].range.end],
+		source[class.friends[0].name.range.start:class.friends[0].name.range.end],
 		"lcl_friend",
 	)
 }
@@ -786,5 +786,5 @@ ENDCLASS.`
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	method := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[0].derived_stmt.(^ast.Method_Decl)
-	testing.expect_value(t, method.name, "if_demo~run")
+	testing.expect_value(t, method.name.text, "if_demo~run")
 }

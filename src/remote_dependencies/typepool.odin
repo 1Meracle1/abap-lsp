@@ -76,7 +76,7 @@ append_expanded_typepool_source :: proc(
 		write_typepool_source_part(out, source[last:stmt.range.start], wrote)
 		failed := false
 		for name in include.names {
-			key := strings.to_lower(name.name, context.temp_allocator)
+			key := strings.to_lower(name.name.text, context.temp_allocator)
 			if key in seen^ {
 				continue
 			}
@@ -84,7 +84,7 @@ append_expanded_typepool_source :: proc(
 			fetched, err := adt.fetch_source(
 				client,
 				.Include,
-				name.name,
+				name.name.text,
 				"",
 				context.temp_allocator,
 			)
@@ -232,13 +232,13 @@ typepool_source_analysis :: proc(
 		case ^ast.Types_Decl:
 			for clause in n.types {
 				if clause.kind == .Begin_Group || clause.kind == .Normal {
-					insert_unique_typepool_symbol(&analysis, clause.name, allocator)
+					insert_unique_typepool_symbol(&analysis, clause.name.text, allocator)
 				}
 			}
 		case ^ast.Constants_Decl:
 			for clause in n.constants {
 				if clause.kind == .Begin_Group || clause.kind == .Normal {
-					insert_unique_typepool_symbol(&analysis, clause.name, allocator)
+					insert_unique_typepool_symbol(&analysis, clause.name.text, allocator)
 				}
 			}
 		}

@@ -66,7 +66,7 @@ checker_check_sql_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_S
 	sql := checker_sql_source_scope_make()
 	defer delete(sql.sources)
 
-	source := checker_sql_add_db_source(ctx, &sql, stmt.target, stmt.db_table_name, stmt.db_table_name_range, stmt.dynamic_source)
+	source := checker_sql_add_db_source(ctx, &sql, stmt.target, stmt.db_table_name.text, stmt.db_table_name.range, stmt.dynamic_source)
 	row_type := source.row_type if source != nil else project_type_unknown(ctx.project)
 	if stmt.source != nil {
 		value := checker_check_expr(ctx, stmt.source)
@@ -273,7 +273,7 @@ checker_sql_append_projection :: proc(
 	}
 	#partial switch n in expr.derived_expr {
 	case ^ast.Sql_Star_Expr:
-		checker_sql_append_star_fields(ctx, sql, fields, n.qualifier, n.star_range if n.star_range.end > n.star_range.start else expr.range)
+		checker_sql_append_star_fields(ctx, sql, fields, n.qualifier.text, n.star_range if n.star_range.end > n.star_range.start else expr.range)
 		return
 	}
 	typ := checker_check_sql_expr(ctx, sql, expr, false)
@@ -305,9 +305,9 @@ checker_sql_projection_name :: proc(
 	}
 	#partial switch n in expr.derived_expr {
 	case ^ast.Sql_Column_Expr:
-		return checker_intern_name(ctx.project, n.name), n.name_range
+		return checker_intern_name(ctx.project, n.name.text), n.name.range
 	case ^ast.Sql_Call_Expr:
-		return checker_intern_name(ctx.project, n.name), n.name_range
+		return checker_intern_name(ctx.project, n.name.text), n.name.range
 	case ^ast.Ident_Expr:
 		return checker_intern_name(ctx.project, n.name), n.range
 	case ^ast.Type_Ref_Expr:
@@ -376,15 +376,15 @@ checker_check_sql_expr :: proc(
 	case ^ast.Host_Expr:
 		return checker_check_expr(ctx, n.value).type
 	case ^ast.Sql_Column_Expr:
-		field, ok := checker_sql_lookup_column(ctx, sql, n.name, n.qualifier, n.name_range)
+		field, ok := checker_sql_lookup_column(ctx, sql, n.name.text, n.qualifier.text, n.name.range)
 		if ok {
 			checker_add_entity_use(ctx, &expr.expr_base, field)
 			return field.type if field.type != nil else project_type_unknown(ctx.project)
 		}
 		return project_type_unknown(ctx.project)
 	case ^ast.Sql_Star_Expr:
-		if n.qualifier != "" {
-			_, _ = checker_sql_source_for_qualifier(ctx, sql, checker_intern_name(ctx.project, n.qualifier))
+		if n.qualifier.text != "" {
+			_, _ = checker_sql_source_for_qualifier(ctx, sql, checker_intern_name(ctx.project, n.qualifier.text))
 		}
 		return project_type_unknown(ctx.project)
 	case ^ast.Sql_Call_Expr:
@@ -395,7 +395,7 @@ checker_check_sql_expr :: proc(
 				result = arg_type
 			}
 		}
-		if strings.equal_fold(n.name, "count") {
+		if strings.equal_fold(n.name.text, "count") {
 			return checker_builtin_type_from_name(ctx.checker, "i")
 		}
 		return result
@@ -700,8 +700,8 @@ checker_check_sql_assignment :: proc(
 	sql: ^Sql_Source_Scope,
 	assignment: ast.Sql_Assignment_Clause,
 ) {
-	field_name := checker_intern_name(ctx.project, assignment.column_name)
-	range := assignment.column_range
+	field_name := checker_intern_name(ctx.project, assignment.column_name.text)
+	range := assignment.column_name.range
 	if !string_interner.is_valid(field_name) {
 		field_name = checker_sql_simple_expr_name(ctx, assignment.name)
 		range = checker_expr_range(assignment.name)
@@ -726,8 +726,8 @@ checker_sql_source_expr_name :: proc(
 	case ^ast.Type_Ref_Expr:
 		return n.name, n.range, n.name != ""
 	case ^ast.Sql_Column_Expr:
-		if n.qualifier == "" {
-			return n.name, n.name_range, n.name != ""
+		if n.qualifier.text == "" {
+			return n.name.text, n.name.range, n.name.text != ""
 		}
 	case ^ast.Unary_Expr:
 		if n.op == .Plus {
@@ -758,8 +758,8 @@ checker_sql_simple_expr_name :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) -> 
 	case ^ast.Type_Ref_Expr:
 		return checker_intern_name(ctx.project, n.name)
 	case ^ast.Sql_Column_Expr:
-		if n.qualifier == "" {
-			return checker_intern_name(ctx.project, n.name)
+		if n.qualifier.text == "" {
+			return checker_intern_name(ctx.project, n.name.text)
 		}
 	case ^ast.Host_Expr:
 		return checker_sql_simple_expr_name(ctx, n.value)
@@ -775,9 +775,9 @@ checker_sql_target_name :: proc(expr: ^ast.Expr) -> string {
 	case ^ast.Host_Expr:
 		return checker_sql_target_name(n.value)
 	case ^ast.Data_Inline_Name_Expr:
-		return n.name
+		return n.name.text
 	case ^ast.Field_Symbol_Inline_Name_Expr:
-		return n.name
+		return n.name.text
 	case ^ast.Ident_Expr:
 		return n.name
 	case ^ast.Type_Ref_Expr:

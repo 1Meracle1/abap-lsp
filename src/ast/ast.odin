@@ -15,6 +15,11 @@ Ast_Trivia :: struct {
 	text:  string,
 }
 
+Token_Text :: struct {
+	text:  string,
+	range: tokenizer.Range,
+}
+
 Ast_Trivia_Attachment :: enum {
 	File_Leading,
 	File_Trailing,
@@ -307,19 +312,16 @@ Type_Ref_Key_Kind :: enum {
 
 // ABAP syntax: type-reference key addition such as `WITH DEFAULT KEY` or `WITH UNIQUE KEY id`.
 Type_Ref_Key_Clause :: struct {
-	kind:             Type_Ref_Key_Kind,
-	default_key:      bool,
-	sorted:           bool,
-	hashed:           bool,
-	name:             string,
-	name_range:       tokenizer.Range,
-	components:       [dynamic]string,
-	component_ranges: [dynamic]tokenizer.Range,
+	kind:        Type_Ref_Key_Kind,
+	default_key: bool,
+	sorted:      bool,
+	hashed:      bool,
+	name:        Token_Text,
+	components:  [dynamic]Token_Text,
 }
 
 Type_Ref_Path_Segment :: struct {
-	name:           string,
-	range:          tokenizer.Range,
+	name:           Token_Text,
 	selector:       Selector_Op,
 	selector_range: tokenizer.Range,
 }
@@ -331,19 +333,16 @@ Raw_Operand_Inline_Decl_Kind :: enum {
 
 Raw_Operand_Inline_Decl :: struct {
 	kind:  Raw_Operand_Inline_Decl_Kind,
-	name:  string,
-	range: tokenizer.Range,
+	name:  Token_Text,
 }
 
 Raw_Operand_Path_Segment :: struct {
-	name:     string,
-	range:    tokenizer.Range,
+	name:     Token_Text,
 	selector: Selector_Op,
 }
 
 Raw_Operand_Ref :: struct {
-	name:         string,
-	range:        tokenizer.Range,
+	name:         Token_Text,
 	type_base:    bool,
 	call_like:    bool,
 	dynamic_path: bool,
@@ -356,8 +355,7 @@ Type_Ref_Expr :: struct {
 	text:        string,
 	name:        string,
 	is_ref:      bool,
-	base_name:   string,
-	base_range:  tokenizer.Range,
+	base_name:   Token_Text,
 	path:        [dynamic]Type_Ref_Path_Segment,
 	key:         ^Type_Ref_Key_Clause,
 	keys:        [dynamic]^Type_Ref_Key_Clause,
@@ -469,19 +467,16 @@ Call_Positional_Arg_Expr :: struct {
 
 // ABAP SQL syntax: column reference such as `field` or `alias~field`.
 Sql_Column_Expr :: struct {
-	using node:      Expr,
-	qualifier:       string,
-	qualifier_range: tokenizer.Range,
-	name:            string,
-	name_range:      tokenizer.Range,
+	using node: Expr,
+	qualifier:  Token_Text,
+	name:       Token_Text,
 }
 
 // ABAP SQL syntax: star projection such as `*` or `alias~*`.
 Sql_Star_Expr :: struct {
-	using node:      Expr,
-	qualifier:       string,
-	qualifier_range: tokenizer.Range,
-	star_range:      tokenizer.Range,
+	using node: Expr,
+	qualifier:  Token_Text,
+	star_range: tokenizer.Range,
 }
 
 Sql_Call_Kind :: enum {
@@ -500,8 +495,7 @@ Sql_Call_Expr :: struct {
 	using node:     Expr,
 	kind:           Sql_Call_Kind,
 	modifier:       Sql_Call_Modifier,
-	name:           string,
-	name_range:     tokenizer.Range,
+	name:           Token_Text,
 	modifier_range: tokenizer.Range,
 	args:           [dynamic]^Expr,
 }
@@ -593,8 +587,7 @@ Let_Expr :: struct {
 // ABAP syntax: one `name = value` binding inside a constructor `LET`.
 Constructor_Let_Binding_Expr :: struct {
 	using node: Expr,
-	name:       string,
-	name_range: tokenizer.Range,
+	name:       Token_Text,
 	value:      ^Expr,
 }
 
@@ -613,18 +606,16 @@ Constructor_Else_Clause_Expr :: struct {
 
 // ABAP syntax: `FOR name IN source [WHERE (...)] ...` or `FOR name = init THEN next UNTIL|WHILE condition ...`.
 Constructor_For_Clause_Expr :: struct {
-	using node:         Expr,
-	kind:               Constructor_For_Kind,
-	variable:           string,
-	variable_range:     tokenizer.Range,
-	init:               ^Expr,
-	then_expr:          ^Expr,
-	condition:          ^Expr,
-	source:             ^Expr,
-	group_source:       string,
-	group_source_range: tokenizer.Range,
-	where_clause:       ^Expr,
-	body:               [dynamic]^Expr,
+	using node:   Expr,
+	kind:         Constructor_For_Kind,
+	variable:     Token_Text,
+	init:         ^Expr,
+	then_expr:    ^Expr,
+	condition:    ^Expr,
+	source:       ^Expr,
+	group_source: Token_Text,
+	where_clause: ^Expr,
+	body:         [dynamic]^Expr,
 }
 
 // ABAP syntax: `WHERE condition` inside a constructor `FOR ... IN` clause.
@@ -699,15 +690,13 @@ Constructor_Corresponding_Except_Clause_Expr :: struct {
 // ABAP syntax: inline declaration expression `DATA(name)`, mainly used at call sites for imported parameters.
 Data_Inline_Name_Expr :: struct {
 	using node: Expr,
-	name:       string,
-	name_range: tokenizer.Range,
+	name:       Token_Text,
 }
 
 // ABAP syntax: inline declaration expression `FIELD-SYMBOL(<name>)`.
 Field_Symbol_Inline_Name_Expr :: struct {
 	using node: Expr,
-	name:       string,
-	name_range: tokenizer.Range,
+	name:       Token_Text,
 }
 
 // ABAP syntax: DATA statement, for example `DATA name TYPE i.`.
@@ -715,8 +704,7 @@ Data_Decl :: struct {
 	using node:      Decl,
 	kind:            Decl_Clause_Kind,
 	flags:           Decl_Clause_Flags,
-	name:            string,
-	name_range:      tokenizer.Range,
+	name:            Token_Text,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause, // nil if untyped
@@ -731,8 +719,7 @@ Data_Decl :: struct {
 // ABAP syntax: inline DATA statement, for example `DATA(name) = 3.`.
 Data_Inline_Decl :: struct {
 	using node: Decl,
-	name:       string,
-	name_range: tokenizer.Range,
+	name:       Token_Text,
 	expr:       ^Expr,
 }
 
@@ -761,8 +748,7 @@ Data_Chained_Branch :: struct {
 	kind:            Decl_Clause_Kind,
 	flags:           Decl_Clause_Flags,
 	depth:           int,
-	name:            string,
-	name_range:      tokenizer.Range,
+	name:            Token_Text,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause, // nil if untyped
@@ -814,8 +800,7 @@ Types_Clause :: struct {
 	kind:            Decl_Clause_Kind,
 	flags:           Decl_Clause_Flags,
 	depth:           int,
-	name:            string,
-	name_range:      tokenizer.Range,
+	name:            Token_Text,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause,
@@ -836,8 +821,7 @@ Constants_Clause :: struct {
 	kind:            Decl_Clause_Kind,
 	flags:           Decl_Clause_Flags,
 	depth:           int,
-	name:            string,
-	name_range:      tokenizer.Range,
+	name:            Token_Text,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause,
@@ -856,8 +840,7 @@ Field_Symbols_Decl :: struct {
 
 // ABAP syntax: one FIELD-SYMBOLS entry, for example `<fs> TYPE any` or `<line> LIKE LINE OF itab`.
 Field_Symbols_Clause :: struct {
-	name:        string,
-	name_range:  tokenizer.Range,
+	name:        Token_Text,
 	type_clause: ^Data_Type_Clause,
 }
 
@@ -872,8 +855,7 @@ Statics_Clause :: struct {
 	kind:            Decl_Clause_Kind,
 	flags:           Decl_Clause_Flags,
 	depth:           int,
-	name:            string,
-	name_range:      tokenizer.Range,
+	name:            Token_Text,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause,
@@ -892,8 +874,7 @@ Tables_Decl :: struct {
 
 // ABAP syntax: one TABLES work-area entry, for example `mara`.
 Tables_Clause :: struct {
-	name:       string,
-	name_range: tokenizer.Range,
+	name:       Token_Text,
 }
 
 // ABAP syntax: RANGES statement, for example `RANGES r FOR mara-matnr.`
@@ -904,8 +885,7 @@ Ranges_Decl :: struct {
 
 // ABAP syntax: one RANGES entry, for example `r_matnr FOR mara-matnr`.
 Ranges_Clause :: struct {
-	name:       string,
-	name_range: tokenizer.Range,
+	name:       Token_Text,
 	for_clause: ^For_Clause,
 }
 
@@ -930,8 +910,7 @@ Parameter_Flags :: bit_set[Parameter_Flag]
 
 // ABAP syntax: one PARAMETERS entry, for example `p_count TYPE i DEFAULT 1`.
 Parameters_Clause :: struct {
-	name:              string,
-	name_range:        tokenizer.Range,
+	name:              Token_Text,
 	paren_length:      ^Paren_Length_Clause,
 	length_clauses:    [dynamic]Length_Clause,
 	type_clause:       ^Data_Type_Clause,
@@ -970,8 +949,7 @@ Selection_Request_Kind :: enum {
 
 // ABAP syntax: one SELECT-OPTIONS entry, for example `s_matnr FOR mara-matnr DEFAULT 'A' TO 'Z'`.
 Select_Options_Clause :: struct {
-	name:             string,
-	name_range:       tokenizer.Range,
+	name:             Token_Text,
 	for_clause:       ^For_Clause,
 	default_clause:   ^Default_Clause,
 	to_clause:        ^To_Clause,
@@ -994,8 +972,7 @@ Controls_Decl :: struct {
 
 // ABAP syntax: one CONTROLS entry, for example `tc TYPE TABLEVIEW USING SCREEN 100`.
 Controls_Clause :: struct {
-	name:         string,
-	name_range:   tokenizer.Range,
+	name:         Token_Text,
 	type_clause:  ^Data_Type_Clause,
 	using_screen: ^Using_Screen_Clause,
 }
@@ -1011,8 +988,7 @@ Class_Data_Clause :: struct {
 	kind:            Decl_Clause_Kind,
 	flags:           Decl_Clause_Flags,
 	depth:           int,
-	name:            string,
-	name_range:      tokenizer.Range,
+	name:            Token_Text,
 	paren_length:    ^Paren_Length_Clause,
 	length_clauses:  [dynamic]Length_Clause,
 	type_clause:     ^Data_Type_Clause,
@@ -1033,14 +1009,12 @@ Type_Pools_Decl :: struct {
 // ABAP syntax: FUNCTION-POOL statement, for example `FUNCTION-POOL zfg MESSAGE-ID sv.`
 Function_Pool_Decl :: struct {
 	using node: Decl,
-	name:       string,
-	name_range: tokenizer.Range,
+	name:       Token_Text,
 	message_id: string,
 }
 
 Include_Name :: struct {
-	name:  string,
-	range: tokenizer.Range,
+	name: Token_Text,
 }
 
 // ABAP syntax: program include statement, for example `INCLUDE zinc.` or `INCLUDE: ztop, zf01.`
@@ -1484,8 +1458,7 @@ Call_Stmt_Arg_Section :: struct {
 Call_Stmt_Named_Arg :: struct {
 	section:       Call_Arg_Section_Kind,
 	has_section:   bool,
-	name:          string,
-	name_range:    tokenizer.Range,
+	name:          Token_Text,
 	value_range:   tokenizer.Range,
 	value:         ^Expr,
 	message_range: tokenizer.Range,
@@ -1517,8 +1490,7 @@ Call_Transformation_Arg_Kind :: enum {
 
 Call_Transformation_Arg :: struct {
 	kind:       Call_Transformation_Arg_Kind,
-	name:       string,
-	name_range: tokenizer.Range,
+	name:       Token_Text,
 	has_eq:     bool,
 	value:      ^Expr,
 }
@@ -1607,8 +1579,7 @@ Message_Head_Clause :: struct {
 	id:                  ^Expr,
 	msg_type:            ^Expr,
 	number:              ^Expr,
-	compact_class_name:  string,
-	compact_class_range: tokenizer.Range,
+	compact_class_name:  Token_Text,
 	has_compact_class:   bool,
 }
 
@@ -1737,10 +1708,8 @@ Data_Cluster_Medium_Kind :: enum {
 Data_Cluster_Medium_Clause :: struct {
 	kind:        Data_Cluster_Medium_Kind,
 	object:      ^Expr,
-	dbtab:       string,
-	dbtab_range: tokenizer.Range,
-	area:        string,
-	area_range:  tokenizer.Range,
+	dbtab:       Token_Text,
+	area:        Token_Text,
 	work_area:   ^Expr,
 	client:      ^Expr,
 	id:          ^Expr,
@@ -1748,8 +1717,7 @@ Data_Cluster_Medium_Clause :: struct {
 
 // ABAP syntax: one data cluster parameter, for example `name = value`.
 Data_Cluster_Parameter_Clause :: struct {
-	name:       string,
-	name_range: tokenizer.Range,
+	name:       Token_Text,
 	value:      ^Expr,
 }
 
@@ -2019,12 +1987,9 @@ Macro_Call_Stmt :: struct {
 Selection_Screen_Stmt :: struct {
 	using node:    Stmt,
 	text:          string,
-	title_name:    string,
-	title_range:   tokenizer.Range,
-	comment_name:  string,
-	comment_range: tokenizer.Range,
-	field_name:    string,
-	field_range:   tokenizer.Range,
+	title_name:    Token_Text,
+	comment_name:  Token_Text,
+	field_name:    Token_Text,
 }
 
 Oop_Simple_Kind :: enum {
@@ -2060,8 +2025,7 @@ Oop_Signature_Kind :: enum {
 }
 
 Oop_Parameter_Clause :: struct {
-	name:        string,
-	range:       tokenizer.Range,
+	name:        Token_Text,
 	passing:     Parameter_Passing_Kind,
 	type_clause: ^Data_Type_Clause,
 	optional:    bool,
@@ -2075,8 +2039,7 @@ Oop_Signature_Clause :: struct {
 }
 
 Oop_Event_Handler_Clause :: struct {
-	event_name:  string,
-	event_range: tokenizer.Range,
+	event_name:  Token_Text,
 	source_type: ^Expr,
 }
 
@@ -2086,25 +2049,19 @@ Oop_Member_Flag :: enum {
 Oop_Member_Flags :: bit_set[Oop_Member_Flag]
 
 Oop_Member_Clause :: struct {
-	name:            string,
-	range:           tokenizer.Range,
-	qualifier:       string,
-	qualifier_range: tokenizer.Range,
-	member_name:     string,
-	member_range:    tokenizer.Range,
+	name:            Token_Text,
+	qualifier:       Token_Text,
+	member_name:     Token_Text,
 	flags:           Oop_Member_Flags,
 	signatures:      [dynamic]Oop_Signature_Clause,
 	event_handler:   Oop_Event_Handler_Clause,
 }
 
 Oop_Alias_Clause :: struct {
-	name:                   string,
-	range:                  tokenizer.Range,
+	name:                   Token_Text,
 	target:                 ^Expr,
-	target_interface_name:  string,
-	target_interface_range: tokenizer.Range,
-	target_member_name:     string,
-	target_member_range:    tokenizer.Range,
+	target_interface_name:  Token_Text,
+	target_member_name:     Token_Text,
 }
 
 // ABAP syntax: class/interface member declarations handled as simple OOP statements.
@@ -2126,8 +2083,7 @@ Oop_Load_Kind :: enum {
 Oop_Load_Stmt :: struct {
 	using node: Stmt,
 	kind:       Oop_Load_Kind,
-	name:       string,
-	name_range: tokenizer.Range,
+	name:       Token_Text,
 	text:       string,
 }
 
@@ -2233,8 +2189,7 @@ At_Stmt :: struct {
 	using node:  Stmt,
 	kind:        At_Stmt_Kind,
 	expr:        ^Expr,
-	field_name:  string,
-	field_range: tokenizer.Range,
+	field_name:  Token_Text,
 	body:        [dynamic]^Stmt,
 }
 
@@ -2269,27 +2224,23 @@ Class_Decl_Flag :: enum {
 Class_Decl_Flags :: bit_set[Class_Decl_Flag]
 
 Class_Friend_Clause :: struct {
-	name:  string,
-	range: tokenizer.Range,
+	name: Token_Text,
 }
 
 Class_Decl :: struct {
 	using node:       Stmt,
-	name:             string,
-	name_range:       tokenizer.Range,
+	name:             Token_Text,
 	body:             [dynamic]^Stmt,
 	header_range:     tokenizer.Range,
 	header_text:      string,
 	flags:            Class_Decl_Flags,
-	superclass_name:  string,
-	superclass_range: tokenizer.Range,
+	superclass_name:  Token_Text,
 	friends:          [dynamic]Class_Friend_Clause,
 }
 
 Interface_Decl :: struct {
 	using node:   Stmt,
-	name:         string,
-	name_range:   tokenizer.Range,
+	name:         Token_Text,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
 	header_text:  string,
@@ -2298,12 +2249,9 @@ Interface_Decl :: struct {
 
 Method_Decl :: struct {
 	using node:      Stmt,
-	name:            string,
-	name_range:      tokenizer.Range,
-	qualifier:       string,
-	qualifier_range: tokenizer.Range,
-	member_name:     string,
-	member_range:    tokenizer.Range,
+	name:            Token_Text,
+	qualifier:       Token_Text,
+	member_name:     Token_Text,
 	body:            [dynamic]^Stmt,
 	header_range:    tokenizer.Range,
 	header_text:     string,
@@ -2327,8 +2275,7 @@ Form_Parameter_Section :: enum {
 
 Form_Parameter_Clause :: struct {
 	section:     Form_Parameter_Section,
-	name:        string,
-	range:       tokenizer.Range,
+	name:        Token_Text,
 	passing:     Parameter_Passing_Kind,
 	type_clause: ^Data_Type_Clause,
 }
@@ -2357,16 +2304,14 @@ Function_Parameter_Flags :: bit_set[Function_Parameter_Flag]
 
 Function_Parameter_Clause :: struct {
 	section:     Function_Parameter_Section,
-	name:        string,
-	range:       tokenizer.Range,
+	name:        Token_Text,
 	passing:     Parameter_Passing_Kind,
 	type_clause: ^Data_Type_Clause,
 	flags:       Function_Parameter_Flags,
 }
 
 Function_Exception_Clause :: struct {
-	name:  string,
-	range: tokenizer.Range,
+	name: Token_Text,
 }
 
 Function_Decl :: struct {
@@ -2572,15 +2517,13 @@ Read_Table_Key_Kind :: enum {
 
 // ABAP syntax: one component-name segment inside a READ TABLE key clause.
 Read_Table_Key_Name_Segment :: struct {
-	name:     string,
-	range:    tokenizer.Range,
+	name:     Token_Text,
 	selector: Selector_Op,
 }
 
 // ABAP syntax: one `name = value` component inside a READ TABLE key clause.
 Read_Table_Key_Value_Clause :: struct {
-	name:         string,
-	name_range:   tokenizer.Range,
+	name:         Token_Text,
 	path:         [dynamic]Read_Table_Key_Name_Segment,
 	dynamic_name: ^Expr,
 	is_dynamic:   bool,
@@ -2590,8 +2533,7 @@ Read_Table_Key_Value_Clause :: struct {
 
 // ABAP syntax: table key selector after `USING KEY`, either `key` or `(expr)`.
 Table_Key_Selector :: struct {
-	name:         string,
-	name_range:   tokenizer.Range,
+	name:         Token_Text,
 	dynamic_name: ^Expr,
 }
 
@@ -2629,8 +2571,7 @@ Insert_Form :: enum {
 Sql_Assignment_Clause :: struct {
 	name:         ^Expr,
 	value:        ^Expr,
-	column_name:  string,
-	column_range: tokenizer.Range,
+	column_name:  Token_Text,
 }
 
 // ABAP syntax: `INSERT ...` for internal tables or database tables.
@@ -2643,8 +2584,7 @@ Insert_Stmt :: struct {
 	assigning:                ^Expr,
 	reference_into:           ^Expr,
 	assignments:              [dynamic]Sql_Assignment_Clause,
-	db_table_name:            string,
-	db_table_name_range:      tokenizer.Range,
+	db_table_name:            Token_Text,
 	db_source_range:          tokenizer.Range,
 	has_db_table_name:        bool,
 	dynamic_source:           bool,
@@ -2674,14 +2614,12 @@ Append_Stmt :: struct {
 
 // ABAP syntax: one component-name segment after `MODIFY ... TRANSPORTING`.
 Modify_Transporting_Field_Segment :: struct {
-	name:  string,
-	range: tokenizer.Range,
+	name: Token_Text,
 }
 
 // ABAP syntax: one component path after `MODIFY ... TRANSPORTING`.
 Modify_Transporting_Field_Clause :: struct {
-	name:  string,
-	range: tokenizer.Range,
+	name: Token_Text,
 	path:  [dynamic]Modify_Transporting_Field_Segment,
 }
 
@@ -2705,8 +2643,7 @@ Modify_Stmt :: struct {
 
 Sort_Field_Clause :: struct {
 	expr:       ^Expr,
-	name:       string,
-	range:      tokenizer.Range,
+	name:       Token_Text,
 	ascending:  bool,
 	descending: bool,
 	as_text:    bool,
@@ -2748,8 +2685,7 @@ Delete_Form :: enum {
 Delete_Comparing_Clause :: struct {
 	all_fields: bool,
 	expr:       ^Expr,
-	name:       string,
-	range:      tokenizer.Range,
+	name:       Token_Text,
 }
 
 // ABAP syntax: `DELETE itab ...`, `DELETE FROM dbtab ...`, or `DELETE ADJACENT DUPLICATES FROM itab`.
@@ -2828,8 +2764,7 @@ Report_Stmt :: struct {
 	line_size:        ^Expr,
 	line_count:       ^Expr,
 	has_message_id:   bool,
-	message_id:       string,
-	message_id_range: tokenizer.Range,
+	message_id:       Token_Text,
 }
 
 Textpool_Kind :: enum {

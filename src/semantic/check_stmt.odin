@@ -107,7 +107,7 @@ checker_check_stmt :: proc(
 			checker_collect_stmt_entities(ctx, stmt)
 		}
 		rhs := checker_check_expr(ctx, n.expr)
-		checker_apply_inline_decl_type(ctx, n.name, rhs.type)
+		checker_apply_inline_decl_type(ctx, n.name.text, rhs.type)
 	case ^ast.Assign_Stmt:
 		checker_check_assignment_stmt(ctx, n.lhs, n.rhs)
 	case ^ast.Downcast_Assign_Stmt:
@@ -530,13 +530,13 @@ checker_check_read_table_key_name :: proc(
 	structure := row_structure
 	current_type := row_type
 	for segment in key.path {
-		if segment.name == "table_line" {
+		if segment.name.text == "table_line" {
 			continue
 		}
 		if structure == nil {
 			return
 		}
-		name := checker_intern_name(ctx.project, segment.name)
+		name := checker_intern_name(ctx.project, segment.name.text)
 		field, ok := checker_lookup_structure_field(structure, name)
 		if !ok {
 			return
@@ -829,8 +829,8 @@ checker_collect_table_component_segments :: proc(
 		if n.raw_operand {
 			return false
 		}
-		base_name := n.base_name
-		base_range := n.base_range
+		base_name := n.base_name.text
+		base_range := n.base_name.range
 		if base_name == "" {
 			base_name = n.name
 			base_range = n.range
@@ -842,16 +842,16 @@ checker_collect_table_component_segments :: proc(
 			if segment.selector != .Dash {
 				return false
 			}
-			if !checker_append_table_component_segment(segments, segment.name, segment.range, &expr.expr_base) {
+			if !checker_append_table_component_segment(segments, segment.name.text, segment.name.range, &expr.expr_base) {
 				return false
 			}
 		}
 		return true
 	case ^ast.Sql_Column_Expr:
-		if n.qualifier != "" {
+		if n.qualifier.text != "" {
 			return false
 		}
-		return checker_append_table_component_segment(segments, n.name, n.name_range, &expr.expr_base)
+		return checker_append_table_component_segment(segments, n.name.text, n.name.range, &expr.expr_base)
 	case ^ast.Selector_Expr:
 		if n.op != .Dash {
 			return false
@@ -878,14 +878,14 @@ checker_append_table_component_leaf_segment :: proc(
 		if n.raw_operand || len(n.path) > 0 {
 			return false
 		}
-		name := n.base_name if n.base_name != "" else n.name
-		range := n.base_range if n.base_name != "" else n.range
+		name := n.base_name.text if n.base_name.text != "" else n.name
+		range := n.base_name.range if n.base_name.text != "" else n.range
 		return checker_append_table_component_segment(segments, name, range, &expr.expr_base)
 	case ^ast.Sql_Column_Expr:
-		if n.qualifier != "" {
+		if n.qualifier.text != "" {
 			return false
 		}
-		return checker_append_table_component_segment(segments, n.name, n.name_range, &expr.expr_base)
+		return checker_append_table_component_segment(segments, n.name.text, n.name.range, &expr.expr_base)
 	}
 	return false
 }
@@ -1017,9 +1017,9 @@ checker_check_call_stmt_args :: proc(
 	args := make([dynamic]Checker_Call_Argument, 0, len(named_args), context.temp_allocator)
 	for named in named_args {
 		arg := Checker_Call_Argument {
-			name          = checker_intern_name(ctx.project, named.name),
-			name_text     = named.name,
-			name_range    = named.name_range,
+			name          = checker_intern_name(ctx.project, named.name.text),
+			name_text     = named.name.text,
+			name_range    = named.name.range,
 			section       = named.section,
 			has_section   = named.has_section,
 			value         = named.value,
@@ -1833,7 +1833,7 @@ checker_dynamic_type_static_name :: proc(
 		}
 		if len(n.raw_refs) == 1 {
 			if name, ok := checker_dynamic_type_constant_name(ctx, n.raw_refs[0]); ok {
-				return name, n.raw_refs[0].range, true
+				return name, n.raw_refs[0].name.range, true
 			}
 		}
 	case ^ast.Literal_Expr:
@@ -1841,7 +1841,7 @@ checker_dynamic_type_static_name :: proc(
 			return name, n.range, true
 		}
 	case ^ast.Ident_Expr:
-		ref := ast.Raw_Operand_Ref{name = n.name, range = n.range}
+		ref := ast.Raw_Operand_Ref{name = ast.Token_Text{text = n.name, range = n.range}}
 		if name, ok := checker_dynamic_type_constant_name(ctx, ref); ok {
 			return name, n.range, true
 		}
@@ -1853,10 +1853,10 @@ checker_dynamic_type_constant_name :: proc(
 	ctx: ^Checker_Context,
 	ref: ast.Raw_Operand_Ref,
 ) -> (string, bool) {
-	if ref.name == "" || ref.type_base || ref.call_like || ref.dynamic_path || len(ref.path) > 0 {
+	if ref.name.text == "" || ref.type_base || ref.call_like || ref.dynamic_path || len(ref.path) > 0 {
 		return "", false
 	}
-	interned := checker_intern_name(ctx.project, ref.name)
+	interned := checker_intern_name(ctx.project, ref.name.text)
 	_, entity, ok := checker_lookup_reference(ctx, .Value, interned)
 	if !ok || entity == nil || entity.kind != .Constant {
 		return "", false
@@ -1892,14 +1892,14 @@ checker_check_line_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Line_Stmt) {
 }
 
 checker_check_selection_screen_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Selection_Screen_Stmt) {
-	if stmt.title_name != "" {
-		checker_check_ident_name(ctx, nil, stmt.title_name, .Value, false)
+	if stmt.title_name.text != "" {
+		checker_check_ident_name(ctx, nil, stmt.title_name.text, .Value, false)
 	}
-	if stmt.comment_name != "" {
-		checker_check_ident_name(ctx, nil, stmt.comment_name, .Value, false)
+	if stmt.comment_name.text != "" {
+		checker_check_ident_name(ctx, nil, stmt.comment_name.text, .Value, false)
 	}
-	if stmt.field_name != "" {
-		checker_check_ident_name(ctx, nil, stmt.field_name, .Value, false)
+	if stmt.field_name.text != "" {
+		checker_check_ident_name(ctx, nil, stmt.field_name.text, .Value, false)
 	}
 }
 

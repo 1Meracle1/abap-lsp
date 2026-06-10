@@ -109,7 +109,7 @@ parse_include_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		bump_token(p)
-		append(&stmt.names, ast.Include_Name{parser_intern_token_name(p, name), name.range})
+		append(&stmt.names, ast.Include_Name{name = parser_ast_raw_name_token(p, name)})
 		if !chained || !allow_token(p, .Comma) {
 			break
 		}
@@ -200,8 +200,7 @@ parse_table_key_selector :: proc(
 	}
 	if current_token(p).kind == .Ident {
 		key := bump_token(p)
-		selector.name = parser_intern_token_name(p, key)
-		selector.name_range = key.range
+		selector.name = parser_ast_raw_name_token(p, key)
 		return selector
 	}
 	if current_token(p).kind == .LParen {
@@ -475,8 +474,7 @@ sql_model_call_expr :: proc(p: ^Parser, expr: ^ast.Expr, call: ^ast.Call_Expr) -
 		return expr
 	}
 	sql_call := ast.new(ast.Sql_Call_Expr, expr.range, p.allocator)
-	sql_call.name = parser_intern_name(p, name)
-	sql_call.name_range = name_range
+	sql_call.name = parser_ast_token(parser_intern_name(p, name), name_range)
 	sql_call.kind = .Aggregate if sql_aggregate_name(name) else .Function
 	sql_call.args = make([dynamic]^ast.Expr, 0, 4, p.allocator)
 	if args, args_ok := call.args.derived_expr.(^ast.Call_Arg_List_Expr); args_ok {
@@ -524,10 +522,8 @@ sql_column_expr :: proc(
 	name_range: tokenizer.Range,
 ) -> ^ast.Expr {
 	expr := ast.new(ast.Sql_Column_Expr, range, p.allocator)
-	expr.qualifier = parser_intern_name(p, qualifier)
-	expr.qualifier_range = qualifier_range
-	expr.name = parser_intern_name(p, name)
-	expr.name_range = name_range
+	expr.qualifier = parser_ast_token(parser_intern_name(p, qualifier), qualifier_range)
+	expr.name = parser_ast_token(parser_intern_name(p, name), name_range)
 	return expr
 }
 
@@ -539,8 +535,7 @@ sql_star_expr :: proc(
 	star_range: tokenizer.Range,
 ) -> ^ast.Expr {
 	expr := ast.new(ast.Sql_Star_Expr, range, p.allocator)
-	expr.qualifier = parser_intern_name(p, qualifier)
-	expr.qualifier_range = qualifier_range
+	expr.qualifier = parser_ast_token(parser_intern_name(p, qualifier), qualifier_range)
 	expr.star_range = star_range
 	return expr
 }
@@ -2147,7 +2142,8 @@ parse_read_table_key_values :: proc(
 				bump_token(p)
 			}
 			expect_token(p, .Eq)
-			name := parser_clone_range_text(p, tokenizer.text_range(name_start, name_end_byte))
+			name_range := tokenizer.text_range(name_start, name_end_byte)
+			name := parser_ast_token(parser_clone_range_text(p, name_range), name_range)
 			value := data_expr(
 				p,
 				body_start,
@@ -2166,7 +2162,6 @@ parse_read_table_key_values :: proc(
 				&entry.key_values,
 				ast.Read_Table_Key_Value_Clause {
 					name = name,
-					name_range = tokenizer.text_range(name_start, name_end_byte),
 					dynamic_name = dynamic_name,
 					is_dynamic = true,
 					value = value,
@@ -2185,8 +2180,7 @@ parse_read_table_key_values :: proc(
 					append(
 						&path,
 						ast.Read_Table_Key_Name_Segment {
-							name = parser_intern_token_name(p, tok),
-							range = tok.range,
+							name = parser_ast_raw_name_token(p, tok),
 							selector = selector,
 						},
 					)
@@ -2202,7 +2196,8 @@ parse_read_table_key_values :: proc(
 				bump_token(p)
 			}
 			expect_token(p, .Eq)
-			name := parser_clone_range_text(p, tokenizer.text_range(name_start, name_end_byte))
+			name_range := tokenizer.text_range(name_start, name_end_byte)
+			name := parser_ast_token(parser_clone_range_text(p, name_range), name_range)
 			value := data_expr(
 				p,
 				body_start,
@@ -2221,9 +2216,8 @@ parse_read_table_key_values :: proc(
 				&entry.key_values,
 				ast.Read_Table_Key_Value_Clause {
 					name = name,
-					name_range = tokenizer.text_range(name_start, name_end_byte),
 					path = path,
-					table_line = len(path) == 1 && strings.equal_fold(path[0].name, "table_line"),
+					table_line = len(path) == 1 && strings.equal_fold(path[0].name.text, "table_line"),
 					value = value,
 				},
 			)
@@ -2341,8 +2335,7 @@ insert_set_db_source_facts :: proc(stmt: ^ast.Insert_Stmt) {
 	stmt.dynamic_source = dml_dynamic_source(stmt.target)
 	if id, ok := stmt.target.derived_expr.(^ast.Ident_Expr); ok && id.name != "" {
 		stmt.has_db_table_name = true
-		stmt.db_table_name = id.name
-		stmt.db_table_name_range = id.range
+		stmt.db_table_name = parser_ast_token(id.name, id.range)
 	}
 }
 
@@ -3030,8 +3023,7 @@ parse_modify_transporting_field :: proc(
 		append(
 			&path,
 			ast.Modify_Transporting_Field_Segment {
-				name = parser_intern_token_name(p, tok),
-				range = tok.range,
+				name = parser_ast_raw_name_token(p, tok),
 			},
 		)
 		bump_token(p)
@@ -3048,10 +3040,9 @@ parse_modify_transporting_field :: proc(
 		}
 		bump_token(p)
 	}
-	end := path[len(path) - 1].range.end
+	end := path[len(path) - 1].name.range.end
 	return ast.Modify_Transporting_Field_Clause {
-			name = parser_clone_range_text(p, tokenizer.text_range(start, end)),
-			range = tokenizer.text_range(start, end),
+			name = parser_ast_token(parser_clone_range_text(p, tokenizer.text_range(start, end)), tokenizer.text_range(start, end)),
 			path = path,
 		},
 		true
@@ -3132,8 +3123,7 @@ sort_field_clause :: proc(p: ^Parser, expr: ^ast.Expr) -> ast.Sort_Field_Clause 
 		expr = expr,
 	}
 	if sort_field_name_expr(expr) {
-		clause.name = parser_clone_range_text(p, expr.range)
-		clause.range = expr.range
+		clause.name = parser_ast_token(parser_clone_range_text(p, expr.range), expr.range)
 	}
 	return clause
 }
@@ -3196,8 +3186,7 @@ parse_sql_assignments :: proc(
 			ast.Sql_Assignment_Clause {
 				name = name,
 				value = value,
-				column_name = column_name,
-				column_range = column_range,
+				column_name = parser_ast_token(column_name, column_range),
 			},
 		)
 	}
@@ -3470,13 +3459,12 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 		if allow_keyword(p, "COMPARING") {
 			if at_keyword(p, "ALL") && at_keyword_index(p, p.index + 1, "FIELDS") {
-				all_start := bump_token(p)
-				fields := bump_token(p)
+				_ = bump_token(p)
+				_ = bump_token(p)
 				append(
 					&stmt.comparing,
 					ast.Delete_Comparing_Clause {
 						all_fields = true,
-						range = tokenizer.text_range(all_start.range.start, fields.range.end),
 					},
 				)
 				continue
@@ -3536,8 +3524,7 @@ delete_comparing_clause :: proc(expr: ^ast.Expr) -> ast.Delete_Comparing_Clause 
 		expr = expr,
 	}
 	if id, ok := expr.derived_expr.(^ast.Ident_Expr); ok {
-		clause.name = id.name
-		clause.range = id.range
+		clause.name = parser_ast_token(id.name, id.range)
 	}
 	return clause
 }
@@ -3719,8 +3706,10 @@ parse_report_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if tok.kind == .Ident || tok.kind == .Number || tok.kind == .String {
 				bump_token(p)
 				stmt.has_message_id = true
-				stmt.message_id = parser_clone_token_text(p, tok) if tok.kind == .String else parser_intern_token_name(p, tok)
-				stmt.message_id_range = tok.range
+				stmt.message_id = parser_ast_token(
+					parser_clone_token_text(p, tok) if tok.kind == .String else parser_intern_token_name(p, tok),
+					tok.range,
+				)
 			}
 			continue
 		}

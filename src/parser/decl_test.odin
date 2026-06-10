@@ -57,7 +57,7 @@ CLASS-DATA gv TYPE i VALUE 0.`
 	class_data := parsed.root.stmts[6].derived_stmt.(^ast.Class_Data_Decl)
 
 	testing.expect_value(t, len(types.types), 1)
-	testing.expect_value(t, types.types[0].name, "ty_i")
+	testing.expect_value(t, types.types[0].name.text, "ty_i")
 	testing.expect(t, types.types[0].type_clause != nil)
 	testing.expect_value(t, types.types[0].type_clause.form, ast.Data_Type_Form.Type)
 	testing.expect_value(t, len(constants.constants), 1)
@@ -163,7 +163,7 @@ FUNCTION-POOL zfg MESSAGE-ID sv.`
 	pool := parsed.root.stmts[1].derived_stmt.(^ast.Function_Pool_Decl)
 	testing.expect_value(t, len(pools.pools), 2)
 	testing.expect_value(t, pools.pools[0], "cxtab")
-	testing.expect_value(t, pool.name, "zfg")
+	testing.expect_value(t, pool.name.text, "zfg")
 	testing.expect_value(t, pool.message_id, "sv")
 }
 
@@ -208,7 +208,7 @@ structured_declaration_escaped_keyword_name_is_normal_field :: proc(t: ^testing.
 	testing.expect_value(t, len(parsed.errors), 0)
 	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
 	testing.expect_value(t, types.types[1].kind, ast.Decl_Clause_Kind.Normal)
-	testing.expect_value(t, types.types[1].name, "include")
+	testing.expect_value(t, types.types[1].name.text, "include")
 	testing.expect_value(t, types.types[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name, "string")
 }
 
@@ -227,17 +227,17 @@ TYPES ty_code_ranges TYPE SORTED TABLE OF ty_code_range WITH UNIQUE KEY begin.`
 
 	testing.expect_value(t, len(range_decl.types), 4)
 	testing.expect_value(t, range_decl.types[1].kind, ast.Decl_Clause_Kind.Normal)
-	testing.expect_value(t, range_decl.types[1].name, "begin")
+	testing.expect_value(t, range_decl.types[1].name.text, "begin")
 	testing.expect_value(t, range_decl.types[1].type_clause.form, ast.Data_Type_Form.Type)
 	testing.expect_value(t, range_decl.types[2].kind, ast.Decl_Clause_Kind.Normal)
-	testing.expect_value(t, range_decl.types[2].name, "end")
+	testing.expect_value(t, range_decl.types[2].name.text, "end")
 	testing.expect_value(t, range_decl.types[3].kind, ast.Decl_Clause_Kind.End_Group)
 
 	table_ref := table_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, table_ref.name, "ty_code_range")
 	testing.expect(t, table_ref.key != nil)
 	testing.expect_value(t, table_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
-	testing.expect_value(t, table_ref.key.components[0], "begin")
+	testing.expect_value(t, table_ref.key.components[0].text, "begin")
 }
 
 @(test)
@@ -255,11 +255,11 @@ table_type_key_clause_keeps_precise_identifier_ranges :: proc(t: ^testing.T) {
 	ref := decl.types[3].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
 	testing.expect_value(t, ref.name, "ty_order_map")
-	testing.expect_value(t, source[ref.base_range.start:ref.base_range.end], "ty_order_map")
+	testing.expect_value(t, source[ref.base_name.range.start:ref.base_name.range.end], "ty_order_map")
 	testing.expect(t, ref.key != nil)
 	if ref.key != nil {
-		testing.expect_value(t, ref.key.components[0], "odata_property")
-		testing.expect_value(t, source[ref.key.component_ranges[0].start:ref.key.component_ranges[0].end], "odata_property")
+		testing.expect_value(t, ref.key.components[0].text, "odata_property")
+		testing.expect_value(t, source[ref.key.components[0].range.start:ref.key.components[0].range.end], "odata_property")
 	}
 }
 
@@ -285,7 +285,7 @@ END OF dd03p.`
 	testing.expect_value(t, types.types[0].kind, ast.Decl_Clause_Kind.Begin_Group)
 	testing.expect_value(t, types.types[1].depth, 1)
 	testing.expect_value(t, types.types[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name, "decimals")
-	testing.expect_value(t, types.types[3].name, "valexi")
+	testing.expect_value(t, types.types[3].name.text, "valexi")
 	testing.expect_value(t, types.types[4].kind, ast.Decl_Clause_Kind.End_Group)
 }
 
@@ -306,14 +306,14 @@ TYPES:
 	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
 	testing.expect_value(t, len(types.types), 6)
 	testing.expect_value(t, types.types[0].kind, ast.Decl_Clause_Kind.Begin_Group)
-	testing.expect_value(t, types.types[0].name, "ty_bus_msg")
+	testing.expect_value(t, types.types[0].name.text, "ty_bus_msg")
 	testing.expect_value(t, types.types[1].kind, ast.Decl_Clause_Kind.Include_Type)
 	testing.expect_value(t, types.types[1].depth, 1)
-	testing.expect_value(t, types.types[2].name, "bus_msg_no")
+	testing.expect_value(t, types.types[2].name.text, "bus_msg_no")
 	testing.expect_value(t, types.types[2].depth, 1)
 	testing.expect_value(t, types.types[4].kind, ast.Decl_Clause_Kind.End_Group)
 	testing.expect_value(t, types.types[4].depth, 0)
-	testing.expect_value(t, types.types[5].name, "ty_bus_msgs")
+	testing.expect_value(t, types.types[5].name.text, "ty_bus_msgs")
 	testing.expect_value(t, types.types[5].depth, 0)
 	table_ref := types.types[5].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, table_ref.name, "ty_bus_msg")
@@ -333,13 +333,13 @@ DATA: BEGIN OF common, field TYPE i, END OF common.`
 
 	testing.expect_value(t, begin.decls[0].kind, ast.Decl_Clause_Kind.Begin_Group)
 	testing.expect(t, .Common_Part_Delimiter in begin.decls[0].flags)
-	testing.expect_value(t, begin.decls[0].name, "fm06lcbe")
+	testing.expect_value(t, begin.decls[0].name.text, "fm06lcbe")
 	testing.expect_value(t, end.decls[0].kind, ast.Decl_Clause_Kind.End_Group)
 	testing.expect(t, .Common_Part_Delimiter in end.decls[0].flags)
-	testing.expect_value(t, end.decls[0].name, "")
+	testing.expect_value(t, end.decls[0].name.text, "")
 	testing.expect_value(t, normal.decls[0].kind, ast.Decl_Clause_Kind.Begin_Group)
 	testing.expect(t, !(.Common_Part_Delimiter in normal.decls[0].flags))
-	testing.expect_value(t, normal.decls[0].name, "common")
+	testing.expect_value(t, normal.decls[0].name.text, "common")
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
@@ -369,7 +369,7 @@ DATA mv_text TYPE string READ-ONLY.`
 	testing.expect_value(t, table_ref.name, "string")
 	testing.expect(t, table_ref.key != nil)
 	testing.expect_value(t, table_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
-	testing.expect_value(t, table_ref.key.components[0], "table_line")
+	testing.expect_value(t, table_ref.key.components[0].text, "table_line")
 	testing.expect_value(t, any_type_decl.types[0].type_clause.form, ast.Data_Type_Form.Any_Table)
 	testing.expect(t, any_type_decl.types[0].type_clause.table_has_of)
 	any_type_ref := any_type_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
@@ -408,43 +408,43 @@ FIELD-SYMBOLS <item> LIKE LINE OF mr_source_tree->*.`
 	deref_decl := parsed.root.stmts[6].derived_stmt.(^ast.Field_Symbols_Decl)
 
 	date_ref := date_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, date_ref.base_name, "sy")
-	testing.expect_value(t, source[date_ref.base_range.start:date_ref.base_range.end], "sy")
+	testing.expect_value(t, date_ref.base_name.text, "sy")
+	testing.expect_value(t, source[date_ref.base_name.range.start:date_ref.base_name.range.end], "sy")
 	testing.expect_value(t, len(date_ref.path), 1)
-	testing.expect_value(t, date_ref.path[0].name, "datum")
+	testing.expect_value(t, date_ref.path[0].name.text, "datum")
 	testing.expect_value(t, date_ref.path[0].selector, ast.Selector_Op.Dash)
-	testing.expect_value(t, source[date_ref.path[0].range.start:date_ref.path[0].range.end], "datum")
+	testing.expect_value(t, source[date_ref.path[0].name.range.start:date_ref.path[0].name.range.end], "datum")
 
 	item_ref := item_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, item_ref.base_name, "lif_demo")
-	testing.expect_value(t, item_ref.path[0].name, "ty_item")
+	testing.expect_value(t, item_ref.base_name.text, "lif_demo")
+	testing.expect_value(t, item_ref.path[0].name.text, "ty_item")
 	testing.expect_value(t, item_ref.path[0].selector, ast.Selector_Op.Fat_Arrow)
 
 	asset_ref := asset_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, asset_ref.base_name, "lif_demo")
-	testing.expect_value(t, asset_ref.path[0].name, "ty_asset")
+	testing.expect_value(t, asset_ref.base_name.text, "lif_demo")
+	testing.expect_value(t, asset_ref.path[0].name.text, "ty_asset")
 	testing.expect_value(t, asset_ref.path[0].selector, ast.Selector_Op.Tilde)
 
 	phase_ref := phase_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, phase_ref.base_name, "lif_demo")
-	testing.expect_value(t, phase_ref.path[0].name, "scriptcallphase_enum")
+	testing.expect_value(t, phase_ref.base_name.text, "lif_demo")
+	testing.expect_value(t, phase_ref.path[0].name.text, "scriptcallphase_enum")
 	testing.expect_value(t, phase_ref.path[0].selector, ast.Selector_Op.Fat_Arrow)
 
 	field_ref := field_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, field_ref.base_name, "zstruc")
-	testing.expect_value(t, field_ref.path[0].name, "field")
+	testing.expect_value(t, field_ref.base_name.text, "zstruc")
+	testing.expect_value(t, field_ref.path[0].name.text, "field")
 	testing.expect_value(t, field_ref.path[0].selector, ast.Selector_Op.Dash)
 
 	table_ref := table_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, table_ref.name, "REF TO lif_demo=>ty_item")
 	testing.expect(t, table_ref.is_ref)
-	testing.expect_value(t, table_ref.base_name, "lif_demo")
-	testing.expect_value(t, table_ref.path[0].name, "ty_item")
+	testing.expect_value(t, table_ref.base_name.text, "lif_demo")
+	testing.expect_value(t, table_ref.path[0].name.text, "ty_item")
 	testing.expect_value(t, table_ref.path[0].selector, ast.Selector_Op.Fat_Arrow)
 
 	deref_ref := deref_decl.field_symbols[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	testing.expect_value(t, deref_ref.base_name, "mr_source_tree")
-	testing.expect_value(t, deref_ref.path[0].name, "*")
+	testing.expect_value(t, deref_ref.base_name.text, "mr_source_tree")
+	testing.expect_value(t, deref_ref.path[0].name.text, "*")
 	testing.expect_value(t, deref_ref.path[0].selector, ast.Selector_Op.Arrow)
 }
 
@@ -474,7 +474,7 @@ PARAMETERS p_count TYPE i DEFAULT 1.`
 	default_ref := default_decl.parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
 	testing.expect_value(t, occurs_ref.name, "beket")
-	testing.expect_value(t, occurs_ref.base_name, "beket")
+	testing.expect_value(t, occurs_ref.base_name.text, "beket")
 	testing.expect_value(t, source[occurs_ref.range.start:occurs_ref.range.end], "beket")
 	testing.expect(t, occurs_decl.occurs != nil)
 	testing.expect(t, .With_Header_Line in occurs_decl.flags)
@@ -502,7 +502,7 @@ structure_component_like_occurs_keeps_bounded_type_ref :: proc(t: ^testing.T) {
 	field := decl.types[1]
 	ref := field.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
-	testing.expect_value(t, field.name, "dyns_fields")
+	testing.expect_value(t, field.name.text, "dyns_fields")
 	testing.expect_value(t, ref.name, "rsdsfields")
 	testing.expect_value(t, source[ref.range.start:ref.range.end], "rsdsfields")
 	testing.expect(t, field.occurs != nil)
@@ -540,7 +540,7 @@ DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.`
 	testing.expect_value(t, unique_ref.name, "string")
 	testing.expect_value(t, source[unique_ref.range.start:unique_ref.range.end], "string WITH UNIQUE KEY table_line")
 	testing.expect_value(t, unique_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
-	testing.expect_value(t, unique_ref.key.components[0], "table_line")
+	testing.expect_value(t, unique_ref.key.components[0].text, "table_line")
 	testing.expect_value(t, header_ref.name, "i")
 	testing.expect_value(t, source[header_ref.range.start:header_ref.range.end], "i")
 	testing.expect(t, .With_Header_Line in header_decl.flags)

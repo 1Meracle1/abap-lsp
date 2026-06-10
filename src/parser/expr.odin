@@ -1090,8 +1090,7 @@ parse_constructor_let_binding_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		tokenizer.text_range(name.range.start, value.range.end),
 		p.allocator,
 	)
-	expr.name = parser_intern_token_name(p, name)
-	expr.name_range = name.range
+	expr.name = parser_ast_raw_name_token(p, name)
 	expr.value = value
 	return expr
 }
@@ -1150,8 +1149,7 @@ parse_constructor_for_clause_expr :: proc(p: ^Parser, body_kind: Constructor_Bod
 	}
 	name.range = parser_token_name_range(p, name)
 	expr := ast.new(ast.Constructor_For_Clause_Expr, start.range, p.allocator)
-	expr.variable = parser_intern_token_name(p, name)
-	expr.variable_range = name.range
+	expr.variable = parser_ast_raw_name_token(p, name)
 	expr.body = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 
 	if allow_token(p, .Eq) {
@@ -1177,8 +1175,7 @@ parse_constructor_for_clause_expr :: proc(p: ^Parser, body_kind: Constructor_Bod
 				return nil
 			}
 			group.range = parser_token_name_range(p, group)
-			expr.group_source = parser_intern_token_name(p, group)
-			expr.group_source_range = group.range
+			expr.group_source = parser_ast_raw_name_token(p, group)
 		} else {
 			expr.source = parse_expr(p)
 		}
@@ -1654,8 +1651,7 @@ parse_data_inline_name_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		tokenizer.text_range(start.range.start, close.range.end),
 		p.allocator,
 	)
-	expr.name = parser_intern_token_name(p, name)
-	expr.name_range = name.range
+	expr.name = parser_ast_raw_name_token(p, name)
 	return expr
 }
 
@@ -1678,8 +1674,7 @@ parse_field_symbol_inline_name_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		tokenizer.text_range(start.range.start, close.range.end),
 		p.allocator,
 	)
-	expr.name = parser_intern_token_name(p, name)
-	expr.name_range = name.range
+	expr.name = parser_ast_raw_name_token(p, name)
 	return expr
 }
 

@@ -367,21 +367,21 @@ checker_type_ref_data_from_expr :: proc(
 	#partial switch n in expr.derived_expr {
 	case ^ast.Type_Ref_Expr:
 		base := n.base_name
-		if base == "" {
-			base = n.name
+		if base.text == "" {
+			base = ast.Token_Text{text = n.name, range = n.range}
 		}
-		if base != "" {
-			data.base_name = checker_intern_name(ctx.project, base)
-			data.base_range = n.base_range if n.base_range.end > n.base_range.start else n.range
+		if base.text != "" {
+			data.base_name = checker_intern_name(ctx.project, base.text)
+			data.base_range = base.range if base.range.end > base.range.start else n.range
 		}
 		data.is_ref = data.is_ref || n.is_ref
 		if len(n.path) > 0 && (n.path[0].selector == .Fat_Arrow || n.path[0].selector == .Tilde) {
 			data.namespace = .Type
 		}
 		for segment in n.path {
-			append(&data.field_path, checker_intern_name(ctx.project, segment.name))
-			append(&data.field_ranges, segment.range)
-			append(&data.field_derefs, segment.selector == .Arrow && segment.name == "*")
+			append(&data.field_path, checker_intern_name(ctx.project, segment.name.text))
+			append(&data.field_ranges, segment.name.range)
+			append(&data.field_derefs, segment.selector == .Arrow && segment.name.text == "*")
 			append(&data.field_selectors, segment.selector)
 		}
 	case ^ast.Ident_Expr:
@@ -401,7 +401,7 @@ checker_record_type_ref_raw_uses :: proc(ctx: ^Checker_Context, expr: ^ast.Expr)
 	if n, ok := expr.derived_expr.(^ast.Type_Ref_Expr); ok {
 		for raw_ref in n.raw_refs {
 			ref_namespace := Namespace.Type if raw_ref.type_base else Namespace.Value
-			checker_check_ident_name(ctx, &expr.expr_base, raw_ref.name, ref_namespace, false)
+			checker_check_ident_name(ctx, &expr.expr_base, raw_ref.name.text, ref_namespace, false)
 		}
 	}
 }
@@ -441,12 +441,12 @@ checker_record_type_ref_key_clause_uses :: proc(
 	if key == nil || row_structure == nil {
 		return
 	}
-	for component, i in key.components {
-		range := key.component_ranges[i] if i < len(key.component_ranges) else Range{}
+	for component in key.components {
+		range := component.range
 		if range.end <= range.start {
 			continue
 		}
-		name := checker_intern_name(ctx.project, component)
+		name := checker_intern_name(ctx.project, component.text)
 		if !string_interner.is_valid(name) {
 			continue
 		}

@@ -70,7 +70,7 @@ ENDCLASS.`
 		if oop, ok := stmt.derived_stmt.(^ast.Oop_Simple_Stmt); ok {
 			testing.expect(t, oop.visibility != ast.Oop_Visibility.Private)
 			if len(oop.members) > 0 {
-				testing.expect(t, !strings.equal_fold(oop.members[0].name, "private_method"))
+				testing.expect(t, !strings.equal_fold(oop.members[0].name.text, "private_method"))
 			}
 		}
 	}

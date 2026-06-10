@@ -615,8 +615,7 @@ populate_raw_operand_fact_lists :: proc(
 		append(
 			refs,
 			ast.Raw_Operand_Ref {
-				name = parser_intern_name(p, text),
-				range = tok.range,
+				name = parser_ast_token(parser_intern_name(p, text), tok.range),
 				call_like = i + 1 < end && p.tokens[i + 1].kind == .LParen,
 			},
 		)
@@ -642,8 +641,7 @@ raw_operand_inline_decl_at :: proc(
 		validate_abap_name_length(p, name)
 		return ast.Raw_Operand_Inline_Decl {
 				kind = .Data,
-				name = parser_intern_token_name(p, name),
-				range = name.range,
+				name = parser_ast_raw_name_token(p, name),
 			},
 			index + 4,
 			true
@@ -660,8 +658,7 @@ raw_operand_inline_decl_at :: proc(
 		validate_abap_name_length(p, name)
 		return ast.Raw_Operand_Inline_Decl {
 				kind = .Field_Symbol,
-				name = parser_intern_token_name(p, name),
-				range = name.range,
+				name = parser_ast_raw_name_token(p, name),
 			},
 			index + 6,
 			true
@@ -735,8 +732,7 @@ raw_operand_selector_ref :: proc(
 		append(
 			&path,
 			ast.Raw_Operand_Path_Segment {
-				name = parser_intern_token_name(p, field),
-				range = field.range,
+				name = parser_ast_raw_name_token(p, field),
 				selector = selector_op(op.kind),
 			},
 		)
@@ -746,8 +742,7 @@ raw_operand_selector_ref :: proc(
 		return {}, start, false
 	}
 	return ast.Raw_Operand_Ref {
-			name = parser_intern_token_name(p, base),
-			range = base.range,
+			name = parser_ast_raw_name_token(p, base),
 			type_base = type_base,
 			dynamic_path = dynamic_path,
 			path = path,
@@ -1122,12 +1117,10 @@ parse_data_cluster_database_medium :: proc(
 	medium: ^ast.Data_Cluster_Medium_Clause,
 ) {
 	dbtab := expect_token(p, .Ident)
-	medium.dbtab = parser_intern_token_name(p, dbtab)
-	medium.dbtab_range = dbtab.range
+	medium.dbtab = parser_ast_raw_name_token(p, dbtab)
 	expect_token(p, .LParen)
 	area := expect_token(p, .Ident)
-	medium.area = parser_intern_token_name(p, area)
-	medium.area_range = area.range
+	medium.area = parser_ast_raw_name_token(p, area)
 	expect_token(p, .RParen)
 	for !simple_stmt_done(p, body_start) {
 		if allow_keyword(p, work_area_keyword) {
@@ -1156,16 +1149,14 @@ parse_data_cluster_parameter :: proc(
 	if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Eq {
 		name := bump_token(p)
 		expect_token(p, .Eq)
-		parameter.name = parser_intern_token_name(p, name)
-		parameter.name_range = name.range
+		parameter.name = parser_ast_raw_name_token(p, name)
 		parameter.value = required_simple_expr(p, body_start, stop)
 		return parameter, true
 	}
 	if current_token(p).kind == .Ident && at_keyword_index(p, p.index + 1, parameter_keyword) {
 		name := bump_token(p)
 		expect_keyword(p, parameter_keyword)
-		parameter.name = parser_intern_token_name(p, name)
-		parameter.name_range = name.range
+		parameter.name = parser_ast_raw_name_token(p, name)
 		parameter.value = required_simple_expr(p, body_start, stop)
 		return parameter, true
 	}
@@ -1975,10 +1966,8 @@ parse_selection_screen_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	} else {
 		for !simple_stmt_done(p, body_start) {
 			if allow_keyword(p, "TITLE") {
-				selection_screen_read_name(
+				stmt.title_name = selection_screen_read_name(
 					p,
-					&stmt.title_name,
-					&stmt.title_range,
 					"syntax error: selection-screen frame title name can be up to eight characters long",
 				)
 				continue
@@ -2000,14 +1989,12 @@ parse_selection_screen_comment :: proc(
 	body_start: int,
 ) {
 	parse_selection_screen_comment_position(p, body_start)
-	selection_screen_read_name(p, &stmt.comment_name, &stmt.comment_range)
+	stmt.comment_name = selection_screen_read_name(p)
 	for !simple_stmt_done(p, body_start) {
 		if allow_keyword(p, "FOR") {
 			allow_keyword(p, "FIELD")
-			selection_screen_read_name(
+			stmt.field_name = selection_screen_read_name(
 				p,
-				&stmt.field_name,
-				&stmt.field_range,
 				"syntax error: selection-screen field name can be up to eight characters long",
 			)
 			continue
@@ -2022,12 +2009,8 @@ parse_selection_screen_comment :: proc(
 
 parse_selection_screen_pushbutton :: proc(p: ^Parser, body_start: int) {
 	parse_selection_screen_comment_position(p, body_start)
-	name: string
-	name_range: tokenizer.Range
-	selection_screen_read_name(
+	_ = selection_screen_read_name(
 		p,
-		&name,
-		&name_range,
 		"syntax error: selection-screen pushbutton name can be up to eight characters long",
 	)
 	for !simple_stmt_done(p, body_start) {
@@ -2054,12 +2037,8 @@ parse_selection_screen_block_name :: proc(p: ^Parser) -> bool {
 	if !allow_keyword(p, "BLOCK") {
 		return true
 	}
-	name: string
-	name_range: tokenizer.Range
-	selection_screen_read_name(
+	_ = selection_screen_read_name(
 		p,
-		&name,
-		&name_range,
 		"syntax error: selection-screen block name can be up to 20 characters long",
 		SELECTION_SCREEN_BLOCK_NAME_MAX_LENGTH,
 	)
@@ -2081,20 +2060,16 @@ parse_selection_screen_comment_position :: proc(p: ^Parser, body_start: int) {
 
 selection_screen_read_name :: proc(
 	p: ^Parser,
-	name: ^string,
-	range: ^tokenizer.Range,
 	limit_message := "syntax error: selection-screen comment name can be up to eight characters long",
 	max_length := SELECTION_SCREEN_NAME_MAX_LENGTH,
-) -> bool {
+) -> ast.Token_Text {
 	tok := current_token(p)
 	if tok.kind != .Ident {
-		return false
+		return {}
 	}
 	validate_token_name_length(p, tok, max_length, limit_message)
-	name^ = parser_intern_token_name(p, tok)
-	range^ = tok.range
 	bump_token(p)
-	return true
+	return parser_ast_raw_name_token(p, tok)
 }
 
 oop_simple_stmt_starts :: proc(p: ^Parser) -> bool {
@@ -2214,21 +2189,18 @@ parse_oop_alias_clause :: proc(p: ^Parser) -> (ast.Oop_Alias_Clause, bool) {
 	consume_oop_alias_target(p)
 	target := type_ref_expr_from_tokens(p, target_start, p.index)
 	if target == nil ||
-	   target.base_name == "" ||
+	   target.base_name.text == "" ||
 	   len(target.path) != 1 ||
 	   target.path[0].selector != .Tilde ||
-	   target.path[0].name == "" {
+	   target.path[0].name.text == "" {
 		error(p, name.range, "syntax error: ALIASES target must be interface~member")
 		return {}, false
 	}
 	return ast.Oop_Alias_Clause {
-			name                   = parser_intern_token_name(p, name),
-			range                  = name.range,
+			name                   = parser_ast_raw_name_token(p, name),
 			target                 = target,
 			target_interface_name  = target.base_name,
-			target_interface_range = target.base_range,
 			target_member_name     = target.path[0].name,
-			target_member_range    = target.path[0].range,
 		},
 		true
 }
@@ -2278,7 +2250,6 @@ oop_member_from_alias :: proc(alias: ast.Oop_Alias_Clause, allocator: mem.Alloca
 	append(&signatures, ast.Oop_Signature_Clause{kind = .For, values = values})
 	return ast.Oop_Member_Clause {
 		name       = alias.name,
-		range      = alias.range,
 		signatures = signatures,
 	}
 }
@@ -2306,12 +2277,9 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 		)
 		p.index = next_index
 		member := ast.Oop_Member_Clause {
-			name            = member_name,
-			range           = member_range,
-			qualifier       = qualifier,
-			qualifier_range = qualifier_range,
-			member_name     = component_name,
-			member_range    = component_range,
+			name            = parser_ast_token(member_name, member_range),
+			qualifier       = parser_ast_token(qualifier, qualifier_range),
+			member_name     = parser_ast_token(component_name, component_range),
 			signatures      = make([dynamic]ast.Oop_Signature_Clause, 0, 2, p.allocator),
 		}
 		for current_token(p).kind != .Period && current_token(p).kind != .Eof && current_token(p).kind != .Comma {
@@ -2355,10 +2323,10 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 			}
 			bump_token(p)
 		}
-		if member.qualifier != "" &&
+		if member.qualifier.text != "" &&
 		   (stmt.kind == .Methods || stmt.kind == .Class_Methods) &&
 		   !(.Redefinition in member.flags) {
-			error(p, member.range, "syntax error: qualified method declaration requires REDEFINITION")
+			error(p, member.name.range, "syntax error: qualified method declaration requires REDEFINITION")
 		}
 		append(&stmt.members, member)
 	}
@@ -2409,8 +2377,7 @@ parse_oop_event_handler_clause :: proc(p: ^Parser) -> (ast.Oop_Event_Handler_Cla
 		return {}, false
 	}
 	return ast.Oop_Event_Handler_Clause {
-			event_name = parser_intern_token_name(p, event),
-			event_range = event.range,
+			event_name = parser_ast_raw_name_token(p, event),
 			source_type = source_type,
 		},
 		true
@@ -2469,8 +2436,7 @@ parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cla
 	append(
 		&clause.parameters,
 		ast.Oop_Parameter_Clause {
-			name = name,
-			range = name_range,
+			name = parser_ast_token(name, name_range),
 			passing = passing,
 			type_clause = type_clause,
 			optional = optional,
@@ -4081,9 +4047,9 @@ parse_call_function_section_args :: proc(
 		if !ok {
 			continue
 		}
-		key := strings.to_lower(arg.name, context.temp_allocator)
+		key := strings.to_lower(arg.name.text, context.temp_allocator)
 		if seen_names[key] {
-			error(p, arg.name_range, "syntax error: duplicate CALL FUNCTION parameter")
+			error(p, arg.name.range, "syntax error: duplicate CALL FUNCTION parameter")
 		}
 		seen_names[key] = true
 		append(&stmt.named_args, arg)
@@ -4145,8 +4111,7 @@ parse_call_function_named_arg :: proc(
 	return ast.Call_Stmt_Named_Arg {
 			section = section,
 			has_section = true,
-			name = name_text,
-			name_range = name_range,
+			name = parser_ast_token(name_text, name_range),
 			value_range = value_range,
 			value = value,
 			message_range = message_range,
@@ -4713,19 +4678,16 @@ append_call_transformation_arg :: proc(
 	stmt: ^ast.Call_Stmt,
 	kind: ast.Call_Transformation_Arg_Kind,
 ) {
-	name := ""
-	name_range := tokenizer.Range{}
+	name := ast.Token_Text{}
 	has_eq := false
 	if call_transformation_named_arg_starts(p, p.index) {
 		tok := bump_token(p)
 		_ = expect_token(p, .Eq)
-		name = parser_intern_token_name(p, tok)
-		name_range = tok.range
+		name = parser_ast_raw_name_token(p, tok)
 		has_eq = true
 	} else if (kind == .Source || kind == .Result) && call_transformation_mode_token(p, current_token(p)) {
 		tok := bump_token(p)
-		name = parser_intern_token_name(p, tok)
-		name_range = tok.range
+		name = parser_ast_raw_name_token(p, tok)
 	}
 	value_start := p.index
 	value_end := call_transformation_arg_value_end(p, value_start)
@@ -4741,7 +4703,6 @@ append_call_transformation_arg :: proc(
 		ast.Call_Transformation_Arg {
 			kind = kind,
 			name = name,
-			name_range = name_range,
 			has_eq = has_eq,
 			value = value,
 		},
@@ -4923,8 +4884,7 @@ parse_raw_call_arguments :: proc(
 			ast.Call_Stmt_Named_Arg {
 				section = section,
 				has_section = has_section,
-				name = name_text,
-				name_range = name_range,
+				name = parser_ast_token(name_text, name_range),
 				value_range = value_range,
 				value = value,
 				raw_decls = raw_decls,
@@ -5242,8 +5202,7 @@ message_head_compact_class :: proc(p: ^Parser, head: ^ast.Message_Head_Clause, s
 		if p.tokens[i].kind == .LParen &&
 		   name.kind == .Ident &&
 		   p.tokens[i + 2].kind == .RParen {
-			head.compact_class_name = parser_intern_token_name(p, name)
-			head.compact_class_range = name.range
+			head.compact_class_name = parser_ast_raw_name_token(p, name)
 			head.has_compact_class = true
 			return
 		}

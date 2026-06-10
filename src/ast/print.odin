@@ -32,8 +32,17 @@ write_node :: proc(out: ^strings.Builder, node: ^Node, options := DEFAULT_PRINT_
 	emit_node(&p, node)
 }
 
-emit :: proc(p: ^Printer, text: string) {
+emit :: proc {
+	emit_string,
+	emit_token_text,
+}
+
+emit_string :: proc(p: ^Printer, text: string) {
 	strings.write_string(p.out, text)
+}
+
+emit_token_text :: proc(p: ^Printer, token: Token_Text) {
+	emit_string(p, token.text)
 }
 
 emit_space :: proc(p: ^Printer) {
@@ -158,13 +167,13 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Call_Positional_Arg_Expr:
 		emit_node(p, n.value)
 	case ^Sql_Column_Expr:
-		if n.qualifier != "" {
+		if n.qualifier.text != "" {
 			emit(p, n.qualifier)
 			emit(p, "~")
 		}
 		emit(p, n.name)
 	case ^Sql_Star_Expr:
-		if n.qualifier != "" {
+		if n.qualifier.text != "" {
 			emit(p, n.qualifier)
 			emit(p, "~")
 		}
@@ -604,7 +613,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 				emit(p, " TO ")
 				emit_node(p, n.to)
 			}
-			if n.using_key.name != "" || n.using_key.dynamic_name != nil {
+			if n.using_key.name.text != "" || n.using_key.dynamic_name != nil {
 				emit(p, " USING KEY ")
 				emit_table_key_selector(p, n.using_key)
 			}
@@ -655,7 +664,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		case .End_Of:
 			emit(p, "END OF")
 		}
-		if n.field_name != "" {
+		if n.field_name.text != "" {
 			emit_space(p)
 			emit(p, n.field_name)
 		} else if n.expr != nil {
@@ -666,14 +675,14 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Try_Stmt:
 		emit_try_stmt(p, n)
 	case ^Class_Decl:
-		emit_named_block(p, "CLASS", n.name, n.header_text, n.body, "ENDCLASS")
+		emit_named_block(p, "CLASS", n.name.text, n.header_text, n.body, "ENDCLASS")
 	case ^Interface_Decl:
-		emit_named_block(p, "INTERFACE", n.name, n.header_text, n.body, "ENDINTERFACE")
+		emit_named_block(p, "INTERFACE", n.name.text, n.header_text, n.body, "ENDINTERFACE")
 	case ^Method_Decl:
 		if n.is_amdp {
 			emit_amdp_method(p, n)
 		} else {
-			emit_named_block(p, "METHOD", n.name, n.header_text, n.body, "ENDMETHOD")
+			emit_named_block(p, "METHOD", n.name.text, n.header_text, n.body, "ENDMETHOD")
 		}
 	case ^Form_Decl:
 		emit_named_block(p, "FORM", n.name, n.header_text, n.body, "ENDFORM")
@@ -964,12 +973,12 @@ emit_type_ref_key_clause :: proc(p: ^Printer, key: ^Type_Ref_Key_Clause) {
 		emit(p, "HASHED ")
 	}
 	emit(p, "KEY")
-	if key.name != "" {
+	if key.name.text != "" {
 		emit_space(p)
 		emit(p, key.name)
 	}
 	if len(key.components) > 0 {
-		emit(p, " COMPONENTS " if key.name != "" else " ")
+		emit(p, " COMPONENTS " if key.name.text != "" else " ")
 		for component, i in key.components {
 			if i > 0 {
 				emit_space(p)
@@ -982,7 +991,7 @@ emit_type_ref_key_clause :: proc(p: ^Printer, key: ^Type_Ref_Key_Clause) {
 emit_constructor_for_clause :: proc(p: ^Printer, expr: ^Constructor_For_Clause_Expr) {
 	emit(p, "FOR ")
 	emit(p, expr.variable)
-	if expr.group_source != "" {
+	if expr.group_source.text != "" {
 		emit(p, " IN GROUP ")
 		emit(p, expr.group_source)
 	} else if expr.source != nil {
@@ -1329,7 +1338,7 @@ emit_include_stmt :: proc(p: ^Printer, stmt: ^Include_Stmt) {
 emit_decl_prefix :: proc(
 	p: ^Printer,
 	kind: Decl_Clause_Kind,
-	name: string,
+	name: Token_Text,
 	include_ref: ^Expr,
 	is_common_part_delimiter := false,
 ) {
@@ -1337,7 +1346,7 @@ emit_decl_prefix :: proc(
 	case .Begin_Group:
 		if is_common_part_delimiter {
 			emit(p, "BEGIN OF COMMON PART")
-			if name != "" {
+			if name.text != "" {
 				emit(p, " ")
 				emit(p, name)
 			}
@@ -1348,7 +1357,7 @@ emit_decl_prefix :: proc(
 	case .End_Group:
 		if is_common_part_delimiter {
 			emit(p, "END OF COMMON PART")
-			if name != "" {
+			if name.text != "" {
 				emit(p, " ")
 				emit(p, name)
 			}
@@ -2041,7 +2050,7 @@ emit_call_stmt :: proc(p: ^Printer, stmt: ^Call_Stmt) {
 			current_kind = arg.kind
 			has_current_kind = true
 		}
-		if arg.name != "" {
+		if arg.name.text != "" {
 			emit_space(p)
 			emit(p, arg.name)
 			if arg.has_eq {
@@ -2411,7 +2420,7 @@ emit_data_cluster_parameters :: proc(
 		if i > 0 {
 			emit(p, " ")
 		}
-		if entry.name != "" {
+		if entry.name.text != "" {
 			emit(p, entry.name)
 			emit(p, " = ")
 		}
@@ -3007,7 +3016,7 @@ emit_read_table_stmt :: proc(p: ^Printer, stmt: ^Read_Table_Stmt) {
 			emit(p, " INDEX ")
 			emit_node(p, entry.index)
 		}
-		if entry.using_key.name != "" || entry.using_key.dynamic_name != nil {
+		if entry.using_key.name.text != "" || entry.using_key.dynamic_name != nil {
 			emit(p, " USING KEY ")
 			emit_table_key_selector(p, entry.using_key)
 		}
@@ -3214,7 +3223,7 @@ emit_delete_stmt :: proc(p: ^Printer, stmt: ^Delete_Stmt) {
 		emit(p, " WHERE ")
 		emit_node(p, stmt.where_cond)
 	}
-	if stmt.using_key.name != "" || stmt.using_key.dynamic_name != nil {
+	if stmt.using_key.name.text != "" || stmt.using_key.dynamic_name != nil {
 		emit(p, " USING KEY ")
 		emit_table_key_selector(p, stmt.using_key)
 	}

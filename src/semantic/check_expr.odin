@@ -55,7 +55,7 @@ checker_check_expr :: proc(
 			typ, entity := checker_type_from_expr(ctx, expr, .Type)
 			return checker_record_operand(ctx, node, .Type, typ, entity, lhs)
 		}
-		name := n.base_name
+		name := n.base_name.text
 		if name == "" {
 			name = n.name
 		}
@@ -164,7 +164,7 @@ checker_check_expr :: proc(
 		return checker_check_let_expr(ctx, node, n, lhs)
 	case ^ast.Constructor_Let_Binding_Expr:
 		value := checker_check_expr(ctx, n.value)
-		checker_collect_inferred_expr_decl(ctx, n.name, .Variable, n.name_range, node, value.type)
+		checker_collect_inferred_expr_decl(ctx, n.name.text, .Variable, n.name.range, node, value.type)
 		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Constructor_When_Clause_Expr:
 		checker_check_expr(ctx, n.condition)
@@ -219,10 +219,10 @@ checker_check_expr :: proc(
 		}
 		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Data_Inline_Name_Expr:
-		entity := checker_collect_inferred_expr_decl(ctx, n.name, .Variable, n.name_range, node, ctx.type_hint)
+		entity := checker_collect_inferred_expr_decl(ctx, n.name.text, .Variable, n.name.range, node, ctx.type_hint)
 		return checker_record_operand(ctx, node, .Variable, entity.type if entity != nil else project_type_unknown(ctx.project), entity, lhs)
 	case ^ast.Field_Symbol_Inline_Name_Expr:
-		entity := checker_collect_inferred_expr_decl(ctx, n.name, .Field_Symbol, n.name_range, node, ctx.type_hint)
+		entity := checker_collect_inferred_expr_decl(ctx, n.name.text, .Field_Symbol, n.name.range, node, ctx.type_hint)
 		return checker_record_operand(ctx, node, .Variable, entity.type if entity != nil else project_type_unknown(ctx.project), entity, lhs)
 	}
 	return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
@@ -530,7 +530,7 @@ checker_check_raw_operand_facts :: proc(
 	fact_count := 0
 	for decl in raw_decls {
 		kind := Entity_Kind.Variable if decl.kind == .Data else Entity_Kind.Field_Symbol
-		entity := checker_collect_inferred_expr_decl(ctx, decl.name, kind, decl.range, node, type_hint)
+		entity := checker_collect_inferred_expr_decl(ctx, decl.name.text, kind, decl.name.range, node, type_hint)
 		fact_count += 1
 		if fact_count == 1 && entity != nil {
 			typ := entity.type if entity.type != nil else fallback.type
@@ -561,10 +561,10 @@ checker_check_raw_operand_ref :: proc(
 	if ref.type_base {
 		namespace = .Type
 	}
-	base := checker_check_ident_expr(ctx, node, ref.name, namespace, lhs && len(ref.path) == 0 && !ref.dynamic_path)
+	base := checker_check_ident_expr(ctx, node, ref.name.text, namespace, lhs && len(ref.path) == 0 && !ref.dynamic_path)
 	for segment in ref.path {
 		member_namespace := checker_selector_member_namespace(segment.selector, namespace)
-		member := checker_lookup_selector_member(ctx, base, segment.selector, segment.name, member_namespace, node, lhs)
+		member := checker_lookup_selector_member(ctx, base, segment.selector, segment.name.text, member_namespace, node, lhs)
 		if member.entity == nil {
 			member.mode = .Field
 		}
@@ -607,11 +607,11 @@ checker_check_constructor_for_clause_expr :: proc(
 
 	source := checker_check_expr(ctx, expr.source)
 	row_type := checker_type_row(ctx, source.type)
-	if expr.variable != "" {
-		checker_collect_inferred_expr_decl(ctx, expr.variable, .Variable, expr.variable_range, node, row_type)
+	if expr.variable.text != "" {
+		checker_collect_inferred_expr_decl(ctx, expr.variable.text, .Variable, expr.variable.range, node, row_type)
 	}
-	if expr.group_source != "" {
-		checker_collect_inferred_expr_decl(ctx, expr.group_source, .Variable, expr.group_source_range, node, row_type)
+	if expr.group_source.text != "" {
+		checker_collect_inferred_expr_decl(ctx, expr.group_source.text, .Variable, expr.group_source.range, node, row_type)
 	}
 	checker_check_expr(ctx, expr.init)
 	checker_check_expr(ctx, expr.then_expr)
@@ -695,7 +695,7 @@ checker_expr_is_inferred_type_ref :: proc(expr: ^ast.Expr) -> bool {
 		return true
 	}
 	if ref, ok := expr.derived_expr.(^ast.Type_Ref_Expr); ok {
-		return ref.name == "#" || ref.base_name == "#"
+		return ref.name == "#" || ref.base_name.text == "#"
 	}
 	if ident, ok := expr.derived_expr.(^ast.Ident_Expr); ok {
 		return ident.name == "#"

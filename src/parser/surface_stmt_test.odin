@@ -50,13 +50,13 @@ INSERT ls_row INTO TABLE lt_rows INDEX lv_idx.`
 
 	testing.expect_value(t, bare_db.form, ast.Insert_Form.Db_Table)
 	testing.expect(t, bare_db.has_db_table_name)
-	testing.expect_value(t, bare_db.db_table_name, "zinsert_tab")
-	testing.expect_value(t, source[bare_db.db_table_name_range.start:bare_db.db_table_name_range.end], "zinsert_tab")
+	testing.expect_value(t, bare_db.db_table_name.text, "zinsert_tab")
+	testing.expect_value(t, source[bare_db.db_table_name.range.start:bare_db.db_table_name.range.end], "zinsert_tab")
 	testing.expect(t, bare_db.from_table)
 	testing.expect(t, bare_db.accepting_duplicate_keys)
 	testing.expect_value(t, into_db.form, ast.Insert_Form.Db_Table)
 	testing.expect(t, into_db.has_db_table_name)
-	testing.expect_value(t, into_db.db_table_name, "zinto_tab")
+	testing.expect_value(t, into_db.db_table_name.text, "zinto_tab")
 	testing.expect_value(t, internal.form, ast.Insert_Form.Internal_Table)
 	testing.expect(t, !internal.has_db_table_name)
 	testing.expect(t, internal.target != nil)
@@ -80,11 +80,11 @@ DELETE REPORT prog.`
 	delete_report := parsed.root.stmts[4].derived_stmt.(^ast.Report_Stmt)
 
 	testing.expect(t, report.has_message_id)
-	testing.expect_value(t, report.message_id, "zmsg")
-	testing.expect_value(t, source[report.message_id_range.start:report.message_id_range.end], "zmsg")
+	testing.expect_value(t, report.message_id.text, "zmsg")
+	testing.expect_value(t, source[report.message_id.range.start:report.message_id.range.end], "zmsg")
 	testing.expect(t, program.has_message_id)
-	testing.expect_value(t, program.message_id, "zcls")
-	testing.expect_value(t, source[program.message_id_range.start:program.message_id_range.end], "zcls")
+	testing.expect_value(t, program.message_id.text, "zcls")
+	testing.expect_value(t, source[program.message_id.range.start:program.message_id.range.end], "zcls")
 	testing.expect(t, !read_report.has_message_id)
 	testing.expect(t, !insert_report.has_message_id)
 	testing.expect(t, !delete_report.has_message_id)
@@ -112,12 +112,12 @@ INCLUDE STRUCTURE textpool.`
 	include_structure := parsed.root.stmts[3].derived_stmt.(^ast.Types_Decl)
 
 	testing.expect_value(t, len(first.names), 1)
-	testing.expect_value(t, first.names[0].name, "zinc")
+	testing.expect_value(t, first.names[0].name.text, "zinc")
 	testing.expect(t, !first.if_found)
-	testing.expect_value(t, source[first.names[0].range.start:first.names[0].range.end], "zinc")
+	testing.expect_value(t, source[first.names[0].name.range.start:first.names[0].name.range.end], "zinc")
 	testing.expect_value(t, len(chained.names), 2)
-	testing.expect_value(t, chained.names[0].name, "ztop")
-	testing.expect_value(t, chained.names[1].name, "zf01")
+	testing.expect_value(t, chained.names[0].name.text, "ztop")
+	testing.expect_value(t, chained.names[1].name.text, "zf01")
 	testing.expect_value(t, include_type.types[0].kind, ast.Decl_Clause_Kind.Include_Type)
 	testing.expect_value(t, include_structure.types[0].kind, ast.Decl_Clause_Kind.Include_Structure)
 }
@@ -129,7 +129,7 @@ program_include_if_found_keeps_concrete_node :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Include_Stmt)
-	testing.expect_value(t, stmt.names[0].name, "zabapgit_user_exit")
+	testing.expect_value(t, stmt.names[0].name.text, "zabapgit_user_exit")
 	testing.expect(t, stmt.if_found)
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
@@ -172,9 +172,9 @@ SORT lt_table BY name DESCENDING.`
 	testing.expect_value(t, counts.sort_stmt, 1)
 	modify := parsed.root.stmts[3].derived_stmt.(^ast.Modify_Stmt)
 	testing.expect_value(t, len(modify.transporting), 1)
-	testing.expect_value(t, modify.transporting[0].name, "value")
+	testing.expect_value(t, modify.transporting[0].name.text, "value")
 	testing.expect_value(t, len(modify.transporting[0].path), 1)
-	testing.expect_value(t, modify.transporting[0].path[0].name, "value")
+	testing.expect_value(t, modify.transporting[0].path[0].name.text, "value")
 }
 
 @(test)
@@ -196,7 +196,7 @@ sort_by_keeps_component_names :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(t, len(stmt.fields), len(names))
 	for name, i in names {
-		testing.expect_value(t, stmt.fields[i].name, name)
+		testing.expect_value(t, stmt.fields[i].name.text, name)
 	}
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
@@ -212,8 +212,8 @@ sort_by_keeps_nested_component_exprs_and_modifiers :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(t, len(stmt.fields), 2)
-	testing.expect_value(t, stmt.fields[0].name, "definition-component_name")
-	testing.expect_value(t, stmt.fields[1].name, "definition-view_name")
+	testing.expect_value(t, stmt.fields[0].name.text, "definition-component_name")
+	testing.expect_value(t, stmt.fields[1].name.text, "definition-view_name")
 	testing.expect_value(t, first_base.name, "definition")
 	testing.expect_value(t, first_field.name, "component_name")
 	testing.expect(t, stmt.fields[0].ascending)
@@ -320,16 +320,16 @@ DELETE lt_rows USING KEY sec_from WHERE id = lv_id.`
 	dynamic_read := parsed.root.stmts[1].derived_stmt.(^ast.Read_Table_Stmt)
 	delete_stmt := parsed.root.stmts[2].derived_stmt.(^ast.Delete_Stmt)
 
-	testing.expect_value(t, static_read.entries[0].using_key.name, "array_index")
+	testing.expect_value(t, static_read.entries[0].using_key.name.text, "array_index")
 	testing.expect_value(
 		t,
-		source[static_read.entries[0].using_key.name_range.start:static_read.entries[0].using_key.name_range.end],
+		source[static_read.entries[0].using_key.name.range.start:static_read.entries[0].using_key.name.range.end],
 		"array_index",
 	)
 	testing.expect(t, static_read.entries[0].using_key.dynamic_name == nil)
-	testing.expect_value(t, dynamic_read.entries[0].using_key.name, "")
+	testing.expect_value(t, dynamic_read.entries[0].using_key.name.text, "")
 	testing.expect(t, dynamic_read.entries[0].using_key.dynamic_name != nil)
-	testing.expect_value(t, delete_stmt.using_key.name, "sec_from")
+	testing.expect_value(t, delete_stmt.using_key.name.text, "sec_from")
 }
 
 @(test)
@@ -353,12 +353,11 @@ DELETE ADJACENT DUPLICATES FROM itab COMPARING ALL FIELDS.`
 
 	testing.expect_value(t, len(read.entries[0].key_values), 1)
 	key := read.entries[0].key_values[0]
-	testing.expect_value(t, key.name, "table_line")
-	testing.expect_value(t, source[key.name_range.start:key.name_range.end], "table_line")
+	testing.expect_value(t, key.name.text, "table_line")
+	testing.expect_value(t, source[key.name.range.start:key.name.range.end], "table_line")
 	testing.expect(t, key.table_line)
 	testing.expect_value(t, len(delete_stmt.comparing), 1)
 	testing.expect(t, delete_stmt.comparing[0].all_fields)
-	testing.expect_value(t, source[delete_stmt.comparing[0].range.start:delete_stmt.comparing[0].range.end], "ALL FIELDS")
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
@@ -375,8 +374,8 @@ read_table_table_key_components_keeps_key_name :: proc(t: ^testing.T) {
 	testing.expect_value(t, entry.key_kind, ast.Read_Table_Key_Kind.Table_Key)
 	testing.expect_value(t, entry.key_name, "iso2")
 	testing.expect_value(t, len(entry.key_values), 1)
-	testing.expect_value(t, entry.key_values[0].name, "langshort")
-	testing.expect_value(t, source[entry.key_values[0].name_range.start:entry.key_values[0].name_range.end], "langshort")
+	testing.expect_value(t, entry.key_values[0].name.text, "langshort")
+	testing.expect_value(t, source[entry.key_values[0].name.range.start:entry.key_values[0].name.range.end], "langshort")
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
@@ -391,11 +390,11 @@ read_table_key_keeps_nested_component_path :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(entry.key_values), 2)
 	key := entry.key_values[1]
-	testing.expect_value(t, key.name, "item-obj_name")
+	testing.expect_value(t, key.name.text, "item-obj_name")
 	testing.expect_value(t, len(key.path), 2)
-	testing.expect_value(t, key.path[0].name, "item")
-	testing.expect_value(t, key.path[1].name, "obj_name")
-	testing.expect_value(t, source[key.path[1].range.start:key.path[1].range.end], "obj_name")
+	testing.expect_value(t, key.path[0].name.text, "item")
+	testing.expect_value(t, key.path[1].name.text, "obj_name")
+	testing.expect_value(t, source[key.path[1].name.range.start:key.path[1].name.range.end], "obj_name")
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
@@ -408,11 +407,11 @@ read_table_key_keeps_table_line_reference_path :: proc(t: ^testing.T) {
 	read := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
 	key := read.entries[0].key_values[0]
 
-	testing.expect_value(t, key.name, "table_line->package_interface_name")
+	testing.expect_value(t, key.name.text, "table_line->package_interface_name")
 	testing.expect_value(t, len(key.path), 2)
-	testing.expect_value(t, key.path[0].name, "table_line")
+	testing.expect_value(t, key.path[0].name.text, "table_line")
 	testing.expect_value(t, key.path[0].selector, ast.Selector_Op.Dash)
-	testing.expect_value(t, key.path[1].name, "package_interface_name")
+	testing.expect_value(t, key.path[1].name.text, "package_interface_name")
 	testing.expect_value(t, key.path[1].selector, ast.Selector_Op.Arrow)
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
@@ -427,7 +426,7 @@ read_table_key_keeps_dynamic_component_name :: proc(t: ^testing.T) {
 	key := read.entries[0].key_values[0]
 
 	testing.expect(t, key.is_dynamic)
-	testing.expect_value(t, key.name, "('NODENAME')")
+	testing.expect_value(t, key.name.text, "('NODENAME')")
 	testing.expect(t, key.dynamic_name != nil)
 	testing.expect_value(
 		t,
@@ -479,9 +478,9 @@ UPDATE (lv_tab) SET status = @lv_status, changed_at = sy-datum WHERE (lv_where).
 	testing.expect_value(t, source[set_update.db_source_range.start:set_update.db_source_range.end], "(lv_tab)")
 	testing.expect_value(t, source[set_update.set_clause.start:set_update.set_clause.end], "SET status = @lv_status, changed_at = sy-datum")
 	testing.expect_value(t, len(set_update.assignments), 2)
-	testing.expect_value(t, set_update.assignments[0].column_name, "status")
-	testing.expect_value(t, source[set_update.assignments[0].column_range.start:set_update.assignments[0].column_range.end], "status")
-	testing.expect_value(t, set_update.assignments[1].column_name, "changed_at")
+	testing.expect_value(t, set_update.assignments[0].column_name.text, "status")
+	testing.expect_value(t, source[set_update.assignments[0].column_name.range.start:set_update.assignments[0].column_name.range.end], "status")
+	testing.expect_value(t, set_update.assignments[1].column_name.text, "changed_at")
 	testing.expect(t, set_update.dynamic_where)
 	testing.expect_value(t, source[set_update.where_clause.start:set_update.where_clause.end], "WHERE (lv_where)")
 }
@@ -500,8 +499,8 @@ open_sql_update_accepts_blank_separated_set_assignments :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(t, len(update.assignments), 4)
-	testing.expect_value(t, update.assignments[1].column_name, "submit")
-	testing.expect_value(t, update.assignments[3].column_name, "contract_number")
+	testing.expect_value(t, update.assignments[1].column_name.text, "submit")
+	testing.expect_value(t, update.assignments[3].column_name.text, "contract_number")
 	testing.expect(t, update.where_cond != nil)
 }
 
@@ -541,7 +540,7 @@ INSERT TEXTPOOL prog FROM pool LANGUAGE lang.`
 	testing.expect_value(t, source[db_modify.client_clause.start:db_modify.client_clause.end], "CLIENT SPECIFIED")
 	testing.expect(t, itab_modify.table_keyword)
 	testing.expect_value(t, len(itab_modify.transporting), 1)
-	testing.expect_value(t, itab_modify.transporting[0].name, "col")
+	testing.expect_value(t, itab_modify.transporting[0].name.text, "col")
 	testing.expect_value(t, len(itab_modify.transporting[0].path), 1)
 	testing.expect_value(t, bare_insert.form, ast.Insert_Form.Db_Table)
 	testing.expect(t, bare_insert.target != nil)
@@ -551,7 +550,7 @@ INSERT TEXTPOOL prog FROM pool LANGUAGE lang.`
 	testing.expect_value(t, into_insert.form, ast.Insert_Form.Db_Table)
 	testing.expect(t, into_insert.into_db_table)
 	testing.expect(t, into_insert.values_clause)
-	testing.expect_value(t, into_insert.db_table_name, "zinto_tab")
+	testing.expect_value(t, into_insert.db_table_name.text, "zinto_tab")
 	testing.expect_value(t, itab_insert.form, ast.Insert_Form.Internal_Table)
 	testing.expect(t, !itab_insert.has_db_table_name)
 	testing.expect_value(t, report_insert.kind, ast.Report_Kind.Insert_Report)
@@ -813,16 +812,16 @@ open_sql_projection_sql_shapes_are_parser_modeled :: proc(t: ^testing.T) {
 	testing.expect_value(t, total.modifier, ast.Sql_Call_Modifier.Distinct)
 	testing.expect_value(t, len(total.args), 1)
 	total_arg := total.args[0].derived_expr.(^ast.Sql_Column_Expr)
-	testing.expect_value(t, total_arg.qualifier, "rel")
-	testing.expect_value(t, total_arg.name, "evtid")
+	testing.expect_value(t, total_arg.qualifier.text, "rel")
+	testing.expect_value(t, total_arg.name.text, "evtid")
 
 	active := stmt.query.projection_clauses[1].value.derived_expr.(^ast.Sql_Call_Expr)
 	testing.expect_value(t, active.kind, ast.Sql_Call_Kind.Aggregate)
 	testing.expect_value(t, active.modifier, ast.Sql_Call_Modifier.All)
 	testing.expect_value(t, len(active.args), 1)
 	active_arg := active.args[0].derived_expr.(^ast.Sql_Column_Expr)
-	testing.expect_value(t, active_arg.qualifier, "evt")
-	testing.expect_value(t, active_arg.name, "evtid")
+	testing.expect_value(t, active_arg.qualifier.text, "evt")
+	testing.expect_value(t, active_arg.name.text, "evtid")
 
 	func := stmt.query.projection_clauses[2].value.derived_expr.(^ast.Sql_Call_Expr)
 	testing.expect_value(t, func.kind, ast.Sql_Call_Kind.Function)
@@ -832,16 +831,16 @@ open_sql_projection_sql_shapes_are_parser_modeled :: proc(t: ^testing.T) {
 	testing.expect(t, host_arg)
 
 	star := stmt.query.projection_clauses[3].value.derived_expr.(^ast.Sql_Star_Expr)
-	testing.expect_value(t, star.qualifier, "rel")
+	testing.expect_value(t, star.qualifier.text, "rel")
 	column := stmt.query.projection_clauses[4].value.derived_expr.(^ast.Sql_Column_Expr)
-	testing.expect_value(t, column.qualifier, "evt")
-	testing.expect_value(t, column.name, "evtid")
+	testing.expect_value(t, column.qualifier.text, "evt")
+	testing.expect_value(t, column.name.text, "evtid")
 
 	join_on := stmt.query.source_clause.joins[0].on.derived_expr.(^ast.Binary_Expr)
 	left := join_on.left.derived_expr.(^ast.Sql_Column_Expr)
 	right := join_on.right.derived_expr.(^ast.Sql_Column_Expr)
-	testing.expect_value(t, left.qualifier, "evt")
-	testing.expect_value(t, right.qualifier, "rel")
+	testing.expect_value(t, left.qualifier.text, "evt")
+	testing.expect_value(t, right.qualifier.text, "rel")
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), "SELECT COUNT( DISTINCT rel~evtid ) AS total_events, COUNT( ALL evt~evtid ) AS active_events, COALESCE( evt~name, @lv_name ) AS event_name, rel~*, evt~evtid FROM zrel AS rel INNER JOIN zevt AS evt ON evt~evtid = rel~evtid INTO @DATA(ls_row).")
 }
 
@@ -857,7 +856,7 @@ open_sql_function_arguments_named_like_modifiers_are_not_aggregate_modifiers :: 
 	testing.expect_value(t, call.modifier, ast.Sql_Call_Modifier.None)
 	testing.expect_value(t, len(call.args), 2)
 	arg := call.args[0].derived_expr.(^ast.Sql_Column_Expr)
-	testing.expect_value(t, arg.name, "all")
+	testing.expect_value(t, arg.name.text, "all")
 }
 
 @(test)
@@ -902,7 +901,7 @@ SELECT matnr FROM @lt_source AS s INTO FIELD-SYMBOL(<row>).`
 	testing.expect_value(t, len(qualified.query.projection_clauses), 2)
 	testing.expect_value(t, qualified.query.projection_clauses[0].alias, "material")
 	qualified_star := qualified.query.projection_clauses[1].value.derived_expr.(^ast.Sql_Star_Expr)
-	testing.expect_value(t, qualified_star.qualifier, "a")
+	testing.expect_value(t, qualified_star.qualifier.text, "a")
 	testing.expect_value(t, qualified.query.source_clause.alias, "a")
 	testing.expect(t, qualified.query.result.table)
 	testing.expect(t, qualified.query.result.corresponding_fields)
@@ -1203,7 +1202,7 @@ open_sql_projection_named_value_before_dynamic_source_is_valid :: proc(t: ^testi
 	testing.expect_value(t, len(parsed.errors), 0)
 	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
 	projection := stmt.query.projection_clauses[0].value.derived_expr.(^ast.Sql_Column_Expr)
-	testing.expect_value(t, projection.name, "value")
+	testing.expect_value(t, projection.name.text, "value")
 	testing.expect(t, stmt.query.source_clause.dynamic_source)
 	testing.expect(t, stmt.query.where_cond != nil)
 }
