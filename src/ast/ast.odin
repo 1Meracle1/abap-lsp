@@ -717,7 +717,7 @@ Data_Inline_Decl :: struct {
 Data_Chained_Decl :: struct {
 	using node: Decl,
 	has_colon:  bool,
-	decls:      [dynamic]Data_Chained_Branch,
+	decls:      [dynamic]Data_Decl_Clause,
 }
 
 Decl_Clause_Kind :: enum {
@@ -735,8 +735,8 @@ Decl_Clause_Flag :: enum {
 }
 Decl_Clause_Flags :: bit_set[Decl_Clause_Flag]
 
-// ABAP syntax: one entry inside a chained DATA statement, for example `a TYPE i` in `DATA: a TYPE i, b.`
-Data_Chained_Branch :: struct {
+// ABAP syntax: one entry inside a DATA or CLASS-DATA statement, for example `a TYPE i` in `DATA: a TYPE i, b.`
+Data_Decl_Clause :: struct {
 	kind:            Decl_Clause_Kind,
 	flags:           Decl_Clause_Flags,
 	depth:           int,
@@ -993,23 +993,7 @@ Controls_Clause :: struct {
 // ABAP syntax: CLASS-DATA statement, for example `CLASS-DATA gv TYPE i.`
 Class_Data_Decl :: struct {
 	using node: Decl,
-	decls:      [dynamic]Class_Data_Clause,
-}
-
-// ABAP syntax: one CLASS-DATA entry, for example `gv TYPE i VALUE 0`.
-Class_Data_Clause :: struct {
-	kind:            Decl_Clause_Kind,
-	flags:           Decl_Clause_Flags,
-	depth:           int,
-	name:            Token_Text,
-	paren_length:    ^Paren_Length_Clause,
-	length_clauses:  [dynamic]Length_Clause,
-	type_clause:     ^Data_Type_Clause,
-	value_clause:    ^Value_Clause,
-	occurs:          ^Expr,
-	include_ref:     ^Expr,
-	as_name:         Token_Text,
-	renaming_suffix: Token_Text,
+	decls:      [dynamic]Data_Decl_Clause,
 }
 
 // ABAP syntax: TYPE-POOLS statement, for example `TYPE-POOLS abap.`

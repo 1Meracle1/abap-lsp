@@ -278,7 +278,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return clone_shallow(n, allocator)
 	case ^Data_Chained_Decl:
 		r := clone_shallow(n, allocator)
-		r.decls = clone_data_chained_branches(n.decls, allocator)
+		r.decls = clone_data_decl_clauses(n.decls, allocator)
 		return r
 	case ^Data_Inline_Decl:
 		r := clone_shallow(n, allocator)
@@ -323,7 +323,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return r
 	case ^Class_Data_Decl:
 		r := clone_shallow(n, allocator)
-		r.decls = clone_class_data_clauses(n.decls, allocator)
+		r.decls = clone_data_decl_clauses(n.decls, allocator)
 		return r
 	case ^Type_Pools_Decl:
 		r := clone_shallow(n, allocator)
@@ -1876,27 +1876,27 @@ clone_data_cluster_parameters :: proc(
 	return res
 }
 
-clone_data_chained_branches :: proc(
-	list: [dynamic]Data_Chained_Branch,
+clone_data_decl_clauses :: proc(
+	list: [dynamic]Data_Decl_Clause,
 	allocator: mem.Allocator,
-) -> [dynamic]Data_Chained_Branch {
-	res := make([dynamic]Data_Chained_Branch, 0, len(list), allocator)
-	for branch in list {
+) -> [dynamic]Data_Decl_Clause {
+	res := make([dynamic]Data_Decl_Clause, 0, len(list), allocator)
+	for clause in list {
 		append(
 			&res,
-			Data_Chained_Branch {
-				kind            = branch.kind,
-				flags           = branch.flags,
-				depth           = branch.depth,
-				name            = clone_token_text(branch.name, allocator),
-				paren_length    = clone_paren_length_clause(branch.paren_length, allocator),
-				length_clauses  = clone_length_clauses(branch.length_clauses, allocator),
-				type_clause     = clone_type_clause(branch.type_clause, allocator),
-				value_clause    = clone_value_clause(branch.value_clause, allocator),
-				occurs          = clone(branch.occurs, allocator),
-				include_ref     = clone(branch.include_ref, allocator),
-				as_name         = clone_token_text(branch.as_name, allocator),
-				renaming_suffix = clone_token_text(branch.renaming_suffix, allocator),
+			Data_Decl_Clause {
+				kind            = clause.kind,
+				flags           = clause.flags,
+				depth           = clause.depth,
+				name            = clone_token_text(clause.name, allocator),
+				paren_length    = clone_paren_length_clause(clause.paren_length, allocator),
+				length_clauses  = clone_length_clauses(clause.length_clauses, allocator),
+				type_clause     = clone_type_clause(clause.type_clause, allocator),
+				value_clause    = clone_value_clause(clause.value_clause, allocator),
+				occurs          = clone(clause.occurs, allocator),
+				include_ref     = clone(clause.include_ref, allocator),
+				as_name         = clone_token_text(clause.as_name, allocator),
+				renaming_suffix = clone_token_text(clause.renaming_suffix, allocator),
 			},
 		)
 	}
@@ -2149,27 +2149,6 @@ clone_controls_clauses :: proc(list: [dynamic]Controls_Clause, allocator: mem.Al
 				using_screen = clone_using_screen_clause(clause.using_screen, allocator),
 			},
 		)
-	}
-	return res
-}
-
-clone_class_data_clauses :: proc(list: [dynamic]Class_Data_Clause, allocator: mem.Allocator) -> [dynamic]Class_Data_Clause {
-	res := make([dynamic]Class_Data_Clause, 0, len(list), allocator)
-	for clause in list {
-		append(&res, Class_Data_Clause {
-			kind           = clause.kind,
-			flags          = clause.flags,
-			depth          = clause.depth,
-			name           = clone_token_text(clause.name, allocator),
-			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
-			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
-			type_clause    = clone_type_clause(clause.type_clause, allocator),
-			value_clause   = clone_value_clause(clause.value_clause, allocator),
-			occurs         = clone(clause.occurs, allocator),
-			include_ref    = clone(clause.include_ref, allocator),
-			as_name        = clone_token_text(clause.as_name, allocator),
-			renaming_suffix = clone_token_text(clause.renaming_suffix, allocator),
-		})
 	}
 	return res
 }

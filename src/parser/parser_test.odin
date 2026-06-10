@@ -132,7 +132,7 @@ single_data_stmt :: proc(stmt: ^ast.Stmt) -> ^ast.Data_Chained_Decl {
 	return stmt.derived_stmt.(^ast.Data_Chained_Decl)
 }
 
-single_data_branch :: proc(stmt: ^ast.Stmt) -> ast.Data_Chained_Branch {
+single_data_branch :: proc(stmt: ^ast.Stmt) -> ast.Data_Decl_Clause {
 	data := single_data_stmt(stmt)
 	return data.decls[0]
 }
@@ -491,6 +491,36 @@ count_nodes :: proc(root: ^ast.Node) -> Node_Counts {
 	return counts
 }
 
+Data_Clause_Walk_Counts :: struct {
+	type_c:           int,
+	include_textpool: int,
+	numeric_literals: int,
+	value_literals:   int,
+}
+
+data_clause_walk_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil {
+		return v
+	}
+	counts := cast(^Data_Clause_Walk_Counts)v.data
+	#partial switch n in node.derived {
+	case ^ast.Type_Ref_Expr:
+		if n.name.text == "c" {
+			counts.type_c += 1
+		} else if n.name.text == "textpool" {
+			counts.include_textpool += 1
+		}
+	case ^ast.Literal_Expr:
+		switch n.value {
+		case "1", "2", "4", "5", "6", "7":
+			counts.numeric_literals += 1
+		case "'A'", "'B'":
+			counts.value_literals += 1
+		}
+	}
+	return v
+}
+
 error_contains :: proc(parsed: Parsed_File, needle: string) -> bool {
 	for e in parsed.errors {
 		if strings.contains(e.message, needle) {
@@ -817,6 +847,57 @@ INCLUDE zinc IF FOUND.`
 	testing.expect_value(t, function_pool_decl.name.text, "zfg")
 	testing.expect_value(t, function_pool_decl.message_id.text, "zmsg")
 	testing.expect_value(t, include_stmt.names[0].name.text, "zinc")
+}
+
+@(test)
+cloned_data_and_class_data_clauses_survive_source_overwrite :: proc(t: ^testing.T) {
+	source := `DATA: BEGIN OF gs_data, INCLUDE STRUCTURE textpool AS data_part RENAMING WITH SUFFIX dsu, field TYPE string VALUE 'A' READ-ONLY, END OF gs_data.
+CLASS-DATA: BEGIN OF gt_data, INCLUDE STRUCTURE textpool AS class_part RENAMING WITH SUFFIX csu, field TYPE string VALUE 'B' READ-ONLY, END OF gt_data.`
+	root := clone_parse_after_source_overwrite(t, source)
+
+	data := root.stmts[0].derived_stmt.(^ast.Data_Chained_Decl)
+	class_data := root.stmts[1].derived_stmt.(^ast.Class_Data_Decl)
+	data_include_ref := data.decls[1].include_ref.derived_expr.(^ast.Type_Ref_Expr)
+	class_include_ref := class_data.decls[1].include_ref.derived_expr.(^ast.Type_Ref_Expr)
+	data_type_ref := data.decls[2].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	class_type_ref := class_data.decls[2].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	data_value := data.decls[2].value_clause.expr.derived_expr.(^ast.Literal_Expr)
+	class_value := class_data.decls[2].value_clause.expr.derived_expr.(^ast.Literal_Expr)
+
+	testing.expect_value(t, data.decls[0].name.text, "gs_data")
+	testing.expect_value(t, data_include_ref.name.text, "textpool")
+	testing.expect_value(t, data.decls[1].as_name.text, "data_part")
+	testing.expect_value(t, data.decls[1].renaming_suffix.text, "dsu")
+	testing.expect_value(t, data.decls[2].name.text, "field")
+	testing.expect_value(t, data_type_ref.name.text, "string")
+	testing.expect_value(t, data_value.value, "'A'")
+	testing.expect(t, .Read_Only in data.decls[2].flags)
+	testing.expect_value(t, class_data.decls[0].name.text, "gt_data")
+	testing.expect_value(t, class_include_ref.name.text, "textpool")
+	testing.expect_value(t, class_data.decls[1].as_name.text, "class_part")
+	testing.expect_value(t, class_data.decls[1].renaming_suffix.text, "csu")
+	testing.expect_value(t, class_data.decls[2].name.text, "field")
+	testing.expect_value(t, class_type_ref.name.text, "string")
+	testing.expect_value(t, class_value.value, "'B'")
+	testing.expect(t, .Read_Only in class_data.decls[2].flags)
+	testing.expect_value(t, ast.print_node(root, context.allocator), source)
+}
+
+@(test)
+walk_visits_data_and_class_data_clause_children :: proc(t: ^testing.T) {
+	source := `DATA: BEGIN OF gs_data OCCURS 1, field(4) LENGTH 5 TYPE c VALUE 'A', INCLUDE STRUCTURE textpool, END OF gs_data.
+CLASS-DATA: BEGIN OF gt_data OCCURS 2, field(6) LENGTH 7 TYPE c VALUE 'B', INCLUDE STRUCTURE textpool, END OF gt_data.`
+	parsed := parse(source, "data_class_data_walk.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	counts := Data_Clause_Walk_Counts{}
+	visitor := ast.Visitor{visit = data_clause_walk_visit, data = rawptr(&counts)}
+	ast.walk(&visitor, parsed.root)
+
+	testing.expect_value(t, counts.type_c, 2)
+	testing.expect_value(t, counts.include_textpool, 2)
+	testing.expect_value(t, counts.numeric_literals, 6)
+	testing.expect_value(t, counts.value_literals, 2)
 }
 
 @(test)

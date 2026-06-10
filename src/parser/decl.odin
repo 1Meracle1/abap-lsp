@@ -81,14 +81,14 @@ parse_data_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 
 	has_colon := allow_token(p, .Colon)
-	branch, ok := parse_data_decl_clause(p)
+	branch, ok := parse_data_or_class_data_clause(p)
 	if !ok {
 		return nil
 	}
 
 	stmt := ast.new(ast.Data_Chained_Decl, start.range, p.allocator)
 	stmt.has_colon = has_colon
-	stmt.decls = make([dynamic]ast.Data_Chained_Branch, 0, 2, p.allocator)
+	stmt.decls = make([dynamic]ast.Data_Decl_Clause, 0, 2, p.allocator)
 	append(&stmt.decls, branch)
 	if has_colon {
 		for allow_token(p, .Comma) {
@@ -96,7 +96,7 @@ parse_data_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				error_current(p, "syntax error: expected declaration after ','")
 				break
 			}
-			next_branch, next_ok := parse_data_decl_clause(p)
+			next_branch, next_ok := parse_data_or_class_data_clause(p)
 			if !next_ok {
 				return nil
 			}
@@ -374,9 +374,9 @@ parse_class_data_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword_phrase(p, "CLASS-DATA")
 	allow_token(p, .Colon)
 	stmt := ast.new(ast.Class_Data_Decl, start.range, p.allocator)
-	stmt.decls = make([dynamic]ast.Class_Data_Clause, 0, 2, p.allocator)
+	stmt.decls = make([dynamic]ast.Data_Decl_Clause, 0, 2, p.allocator)
 	for !decl_clause_boundary(p) {
-		clause, ok := parse_class_data_clause(p)
+		clause, ok := parse_data_or_class_data_clause(p)
 		if !ok {
 			return nil
 		}
@@ -466,12 +466,12 @@ assign_decl_depths :: proc(list: ^[dynamic]$T) {
 	}
 }
 
-parse_data_decl_clause :: proc(p: ^Parser) -> (ast.Data_Chained_Branch, bool) {
+parse_data_or_class_data_clause :: proc(p: ^Parser) -> (ast.Data_Decl_Clause, bool) {
 	kind, is_common_part_delimiter, name, include_ref, name_index, ok := parse_decl_clause_head(p)
 	if !ok {
-		return ast.Data_Chained_Branch{}, false
+		return ast.Data_Decl_Clause{}, false
 	}
-	clause := ast.Data_Chained_Branch {
+	clause := ast.Data_Decl_Clause {
 		kind           = kind,
 		name           = name,
 		include_ref    = include_ref,
@@ -483,7 +483,7 @@ parse_data_decl_clause :: proc(p: ^Parser) -> (ast.Data_Chained_Branch, bool) {
 	if current_token(p).kind == .LParen {
 		clause.paren_length = parse_required_paren_length_clause(p)
 		if clause.paren_length == nil {
-			return ast.Data_Chained_Branch{}, false
+			return ast.Data_Decl_Clause{}, false
 		}
 	}
 	for !decl_clause_end(p, name_index) {
@@ -496,7 +496,7 @@ parse_data_decl_clause :: proc(p: ^Parser) -> (ast.Data_Chained_Branch, bool) {
 		if at_length_keyword(p) {
 			length_clause, length_ok := parse_required_length_clause(p)
 			if !length_ok {
-				return ast.Data_Chained_Branch{}, false
+				return ast.Data_Decl_Clause{}, false
 			}
 			append(&clause.length_clauses, length_clause)
 			continue
@@ -504,14 +504,14 @@ parse_data_decl_clause :: proc(p: ^Parser) -> (ast.Data_Chained_Branch, bool) {
 		if at_keyword(p, "TYPE") || at_keyword(p, "LIKE") {
 			clause.type_clause = parse_required_type_clause(p)
 			if clause.type_clause == nil {
-				return ast.Data_Chained_Branch{}, false
+				return ast.Data_Decl_Clause{}, false
 			}
 			continue
 		}
 		if at_keyword(p, "VALUE") {
 			clause.value_clause = parse_required_value_clause(p)
 			if clause.value_clause == nil {
-				return ast.Data_Chained_Branch{}, false
+				return ast.Data_Decl_Clause{}, false
 			}
 			continue
 		}
@@ -964,65 +964,6 @@ parse_controls_clause :: proc(p: ^Parser) -> (ast.Controls_Clause, bool) {
 			if clause.using_screen == nil {
 				return ast.Controls_Clause{}, false
 			}
-			continue
-		}
-		bump_token(p)
-	}
-	return clause, true
-}
-
-parse_class_data_clause :: proc(p: ^Parser) -> (ast.Class_Data_Clause, bool) {
-	kind, is_common_part_delimiter, name, include_ref, name_index, ok := parse_decl_clause_head(p)
-	if !ok {
-		return ast.Class_Data_Clause{}, false
-	}
-	clause := ast.Class_Data_Clause {
-		kind           = kind,
-		name           = name,
-		include_ref    = include_ref,
-		length_clauses = make([dynamic]ast.Length_Clause, 0, 2, p.allocator),
-	}
-	if is_common_part_delimiter {
-		clause.flags += {.Common_Part_Delimiter}
-	}
-	if current_token(p).kind == .LParen {
-		clause.paren_length = parse_required_paren_length_clause(p)
-		if clause.paren_length == nil {
-			return ast.Class_Data_Clause{}, false
-		}
-	}
-	for !decl_clause_end(p, name_index) {
-		if parse_group_or_include_addition(p, &clause.occurs, &clause.as_name, &clause.renaming_suffix) {
-			continue
-		}
-		if parse_with_header_line_addition(p, &clause.flags) {
-			continue
-		}
-		if at_length_keyword(p) {
-			length_clause, length_ok := parse_required_length_clause(p)
-			if !length_ok {
-				return ast.Class_Data_Clause{}, false
-			}
-			append(&clause.length_clauses, length_clause)
-			continue
-		}
-		if at_keyword(p, "TYPE") || at_keyword(p, "LIKE") {
-			clause.type_clause = parse_required_type_clause(p)
-			if clause.type_clause == nil {
-				return ast.Class_Data_Clause{}, false
-			}
-			continue
-		}
-		if at_keyword(p, "VALUE") {
-			clause.value_clause = parse_required_value_clause(p)
-			if clause.value_clause == nil {
-				return ast.Class_Data_Clause{}, false
-			}
-			continue
-		}
-		if at_keyword_phrase(p, "READ-ONLY") {
-			expect_keyword_phrase(p, "READ-ONLY")
-			clause.flags += {.Read_Only}
 			continue
 		}
 		bump_token(p)

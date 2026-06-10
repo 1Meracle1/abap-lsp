@@ -1011,17 +1011,7 @@ emit_data_chained_decl :: proc(p: ^Printer, decl: ^Data_Chained_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit_decl_prefix(p, branch.kind, branch.name, branch.include_ref, .Common_Part_Delimiter in branch.flags)
-		emit_paren_length(p, branch.paren_length)
-		emit_occurs(p, branch.occurs)
-		emit_include_additions(p, branch.as_name, branch.renaming_suffix)
-		emit_length_clauses(p, branch.length_clauses)
-		emit_type_clause(p, branch.type_clause)
-		emit_header_line(p, branch.flags)
-		emit_value_clause(p, branch.value_clause)
-		if .Read_Only in branch.flags {
-			emit(p, " READ-ONLY")
-		}
+		emit_data_decl_clause(p, branch)
 	}
 	emit(p, ".")
 }
@@ -1204,19 +1194,23 @@ emit_class_data_decl :: proc(p: ^Printer, decl: ^Class_Data_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref, .Common_Part_Delimiter in clause.flags)
-		emit_paren_length(p, clause.paren_length)
-		emit_occurs(p, clause.occurs)
-		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
-		emit_length_clauses(p, clause.length_clauses)
-		emit_type_clause(p, clause.type_clause)
-		emit_header_line(p, clause.flags)
-		emit_value_clause(p, clause.value_clause)
-		if .Read_Only in clause.flags {
-			emit(p, " READ-ONLY")
-		}
+		emit_data_decl_clause(p, clause)
 	}
 	emit(p, ".")
+}
+
+emit_data_decl_clause :: proc(p: ^Printer, clause: Data_Decl_Clause) {
+	emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref, .Common_Part_Delimiter in clause.flags)
+	emit_paren_length(p, clause.paren_length)
+	emit_occurs(p, clause.occurs)
+	emit_include_additions(p, clause.as_name, clause.renaming_suffix)
+	emit_length_clauses(p, clause.length_clauses)
+	emit_type_clause(p, clause.type_clause)
+	emit_header_line(p, clause.flags)
+	emit_value_clause(p, clause.value_clause)
+	if .Read_Only in clause.flags {
+		emit(p, " READ-ONLY")
+	}
 }
 
 emit_type_pools_decl :: proc(p: ^Printer, decl: ^Type_Pools_Decl) {

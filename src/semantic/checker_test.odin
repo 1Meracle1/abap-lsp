@@ -1852,6 +1852,34 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_data_and_class_data_keep_static_boundary :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    DATA mv_value TYPE i READ-ONLY.
+    CLASS-DATA gv_value TYPE i READ-ONLY.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://data_class_data_static_boundary.abap")
+
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_demo", .Class)
+	testing.expect(t, class != nil)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	attr := checker_test_lookup(t, &project, class_payload.definition_scope, .Value, "mv_value", .Variable)
+	static_attr := checker_test_lookup(t, &project, class_payload.definition_scope, .Value, "gv_value", .Variable)
+
+	testing.expect(t, attr != nil && .Read_Only in attr.flags)
+	testing.expect(t, attr != nil && !(.Static in attr.flags))
+	testing.expect(t, static_attr != nil && .Read_Only in static_attr.flags)
+	testing.expect(t, static_attr != nil && .Static in static_attr.flags)
+}
+
+@(test)
 root_semantic_oop_member_additions_and_parameter_defaults_are_collected :: proc(t: ^testing.T) {
 	source := `CLASS lcl_demo DEFINITION.
   PUBLIC SECTION.

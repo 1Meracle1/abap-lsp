@@ -154,20 +154,12 @@ checker_collect_data_chained_decl :: proc(
 ) {
 	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
 	for clause in decl.decls {
-		checker_collect_data_branch(
+		checker_collect_data_decl_clause(
 			ctx,
 			&frames,
-			clause.kind,
-			clause.flags,
-			clause.name,
+			clause,
 			decl.range,
 			&decl.node.decl_base.stmt_base,
-			clause.type_clause,
-			clause.value_clause,
-			clause.occurs,
-			clause.include_ref,
-			clause.as_name,
-			clause.renaming_suffix,
 			.Variable,
 			owner,
 			visibility,
@@ -242,26 +234,48 @@ checker_collect_class_data_decl :: proc(
 ) {
 	frames := make([dynamic]Decl_Structure_Frame, 0, 4, context.temp_allocator)
 	for clause in decl.decls {
-		entity := checker_collect_data_branch(
+		entity := checker_collect_data_decl_clause(
 			ctx,
 			&frames,
-			clause.kind,
-			clause.flags,
-			clause.name,
+			clause,
 			decl.range,
 			&decl.node.decl_base.stmt_base,
-			clause.type_clause,
-			clause.value_clause,
-			clause.occurs,
-			clause.include_ref,
-			clause.as_name,
-			clause.renaming_suffix,
 			.Variable,
 			owner,
 			visibility,
 		)
 		checker_note_variable_decl_flags(entity, is_static = true, read_only = .Read_Only in clause.flags)
 	}
+}
+
+checker_collect_data_decl_clause :: proc(
+	ctx: ^Checker_Context,
+	frames: ^[dynamic]Decl_Structure_Frame,
+	clause: ast.Data_Decl_Clause,
+	range: Range,
+	node: ^ast.Node,
+	entity_kind: Entity_Kind,
+	owner: ^Entity = nil,
+	visibility: Visibility = .Public,
+) -> ^Entity {
+	return checker_collect_data_branch(
+		ctx,
+		frames,
+		clause.kind,
+		clause.flags,
+		clause.name,
+		range,
+		node,
+		clause.type_clause,
+		clause.value_clause,
+		clause.occurs,
+		clause.include_ref,
+		clause.as_name,
+		clause.renaming_suffix,
+		entity_kind,
+		owner,
+		visibility,
+	)
 }
 
 checker_collect_data_branch :: proc(

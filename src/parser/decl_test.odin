@@ -70,6 +70,44 @@ CLASS-DATA gv TYPE i VALUE 0.`
 }
 
 @(test)
+data_and_class_data_share_clause_shape_for_parse_and_print :: proc(t: ^testing.T) {
+	source := `DATA: BEGIN OF gs_data OCCURS 1, field(4) LENGTH 4 TYPE c VALUE 'A' READ-ONLY, INCLUDE STRUCTURE textpool AS data_part RENAMING WITH SUFFIX dsu, END OF gs_data.
+CLASS-DATA: BEGIN OF gt_data OCCURS 2, field(5) LENGTH 5 TYPE c VALUE 'B' READ-ONLY, INCLUDE STRUCTURE textpool AS class_part RENAMING WITH SUFFIX csu, END OF gt_data.`
+	parsed := parse(source, "data_class_data_clauses.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	data := parsed.root.stmts[0].derived_stmt.(^ast.Data_Chained_Decl)
+	class_data := parsed.root.stmts[1].derived_stmt.(^ast.Class_Data_Decl)
+
+	testing.expect_value(t, len(data.decls), 4)
+	testing.expect_value(t, data.decls[0].kind, ast.Decl_Clause_Kind.Begin_Group)
+	testing.expect(t, data.decls[0].occurs != nil)
+	testing.expect(t, data.decls[1].paren_length != nil)
+	testing.expect_value(t, len(data.decls[1].length_clauses), 1)
+	testing.expect(t, data.decls[1].type_clause != nil)
+	testing.expect(t, data.decls[1].value_clause != nil)
+	testing.expect(t, .Read_Only in data.decls[1].flags)
+	testing.expect_value(t, data.decls[2].kind, ast.Decl_Clause_Kind.Include_Structure)
+	testing.expect_value(t, data.decls[2].as_name.text, "data_part")
+	testing.expect_value(t, data.decls[2].renaming_suffix.text, "dsu")
+	testing.expect_value(t, data.decls[3].kind, ast.Decl_Clause_Kind.End_Group)
+
+	testing.expect_value(t, len(class_data.decls), 4)
+	testing.expect_value(t, class_data.decls[0].kind, ast.Decl_Clause_Kind.Begin_Group)
+	testing.expect(t, class_data.decls[0].occurs != nil)
+	testing.expect(t, class_data.decls[1].paren_length != nil)
+	testing.expect_value(t, len(class_data.decls[1].length_clauses), 1)
+	testing.expect(t, class_data.decls[1].type_clause != nil)
+	testing.expect(t, class_data.decls[1].value_clause != nil)
+	testing.expect(t, .Read_Only in class_data.decls[1].flags)
+	testing.expect_value(t, class_data.decls[2].kind, ast.Decl_Clause_Kind.Include_Structure)
+	testing.expect_value(t, class_data.decls[2].as_name.text, "class_part")
+	testing.expect_value(t, class_data.decls[2].renaming_suffix.text, "csu")
+	testing.expect_value(t, class_data.decls[3].kind, ast.Decl_Clause_Kind.End_Group)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 selection_screen_declaration_names_are_limited_to_eight_characters :: proc(t: ^testing.T) {
 	source := `PARAMETERS p_too_long TYPE i.
 SELECT-OPTIONS so_too_long FOR mara-matnr.`

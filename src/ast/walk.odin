@@ -155,12 +155,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Field_Symbol_Inline_Name_Expr:
 	case ^Data_Chained_Decl:
 		for branch in n.decls {
-			walk_paren_length_clause(next, branch.paren_length)
-			walk_length_clauses(next, branch.length_clauses)
-			walk_data_type_clause(next, branch.type_clause)
-			walk_value_clause(next, branch.value_clause)
-			walk(next, branch.occurs)
-			walk(next, branch.include_ref)
+			walk_data_decl_clause(next, branch)
 		}
 	case ^Data_Inline_Decl:
 		walk(next, n.expr)
@@ -225,12 +220,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		}
 	case ^Class_Data_Decl:
 		for clause in n.decls {
-			walk_paren_length_clause(next, clause.paren_length)
-			walk_length_clauses(next, clause.length_clauses)
-			walk_data_type_clause(next, clause.type_clause)
-			walk_value_clause(next, clause.value_clause)
-			walk(next, clause.occurs)
-			walk(next, clause.include_ref)
+			walk_data_decl_clause(next, clause)
 		}
 	case ^Type_Pools_Decl:
 	case ^Function_Pool_Decl:
@@ -743,6 +733,15 @@ walk_data_type_clause :: proc(v: ^Visitor, clause: ^Data_Type_Clause) {
 		walk(v, clause.type_ref)
 		walk(v, clause.initial_size)
 	}
+}
+
+walk_data_decl_clause :: proc(v: ^Visitor, clause: Data_Decl_Clause) {
+	walk_paren_length_clause(v, clause.paren_length)
+	walk_length_clauses(v, clause.length_clauses)
+	walk_data_type_clause(v, clause.type_clause)
+	walk_value_clause(v, clause.value_clause)
+	walk(v, clause.occurs)
+	walk(v, clause.include_ref)
 }
 
 walk_paren_length_clause :: proc(v: ^Visitor, clause: ^Paren_Length_Clause) {
