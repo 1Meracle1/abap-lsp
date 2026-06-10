@@ -3,8 +3,12 @@ name = "ABAP"
 version = "0.0.1"
 schema_version = 1
 authors = ["ABAP LSP contributors"]
-description = "ABAP syntax support and a dark editor theme for Zed."
+description = "ABAP syntax and language server support for Zed."
 repository = "https://github.com/1Meracle1/abap-lsp"
+
+[language_servers.abap-language-server]
+name = "ABAP Language Server"
+languages = ["ABAP"]
 
 [grammars.abap]
 repository = "file:///D:/dev/rust/abap-lsp"
