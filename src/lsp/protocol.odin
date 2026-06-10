@@ -23,6 +23,8 @@ METHOD_COMPLETION :: "textDocument/completion"
 METHOD_HOVER :: "textDocument/hover"
 METHOD_DEFINITION :: "textDocument/definition"
 METHOD_REFERENCES :: "textDocument/references"
+METHOD_PREPARE_RENAME :: "textDocument/prepareRename"
+METHOD_RENAME :: "textDocument/rename"
 METHOD_SEMANTIC_TOKENS_FULL :: "textDocument/semanticTokens/full"
 METHOD_FOLDING_RANGE :: "textDocument/foldingRange"
 METHOD_PUBLISH_DIAGNOSTICS :: "textDocument/publishDiagnostics"
@@ -103,6 +105,20 @@ Hover_Markup :: struct {
 Hover :: struct {
 	contents: Hover_Markup `json:"contents"`,
 	range:    Range `json:"range"`,
+}
+
+Text_Edit :: struct {
+	range:    Range `json:"range"`,
+	new_text: string `json:"newText"`,
+}
+
+Workspace_Edit :: struct {
+	changes: map[string][]Text_Edit `json:"changes"`,
+}
+
+Prepare_Rename_Response :: struct {
+	range:       Range `json:"range"`,
+	placeholder: string `json:"placeholder"`,
 }
 
 Semantic_Tokens :: struct {

@@ -3050,6 +3050,41 @@ lv_copy = lv_value + 1.`
 }
 
 @(test)
+root_semantic_query_records_structure_end_name_as_use :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_input_po,
+         sort_idx TYPE i,
+       END OF ty_input_po.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://query_structure_end_name.abap")
+	query := semantic_query(&project, &checker, file)
+	decl_query := semantic_query_decls(query)
+	ref_query := semantic_query_refs(query)
+
+	decl_offset := checker_test_find_text(source, "ty_input_po")
+	end_offset := checker_test_find_text_last(source, "ty_input_po")
+	testing.expect(t, decl_offset >= 0 && end_offset > decl_offset)
+
+	decl := semantic_decl_entity_at_offset(decl_query, decl_offset)
+	testing.expect(t, decl != nil)
+	if decl == nil {
+		return
+	}
+	use := semantic_ref_use_at_offset(ref_query, end_offset)
+	testing.expect(t, use != nil)
+	if use != nil {
+		testing.expect(t, use.entity == decl)
+		range := semantic_entity_use_range(use^)
+		testing.expect_value(t, source[range.start:range.end], "ty_input_po")
+	}
+
+	uses := semantic_ref_resolving_to_entity(ref_query, decl, context.allocator)
+	testing.expect_value(t, len(uses), 1)
+}
+
+@(test)
 root_semantic_query_finds_named_call_argument_parameter_reference_range :: proc(t: ^testing.T) {
 	source := `CLASS lcl_demo DEFINITION.
   PUBLIC SECTION.
@@ -3351,6 +3386,49 @@ TYPES: BEGIN OF ty_demo,
 		structure := checker_type_structure(ty_demo.type)
 		direct := semantic_decl_structure_field(decl_query, structure, "COMP")
 		testing.expect(t, direct == field)
+	}
+}
+
+@(test)
+root_semantic_query_uses_method_implementation_name_range :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://query_method_impl_range.abap")
+	query := semantic_query(&project, &checker, file)
+	decl_query := semantic_query_decls(query)
+
+	decl_offset := checker_test_find_text(source, "run.")
+	impl_offset := checker_test_find_text(source, "METHOD run") + len("METHOD ")
+	body_offset := checker_test_find_text(source, "lv_value")
+	testing.expect(t, decl_offset >= 0 && impl_offset >= len("METHOD ") && body_offset >= 0)
+
+	decl_member := semantic_decl_class_member_at_offset(decl_query, decl_offset)
+	impl_member := semantic_decl_class_member_at_offset(decl_query, impl_offset)
+	body_member := semantic_decl_class_member_at_offset(decl_query, body_offset)
+
+	testing.expect(t, decl_member != nil)
+	testing.expect(t, impl_member == decl_member)
+	testing.expect(t, body_member == nil)
+	if impl_member != nil {
+		range := semantic_member_query_range(impl_member, impl_offset)
+		testing.expect_value(t, source[range.start:range.end], "run")
+		payload := impl_member.payload.(^Entity_Routine_Payload)
+		testing.expect_value(
+			t,
+			source[payload.implementation_name_range.start:payload.implementation_name_range.end],
+			"run",
+		)
 	}
 }
 

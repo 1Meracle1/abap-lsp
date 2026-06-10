@@ -268,6 +268,7 @@ Entity_Routine_Payload :: struct {
 	has_implementation:   bool,
 	implementation_unit:  ^Project_File,
 	implementation_range: Range,
+	implementation_name_range: Range,
 }
 
 Entity_Field_Payload :: struct {

@@ -150,7 +150,7 @@ semantic_decl_class_member_at_offset :: proc(q: Semantic_Decl_Query, offset: int
 	best_width := 0
 	for entity in q.checker.info.definitions {
 		if entity == nil ||
-		   !semantic_query_entity_matches_file(entity, q.file) ||
+		   !semantic_query_member_matches_file(entity, q.file) ||
 		   !semantic_entity_is_object_member(entity) {
 			continue
 		}
@@ -520,8 +520,8 @@ semantic_member_query_range :: proc(entity: ^Entity, offset: int) -> Range {
 		return entity.name_range
 	}
 	if routine, ok := entity.payload.(^Entity_Routine_Payload); ok && routine != nil {
-		if semantic_range_contains_offset(routine.implementation_range, offset) {
-			return routine.implementation_range
+		if semantic_range_contains_offset(routine.implementation_name_range, offset) {
+			return routine.implementation_name_range
 		}
 	}
 	return entity.name_range
@@ -536,6 +536,16 @@ semantic_entity_is_object_member :: proc(entity: ^Entity) -> bool {
 
 semantic_query_entity_matches_file :: proc(entity: ^Entity, file: ^Project_File) -> bool {
 	return file == nil || entity.source_file == file
+}
+
+semantic_query_member_matches_file :: proc(entity: ^Entity, file: ^Project_File) -> bool {
+	if file == nil || entity.source_file == file {
+		return true
+	}
+	if routine, ok := entity.payload.(^Entity_Routine_Payload); ok && routine != nil {
+		return routine.implementation_unit == file
+	}
+	return false
 }
 
 semantic_query_use_matches_file :: proc(use: Checker_Entity_Use, file: ^Project_File) -> bool {

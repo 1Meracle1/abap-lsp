@@ -320,7 +320,8 @@ checker_collect_data_branch :: proc(
 		return entity
 	case .End_Group:
 		if len(frames^) > 0 {
-			_ = pop(frames)
+			frame := pop(frames)
+			checker_record_structure_end_name_use(ctx, frame.entity, name)
 		}
 	case .Normal:
 		if len(frames^) > 0 {
@@ -396,7 +397,8 @@ checker_collect_type_clause :: proc(
 		return entity
 	case .End_Group:
 		if len(frames^) > 0 {
-			_ = pop(frames)
+			frame := pop(frames)
+			checker_record_structure_end_name_use(ctx, frame.entity, clause.name)
 		}
 	case .Normal:
 		if len(frames^) > 0 {
@@ -425,6 +427,20 @@ checker_collect_type_clause :: proc(
 		return nil
 	}
 	return nil
+}
+
+checker_record_structure_end_name_use :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	name: ast.Token_Text,
+) {
+	if entity == nil || name.text == "" || name.range.start >= name.range.end {
+		return
+	}
+	if checker_intern_name(ctx.project, name.text) != entity.name {
+		return
+	}
+	checker_add_entity_use_at_range(ctx, nil, entity, name.range)
 }
 
 checker_attach_structure_to_entity :: proc(
@@ -1121,6 +1137,7 @@ checker_collect_method_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Method_Dec
 	payload.has_implementation = true
 	payload.implementation_unit = ctx.file
 	payload.implementation_range = decl.range
+	payload.implementation_name_range = decl.name.range
 	entity.flags += {.Has_Implementation}
 	return entity
 }

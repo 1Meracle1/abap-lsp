@@ -5,6 +5,7 @@ import "src:semantic"
 import workspace "src:workspace"
 
 import json "core:encoding/json"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -131,6 +132,13 @@ lsp_uri_matches_or_under_accepts_file_uris_and_paths :: proc(t: ^testing.T) {
 	testing.expect(t, lsp_uri_matches_or_under(`D:\repo\pkg\zmain.abap`, "file:///D:/repo/pkg"))
 	testing.expect(t, lsp_uri_matches_or_under("file:///D:/repo/pkg/zmain.abap", `D:\repo\pkg`))
 	testing.expect(t, !lsp_uri_matches_or_under(`D:\repo\pkg2\zmain.abap`, "file:///D:/repo/pkg"))
+}
+
+@(test)
+initialize_result_exposes_rename_prepare_provider :: proc(t: ^testing.T) {
+	result := initialize_result(context.allocator)
+
+	testing.expect(t, result.capabilities.rename_provider.prepare_provider)
 }
 
 @(test)
@@ -311,6 +319,168 @@ lsp_positions_use_utf16_columns :: proc(t: ^testing.T) {
 }
 
 @(test)
+prepare_rename_returns_placeholder_and_range_for_variable_use :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/prepare_rename.abap"
+	source := "DATA lv TYPE i.\nlv = 1."
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	params := lsp_test_rename_position_params(uri, Position{line = 1, character = 1}, "")
+	response, ok := prepare_rename_for_params(&state, params, context.allocator)
+
+	testing.expect(t, ok)
+	testing.expect_value(t, response.placeholder, "lv")
+	testing.expect_value(t, response.range.start.line, 1)
+	testing.expect_value(t, response.range.start.character, 0)
+	testing.expect_value(t, response.range.end.character, 2)
+}
+
+@(test)
+rename_returns_workspace_edit_for_method_declaration_implementation_and_call :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/rename_method.abap"
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+    METHODS caller.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+  METHOD caller.
+    run( ).
+  ENDMETHOD.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "run( )") + 1
+	testing.expect(t, offset > 0)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "execute")
+	edit, ok, error := rename_for_params(&state, params, context.allocator)
+
+	testing.expect_value(t, error, "")
+	testing.expect(t, ok)
+	edits, edits_ok := edit.changes[uri]
+	testing.expect(t, edits_ok)
+	if !edits_ok {
+		return
+	}
+	testing.expect_value(t, len(edits), 3)
+	if len(edits) == 3 {
+		testing.expect_value(t, edits[0].range.start.line, 2)
+		testing.expect_value(t, edits[1].range.start.line, 7)
+		testing.expect_value(t, edits[2].range.start.line, 10)
+	}
+	for item in edits {
+		testing.expect_value(t, item.new_text, "execute")
+	}
+}
+
+@(test)
+rename_updates_type_structure_begin_and_end_names :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/rename_type_group.abap"
+	source := `TYPES: BEGIN OF ty_input_po,
+         sort_idx  TYPE i,
+         ebeln     TYPE string,
+         vendor_po TYPE string,
+       END OF ty_input_po.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	begin_offset := strings.index(source, "BEGIN OF ty_input_po") + len("BEGIN OF ")
+	end_offset := strings.last_index(source, "ty_input_po")
+	testing.expect(t, begin_offset >= len("BEGIN OF "))
+	testing.expect(t, end_offset > begin_offset)
+
+	begin_params := lsp_test_rename_position_params(
+		uri,
+		offset_to_position(source, begin_offset),
+		"ty_purchase_order",
+	)
+	begin_edit, begin_ok, begin_error := rename_for_params(&state, begin_params, context.allocator)
+
+	testing.expect_value(t, begin_error, "")
+	testing.expect(t, begin_ok)
+	lsp_test_expect_type_structure_rename_edits(
+		t,
+		source,
+		begin_edit,
+		uri,
+		"ty_input_po",
+		"ty_purchase_order",
+	)
+
+	end_params := lsp_test_rename_position_params(
+		uri,
+		offset_to_position(source, end_offset),
+		"ty_po_input",
+	)
+	end_edit, end_ok, end_error := rename_for_params(&state, end_params, context.allocator)
+
+	testing.expect_value(t, end_error, "")
+	testing.expect(t, end_ok)
+	lsp_test_expect_type_structure_rename_edits(
+		t,
+		source,
+		end_edit,
+		uri,
+		"ty_input_po",
+		"ty_po_input",
+	)
+}
+
+lsp_test_expect_type_structure_rename_edits :: proc(
+	t: ^testing.T,
+	source: string,
+	edit: Workspace_Edit,
+	uri: string,
+	old_name: string,
+	new_name: string,
+) {
+	testing.expect_value(t, len(edit.changes), 1)
+	edits, edits_ok := edit.changes[uri]
+	testing.expect(t, edits_ok)
+	if !edits_ok {
+		return
+	}
+	testing.expect_value(t, len(edits), 2)
+	if len(edits) == 2 {
+		testing.expect_value(t, edits[0].range.start.line, 0)
+		testing.expect_value(t, edits[0].range.start.character, 16)
+		testing.expect_value(t, edits[0].range.end.line, 0)
+		testing.expect_value(t, edits[0].range.end.character, 27)
+		testing.expect_value(t, edits[1].range.start.line, 4)
+		testing.expect_value(t, edits[1].range.start.character, 14)
+		testing.expect_value(t, edits[1].range.end.line, 4)
+		testing.expect_value(t, edits[1].range.end.character, 25)
+	}
+	for item in edits {
+		testing.expect_value(t, item.new_text, new_name)
+	}
+	applied := lsp_test_apply_text_edits(t, source, edits, context.allocator)
+	testing.expect(t, strings.contains(applied, strings.concatenate({"BEGIN OF ", new_name}, context.temp_allocator)))
+	testing.expect(t, strings.contains(applied, strings.concatenate({"END OF ", new_name}, context.temp_allocator)))
+	testing.expect(t, !strings.contains(applied, old_name))
+}
+
+@(test)
+rename_rejects_field_symbol_name_without_angle_brackets :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/rename_field_symbol.abap"
+	source := "FIELD-SYMBOLS <fs> TYPE any.\nASSIGN 1 TO <fs>."
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "ASSIGN 1 TO <fs>") + len("ASSIGN 1 TO ") + 1
+	testing.expect(t, offset > 0)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "fs2")
+	_, ok, error := rename_for_params(&state, params, context.allocator)
+
+	testing.expect(t, !ok)
+	testing.expect(t, strings.contains(error, "angle brackets"))
+}
+
+@(test)
 semantic_tokens_include_multiline_class_header_names :: proc(t: ^testing.T) {
 	source := `CLASS lcl_parent DEFINITION.
 ENDCLASS.
@@ -434,4 +604,82 @@ semantic_token_data_has_token :: proc(
 		}
 	}
 	return false
+}
+
+lsp_test_state_with_open_document :: proc(uri, source: string) -> Server_State {
+	state := Server_State {
+		allocator         = context.allocator,
+		documents         = make(map[string]Document, 1, context.allocator),
+		parse_diagnostics = make([dynamic]Parse_Diagnostic_Bucket, 0, 2, context.allocator),
+		workspaces        = make([dynamic]Server_Workspace, 0, 1, context.allocator),
+	}
+	append(&state.workspaces, Server_Workspace{root = workspace.Workspace{root_path = `D:\repo`}})
+	params := lsp_test_did_open_params(uri, source)
+	testing_ok := update_document_from_open(&state, params)
+	assert(testing_ok)
+	server_reanalyze(&state)
+	return state
+}
+
+lsp_test_state_destroy :: proc(state: ^Server_State) {
+	for &slot in state.workspaces {
+		if slot.has_analysis {
+			workspace.analysis_result_destroy(&slot.analysis, state.allocator)
+		}
+		workspace.workspace_destroy(&slot.root, state.allocator)
+	}
+	delete(state.workspaces)
+	delete(state.parse_diagnostics)
+	delete(state.documents)
+}
+
+lsp_test_rename_position_params :: proc(
+	uri: string,
+	position: Position,
+	new_name: string,
+) -> json.Object {
+	params := make(json.Object, 3, context.allocator)
+	text_document := make(json.Object, 1, context.allocator)
+	text_document["uri"] = json.String(uri)
+	params["textDocument"] = text_document
+
+	position_object := make(json.Object, 2, context.allocator)
+	position_object["line"] = json.Integer(position.line)
+	position_object["character"] = json.Integer(position.character)
+	params["position"] = position_object
+
+	if new_name != "" {
+		params["newName"] = json.String(new_name)
+	}
+	return params
+}
+
+lsp_test_apply_text_edits :: proc(
+	t: ^testing.T,
+	source: string,
+	edits: []Text_Edit,
+	allocator: mem.Allocator,
+) -> string {
+	current := strings.clone(source, allocator)
+	for i := len(edits); i > 0; i -= 1 {
+		edit := edits[i - 1]
+		start := position_to_offset(current, edit.range.start)
+		end := position_to_offset(current, edit.range.end)
+		testing.expect(t, start >= 0 && start <= end && end <= len(current))
+		if start < 0 || start > end || end > len(current) {
+			return current
+		}
+		current = strings.concatenate({current[:start], edit.new_text, current[end:]}, allocator)
+	}
+	return current
+}
+
+lsp_test_did_open_params :: proc(uri, source: string) -> json.Object {
+	params := make(json.Object, 1, context.allocator)
+	text_document := make(json.Object, 3, context.allocator)
+	text_document["uri"] = json.String(uri)
+	text_document["text"] = json.String(source)
+	text_document["version"] = json.Integer(1)
+	params["textDocument"] = text_document
+	return params
 }
