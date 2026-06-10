@@ -174,6 +174,7 @@ checker_type_from_ref_data :: proc(
 		reason := External_Candidate_Reason.Unresolved_Reference
 		if type_ref.namespace == .Type {
 			reason = .Unresolved_Type
+			checker_add_unresolved_type_diagnostic(ctx, type_ref, current_decl_entity)
 		}
 		checker_add_unresolved_candidate(
 			ctx,
@@ -259,6 +260,32 @@ checker_type_from_ref_data :: proc(
 		current = project_type_ref(ctx.project, current)
 	}
 	return current, current_entity
+}
+
+checker_add_unresolved_type_diagnostic :: proc(
+	ctx: ^Checker_Context,
+	type_ref: Field_Type_Ref_Data,
+	entity: ^Entity,
+) {
+	if entity == nil || type_ref.namespace != .Type || !string_interner.is_valid(type_ref.base_name) {
+		return
+	}
+	name := string_interner.load(ctx.project.interner, type_ref.base_name)
+	message := "unresolved type"
+	if name != "" {
+		builder := strings.builder_make(context.temp_allocator)
+		strings.write_string(&builder, "unresolved type ")
+		strings.write_string(&builder, name)
+		message = strings.to_string(builder)
+	}
+	checker_add_diagnostic(
+		ctx,
+		.Unresolved_Type,
+		type_ref.base_range,
+		message,
+		entity,
+		entity.decl_info,
+	)
 }
 
 checker_type_ref_should_skip_current_decl :: proc(

@@ -490,6 +490,60 @@ DATA lr_if TYPE REF TO lif_demo.`
 }
 
 @(test)
+root_semantic_type_checker_diagnoses_unresolved_structure_component_type_refs :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_input_po,
+         sort_idx  TYPE i,
+         ebeln     TYPE ekpo-ebeln,
+         vendor_po TYPE /sttpec/e_docnum,
+       END OF ty_input_po.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://unresolved_structure_component_types.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Type), 2)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Global_Symbol,
+			.Type,
+			"ekpo",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Global_Symbol,
+			.Type,
+			"/sttpec/e_docnum",
+		),
+		1,
+	)
+
+	ekpo_diag := false
+	docnum_diag := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Type {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if text == "ekpo" {
+			ekpo_diag = true
+		} else if text == "/sttpec/e_docnum" {
+			docnum_diag = true
+		}
+	}
+	testing.expect(t, ekpo_diag)
+	testing.expect(t, docnum_diag)
+}
+
+@(test)
 root_semantic_type_checker_bounds_recursive_aliases :: proc(t: ^testing.T) {
 	project := project_make()
 	defer project_destroy(&project)

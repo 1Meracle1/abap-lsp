@@ -11,6 +11,7 @@ Checker_Diagnostic_Kind :: enum {
 	Declaration_Cycle,
 	Missing_Declaration_Info,
 	Invalid_Context,
+	Unresolved_Type,
 	Invalid_Object_Type_Reference,
 	Invalid_Generic_Builtin_Type,
 	Invalid_Generic_Table_Type,
