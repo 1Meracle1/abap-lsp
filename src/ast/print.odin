@@ -818,8 +818,6 @@ trivia_is_in_printed_source_fragment :: proc(node: ^Node, trivia: Ast_Trivia) ->
 	#partial switch n in node.derived {
 	case ^Selection_Screen_Stmt:
 		return n.text != "" && range_contains(n.range, trivia.range)
-	case ^Oop_Simple_Stmt:
-		return n.text != "" && range_contains(n.range, trivia.range)
 	case ^Oop_Load_Stmt:
 		return n.text != "" && range_contains(n.range, trivia.range)
 	case ^Loop_Stmt:
@@ -2644,7 +2642,7 @@ emit_macro_def_stmt :: proc(p: ^Printer, stmt: ^Macro_Def_Stmt) {
 emit_oop_simple_stmt :: proc(p: ^Printer, stmt: ^Oop_Simple_Stmt) {
 	if stmt.kind == .Aliases && len(stmt.aliases) > 0 {
 		emit(p, "ALIASES")
-		if len(stmt.aliases) > 1 {
+		if stmt.has_colon || len(stmt.aliases) > 1 {
 			emit(p, ":")
 		}
 		for alias, i in stmt.aliases {
@@ -2660,16 +2658,17 @@ emit_oop_simple_stmt :: proc(p: ^Printer, stmt: ^Oop_Simple_Stmt) {
 		return
 	}
 	if len(stmt.members) == 0 {
-		if stmt.text != "" {
-			emit(p, stmt.text)
-		} else if stmt.kind == .Class_Section && stmt.visibility != .Unspecified {
+		if stmt.kind == .Class_Section && stmt.visibility != .Unspecified {
 			emit(p, oop_visibility_text(stmt.visibility))
 			emit(p, " SECTION.")
+		} else {
+			emit(p, oop_simple_kind_text(stmt.kind))
+			emit(p, ".")
 		}
 		return
 	}
 	emit(p, oop_simple_kind_text(stmt.kind))
-	if len(stmt.members) > 1 {
+	if stmt.has_colon || len(stmt.members) > 1 {
 		emit(p, ":")
 	}
 	for member, i in stmt.members {
@@ -2677,17 +2676,80 @@ emit_oop_simple_stmt :: proc(p: ^Printer, stmt: ^Oop_Simple_Stmt) {
 			emit(p, ",")
 		}
 		emit_space(p)
-		emit(p, member.name)
-		for sig in member.signatures {
-			emit_space(p)
-			emit(p, oop_signature_kind_text(sig.kind))
-			if len(sig.values) > 0 {
-				emit_space(p)
-				emit_expr_list(p, sig.values, " ")
-			}
-		}
+		emit_oop_member_clause(p, member)
 	}
 	emit(p, ".")
+}
+
+emit_oop_member_clause :: proc(p: ^Printer, member: Oop_Member_Clause) {
+	emit(p, member.name)
+	if .Redefinition in member.flags {
+		emit(p, " REDEFINITION")
+	}
+	if .Abstract in member.flags {
+		emit(p, " ABSTRACT")
+	}
+	if .Final in member.flags {
+		emit(p, " FINAL")
+	}
+	if member.event_handler.event_name.text != "" {
+		emit(p, " FOR EVENT ")
+		emit(p, member.event_handler.event_name)
+		if member.event_handler.source_type != nil {
+			emit(p, " OF ")
+			emit_node(p, member.event_handler.source_type)
+		}
+	}
+	for sig in member.signatures {
+		emit_oop_signature_clause(p, sig)
+	}
+}
+
+emit_oop_signature_clause :: proc(p: ^Printer, sig: Oop_Signature_Clause) {
+	emit_space(p)
+	emit(p, oop_signature_kind_text(sig.kind))
+	if len(sig.parameters) > 0 {
+		for param in sig.parameters {
+			emit_space(p)
+			emit_oop_parameter_clause(p, param)
+		}
+	} else if len(sig.values) > 0 {
+		emit_space(p)
+		emit_expr_list(p, sig.values, " ")
+	}
+	if sig.preferred_parameter.text != "" {
+		emit(p, " PREFERRED PARAMETER ")
+		emit(p, sig.preferred_parameter)
+	}
+}
+
+emit_oop_parameter_clause :: proc(p: ^Printer, param: Oop_Parameter_Clause) {
+	if param.escaped {
+		emit(p, "!")
+	}
+	switch param.passing {
+	case .Value:
+		emit(p, "VALUE(")
+		emit(p, param.name)
+		emit(p, ")")
+	case .Reference:
+		emit(p, "REFERENCE(")
+		emit(p, param.name)
+		emit(p, ")")
+	case .Direct:
+		emit(p, param.name)
+	}
+	emit_type_clause(p, param.type_clause)
+	if param.optional {
+		emit(p, " OPTIONAL")
+	}
+	if param.has_default {
+		emit(p, " DEFAULT")
+		if param.default_expr != nil {
+			emit_space(p)
+			emit_node(p, param.default_expr)
+		}
+	}
 }
 
 emit_oop_load_stmt :: proc(p: ^Printer, stmt: ^Oop_Load_Stmt) {

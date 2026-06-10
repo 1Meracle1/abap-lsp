@@ -1717,6 +1717,41 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_oop_member_additions_and_parameter_defaults_are_collected :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS choose ABSTRACT
+      IMPORTING !iv_value TYPE string DEFAULT 'x' PREFERRED PARAMETER iv_value.
+    METHODS done FINAL.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://oop_member_additions.abap")
+
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_demo", .Class)
+	testing.expect(t, class != nil)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	choose := checker_test_lookup(t, &project, class_payload.definition_scope, .Routine, "choose", .Method)
+	done := checker_test_lookup(t, &project, class_payload.definition_scope, .Routine, "done", .Method)
+	testing.expect(t, choose != nil && done != nil)
+	if choose == nil || done == nil {
+		return
+	}
+
+	choose_payload := choose.payload.(^Entity_Routine_Payload)
+	param := checker_test_lookup(t, &project, choose_payload.signature_scope, .Value, "iv_value", .Parameter)
+	testing.expect(t, .Static in choose.flags)
+	testing.expect(t, .Abstract in choose.flags)
+	testing.expect(t, .Final in done.flags)
+	testing.expect(t, param != nil && param.decl_info.default_expr != nil)
+}
+
+@(test)
 root_semantic_expr_checker_resolves_structure_selectors_and_table_keys :: proc(t: ^testing.T) {
 	source := `FORM run.
   TYPES: BEGIN OF ty_status,

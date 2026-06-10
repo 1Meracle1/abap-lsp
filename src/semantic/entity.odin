@@ -141,6 +141,7 @@ Entity_Flag :: enum {
 	Forward,
 	Static,
 	Abstract,
+	Final,
 	Redefinition,
 	Optional,
 	Has_Default_Value,

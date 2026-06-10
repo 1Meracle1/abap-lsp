@@ -964,7 +964,8 @@ checker_collect_oop_routine_member :: proc(
 	if kind == .Method {
 		name = checker_oop_method_entity_name(member)
 	}
-	entity := checker_collect_routine_decl(ctx, name, kind, stmt.range, header_range, stmt.text, &stmt.node.stmt_base)
+	range := member.range if member.range.end > member.range.start else stmt.range
+	entity := checker_collect_routine_decl(ctx, name, kind, range, header_range, "", &stmt.node.stmt_base)
 	if entity == nil {
 		return nil
 	}
@@ -972,6 +973,12 @@ checker_collect_oop_routine_member :: proc(
 	payload, ok := entity.payload.(^Entity_Routine_Payload)
 	assert(ok && payload != nil)
 	payload.visibility = visibility
+	if .Abstract in member.flags {
+		entity.flags += {.Abstract}
+	}
+	if .Final in member.flags {
+		entity.flags += {.Final}
+	}
 	checker_collect_oop_signature(ctx, entity, member.signatures[:], kind)
 	return entity
 }
@@ -1203,6 +1210,7 @@ checker_collect_oop_signature :: proc(
 					checker_parameter_passing_from_ast(param.passing),
 					optional = param.optional,
 					has_default = param.has_default,
+					default_expr = param.default_expr,
 				)
 			}
 			continue
@@ -1247,8 +1255,9 @@ checker_collect_parameter_decl :: proc(
 	passing: Entity_Parameter_Passing,
 	optional := false,
 	has_default := false,
+	default_expr: ^ast.Expr = nil,
 ) -> ^Entity {
-	entity := checker_collect_variable_decl(ctx, scope, name, .Parameter, range, owner.node, type_clause, nil)
+	entity := checker_collect_variable_decl(ctx, scope, name, .Parameter, range, owner.node, type_clause, nil, default_expr)
 	if entity == nil {
 		return nil
 	}

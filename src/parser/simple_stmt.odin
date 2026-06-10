@@ -2158,29 +2158,35 @@ parse_oop_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				return nil
 			}
 			stmt.range = simple_stmt_range(p, start)
-			stmt.text = source_range_text(p, stmt.range)
 			return stmt
 		}
 		stmt.members = make([dynamic]ast.Oop_Member_Clause, 0, 2, p.allocator)
 		parse_oop_members(p, stmt)
 		stmt.range = simple_stmt_range(p, start)
-		stmt.text = source_range_text(p, stmt.range)
 		return stmt
 	}
-	consume_raw_until_top_level_period(p)
+	if stmt.visibility == .Public {
+		expect_keyword(p, "PUBLIC")
+	} else if stmt.visibility == .Protected {
+		expect_keyword(p, "PROTECTED")
+	} else {
+		expect_keyword(p, "PRIVATE")
+	}
+	if !allow_keyword(p, "SECTION") {
+		error_current(p, "syntax error: expected SECTION in visibility declaration")
+	}
 	period := expect_token(p, .Period)
 	if period.kind != .Period {
 		return nil
 	}
 	stmt.range = tokenizer.text_range(start.range.start, period.range.end)
-	stmt.text = source_range_text(p, stmt.range)
 	return stmt
 }
 
 parse_oop_aliases :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) -> bool {
 	stmt.aliases = make([dynamic]ast.Oop_Alias_Clause, 0, 2, p.allocator)
 	stmt.members = make([dynamic]ast.Oop_Member_Clause, 0, 2, p.allocator)
-	allow_token(p, .Colon)
+	stmt.has_colon = allow_token(p, .Colon)
 	for current_token(p).kind != .Period && current_token(p).kind != .Eof {
 		if allow_token(p, .Comma) {
 			continue
@@ -2220,6 +2226,7 @@ parse_oop_alias_clause :: proc(p: ^Parser) -> (ast.Oop_Alias_Clause, bool) {
 	}
 	return ast.Oop_Alias_Clause {
 			name                   = parser_ast_raw_name_token(p, name),
+			range                  = tokenizer.text_range(name.range.start, target.range.end),
 			target                 = target,
 			target_interface_name  = target.base_name,
 			target_member_name     = target.path[0].name,
@@ -2269,15 +2276,16 @@ oop_member_from_alias :: proc(alias: ast.Oop_Alias_Clause, allocator: mem.Alloca
 	values := make([dynamic]^ast.Expr, 0, 1, allocator)
 	append(&values, alias.target)
 	signatures := make([dynamic]ast.Oop_Signature_Clause, 0, 1, allocator)
-	append(&signatures, ast.Oop_Signature_Clause{kind = .For, values = values})
+	append(&signatures, ast.Oop_Signature_Clause{kind = .For, range = alias.range, values = values})
 	return ast.Oop_Member_Clause {
 		name       = alias.name,
+		range      = alias.range,
 		signatures = signatures,
 	}
 }
 
 parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
-	allow_token(p, .Colon)
+	stmt.has_colon = allow_token(p, .Colon)
 	for current_token(p).kind != .Period && current_token(p).kind != .Eof {
 		if allow_token(p, .Comma) {
 			continue
@@ -2300,11 +2308,20 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 		p.index = next_index
 		member := ast.Oop_Member_Clause {
 			name            = parser_ast_token(member_name, member_range),
+			range           = member_range,
 			qualifier       = parser_ast_token(qualifier, qualifier_range),
 			member_name     = parser_ast_token(component_name, component_range),
 			signatures      = make([dynamic]ast.Oop_Signature_Clause, 0, 2, p.allocator),
 		}
 		for current_token(p).kind != .Period && current_token(p).kind != .Eof && current_token(p).kind != .Comma {
+			if allow_keyword(p, "ABSTRACT") {
+				member.flags += {.Abstract}
+				continue
+			}
+			if allow_keyword(p, "FINAL") {
+				member.flags += {.Final}
+				continue
+			}
 			if allow_keyword(p, "REDEFINITION") {
 				if len(member.signatures) > 0 {
 					error(p, previous_token(p).range, "syntax error: REDEFINITION method cannot declare a signature")
@@ -2322,6 +2339,7 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 				continue
 			}
 			if kind, ok := oop_signature_kind(p); ok {
+				keyword := current_token(p)
 				if .Redefinition in member.flags {
 					error_current(p, "syntax error: REDEFINITION method cannot declare a signature")
 					consume_oop_member_tail(p)
@@ -2340,7 +2358,7 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 					}
 					continue
 				}
-				append(&member.signatures, parse_oop_signature_clause(p, kind))
+				append(&member.signatures, parse_oop_signature_clause(p, kind, keyword.range.start))
 				continue
 			}
 			bump_token(p)
@@ -2349,6 +2367,9 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 		   (stmt.kind == .Methods || stmt.kind == .Class_Methods) &&
 		   !(.Redefinition in member.flags) {
 			error(p, member.name.range, "syntax error: qualified method declaration requires REDEFINITION")
+		}
+		if previous_token(p).range.end > member.range.end {
+			member.range = tokenizer.text_range(member.range.start, previous_token(p).range.end)
 		}
 		append(&stmt.members, member)
 	}
@@ -2366,9 +2387,10 @@ consume_oop_member_tail :: proc(p: ^Parser) {
 	}
 }
 
-parse_oop_signature_clause :: proc(p: ^Parser, kind: ast.Oop_Signature_Kind) -> ast.Oop_Signature_Clause {
+parse_oop_signature_clause :: proc(p: ^Parser, kind: ast.Oop_Signature_Kind, start: int) -> ast.Oop_Signature_Clause {
 	clause := ast.Oop_Signature_Clause {
 		kind       = kind,
+		range      = tokenizer.text_range(start, previous_token(p).range.end),
 		values     = make([dynamic]^ast.Expr, 0, 2, p.allocator),
 		parameters = make([dynamic]ast.Oop_Parameter_Clause, 0, 2, p.allocator),
 	}
@@ -2376,6 +2398,9 @@ parse_oop_signature_clause :: proc(p: ^Parser, kind: ast.Oop_Signature_Kind) -> 
 		parse_oop_signature_parameters(p, &clause)
 	} else {
 		clause.values = parse_oop_signature_values(p)
+	}
+	if previous_token(p).range.end > clause.range.end {
+		clause.range.end = previous_token(p).range.end
 	}
 	return clause
 }
@@ -2416,6 +2441,9 @@ oop_signature_has_parameters :: proc(kind: ast.Oop_Signature_Kind) -> bool {
 parse_oop_signature_parameters :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Clause) {
 	for !oop_signature_values_done(p) {
 		start := p.index
+		if parse_oop_preferred_parameter(p, clause) {
+			continue
+		}
 		if parse_oop_signature_parameter(p, clause) {
 			continue
 		}
@@ -2425,7 +2453,7 @@ parse_oop_signature_parameters :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cl
 
 parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Clause) -> bool {
 	start := p.index
-	name, name_range, passing, ok := parse_oop_parameter_name(p)
+	name, name_range, passing, escaped, ok := parse_oop_parameter_name(p)
 	if !ok {
 		return false
 	}
@@ -2436,6 +2464,7 @@ parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cla
 	}
 	optional := false
 	has_default := false
+	default_expr: ^ast.Expr
 	for !oop_signature_values_done(p) {
 		if allow_keyword(p, "OPTIONAL") {
 			optional = true
@@ -2443,24 +2472,24 @@ parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cla
 		}
 		if allow_keyword(p, "DEFAULT") {
 			has_default = true
-			skip_oop_parameter_addition_value(p)
+			default_expr = parse_oop_parameter_default_expr(p)
 			continue
 		}
-		if allow_keyword(p, "PREFERRED") {
-			allow_keyword(p, "PARAMETER")
-			if current_token(p).kind == .Ident {
-				bump_token(p)
-			}
+		if parse_oop_preferred_parameter(p, clause) {
 			continue
 		}
 		break
 	}
+	end := previous_token(p).range.end
 	append(
 		&clause.parameters,
 		ast.Oop_Parameter_Clause {
 			name = parser_ast_token(name, name_range),
+			range = tokenizer.text_range(name_range.start, end),
 			passing = passing,
 			type_clause = type_clause,
+			default_expr = default_expr,
+			escaped = escaped,
 			optional = optional,
 			has_default = has_default,
 		},
@@ -2469,15 +2498,33 @@ parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cla
 	return true
 }
 
+parse_oop_preferred_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Clause) -> bool {
+	if !allow_keyword(p, "PREFERRED") {
+		return false
+	}
+	allow_keyword(p, "PARAMETER")
+	name := current_token(p)
+	if name.kind == .Ident {
+		validate_abap_name_length(p, name)
+		clause.preferred_parameter = parser_ast_raw_name_token(p, name)
+		bump_token(p)
+	}
+	return true
+}
+
 parse_oop_parameter_name :: proc(p: ^Parser) -> (
 	string,
 	tokenizer.Range,
 	ast.Parameter_Passing_Kind,
 	bool,
+	bool,
 ) {
 	escaped := false
-	if tokenizer.token_lexeme(current_token(p), p.source) == "!" {
+	text := tokenizer.token_lexeme(current_token(p), p.source)
+	if text == "!" {
 		bump_token(p)
+		escaped = true
+	} else if len(text) > 0 && text[0] == '!' {
 		escaped = true
 	}
 	if !escaped &&
@@ -2489,18 +2536,18 @@ parse_oop_parameter_name :: proc(p: ^Parser) -> (
 		expect_token(p, .LParen)
 		tok := current_token(p)
 		if tok.kind != .Ident {
-			return "", tok.range, passing, false
+			return "", tok.range, passing, escaped, false
 		}
 		bump_token(p)
 		expect_token(p, .RParen)
-		return parser_intern_token_name(p, tok), tok.range, passing, true
+		return parser_intern_token_name(p, tok), tok.range, passing, escaped, true
 	}
 	tok := current_token(p)
 	if tok.kind != .Ident {
-		return "", tok.range, .Direct, false
+		return "", tok.range, .Direct, escaped, false
 	}
 	bump_token(p)
-	return parser_intern_token_name(p, tok), tok.range, .Direct, true
+	return parser_intern_token_name(p, tok), tok.range, .Direct, escaped, true
 }
 
 parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
@@ -2638,20 +2685,35 @@ oop_type_ref_done :: proc(p: ^Parser, start: int, in_key: bool) -> bool {
 	    at_keyword_phrase(p, "READ-ONLY") ||
 	    at_keyword(p, "OPTIONAL") ||
 	    at_keyword(p, "PREFERRED") ||
-	    (!in_key && at_keyword(p, "DEFAULT"))) {
+	    (!in_key && at_keyword(p, "DEFAULT")) ||
+	    oop_member_addition_starts(p)) {
 		return true
 	}
 	return p.index > start && oop_parameter_starts(p, p.index)
 }
 
-skip_oop_parameter_addition_value :: proc(p: ^Parser) {
+parse_oop_parameter_default_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	start := p.index
+	end := oop_parameter_default_end(p, start)
+	if start >= end {
+		return nil
+	}
+	value := parse_complete_concat_expr(p, start, end)
+	if value == nil {
+		value = cast(^ast.Expr)type_ref_expr_from_tokens(p, start, end, -1, false, false)
+	}
+	p.index = end
+	return value
+}
+
+oop_parameter_default_end :: proc(p: ^Parser, start: int) -> int {
 	paren, bracket, brace := 0, 0, 0
 	for !oop_signature_values_done(p) {
 		top := paren == 0 && bracket == 0 && brace == 0
 		if top && (at_keyword(p, "OPTIONAL") ||
 		           at_keyword(p, "PREFERRED") ||
 		           oop_parameter_starts(p, p.index)) {
-			return
+			return p.index
 		}
 		tok := bump_token(p)
 		#partial switch tok.kind {
@@ -2675,6 +2737,7 @@ skip_oop_parameter_addition_value :: proc(p: ^Parser) {
 			}
 		}
 	}
+	return p.index
 }
 
 append_oop_signature_value :: proc(
@@ -2697,9 +2760,14 @@ append_oop_signature_value :: proc(
 oop_parameter_starts :: proc(p: ^Parser, index: int) -> bool {
 	i := index
 	escaped := false
-	if i < len(p.tokens) && tokenizer.token_lexeme(p.tokens[i], p.source) == "!" {
-		i += 1
-		escaped = true
+	if i < len(p.tokens) {
+		text := tokenizer.token_lexeme(p.tokens[i], p.source)
+		if text == "!" {
+			i += 1
+			escaped = true
+		} else if len(text) > 0 && text[0] == '!' {
+			escaped = true
+		}
 	}
 	if !escaped &&
 	   (at_keyword_index(p, i, "VALUE") || at_keyword_index(p, i, "REFERENCE")) &&
@@ -2721,7 +2789,8 @@ oop_signature_values_done :: proc(p: ^Parser) -> bool {
 	       current_token(p).kind == .Eof ||
 	       current_token(p).kind == .Comma ||
 	       current_token(p).kind == .Colon ||
-	       simple_current_keyword_in(p, OOP_SIGNATURE_STOP_KEYWORDS)
+	       simple_current_keyword_in(p, OOP_SIGNATURE_STOP_KEYWORDS) ||
+	       oop_member_addition_starts(p)
 }
 
 parse_oop_signature_values :: proc(p: ^Parser) -> [dynamic]^ast.Expr {
@@ -2766,6 +2835,14 @@ oop_signature_kind :: proc(p: ^Parser) -> (ast.Oop_Signature_Kind, bool) {
 }
 
 OOP_SIGNATURE_STOP_KEYWORDS :: []string{"IMPORTING", "EXPORTING", "CHANGING", "RECEIVING", "RETURNING", "RAISING", "EXCEPTIONS", "FOR"}
+
+oop_member_addition_starts :: proc(p: ^Parser) -> bool {
+	return(
+		at_keyword(p, "ABSTRACT") ||
+		at_keyword(p, "FINAL") ||
+		at_keyword(p, "REDEFINITION") \
+	)
+}
 
 parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "CLEAR")

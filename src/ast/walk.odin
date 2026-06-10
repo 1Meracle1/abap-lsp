@@ -504,10 +504,12 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk(next, alias.target)
 		}
 		for member in n.members {
+			walk(next, member.event_handler.source_type)
 			for clause in member.signatures {
 				walk_expr_list(next, clause.values)
 				for param in clause.parameters {
 					walk_data_type_clause(next, param.type_clause)
+					walk(next, param.default_expr)
 				}
 			}
 		}

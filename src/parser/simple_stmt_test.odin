@@ -1069,23 +1069,63 @@ oop_signature_accepts_escaped_keyword_parameters :: proc(t: ^testing.T) {
   METHODS set_option
     IMPORTING
       !OPTION TYPE I
-      !VALUE TYPE ABAP_BOOL DEFAULT ABAP_TRUE.
+      !VALUE TYPE ABAP_BOOL DEFAULT ABAP_TRUE
+      !NEXT TYPE I.
 ENDINTERFACE.`
 	parsed := parse(source, "oop_escaped_keyword_parameters.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	methods := parsed.root.stmts[0].derived_stmt.(^ast.Interface_Decl).body[0].derived_stmt.(^ast.Oop_Simple_Stmt)
 	importing := methods.members[0].signatures[0]
-	testing.expect_value(t, len(importing.parameters), 2)
+	testing.expect_value(t, len(importing.parameters), 3)
 	testing.expect_value(t, importing.parameters[0].name.text, "OPTION")
 	testing.expect_value(t, importing.parameters[0].passing, ast.Parameter_Passing_Kind.Direct)
+	testing.expect(t, importing.parameters[0].escaped)
 	option_type := importing.parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, option_type.base_name.text, "I")
 	testing.expect_value(t, importing.parameters[1].name.text, "VALUE")
 	testing.expect_value(t, importing.parameters[1].passing, ast.Parameter_Passing_Kind.Direct)
+	testing.expect(t, importing.parameters[1].escaped)
 	testing.expect(t, importing.parameters[1].has_default)
+	testing.expect(t, importing.parameters[1].default_expr != nil)
 	value_type := importing.parameters[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, value_type.base_name.text, "ABAP_BOOL")
+	testing.expect_value(t, importing.parameters[2].name.text, "NEXT")
+	testing.expect(t, importing.parameters[2].escaped)
+	testing.expect_value(
+		t,
+		ast.print_node(methods, context.allocator),
+		"METHODS set_option IMPORTING !OPTION TYPE I !VALUE TYPE ABAP_BOOL DEFAULT ABAP_TRUE !NEXT TYPE I.",
+	)
+}
+
+@(test)
+oop_member_additions_and_preferred_parameter_are_ast_fields :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS choose ABSTRACT IMPORTING !iv_one TYPE string !iv_two TYPE string PREFERRED PARAMETER iv_two.
+    METHODS done FINAL.
+ENDCLASS.`
+	parsed := parse(source, "oop_member_additions.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	class_decl := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl)
+	choose := class_decl.body[1].derived_stmt.(^ast.Oop_Simple_Stmt)
+	done := class_decl.body[2].derived_stmt.(^ast.Oop_Simple_Stmt)
+	signature := choose.members[0].signatures[0]
+
+	testing.expect(t, .Abstract in choose.members[0].flags)
+	testing.expect(t, .Final in done.members[0].flags)
+	testing.expect_value(t, signature.preferred_parameter.text, "iv_two")
+	testing.expect_value(t, len(signature.parameters), 2)
+	testing.expect(t, signature.parameters[0].escaped)
+	testing.expect(t, signature.parameters[1].escaped)
+	testing.expect_value(t, source[choose.members[0].range.start:choose.members[0].range.end], "choose ABSTRACT IMPORTING !iv_one TYPE string !iv_two TYPE string PREFERRED PARAMETER iv_two")
+	testing.expect_value(
+		t,
+		ast.print_node(choose, context.allocator),
+		"METHODS choose ABSTRACT IMPORTING !iv_one TYPE string !iv_two TYPE string PREFERRED PARAMETER iv_two.",
+	)
 }
 
 @(test)

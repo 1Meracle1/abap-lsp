@@ -1992,16 +1992,21 @@ Oop_Signature_Kind :: enum {
 
 Oop_Parameter_Clause :: struct {
 	name:        Token_Text,
+	range:       tokenizer.Range,
 	passing:     Parameter_Passing_Kind,
 	type_clause: ^Data_Type_Clause,
+	default_expr: ^Expr,
+	escaped:     bool,
 	optional:    bool,
 	has_default: bool,
 }
 
 Oop_Signature_Clause :: struct {
-	kind:       Oop_Signature_Kind,
-	values:     [dynamic]^Expr,
-	parameters: [dynamic]Oop_Parameter_Clause,
+	kind:                Oop_Signature_Kind,
+	range:               tokenizer.Range,
+	values:              [dynamic]^Expr,
+	parameters:          [dynamic]Oop_Parameter_Clause,
+	preferred_parameter: Token_Text,
 }
 
 Oop_Event_Handler_Clause :: struct {
@@ -2011,11 +2016,14 @@ Oop_Event_Handler_Clause :: struct {
 
 Oop_Member_Flag :: enum {
 	Redefinition,
+	Abstract,
+	Final,
 }
 Oop_Member_Flags :: bit_set[Oop_Member_Flag]
 
 Oop_Member_Clause :: struct {
 	name:          Token_Text,
+	range:         tokenizer.Range,
 	qualifier:     Token_Text,
 	member_name:   Token_Text,
 	flags:         Oop_Member_Flags,
@@ -2025,6 +2033,7 @@ Oop_Member_Clause :: struct {
 
 Oop_Alias_Clause :: struct {
 	name:                  Token_Text,
+	range:                 tokenizer.Range,
 	target:                ^Expr,
 	target_interface_name: Token_Text,
 	target_member_name:    Token_Text,
@@ -2035,7 +2044,7 @@ Oop_Simple_Stmt :: struct {
 	using node: Stmt,
 	kind:       Oop_Simple_Kind,
 	visibility: Oop_Visibility,
-	text:       string,
+	has_colon:  bool,
 	members:    [dynamic]Oop_Member_Clause,
 	aliases:    [dynamic]Oop_Alias_Clause,
 }

@@ -1381,8 +1381,10 @@ clone_oop_signatures :: proc(list: [dynamic]Oop_Signature_Clause, allocator: mem
 			&res,
 			Oop_Signature_Clause {
 				kind = clause.kind,
+				range = clause.range,
 				values = clone_expr_list(clause.values, allocator),
 				parameters = clone_oop_parameters(clause.parameters, allocator),
+				preferred_parameter = clone_token_text(clause.preferred_parameter, allocator),
 			},
 		)
 	}
@@ -1396,8 +1398,11 @@ clone_oop_parameters :: proc(list: [dynamic]Oop_Parameter_Clause, allocator: mem
 			&res,
 			Oop_Parameter_Clause {
 				name = clone_token_text(clause.name, allocator),
+				range = clause.range,
 				passing = clause.passing,
 				type_clause = clone_type_clause(clause.type_clause, allocator),
+				default_expr = clone(clause.default_expr, allocator),
+				escaped = clause.escaped,
 				optional = clause.optional,
 				has_default = clause.has_default,
 			},
