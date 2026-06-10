@@ -36,7 +36,7 @@ ENDDO.
             (equals)
             (string))
           (named_argument
-            (keyword)
+            (identifier)
             (equals)
             (string))
           (named_argument
@@ -50,7 +50,7 @@ ENDDO.
             (equals)
             (string))
           (named_argument
-            (keyword)
+            (identifier)
             (equals)
             (string))
           (named_argument
@@ -62,7 +62,72 @@ ENDDO.
     (keyword)
     (simple_statement
       (keyword))
+      (keyword)))
+
+==================
+Dynpro SET statements and modules
+==================
+
+SET PF-STATUS '0100'.
+SET TITLEBAR '0100'.
+MODULE user_command_0100 INPUT.
+ENDMODULE.
+
+---
+
+(source_file
+  (set_pf_status_statement
+    (keyword)
+    (keyword)
+    (string))
+  (set_titlebar_statement
+    (keyword)
+    (keyword)
+    (string))
+  (module_definition
+    (keyword)
+    (identifier)
+    (keyword)
     (keyword)))
+
+==================
+Append constructor option field is an identifier
+==================
+
+APPEND VALUE #(
+        sign   = ls_pgid-sign
+        option = ls_pgid-option
+        low    = ls_pgid-low
+        high   = ls_pgid-high
+      ) TO lt_wadat_ist.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (constructor_expression
+      (keyword)
+      (argument_list
+        (named_argument
+          (identifier)
+          (equals)
+          (field_path))
+        (named_argument
+          (identifier)
+          (equals)
+          (field_path))
+        (named_argument
+          (identifier)
+          (equals)
+          (field_path))
+        (named_argument
+          (identifier)
+          (equals)
+          (field_path))))
+    (keyword)
+    (qualified_name
+      (identifier))))
 
 ==================
 ABAP additions highlight as keywords

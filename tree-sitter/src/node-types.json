@@ -204,6 +204,14 @@
         "named": true
       },
       {
+        "type": "set_pf_status_statement",
+        "named": true
+      },
+      {
+        "type": "set_titlebar_statement",
+        "named": true
+      },
+      {
         "type": "simple_statement",
         "named": true
       },
@@ -2702,6 +2710,16 @@
           }
         ]
       },
+      "direction": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "keyword",
+            "named": true
+          }
+        ]
+      },
       "name": {
         "multiple": false,
         "required": true,
@@ -2730,31 +2748,7 @@
       "required": true,
       "types": [
         {
-          "type": "_expression",
-          "named": true
-        },
-        {
           "type": "keyword",
-          "named": true
-        },
-        {
-          "type": "operator",
-          "named": true
-        },
-        {
-          "type": "punctuation",
-          "named": true
-        },
-        {
-          "type": "tail_fragment",
-          "named": true
-        },
-        {
-          "type": "type_ref_tail",
-          "named": true
-        },
-        {
-          "type": "value_tail",
           "named": true
         }
       ]
@@ -3181,6 +3175,138 @@
           }
         ]
       }
+    }
+  },
+  {
+    "type": "set_pf_status_statement",
+    "named": true,
+    "fields": {
+      "status": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_literal",
+            "named": true
+          },
+          {
+            "type": "dynamic_name",
+            "named": true
+          },
+          {
+            "type": "field_path",
+            "named": true
+          },
+          {
+            "type": "field_symbol_path",
+            "named": true
+          },
+          {
+            "type": "qualified_name",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "set_titlebar_statement",
+    "named": true,
+    "fields": {
+      "title": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_literal",
+            "named": true
+          },
+          {
+            "type": "dynamic_name",
+            "named": true
+          },
+          {
+            "type": "field_path",
+            "named": true
+          },
+          {
+            "type": "field_symbol_path",
+            "named": true
+          },
+          {
+            "type": "qualified_name",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
+          "named": true
+        },
+        {
+          "type": "type_ref_tail",
+          "named": true
+        },
+        {
+          "type": "value_tail",
+          "named": true
+        }
+      ]
     }
   },
   {

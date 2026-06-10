@@ -317,7 +317,6 @@ const COMPONENT_NAME_KEYWORDS = [
   "NAME",
   "NEW",
   "OBJECT",
-  "OPTION",
   "ORDER",
   "PARAMETER",
   "PARAMETERS",
@@ -531,6 +530,8 @@ module.exports = grammar({
         $.sql_dml_statement,
         $.select_statement,
         $.submit_statement,
+        $.set_pf_status_statement,
+        $.set_titlebar_statement,
         $.exec_sql_statement,
         $.report_statement,
         $.include_statement,
@@ -1033,7 +1034,15 @@ module.exports = grammar({
       seq(keyword($, "FUNCTION"), field("name", $._name), optional($._statement_tail), ".", field("body", repeat($._statement)), keyword($, "ENDFUNCTION"), "."),
 
     module_definition: ($) =>
-      seq(keyword($, "MODULE"), field("name", $._name), optional($._statement_tail), ".", field("body", repeat($._statement)), keyword($, "ENDMODULE"), "."),
+      seq(
+        keyword($, "MODULE"),
+        field("name", $._name),
+        optional(field("direction", keywordChoice($, ["INPUT", "OUTPUT"]))),
+        ".",
+        field("body", repeat($._statement)),
+        keyword($, "ENDMODULE"),
+        ".",
+      ),
 
     event_block: ($) =>
       seq(
@@ -1211,6 +1220,30 @@ module.exports = grammar({
         keywordChoice($, EXPRESSION_KEYWORDS),
         $.operator,
         $.punctuation,
+      ),
+
+    set_pf_status_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "SET"),
+          keyword($, "PF-STATUS"),
+          field("status", choice($._literal, $.qualified_name, $.field_path, $.field_symbol_path, $.dynamic_name)),
+          optional($._statement_tail),
+          ".",
+        ),
+      ),
+
+    set_titlebar_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "SET"),
+          keyword($, "TITLEBAR"),
+          field("title", choice($._literal, $.qualified_name, $.field_path, $.field_symbol_path, $.dynamic_name)),
+          optional($._statement_tail),
+          ".",
+        ),
       ),
 
     exec_sql_statement: ($) =>
