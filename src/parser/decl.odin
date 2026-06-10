@@ -86,10 +86,11 @@ parse_data_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return nil
 	}
 
+	stmt := ast.new(ast.Data_Chained_Decl, start.range, p.allocator)
+	stmt.has_colon = has_colon
+	stmt.decls = make([dynamic]ast.Data_Chained_Branch, 0, 2, p.allocator)
+	append(&stmt.decls, branch)
 	if has_colon {
-		stmt := ast.new(ast.Data_Chained_Decl, start.range, p.allocator)
-		stmt.decls = make([dynamic]ast.Data_Chained_Branch, 0, 2, p.allocator)
-		append(&stmt.decls, branch)
 		for allow_token(p, .Comma) {
 			if current_token(p).kind == .Period || current_token(p).kind == .Eof {
 				error_current(p, "syntax error: expected declaration after ','")
@@ -101,36 +102,13 @@ parse_data_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			}
 			append(&stmt.decls, next_branch)
 		}
-		period := expect_token_message(p, .Period, "syntax error: expected '.'")
-		if period.kind != .Period {
-			return nil
-		}
-		assign_decl_depths(&stmt.decls)
-		stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
-		return stmt
 	}
-
 	period := expect_token_message(p, .Period, "syntax error: expected '.'")
 	if period.kind != .Period {
 		return nil
 	}
-	stmt := ast.new(
-		ast.Data_Decl,
-		tokenizer.text_range(start.range.start, statement_end(p, period)),
-		p.allocator,
-	)
-	stmt.kind = branch.kind
-	stmt.flags = branch.flags
-	stmt.name = branch.name
-	stmt.paren_length = branch.paren_length
-	stmt.length_clauses = branch.length_clauses
-	stmt.type_clause = branch.type_clause
-	stmt.value_clause = branch.value_clause
-	stmt.occurs = branch.occurs
-	stmt.include_ref = branch.include_ref
-	stmt.as_name = branch.as_name
-	stmt.renaming_suffix = branch.renaming_suffix
-	stmt.read_only = branch.read_only
+	assign_decl_depths(&stmt.decls)
+	stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
 	return stmt
 }
 
@@ -538,7 +516,7 @@ parse_data_decl_clause :: proc(p: ^Parser) -> (ast.Data_Chained_Branch, bool) {
 		}
 		if at_keyword_phrase(p, "READ-ONLY") {
 			expect_keyword_phrase(p, "READ-ONLY")
-			clause.read_only = true
+			clause.flags += {.Read_Only}
 			continue
 		}
 		bump_token(p)
@@ -1040,7 +1018,7 @@ parse_class_data_clause :: proc(p: ^Parser) -> (ast.Class_Data_Clause, bool) {
 		}
 		if at_keyword_phrase(p, "READ-ONLY") {
 			expect_keyword_phrase(p, "READ-ONLY")
-			clause.read_only = true
+			clause.flags += {.Read_Only}
 			continue
 		}
 		bump_token(p)
@@ -1390,8 +1368,8 @@ consume_type_ref_key_addition :: proc(p: ^Parser) {
 parse_group_or_include_addition :: proc(
 	p: ^Parser,
 	occurs: ^^ast.Expr,
-	as_name: ^string,
-	renaming_suffix: ^string,
+	as_name: ^ast.Token_Text,
+	renaming_suffix: ^ast.Token_Text,
 ) -> bool {
 	if allow_keyword(p, "OCCURS") {
 		if decl_clause_boundary(p) ||
@@ -1405,7 +1383,7 @@ parse_group_or_include_addition :: proc(
 		return true
 	}
 	if allow_keyword(p, "AS") {
-		name, ok := parse_required_addition_name(p)
+		name, ok := parse_required_addition_token_text(p)
 		if ok {
 			as_name^ = name
 		}
@@ -1414,7 +1392,7 @@ parse_group_or_include_addition :: proc(
 	if allow_keyword(p, "RENAMING") {
 		allow_keyword(p, "WITH")
 		allow_keyword(p, "SUFFIX")
-		suffix, ok := parse_required_addition_name(p)
+		suffix, ok := parse_required_addition_token_text(p)
 		if ok {
 			renaming_suffix^ = suffix
 		}

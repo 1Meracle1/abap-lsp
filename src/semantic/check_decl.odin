@@ -26,8 +26,6 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 		return
 	}
 	#partial switch n in stmt.derived_stmt {
-	case ^ast.Data_Decl:
-		checker_collect_data_decl(ctx, n)
 	case ^ast.Data_Chained_Decl:
 		checker_collect_data_chained_decl(ctx, n)
 	case ^ast.Data_Inline_Decl:
@@ -112,52 +110,6 @@ checker_normalize_event_block_decl_name :: proc(text: string) -> string {
 	return strings.to_string(builder)
 }
 
-checker_collect_data_decl :: proc(
-	ctx: ^Checker_Context,
-	decl: ^ast.Data_Decl,
-	owner: ^Entity = nil,
-	visibility: Visibility = .Public,
-) {
-	if decl.kind == .Normal {
-		entity := checker_collect_variable_decl(
-			ctx,
-			ctx.scope,
-			decl.name.text,
-			.Variable,
-			decl.name.range,
-			&decl.node.decl_base.stmt_base,
-			decl.type_clause,
-			decl.value_clause,
-			nil,
-			decl.occurs,
-		)
-		checker_note_variable_decl_flags(entity, read_only = decl.read_only)
-		checker_note_member_owner(entity, owner, .Attribute, visibility)
-		return
-	}
-
-	frames := make([dynamic]Decl_Structure_Frame, 0, 2, context.temp_allocator)
-	checker_collect_data_branch(
-		ctx,
-		&frames,
-		decl.kind,
-		decl.flags,
-		decl.name,
-		decl.range,
-		&decl.node.decl_base.stmt_base,
-		decl.type_clause,
-		decl.value_clause,
-		decl.occurs,
-		decl.include_ref,
-		decl.as_name,
-		decl.renaming_suffix,
-		.Variable,
-		owner,
-		decl.read_only,
-		visibility,
-	)
-}
-
 checker_collect_data_chained_decl :: proc(
 	ctx: ^Checker_Context,
 	decl: ^ast.Data_Chained_Decl,
@@ -182,7 +134,6 @@ checker_collect_data_chained_decl :: proc(
 			clause.renaming_suffix,
 			.Variable,
 			owner,
-			clause.read_only,
 			visibility,
 		)
 	}
@@ -271,10 +222,9 @@ checker_collect_class_data_decl :: proc(
 			clause.renaming_suffix,
 			.Variable,
 			owner,
-			clause.read_only,
 			visibility,
 		)
-		checker_note_variable_decl_flags(entity, is_static = true, read_only = clause.read_only)
+		checker_note_variable_decl_flags(entity, is_static = true, read_only = .Read_Only in clause.flags)
 	}
 }
 
@@ -290,16 +240,16 @@ checker_collect_data_branch :: proc(
 	value_clause: ^ast.Value_Clause,
 	occurs: ^ast.Expr,
 	include_ref: ^ast.Expr,
-	as_name: string,
-	renaming_suffix: string,
+	as_name: ast.Token_Text,
+	renaming_suffix: ast.Token_Text,
 	entity_kind: Entity_Kind,
 	owner: ^Entity = nil,
-	read_only := false,
 	visibility: Visibility = .Public,
 ) -> ^Entity {
 	if .Common_Part_Delimiter in flags {
 		return nil
 	}
+	read_only := .Read_Only in flags
 
 	switch kind {
 	case .Begin_Group:
@@ -518,13 +468,13 @@ checker_collect_structure_include :: proc(
 	range: Range,
 	node: ^ast.Node,
 	include_ref: ^ast.Expr,
-	as_name: string = "",
-	renaming_suffix: string = "",
+	as_name: ast.Token_Text = {},
+	renaming_suffix: ast.Token_Text = {},
 	value_clause: ^ast.Value_Clause = nil,
 ) -> ^Entity {
 	assert(structure != nil && scope != nil && owner != nil)
 	assert(kind == .Include_Type || kind == .Include_Structure)
-	name := as_name
+	name := as_name.text
 	entity := project_new_entity(ctx.project, .Field)
 	entity.node = node
 	entity.owner = owner
@@ -548,8 +498,8 @@ checker_collect_structure_include :: proc(
 	payload.flags += {.Has_Type_Ref}
 	if name == "" {
 		payload.flags += {.Is_Include}
-		if renaming_suffix != "" {
-			payload.include_renaming_suffix = strings.clone(renaming_suffix, ctx.project.allocator)
+		if renaming_suffix.text != "" {
+			payload.include_renaming_suffix = strings.clone(renaming_suffix.text, ctx.project.allocator)
 		}
 	}
 	append(&structure.fields, entity)
@@ -924,8 +874,6 @@ checker_collect_class_body :: proc(
 			continue
 		}
 		#partial switch n in stmt.derived_stmt {
-		case ^ast.Data_Decl:
-			checker_collect_data_decl(ctx, n, owner, visibility)
 		case ^ast.Data_Chained_Decl:
 			checker_collect_data_chained_decl(ctx, n, owner, visibility)
 		case ^ast.Class_Data_Decl:

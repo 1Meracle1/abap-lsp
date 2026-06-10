@@ -301,8 +301,6 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit(p, "FIELD-SYMBOL(")
 		emit(p, n.name)
 		emit(p, ")")
-	case ^Data_Decl:
-		emit_data_decl(p, n)
 	case ^Data_Chained_Decl:
 		emit_data_chained_decl(p, n)
 	case ^Data_Inline_Decl:
@@ -1072,24 +1070,9 @@ emit_constructor_mapping_assignment :: proc(
 	}
 }
 
-emit_data_decl :: proc(p: ^Printer, decl: ^Data_Decl) {
-	emit(p, "DATA ")
-	emit_decl_prefix(p, decl.kind, decl.name, decl.include_ref, .Common_Part_Delimiter in decl.flags)
-	emit_paren_length(p, decl.paren_length)
-	emit_occurs(p, decl.occurs)
-	emit_include_additions(p, decl.as_name, decl.renaming_suffix)
-	emit_length_clauses(p, decl.length_clauses)
-	emit_type_clause(p, decl.type_clause)
-	emit_header_line(p, decl.flags)
-	emit_value_clause(p, decl.value_clause)
-	if decl.read_only {
-		emit(p, " READ-ONLY")
-	}
-	emit(p, ".")
-}
-
 emit_data_chained_decl :: proc(p: ^Printer, decl: ^Data_Chained_Decl) {
-	emit(p, "DATA: ")
+	emit(p, "DATA")
+	emit(p, ": " if decl.has_colon || len(decl.decls) > 1 else " ")
 	for branch, i in decl.decls {
 		if i > 0 {
 			emit(p, ", ")
@@ -1102,7 +1085,7 @@ emit_data_chained_decl :: proc(p: ^Printer, decl: ^Data_Chained_Decl) {
 		emit_type_clause(p, branch.type_clause)
 		emit_header_line(p, branch.flags)
 		emit_value_clause(p, branch.value_clause)
-		if branch.read_only {
+		if .Read_Only in branch.flags {
 			emit(p, " READ-ONLY")
 		}
 	}
@@ -1298,7 +1281,7 @@ emit_class_data_decl :: proc(p: ^Printer, decl: ^Class_Data_Decl) {
 		emit_type_clause(p, clause.type_clause)
 		emit_header_line(p, clause.flags)
 		emit_value_clause(p, clause.value_clause)
-		if clause.read_only {
+		if .Read_Only in clause.flags {
 			emit(p, " READ-ONLY")
 		}
 	}
@@ -1383,12 +1366,12 @@ emit_decl_prefix :: proc(
 	}
 }
 
-emit_include_additions :: proc(p: ^Printer, as_name, suffix: string) {
-	if as_name != "" {
+emit_include_additions :: proc(p: ^Printer, as_name, suffix: Token_Text) {
+	if as_name.text != "" {
 		emit(p, " AS ")
 		emit(p, as_name)
 	}
-	if suffix != "" {
+	if suffix.text != "" {
 		emit(p, " RENAMING WITH SUFFIX ")
 		emit(p, suffix)
 	}

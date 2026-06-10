@@ -153,13 +153,6 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk_expr_list(next, n.names)
 	case ^Data_Inline_Name_Expr:
 	case ^Field_Symbol_Inline_Name_Expr:
-	case ^Data_Decl:
-		walk_paren_length_clause(next, n.paren_length)
-		walk_length_clauses(next, n.length_clauses)
-		walk_data_type_clause(next, n.type_clause)
-		walk_value_clause(next, n.value_clause)
-		walk(next, n.occurs)
-		walk(next, n.include_ref)
 	case ^Data_Chained_Decl:
 		for branch in n.decls {
 			walk_paren_length_clause(next, branch.paren_length)

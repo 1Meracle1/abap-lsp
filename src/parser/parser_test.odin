@@ -127,6 +127,15 @@ Node_Counts :: struct {
 	invalid_stmt:  int,
 }
 
+single_data_stmt :: proc(stmt: ^ast.Stmt) -> ^ast.Data_Chained_Decl {
+	return stmt.derived_stmt.(^ast.Data_Chained_Decl)
+}
+
+single_data_branch :: proc(stmt: ^ast.Stmt) -> ast.Data_Chained_Branch {
+	data := single_data_stmt(stmt)
+	return data.decls[0]
+}
+
 @(test)
 comments_attach_to_statement_nodes_for_printing :: proc(t: ^testing.T) {
 	source := `DATA first TYPE i.
@@ -284,7 +293,7 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.host_expr += 1
 	case ^ast.Macro_Arg_Ref_Expr:
 		counts.macro_arg_ref += 1
-	case ^ast.Data_Decl:
+	case ^ast.Data_Chained_Decl:
 		counts.data_decl += 1
 	case ^ast.Data_Inline_Decl:
 		counts.data_inline += 1
@@ -617,7 +626,7 @@ TYPES ty_tab TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line.`
 	parsed := parse_then_overwrite_source(source)
 
 	testing.expect_value(t, len(parsed.errors), 0)
-	data_decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Decl)
+	data_decl := single_data_branch(parsed.root.stmts[0])
 	date_ref := data_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	types_decl := parsed.root.stmts[1].derived_stmt.(^ast.Types_Decl)
 	table_ref := types_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
@@ -739,7 +748,7 @@ INCLUDE zinc IF FOUND.`
 	parsed := parse_then_overwrite_source(source)
 
 	testing.expect_value(t, len(parsed.errors), 0)
-	data_decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Decl)
+	data_decl := single_data_branch(parsed.root.stmts[0])
 	inline_decl := parsed.root.stmts[1].derived_stmt.(^ast.Data_Inline_Decl)
 	types_decl := parsed.root.stmts[2].derived_stmt.(^ast.Types_Decl)
 	constants_decl := parsed.root.stmts[3].derived_stmt.(^ast.Constants_Decl)
@@ -756,21 +765,21 @@ INCLUDE zinc IF FOUND.`
 	include_stmt := parsed.root.stmts[14].derived_stmt.(^ast.Include_Stmt)
 
 	testing.expect_value(t, data_decl.name.text, "lv_text")
-	testing.expect_value(t, data_decl.as_name, "lv_alias")
-	testing.expect_value(t, data_decl.renaming_suffix, "suff")
+	testing.expect_value(t, data_decl.as_name.text, "lv_alias")
+	testing.expect_value(t, data_decl.renaming_suffix.text, "suff")
 	testing.expect_value(t, inline_decl.name.text, "ls_inline")
 	testing.expect_value(t, types_decl.types[0].name.text, "ty_text")
-	testing.expect_value(t, types_decl.types[0].as_name, "ty_alias")
-	testing.expect_value(t, types_decl.types[0].renaming_suffix, "tys")
+	testing.expect_value(t, types_decl.types[0].as_name.text, "ty_alias")
+	testing.expect_value(t, types_decl.types[0].renaming_suffix.text, "tys")
 	testing.expect_value(t, constants_decl.constants[0].name.text, "c_text")
-	testing.expect_value(t, constants_decl.constants[0].as_name, "c_alias")
-	testing.expect_value(t, constants_decl.constants[0].renaming_suffix, "cs")
+	testing.expect_value(t, constants_decl.constants[0].as_name.text, "c_alias")
+	testing.expect_value(t, constants_decl.constants[0].renaming_suffix.text, "cs")
 	testing.expect_value(t, statics_decl.statics[0].name.text, "st_text")
-	testing.expect_value(t, statics_decl.statics[0].as_name, "st_alias")
-	testing.expect_value(t, statics_decl.statics[0].renaming_suffix, "sts")
+	testing.expect_value(t, statics_decl.statics[0].as_name.text, "st_alias")
+	testing.expect_value(t, statics_decl.statics[0].renaming_suffix.text, "sts")
 	testing.expect_value(t, class_data_decl.decls[0].name.text, "gv_text")
-	testing.expect_value(t, class_data_decl.decls[0].as_name, "gv_alias")
-	testing.expect_value(t, class_data_decl.decls[0].renaming_suffix, "gvs")
+	testing.expect_value(t, class_data_decl.decls[0].as_name.text, "gv_alias")
+	testing.expect_value(t, class_data_decl.decls[0].renaming_suffix.text, "gvs")
 	testing.expect_value(t, field_symbols_decl.field_symbols[0].name.text, "<fs_text>")
 	testing.expect_value(t, tables_decl.tables[0].name.text, "mara")
 	testing.expect_value(t, ranges_decl.ranges[0].name.text, "r_date")
@@ -980,7 +989,7 @@ DATA lv_date LIKE sy-datum.`
 	sort_stmt := root.stmts[10].derived_stmt.(^ast.Sort_Stmt)
 	template_decl := root.stmts[11].derived_stmt.(^ast.Data_Inline_Decl)
 	literal_decl := root.stmts[12].derived_stmt.(^ast.Data_Inline_Decl)
-	type_decl := root.stmts[13].derived_stmt.(^ast.Data_Decl)
+	type_decl := single_data_branch(root.stmts[13])
 
 	testing.expect_value(t, root.leading_trivia[0].text, `" keep this comment`)
 	testing.expect_value(t, parameters.trailing_trivia[0].text, `" inline comment`)
@@ -1109,7 +1118,8 @@ DATA second.`, "test.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.root.stmts), 2)
 	_, first_invalid := parsed.root.stmts[0].derived_stmt.(^ast.Invalid_Stmt)
-	second, second_data := parsed.root.stmts[1].derived_stmt.(^ast.Data_Decl)
+	second := single_data_branch(parsed.root.stmts[1])
+	_, second_data := parsed.root.stmts[1].derived_stmt.(^ast.Data_Chained_Decl)
 	testing.expect(t, first_invalid)
 	testing.expect(t, second_data)
 	testing.expect_value(t, second.name.text, "second")

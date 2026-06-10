@@ -706,23 +706,6 @@ Field_Symbol_Inline_Name_Expr :: struct {
 	name:       Token_Text,
 }
 
-// ABAP syntax: DATA statement, for example `DATA name TYPE i.`.
-Data_Decl :: struct {
-	using node:      Decl,
-	kind:            Decl_Clause_Kind,
-	flags:           Decl_Clause_Flags,
-	name:            Token_Text,
-	paren_length:    ^Paren_Length_Clause,
-	length_clauses:  [dynamic]Length_Clause,
-	type_clause:     ^Data_Type_Clause, // nil if untyped
-	value_clause:    ^Value_Clause,
-	occurs:          ^Expr,
-	include_ref:     ^Expr,
-	as_name:         string,
-	renaming_suffix: string,
-	read_only:       bool,
-}
-
 // ABAP syntax: inline DATA statement, for example `DATA(name) = 3.`.
 Data_Inline_Decl :: struct {
 	using node: Decl,
@@ -733,6 +716,7 @@ Data_Inline_Decl :: struct {
 // ABAP syntax: chained DATA declarations with or without type such as `DATA: a TYPE i, b TYPE string, c.`
 Data_Chained_Decl :: struct {
 	using node: Decl,
+	has_colon:  bool,
 	decls:      [dynamic]Data_Chained_Branch,
 }
 
@@ -747,6 +731,7 @@ Decl_Clause_Kind :: enum {
 Decl_Clause_Flag :: enum {
 	Common_Part_Delimiter,
 	With_Header_Line,
+	Read_Only,
 }
 Decl_Clause_Flags :: bit_set[Decl_Clause_Flag]
 
@@ -762,9 +747,8 @@ Data_Chained_Branch :: struct {
 	value_clause:    ^Value_Clause,
 	occurs:          ^Expr,
 	include_ref:     ^Expr,
-	as_name:         string,
-	renaming_suffix: string,
-	read_only:       bool,
+	as_name:         Token_Text,
+	renaming_suffix: Token_Text,
 }
 
 // ABAP syntax: type-clause form keyword sequence, for example `TYPE REF TO`, `LIKE LINE OF`, or `TYPE STANDARD TABLE`.
@@ -813,8 +797,8 @@ Types_Clause :: struct {
 	type_clause:     ^Data_Type_Clause,
 	occurs:          ^Expr,
 	include_ref:     ^Expr,
-	as_name:         string,
-	renaming_suffix: string,
+	as_name:         Token_Text,
+	renaming_suffix: Token_Text,
 }
 
 // ABAP syntax: CONSTANTS statement, for example `CONSTANTS c TYPE i VALUE 1.`
@@ -835,8 +819,8 @@ Constants_Clause :: struct {
 	value_clause:    ^Value_Clause,
 	occurs:          ^Expr,
 	include_ref:     ^Expr,
-	as_name:         string,
-	renaming_suffix: string,
+	as_name:         Token_Text,
+	renaming_suffix: Token_Text,
 }
 
 // ABAP syntax: FIELD-SYMBOLS statement, for example `FIELD-SYMBOLS <fs> TYPE any.`
@@ -869,8 +853,8 @@ Statics_Clause :: struct {
 	value_clause:    ^Value_Clause,
 	occurs:          ^Expr,
 	include_ref:     ^Expr,
-	as_name:         string,
-	renaming_suffix: string,
+	as_name:         Token_Text,
+	renaming_suffix: Token_Text,
 }
 
 // ABAP syntax: TABLES statement, for example `TABLES mara.`
@@ -1002,9 +986,8 @@ Class_Data_Clause :: struct {
 	value_clause:    ^Value_Clause,
 	occurs:          ^Expr,
 	include_ref:     ^Expr,
-	as_name:         string,
-	renaming_suffix: string,
-	read_only:       bool,
+	as_name:         Token_Text,
+	renaming_suffix: Token_Text,
 }
 
 // ABAP syntax: TYPE-POOLS statement, for example `TYPE-POOLS abap.`
@@ -2877,7 +2860,6 @@ Any_Node :: union {
 	^Constructor_Corresponding_Except_Clause_Expr,
 	^Data_Inline_Name_Expr,
 	^Field_Symbol_Inline_Name_Expr,
-	^Data_Decl,
 	^Data_Chained_Decl,
 	^Data_Inline_Decl,
 	^Types_Decl,
@@ -3048,7 +3030,6 @@ Any_Stmt :: union {
 	^Assign_Stmt,
 	^Downcast_Assign_Stmt,
 	^Expr_Stmt,
-	^Data_Decl,
 	^Data_Chained_Decl,
 	^Data_Inline_Decl,
 	^Types_Decl,

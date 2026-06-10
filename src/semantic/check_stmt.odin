@@ -74,8 +74,7 @@ checker_check_stmt :: proc(
 	}
 
 	#partial switch n in stmt.derived_stmt {
-	case ^ast.Data_Decl,
-	     ^ast.Data_Chained_Decl,
+	case ^ast.Data_Chained_Decl,
 	     ^ast.Types_Decl,
 	     ^ast.Constants_Decl,
 	     ^ast.Field_Symbols_Decl,

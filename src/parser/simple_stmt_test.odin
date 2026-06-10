@@ -1605,7 +1605,7 @@ DATA lv_typed TYPE sy-datum.`
 	assign_component := assign.component.derived_expr.(^ast.Type_Ref_Expr)
 	assign_structure := assign.structure.derived_expr.(^ast.Type_Ref_Expr)
 	assign_target := assign.target.derived_expr.(^ast.Type_Ref_Expr)
-	decl := parsed.root.stmts[2].derived_stmt.(^ast.Data_Decl)
+	decl := single_data_branch(parsed.root.stmts[2])
 	type_ref := decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
 	testing.expect(t, raise_target.raw_operand)

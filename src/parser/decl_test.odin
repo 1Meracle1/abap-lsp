@@ -182,8 +182,8 @@ CONSTANTS: BEGIN OF c_pair, a TYPE c VALUE IS INITIAL, END OF c_pair.`
 	testing.expect_value(t, types.types[0].kind, ast.Decl_Clause_Kind.Begin_Group)
 	testing.expect_value(t, types.types[1].kind, ast.Decl_Clause_Kind.Include_Type)
 	testing.expect_value(t, types.types[1].depth, 1)
-	testing.expect_value(t, types.types[1].as_name, "inner")
-	testing.expect_value(t, types.types[1].renaming_suffix, "_x")
+	testing.expect_value(t, types.types[1].as_name.text, "inner")
+	testing.expect_value(t, types.types[1].renaming_suffix.text, "_x")
 	testing.expect_value(t, types.types[2].type_clause.form, ast.Data_Type_Form.Standard_Table)
 	testing.expect_value(t, types.types[2].depth, 1)
 	testing.expect_value(t, types.types[3].kind, ast.Decl_Clause_Kind.End_Group)
@@ -360,8 +360,8 @@ DATA mv_text TYPE string READ-ONLY.`
 	any_type_decl := parsed.root.stmts[2].derived_stmt.(^ast.Types_Decl)
 	field_decl := parsed.root.stmts[3].derived_stmt.(^ast.Field_Symbols_Decl)
 	any_decl := parsed.root.stmts[4].derived_stmt.(^ast.Field_Symbols_Decl)
-	index_decl := parsed.root.stmts[5].derived_stmt.(^ast.Data_Decl)
-	data_decl := parsed.root.stmts[6].derived_stmt.(^ast.Data_Decl)
+	index_decl := single_data_branch(parsed.root.stmts[5])
+	data_decl := single_data_branch(parsed.root.stmts[6])
 
 	testing.expect_value(t, range_decl.types[0].type_clause.form, ast.Data_Type_Form.Range_Of)
 	testing.expect_value(t, table_decl.types[0].type_clause.form, ast.Data_Type_Form.Hashed_Table)
@@ -382,7 +382,7 @@ DATA mv_text TYPE string READ-ONLY.`
 	testing.expect(t, any_decl.field_symbols[0].type_clause.type_ref == nil)
 	testing.expect_value(t, index_decl.type_clause.form, ast.Data_Type_Form.Index_Table)
 	testing.expect(t, index_decl.type_clause.type_ref == nil)
-	testing.expect(t, data_decl.read_only)
+	testing.expect(t, .Read_Only in data_decl.flags)
 	printed := ast.print_node(parsed.root, context.allocator)
 	testing.expect_value(t, printed, source)
 }
@@ -399,10 +399,10 @@ FIELD-SYMBOLS <item> LIKE LINE OF mr_source_tree->*.`
 	parsed := parse(source, "type_ref_paths.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
-	date_decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Decl)
-	item_decl := parsed.root.stmts[1].derived_stmt.(^ast.Data_Decl)
-	asset_decl := parsed.root.stmts[2].derived_stmt.(^ast.Data_Decl)
-	phase_decl := parsed.root.stmts[3].derived_stmt.(^ast.Data_Decl)
+	date_decl := single_data_branch(parsed.root.stmts[0])
+	item_decl := single_data_branch(parsed.root.stmts[1])
+	asset_decl := single_data_branch(parsed.root.stmts[2])
+	phase_decl := single_data_branch(parsed.root.stmts[3])
 	field_decl := parsed.root.stmts[4].derived_stmt.(^ast.Types_Decl)
 	table_decl := parsed.root.stmts[5].derived_stmt.(^ast.Types_Decl)
 	deref_decl := parsed.root.stmts[6].derived_stmt.(^ast.Field_Symbols_Decl)
@@ -461,11 +461,11 @@ PARAMETERS p_count TYPE i DEFAULT 1.`
 	parsed := parse(source, "type_ref_addition_bounds.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
-	occurs_decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Decl)
-	value_decl := parsed.root.stmts[1].derived_stmt.(^ast.Data_Decl)
-	length_decl := parsed.root.stmts[2].derived_stmt.(^ast.Data_Decl)
-	decimal_decl := parsed.root.stmts[3].derived_stmt.(^ast.Data_Decl)
-	read_only_decl := parsed.root.stmts[4].derived_stmt.(^ast.Data_Decl)
+	occurs_decl := single_data_branch(parsed.root.stmts[0])
+	value_decl := single_data_branch(parsed.root.stmts[1])
+	length_decl := single_data_branch(parsed.root.stmts[2])
+	decimal_decl := single_data_branch(parsed.root.stmts[3])
+	read_only_decl := single_data_branch(parsed.root.stmts[4])
 	default_decl := parsed.root.stmts[5].derived_stmt.(^ast.Parameters_Decl)
 
 	occurs_ref := occurs_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
@@ -487,7 +487,7 @@ PARAMETERS p_count TYPE i DEFAULT 1.`
 	testing.expect_value(t, source[decimal_ref.range.start:decimal_ref.range.end], "p")
 	testing.expect_value(t, decimal_decl.length_clauses[0].kind, ast.Length_Clause_Kind.Decimals)
 	testing.expect_value(t, source[read_only_ref.range.start:read_only_ref.range.end], "string")
-	testing.expect(t, read_only_decl.read_only)
+	testing.expect(t, .Read_Only in read_only_decl.flags)
 	testing.expect_value(t, source[default_ref.range.start:default_ref.range.end], "i")
 	testing.expect(t, default_decl.parameters[0].default_clause != nil)
 }
@@ -530,7 +530,8 @@ DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.`
 	testing.expect_value(t, len(parsed.errors), 0)
 	default_decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
 	unique_decl := parsed.root.stmts[1].derived_stmt.(^ast.Types_Decl)
-	header_decl := parsed.root.stmts[2].derived_stmt.(^ast.Data_Decl)
+	header_stmt := single_data_stmt(parsed.root.stmts[2])
+	header_decl := header_stmt.decls[0]
 
 	default_ref := default_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	unique_ref := unique_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
@@ -546,7 +547,7 @@ DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.`
 	testing.expect_value(t, header_ref.name.text, "i")
 	testing.expect_value(t, source[header_ref.range.start:header_ref.range.end], "i")
 	testing.expect(t, .With_Header_Line in header_decl.flags)
-	testing.expect_value(t, ast.print_node(header_decl, context.allocator), "DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.")
+	testing.expect_value(t, ast.print_node(header_stmt, context.allocator), "DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.")
 }
 
 @(test)

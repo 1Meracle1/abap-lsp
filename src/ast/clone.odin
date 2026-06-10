@@ -276,15 +276,6 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return clone_shallow(n, allocator)
 	case ^Field_Symbol_Inline_Name_Expr:
 		return clone_shallow(n, allocator)
-	case ^Data_Decl:
-		r := clone_shallow(n, allocator)
-		r.paren_length = clone_paren_length_clause(n.paren_length, allocator)
-		r.length_clauses = clone_length_clauses(n.length_clauses, allocator)
-		r.type_clause = clone_type_clause(n.type_clause, allocator)
-		r.value_clause = clone_value_clause(n.value_clause, allocator)
-		r.occurs = clone(n.occurs, allocator)
-		r.include_ref = clone(n.include_ref, allocator)
-		return r
 	case ^Data_Chained_Decl:
 		r := clone_shallow(n, allocator)
 		r.decls = clone_data_chained_branches(n.decls, allocator)
@@ -922,6 +913,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "as_name")) {
 			dst.as_name = strings.clone(src.as_name, allocator)
 		}
+		when intrinsics.type_field_type(T, "as_name") == Token_Text {
+			dst.as_name = clone_token_text(src.as_name, allocator)
+		}
 	}
 	when intrinsics.type_has_field(T, "base_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "base_name")) {
@@ -1083,6 +1077,9 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "renaming_suffix") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "renaming_suffix")) {
 			dst.renaming_suffix = strings.clone(src.renaming_suffix, allocator)
+		}
+		when intrinsics.type_field_type(T, "renaming_suffix") == Token_Text {
+			dst.renaming_suffix = clone_token_text(src.renaming_suffix, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "sign") {
@@ -1860,9 +1857,8 @@ clone_data_chained_branches :: proc(
 				value_clause    = clone_value_clause(branch.value_clause, allocator),
 				occurs          = clone(branch.occurs, allocator),
 				include_ref     = clone(branch.include_ref, allocator),
-				as_name         = strings.clone(branch.as_name, allocator),
-				renaming_suffix = strings.clone(branch.renaming_suffix, allocator),
-				read_only       = branch.read_only,
+				as_name         = clone_token_text(branch.as_name, allocator),
+				renaming_suffix = clone_token_text(branch.renaming_suffix, allocator),
 			},
 		)
 	}
@@ -1970,8 +1966,8 @@ clone_types_clauses :: proc(list: [dynamic]Types_Clause, allocator: mem.Allocato
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
 			occurs         = clone(clause.occurs, allocator),
 			include_ref    = clone(clause.include_ref, allocator),
-			as_name = strings.clone(clause.as_name, allocator),
-			renaming_suffix = strings.clone(clause.renaming_suffix, allocator),
+			as_name        = clone_token_text(clause.as_name, allocator),
+			renaming_suffix = clone_token_text(clause.renaming_suffix, allocator),
 		})
 	}
 	return res
@@ -1991,8 +1987,8 @@ clone_constants_clauses :: proc(list: [dynamic]Constants_Clause, allocator: mem.
 			value_clause   = clone_value_clause(clause.value_clause, allocator),
 			occurs         = clone(clause.occurs, allocator),
 			include_ref    = clone(clause.include_ref, allocator),
-			as_name = strings.clone(clause.as_name, allocator),
-			renaming_suffix = strings.clone(clause.renaming_suffix, allocator),
+			as_name        = clone_token_text(clause.as_name, allocator),
+			renaming_suffix = clone_token_text(clause.renaming_suffix, allocator),
 		})
 	}
 	return res
@@ -2026,8 +2022,8 @@ clone_statics_clauses :: proc(list: [dynamic]Statics_Clause, allocator: mem.Allo
 			value_clause   = clone_value_clause(clause.value_clause, allocator),
 			occurs         = clone(clause.occurs, allocator),
 			include_ref    = clone(clause.include_ref, allocator),
-			as_name = strings.clone(clause.as_name, allocator),
-			renaming_suffix = strings.clone(clause.renaming_suffix, allocator),
+			as_name        = clone_token_text(clause.as_name, allocator),
+			renaming_suffix = clone_token_text(clause.renaming_suffix, allocator),
 		})
 	}
 	return res
@@ -2132,9 +2128,8 @@ clone_class_data_clauses :: proc(list: [dynamic]Class_Data_Clause, allocator: me
 			value_clause   = clone_value_clause(clause.value_clause, allocator),
 			occurs         = clone(clause.occurs, allocator),
 			include_ref    = clone(clause.include_ref, allocator),
-			as_name = strings.clone(clause.as_name, allocator),
-			renaming_suffix = strings.clone(clause.renaming_suffix, allocator),
-			read_only      = clause.read_only,
+			as_name        = clone_token_text(clause.as_name, allocator),
+			renaming_suffix = clone_token_text(clause.renaming_suffix, allocator),
 		})
 	}
 	return res
