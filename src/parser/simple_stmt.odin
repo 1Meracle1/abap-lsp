@@ -5032,7 +5032,7 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	for !simple_stmt_done(p, body_start) {
 		if allow_keyword(p, "AND") {
 			if allow_keyword(p, "RETURN") {
-				stmt.and_return = true
+				stmt.flags += {.And_Return}
 			}
 			continue
 		}
@@ -5042,7 +5042,7 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				"SELECTION",
 				"SCREEN",
 			) {
-				stmt.via_selection_screen = true
+				stmt.flags += {.Via_Selection_Screen}
 			} else if allow_keyword(p, "JOB") {
 				value := required_simple_expr(
 					p,
@@ -5055,20 +5055,22 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 		if allow_keyword(p, "EXPORTING") {
 			if allow_keyword(p, "LIST") && allow_keyword(p, "TO") && allow_keyword(p, "MEMORY") {
-				stmt.exporting_list_to_memory = true
+				stmt.flags += {.Exporting_List_To_Memory}
 			}
 			continue
 		}
 		if allow_keyword(p, "TO") {
 			if allow_keyword(p, "SAP") {
 				allow_token(p, .Minus)
-				stmt.to_sap_spool = allow_keyword(p, "SPOOL")
+				if allow_keyword(p, "SPOOL") {
+					stmt.flags += {.To_Sap_Spool}
+				}
 			}
 			continue
 		}
 		if allow_keyword(p, "WITHOUT") {
 			if allow_keyword(p, "SPOOL") && allow_keyword(p, "DYNPRO") {
-				stmt.without_spool_dynpro = true
+				stmt.flags += {.Without_Spool_Dynpro}
 			}
 			continue
 		}

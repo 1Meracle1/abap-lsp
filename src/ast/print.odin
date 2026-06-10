@@ -2143,19 +2143,19 @@ emit_submit_stmt :: proc(p: ^Printer, stmt: ^Submit_Stmt) {
 	for option in stmt.options {
 		emit_submit_option(p, option)
 	}
-	if stmt.via_selection_screen {
+	if .Via_Selection_Screen in stmt.flags {
 		emit(p, " VIA SELECTION-SCREEN")
 	}
-	if stmt.exporting_list_to_memory {
+	if .Exporting_List_To_Memory in stmt.flags {
 		emit(p, " EXPORTING LIST TO MEMORY")
 	}
-	if stmt.to_sap_spool {
+	if .To_Sap_Spool in stmt.flags {
 		emit(p, " TO SAP-SPOOL")
 	}
-	if stmt.without_spool_dynpro {
+	if .Without_Spool_Dynpro in stmt.flags {
 		emit(p, " WITHOUT SPOOL DYNPRO")
 	}
-	if stmt.and_return {
+	if .And_Return in stmt.flags {
 		emit(p, " AND RETURN")
 	}
 	emit(p, ".")

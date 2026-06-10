@@ -1509,6 +1509,15 @@ Submit_Target_Kind :: enum {
 	Dynamic,
 }
 
+Submit_Flag :: enum {
+	Via_Selection_Screen,
+	Exporting_List_To_Memory,
+	To_Sap_Spool,
+	Without_Spool_Dynpro,
+	And_Return,
+}
+Submit_Flags :: bit_set[Submit_Flag]
+
 // ABAP syntax: one SUBMIT option with a compact operand, for example `WITH p = v` or `LINE-SIZE n`.
 Submit_Option_Clause :: struct {
 	kind:       Submit_Option_Kind,
@@ -1524,11 +1533,7 @@ Submit_Stmt :: struct {
 	target:                   ^Expr,
 	target_kind:              Submit_Target_Kind,
 	options:                  [dynamic]Submit_Option_Clause,
-	via_selection_screen:     bool,
-	exporting_list_to_memory: bool,
-	to_sap_spool:             bool,
-	without_spool_dynpro:     bool,
-	and_return:               bool,
+	flags:                    Submit_Flags,
 }
 
 // ABAP syntax: MESSAGE head, for example `e001(id)` or `ID id TYPE type NUMBER number`.
