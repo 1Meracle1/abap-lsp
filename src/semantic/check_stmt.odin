@@ -1949,6 +1949,9 @@ checker_check_selection_screen_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Se
 	if stmt.comment_name.text != "" {
 		checker_check_ident_name(ctx, nil, stmt.comment_name.text, .Value, false)
 	}
+	if stmt.pushbutton_name.text != "" {
+		checker_check_ident_name(ctx, nil, stmt.pushbutton_name.text, .Value, false)
+	}
 	if stmt.field_name.text != "" {
 		checker_check_ident_name(ctx, nil, stmt.field_name.text, .Value, false)
 	}

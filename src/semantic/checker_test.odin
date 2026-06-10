@@ -1735,6 +1735,35 @@ END-TEST-INJECTION.`
 }
 
 @(test)
+root_semantic_selection_screen_text_fields_record_value_uses :: proc(t: ^testing.T) {
+	source := `DATA sc_title TYPE c.
+DATA sc_url TYPE c.
+DATA pb_text TYPE c.
+PARAMETERS p_url TYPE string.
+SELECTION-SCREEN BEGIN OF SCREEN 1002 TITLE sc_title.
+SELECTION-SCREEN COMMENT 1(18) sc_url FOR FIELD p_url.
+SELECTION-SCREEN PUSHBUTTON 20(10) pb_text USER-COMMAND run MODIF ID md2.
+SELECTION-SCREEN END OF SCREEN 1002.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://selection_screen_text_fields.abap")
+
+	title := checker_test_lookup(t, &project, file.root_scope, .Value, "sc_title", .Variable)
+	comment := checker_test_lookup(t, &project, file.root_scope, .Value, "sc_url", .Variable)
+	pushbutton := checker_test_lookup(t, &project, file.root_scope, .Value, "pb_text", .Variable)
+	field := checker_test_lookup(t, &project, file.root_scope, .Value, "p_url", .Variable)
+
+	testing.expect(t, .Used in title.flags)
+	testing.expect(t, .Used in comment.flags)
+	testing.expect(t, .Used in pushbutton.flags)
+	testing.expect(t, .Used in field.flags)
+	testing.expect_value(t, checker_test_unresolved_candidate_namespace_count(&checker, &project, .Global_Symbol, .Value, "run"), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_namespace_count(&checker, &project, .Global_Symbol, .Value, "md2"), 0)
+}
+
+@(test)
 root_semantic_selection_screen_event_variants_are_distinct :: proc(t: ^testing.T) {
 	source := `PARAMETERS p_field TYPE string.
 AT SELECTION-SCREEN OUTPUT.

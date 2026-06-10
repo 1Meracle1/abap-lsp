@@ -567,11 +567,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		}
 		emit(p, ".")
 	case ^Selection_Screen_Stmt:
-		if n.text != "" {
-			emit(p, n.text)
-		} else {
-			emit(p, "SELECTION-SCREEN.")
-		}
+		emit_selection_screen_stmt(p, n)
 	case ^Oop_Simple_Stmt:
 		emit_oop_simple_stmt(p, n)
 	case ^Oop_Load_Stmt:
@@ -750,7 +746,7 @@ trivia_prints_before_final_period :: proc(node: ^Node, trivia: Ast_Trivia) -> bo
 trivia_is_in_printed_source_fragment :: proc(node: ^Node, trivia: Ast_Trivia) -> bool {
 	#partial switch n in node.derived {
 	case ^Selection_Screen_Stmt:
-		return n.text != "" && range_contains(n.range, trivia.range)
+		return n.raw_text != "" && range_contains(n.range, trivia.range)
 	case ^Class_Decl:
 		return range_contains(n.header_range, trivia.range)
 	case ^Interface_Decl:
@@ -814,6 +810,114 @@ emit_stmt_list :: proc(p: ^Printer, list: [dynamic]^Stmt) {
 		}
 		emit_node(p, stmt)
 	}
+}
+
+emit_selection_screen_stmt :: proc(p: ^Printer, stmt: ^Selection_Screen_Stmt) {
+	if stmt.raw_text != "" {
+		emit(p, stmt.raw_text)
+		return
+	}
+	emit(p, "SELECTION-SCREEN")
+	switch stmt.kind {
+	case .Begin_Screen:
+		emit(p, " BEGIN OF SCREEN")
+		emit_selection_screen_spaced_token(p, stmt.screen)
+		emit_selection_screen_title(p, stmt)
+	case .End_Screen:
+		emit(p, " END OF SCREEN")
+		emit_selection_screen_spaced_token(p, stmt.screen)
+	case .Begin_Block:
+		emit(p, " BEGIN OF BLOCK")
+		emit_selection_screen_spaced_token(p, stmt.block_name)
+		if stmt.with_frame {
+			emit(p, " WITH FRAME")
+		}
+		emit_selection_screen_title(p, stmt)
+	case .End_Block:
+		emit(p, " END OF BLOCK")
+		emit_selection_screen_spaced_token(p, stmt.block_name)
+	case .Begin_Line:
+		emit(p, " BEGIN OF LINE")
+	case .End_Line:
+		emit(p, " END OF LINE")
+	case .Skip:
+		emit(p, " SKIP")
+		emit_selection_screen_spaced_token(p, stmt.skip_lines)
+	case .Comment:
+		emit(p, " COMMENT ")
+		position := emit_selection_screen_position(p, stmt)
+		if stmt.comment_name.text != "" {
+			if position {
+				emit_space(p)
+			}
+			emit(p, stmt.comment_name)
+		}
+		if stmt.field_name.text != "" {
+			emit(p, " FOR FIELD ")
+			emit(p, stmt.field_name)
+		}
+		emit_selection_screen_modif_id(p, stmt)
+	case .Pushbutton:
+		emit(p, " PUSHBUTTON ")
+		position := emit_selection_screen_position(p, stmt)
+		if stmt.pushbutton_name.text != "" {
+			if position {
+				emit_space(p)
+			}
+			emit(p, stmt.pushbutton_name)
+		}
+		if stmt.user_command.text != "" {
+			emit(p, " USER-COMMAND ")
+			emit(p, stmt.user_command)
+		}
+		emit_selection_screen_modif_id(p, stmt)
+	case .Unknown:
+	}
+	emit(p, ".")
+}
+
+emit_selection_screen_title :: proc(p: ^Printer, stmt: ^Selection_Screen_Stmt) {
+	title := stmt.title
+	if title.text == "" {
+		title = stmt.title_name
+	}
+	if title.text != "" {
+		emit(p, " TITLE ")
+		emit(p, title)
+	}
+}
+
+emit_selection_screen_modif_id :: proc(p: ^Printer, stmt: ^Selection_Screen_Stmt) {
+	if stmt.modif_id.text != "" {
+		emit(p, " MODIF ID ")
+		emit(p, stmt.modif_id)
+	}
+}
+
+emit_selection_screen_spaced_token :: proc(p: ^Printer, token: Token_Text) {
+	if token.text != "" {
+		emit_space(p)
+		emit(p, token)
+	}
+}
+
+emit_selection_screen_position :: proc(p: ^Printer, stmt: ^Selection_Screen_Stmt) -> bool {
+	wrote := false
+	if stmt.line_break {
+		emit(p, "/")
+		wrote = true
+	}
+	if stmt.position.text != "" {
+		emit(p, stmt.position)
+		wrote = true
+	}
+	if stmt.length.text != "" {
+		emit(p, "(")
+		emit(p, stmt.length)
+		emit(p, ")")
+		wrote = true
+	}
+	return wrote
 }
 
 emit_block :: proc(p: ^Printer, body: [dynamic]^Stmt, end_keyword: string) {

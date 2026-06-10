@@ -89,9 +89,74 @@ SELECTION-SCREEN END OF SCREEN 1002.`
 	_, macro := parsed.root.stmts[1].derived_stmt.(^ast.Macro_Call_Stmt)
 
 	testing.expect(t, !macro)
+	testing.expect_value(t, begin.kind, ast.Selection_Screen_Kind.Begin_Screen)
+	testing.expect_value(t, begin.screen.text, "1002")
+	testing.expect_value(t, begin.title.text, "sc_title")
 	testing.expect_value(t, begin.title_name.text, "sc_title")
+	testing.expect_value(t, begin.raw_text, "")
+	testing.expect_value(t, comment.kind, ast.Selection_Screen_Kind.Comment)
+	testing.expect_value(t, comment.position.text, "1")
+	testing.expect_value(t, comment.length.text, "18")
 	testing.expect_value(t, comment.comment_name.text, "sc_url")
 	testing.expect_value(t, comment.field_name.text, "p_url")
+	testing.expect_value(t, comment.raw_text, "")
+}
+
+@(test)
+selection_screen_known_forms_are_structured :: proc(t: ^testing.T) {
+	source := `SELECTION-SCREEN BEGIN OF SCREEN 1002 TITLE sc_title.
+SELECTION-SCREEN SKIP 2.
+SELECTION-SCREEN BEGIN OF LINE.
+SELECTION-SCREEN COMMENT /1(18) sc_url FOR FIELD p_url MODIF ID mod.
+SELECTION-SCREEN PUSHBUTTON /20(10) pb_text USER-COMMAND run MODIF ID md2.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
+SELECTION-SCREEN END OF BLOCK b1.
+SELECTION-SCREEN END OF SCREEN 1002.`
+	parsed := parse(source, "selection_screen_structured.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	begin_screen := parsed.root.stmts[0].derived_stmt.(^ast.Selection_Screen_Stmt)
+	skip := parsed.root.stmts[1].derived_stmt.(^ast.Selection_Screen_Stmt)
+	begin_line := parsed.root.stmts[2].derived_stmt.(^ast.Selection_Screen_Stmt)
+	comment := parsed.root.stmts[3].derived_stmt.(^ast.Selection_Screen_Stmt)
+	pushbutton := parsed.root.stmts[4].derived_stmt.(^ast.Selection_Screen_Stmt)
+	end_line := parsed.root.stmts[5].derived_stmt.(^ast.Selection_Screen_Stmt)
+	begin_block := parsed.root.stmts[6].derived_stmt.(^ast.Selection_Screen_Stmt)
+	end_block := parsed.root.stmts[7].derived_stmt.(^ast.Selection_Screen_Stmt)
+	end_screen := parsed.root.stmts[8].derived_stmt.(^ast.Selection_Screen_Stmt)
+
+	testing.expect_value(t, begin_screen.kind, ast.Selection_Screen_Kind.Begin_Screen)
+	testing.expect_value(t, begin_screen.screen.text, "1002")
+	testing.expect_value(t, begin_screen.title.text, "sc_title")
+	testing.expect_value(t, skip.kind, ast.Selection_Screen_Kind.Skip)
+	testing.expect_value(t, skip.skip_lines.text, "2")
+	testing.expect_value(t, begin_line.kind, ast.Selection_Screen_Kind.Begin_Line)
+	testing.expect_value(t, comment.kind, ast.Selection_Screen_Kind.Comment)
+	testing.expect(t, comment.line_break)
+	testing.expect_value(t, comment.position.text, "1")
+	testing.expect_value(t, comment.length.text, "18")
+	testing.expect_value(t, comment.comment_name.text, "sc_url")
+	testing.expect_value(t, comment.field_name.text, "p_url")
+	testing.expect_value(t, comment.modif_id.text, "mod")
+	testing.expect_value(t, pushbutton.kind, ast.Selection_Screen_Kind.Pushbutton)
+	testing.expect(t, pushbutton.line_break)
+	testing.expect_value(t, pushbutton.position.text, "20")
+	testing.expect_value(t, pushbutton.length.text, "10")
+	testing.expect_value(t, pushbutton.pushbutton_name.text, "pb_text")
+	testing.expect_value(t, pushbutton.user_command.text, "run")
+	testing.expect_value(t, pushbutton.modif_id.text, "md2")
+	testing.expect_value(t, end_line.kind, ast.Selection_Screen_Kind.End_Line)
+	testing.expect_value(t, begin_block.kind, ast.Selection_Screen_Kind.Begin_Block)
+	testing.expect_value(t, begin_block.block_name.text, "b1")
+	testing.expect(t, begin_block.with_frame)
+	testing.expect_value(t, begin_block.title.text, "text-001")
+	testing.expect_value(t, begin_block.title_name.text, "text")
+	testing.expect_value(t, end_block.kind, ast.Selection_Screen_Kind.End_Block)
+	testing.expect_value(t, end_block.block_name.text, "b1")
+	testing.expect_value(t, end_screen.kind, ast.Selection_Screen_Kind.End_Screen)
+	testing.expect_value(t, end_screen.screen.text, "1002")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
 @(test)
@@ -170,6 +235,75 @@ SELECTION-SCREEN END OF SCREEN 1002.`
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+Selection_Screen_Walk_Counts :: struct {
+	statements:  int,
+	comments:    int,
+	pushbuttons: int,
+	begin_blocks: int,
+}
+
+selection_screen_walk_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil {
+		return v
+	}
+	counts := cast(^Selection_Screen_Walk_Counts)v.data
+	#partial switch n in node.derived {
+	case ^ast.Selection_Screen_Stmt:
+		counts.statements += 1
+		#partial switch n.kind {
+		case .Comment:
+			counts.comments += 1
+		case .Pushbutton:
+			counts.pushbuttons += 1
+		case .Begin_Block:
+			counts.begin_blocks += 1
+		}
+	}
+	return v
+}
+
+@(test)
+cloned_selection_screen_structured_strings_survive_source_overwrite :: proc(t: ^testing.T) {
+	source := `SELECTION-SCREEN COMMENT /1(18) sc_url FOR FIELD p_url MODIF ID mod.
+SELECTION-SCREEN PUSHBUTTON /20(10) pb_text USER-COMMAND run MODIF ID md2.
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.`
+	root := clone_parse_after_source_overwrite(t, source)
+
+	comment := root.stmts[0].derived_stmt.(^ast.Selection_Screen_Stmt)
+	pushbutton := root.stmts[1].derived_stmt.(^ast.Selection_Screen_Stmt)
+	block := root.stmts[2].derived_stmt.(^ast.Selection_Screen_Stmt)
+
+	testing.expect_value(t, comment.comment_name.text, "sc_url")
+	testing.expect_value(t, comment.field_name.text, "p_url")
+	testing.expect_value(t, comment.modif_id.text, "mod")
+	testing.expect_value(t, pushbutton.pushbutton_name.text, "pb_text")
+	testing.expect_value(t, pushbutton.user_command.text, "run")
+	testing.expect_value(t, pushbutton.modif_id.text, "md2")
+	testing.expect_value(t, block.block_name.text, "b1")
+	testing.expect_value(t, block.title.text, "text-001")
+	testing.expect_value(t, block.title_name.text, "text")
+	testing.expect_value(t, ast.print_node(root, context.allocator), source)
+}
+
+@(test)
+walk_visits_selection_screen_statements :: proc(t: ^testing.T) {
+	source := `SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
+SELECTION-SCREEN COMMENT 1(18) sc_url FOR FIELD p_url.
+SELECTION-SCREEN PUSHBUTTON 20(10) pb_text USER-COMMAND run.
+SELECTION-SCREEN END OF BLOCK b1.`
+	parsed := parse(source, "selection_screen_walk.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	counts := Selection_Screen_Walk_Counts{}
+	visitor := ast.Visitor{visit = selection_screen_walk_visit, data = rawptr(&counts)}
+	ast.walk(&visitor, parsed.root)
+
+	testing.expect_value(t, counts.statements, 4)
+	testing.expect_value(t, counts.comments, 1)
+	testing.expect_value(t, counts.pushbuttons, 1)
+	testing.expect_value(t, counts.begin_blocks, 1)
 }
 
 @(test)

@@ -1933,13 +1933,38 @@ Macro_Call_Stmt :: struct {
 	args:       [dynamic]^Expr,
 }
 
-// ABAP syntax: `SELECTION-SCREEN ...`, including COMMENT-generated text fields.
+Selection_Screen_Kind :: enum {
+	Unknown,
+	Begin_Screen,
+	End_Screen,
+	Begin_Block,
+	End_Block,
+	Begin_Line,
+	End_Line,
+	Skip,
+	Comment,
+	Pushbutton,
+}
+
+// ABAP syntax: `SELECTION-SCREEN ...`, including COMMENT/PUSHBUTTON-generated text fields.
 Selection_Screen_Stmt :: struct {
-	using node:   Stmt,
-	text:         string,
-	title_name:   Token_Text,
-	comment_name: Token_Text,
-	field_name:   Token_Text,
+	using node:     Stmt,
+	kind:           Selection_Screen_Kind,
+	raw_text:       string,
+	screen:         Token_Text,
+	block_name:     Token_Text,
+	title:          Token_Text,
+	title_name:     Token_Text,
+	line_break:     bool,
+	position:       Token_Text,
+	length:         Token_Text,
+	skip_lines:     Token_Text,
+	comment_name:   Token_Text,
+	pushbutton_name: Token_Text,
+	field_name:     Token_Text,
+	user_command:   Token_Text,
+	modif_id:       Token_Text,
+	with_frame:     bool,
 }
 
 Oop_Simple_Kind :: enum {

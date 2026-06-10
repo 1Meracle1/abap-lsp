@@ -941,6 +941,11 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 			dst.body = strings.clone(src.body, allocator)
 		}
 	}
+	when intrinsics.type_has_field(T, "block_name") {
+		when intrinsics.type_field_type(T, "block_name") == Token_Text {
+			dst.block_name = clone_token_text(src.block_name, allocator)
+		}
+	}
 	when intrinsics.type_has_field(T, "column_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "column_name")) {
 			dst.column_name = strings.clone(src.column_name, allocator)
@@ -1048,6 +1053,11 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 			dst.literal = strings.clone(src.literal, allocator)
 		}
 	}
+	when intrinsics.type_has_field(T, "length") {
+		when intrinsics.type_field_type(T, "length") == Token_Text {
+			dst.length = clone_token_text(src.length, allocator)
+		}
+	}
 	when intrinsics.type_has_field(T, "member_name") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "member_name")) {
 			dst.member_name = strings.clone(src.member_name, allocator)
@@ -1067,6 +1077,11 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		}
 		when intrinsics.type_field_type(T, "message_id") == Token_Text {
 			dst.message_id = clone_token_text(src.message_id, allocator)
+		}
+	}
+	when intrinsics.type_has_field(T, "modif_id") {
+		when intrinsics.type_field_type(T, "modif_id") == Token_Text {
+			dst.modif_id = clone_token_text(src.modif_id, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "name") {
@@ -1095,6 +1110,21 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 			dst.qualifier = clone_token_text(src.qualifier, allocator)
 		}
 	}
+	when intrinsics.type_has_field(T, "position") {
+		when intrinsics.type_field_type(T, "position") == Token_Text {
+			dst.position = clone_token_text(src.position, allocator)
+		}
+	}
+	when intrinsics.type_has_field(T, "pushbutton_name") {
+		when intrinsics.type_field_type(T, "pushbutton_name") == Token_Text {
+			dst.pushbutton_name = clone_token_text(src.pushbutton_name, allocator)
+		}
+	}
+	when intrinsics.type_has_field(T, "raw_text") {
+		when intrinsics.type_is_string(intrinsics.type_field_type(T, "raw_text")) {
+			dst.raw_text = strings.clone(src.raw_text, allocator)
+		}
+	}
 	when intrinsics.type_has_field(T, "renaming_suffix") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "renaming_suffix")) {
 			dst.renaming_suffix = strings.clone(src.renaming_suffix, allocator)
@@ -1106,6 +1136,16 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 	when intrinsics.type_has_field(T, "sign") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "sign")) {
 			dst.sign = strings.clone(src.sign, allocator)
+		}
+	}
+	when intrinsics.type_has_field(T, "screen") {
+		when intrinsics.type_field_type(T, "screen") == Token_Text {
+			dst.screen = clone_token_text(src.screen, allocator)
+		}
+	}
+	when intrinsics.type_has_field(T, "skip_lines") {
+		when intrinsics.type_field_type(T, "skip_lines") == Token_Text {
+			dst.skip_lines = clone_token_text(src.skip_lines, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "spot_name") {
@@ -1145,6 +1185,11 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 			dst.target_member_name = clone_token_text(src.target_member_name, allocator)
 		}
 	}
+	when intrinsics.type_has_field(T, "title") {
+		when intrinsics.type_field_type(T, "title") == Token_Text {
+			dst.title = clone_token_text(src.title, allocator)
+		}
+	}
 	when intrinsics.type_has_field(T, "text") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "text")) {
 			dst.text = strings.clone(src.text, allocator)
@@ -1164,6 +1209,11 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		}
 		when intrinsics.type_field_type(T, "using_key") == Token_Text {
 			dst.using_key = clone_token_text(src.using_key, allocator)
+		}
+	}
+	when intrinsics.type_has_field(T, "user_command") {
+		when intrinsics.type_field_type(T, "user_command") == Token_Text {
+			dst.user_command = clone_token_text(src.user_command, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "value") {

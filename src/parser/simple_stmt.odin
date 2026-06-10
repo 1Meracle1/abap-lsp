@@ -1984,24 +1984,21 @@ parse_selection_screen_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if allow_keyword(p, "COMMENT") {
 		parse_selection_screen_comment(p, stmt, body_start)
 	} else if allow_keyword(p, "PUSHBUTTON") {
-		parse_selection_screen_pushbutton(p, body_start)
+		parse_selection_screen_pushbutton(p, stmt, body_start)
+	} else if allow_keyword(p, "BEGIN") {
+		parse_selection_screen_boundary(p, stmt, body_start, true)
+	} else if allow_keyword(p, "END") {
+		parse_selection_screen_boundary(p, stmt, body_start, false)
+	} else if allow_keyword(p, "SKIP") {
+		parse_selection_screen_skip(p, stmt, body_start)
 	} else {
-		for !simple_stmt_done(p, body_start) {
-			if allow_keyword(p, "TITLE") {
-				stmt.title_name = selection_screen_read_name(
-					p,
-					"syntax error: selection-screen frame title name can be up to eight characters long",
-				)
-				continue
-			}
-			if parse_selection_screen_block_name(p) {
-				continue
-			}
-			bump_token(p)
-		}
+		stmt.kind = .Unknown
+		selection_screen_consume_raw_tail(p, stmt, body_start)
 	}
 	stmt.range = simple_stmt_range(p, start)
-	stmt.text = source_range_text(p, stmt.range)
+	if stmt.kind == .Unknown || stmt.raw_text != "" {
+		stmt.raw_text = source_range_text(p, stmt.range)
+	}
 	return stmt
 }
 
@@ -2010,7 +2007,8 @@ parse_selection_screen_comment :: proc(
 	stmt: ^ast.Selection_Screen_Stmt,
 	body_start: int,
 ) {
-	parse_selection_screen_comment_position(p, body_start)
+	stmt.kind = .Comment
+	parse_selection_screen_comment_position(p, stmt, body_start)
 	stmt.comment_name = selection_screen_read_name(p)
 	for !simple_stmt_done(p, body_start) {
 		if allow_keyword(p, "FOR") {
@@ -2022,61 +2020,156 @@ parse_selection_screen_comment :: proc(
 			continue
 		}
 		if at_keyword_phrase(p, "MODIF ID") {
-			_, _ = parse_required_modif_id(p)
+			modif_id, ok := parse_required_modif_id(p)
+			if ok {
+				stmt.modif_id = modif_id
+			} else {
+				selection_screen_mark_raw(stmt)
+			}
 			continue
 		}
+		selection_screen_mark_raw(stmt)
 		bump_token(p)
 	}
 }
 
-parse_selection_screen_pushbutton :: proc(p: ^Parser, body_start: int) {
-	parse_selection_screen_comment_position(p, body_start)
-	_ = selection_screen_read_name(
+parse_selection_screen_pushbutton :: proc(p: ^Parser, stmt: ^ast.Selection_Screen_Stmt, body_start: int) {
+	stmt.kind = .Pushbutton
+	parse_selection_screen_comment_position(p, stmt, body_start)
+	stmt.pushbutton_name = selection_screen_read_name(
 		p,
 		"syntax error: selection-screen pushbutton name can be up to eight characters long",
 	)
 	for !simple_stmt_done(p, body_start) {
 		if at_keyword_phrase(p, "USER-COMMAND") {
-			_, _ = parse_required_user_command(p)
+			user_command, ok := parse_required_user_command(p)
+			if ok {
+				stmt.user_command = user_command
+			} else {
+				selection_screen_mark_raw(stmt)
+			}
 			continue
 		}
 		if at_keyword_phrase(p, "MODIF ID") {
-			_, _ = parse_required_modif_id(p)
+			modif_id, ok := parse_required_modif_id(p)
+			if ok {
+				stmt.modif_id = modif_id
+			} else {
+				selection_screen_mark_raw(stmt)
+			}
 			continue
 		}
+		selection_screen_mark_raw(stmt)
 		bump_token(p)
 	}
 }
 
-parse_selection_screen_block_name :: proc(p: ^Parser) -> bool {
-	if !(at_keyword(p, "BEGIN") || at_keyword(p, "END")) {
-		return false
-	}
-	bump_token(p)
+parse_selection_screen_boundary :: proc(
+	p: ^Parser,
+	stmt: ^ast.Selection_Screen_Stmt,
+	body_start: int,
+	begin: bool,
+) {
 	if !allow_keyword(p, "OF") {
-		return true
+		selection_screen_consume_raw_tail(p, stmt, body_start)
+		return
 	}
-	if !allow_keyword(p, "BLOCK") {
-		return true
+	if allow_keyword(p, "SCREEN") {
+		stmt.kind = .Begin_Screen if begin else .End_Screen
+		stmt.screen = selection_screen_read_token_text(p, body_start)
+		if begin {
+			parse_selection_screen_title_tail(p, stmt, body_start)
+		} else {
+			selection_screen_consume_empty_tail(p, stmt, body_start)
+		}
+		return
 	}
-	_ = selection_screen_read_name(
-		p,
-		"syntax error: selection-screen block name can be up to 20 characters long",
-		SELECTION_SCREEN_BLOCK_NAME_MAX_LENGTH,
-	)
-	return true
+	if allow_keyword(p, "BLOCK") {
+		stmt.kind = .Begin_Block if begin else .End_Block
+		stmt.block_name = selection_screen_read_name(
+			p,
+			"syntax error: selection-screen block name can be up to 20 characters long",
+			SELECTION_SCREEN_BLOCK_NAME_MAX_LENGTH,
+		)
+		if begin {
+			parse_selection_screen_block_tail(p, stmt, body_start)
+		} else {
+			selection_screen_consume_empty_tail(p, stmt, body_start)
+		}
+		return
+	}
+	if allow_keyword(p, "LINE") {
+		stmt.kind = .Begin_Line if begin else .End_Line
+		selection_screen_consume_empty_tail(p, stmt, body_start)
+		return
+	}
+	stmt.kind = .Unknown
+	selection_screen_consume_raw_tail(p, stmt, body_start)
 }
 
-parse_selection_screen_comment_position :: proc(p: ^Parser, body_start: int) {
-	allow_token(p, .Slash)
-	if !simple_stmt_done(p, body_start) && current_token(p).kind != .LParen {
+parse_selection_screen_title_tail :: proc(
+	p: ^Parser,
+	stmt: ^ast.Selection_Screen_Stmt,
+	body_start: int,
+) {
+	for !simple_stmt_done(p, body_start) {
+		if allow_keyword(p, "TITLE") {
+			stmt.title, stmt.title_name = selection_screen_read_title(p)
+			continue
+		}
+		selection_screen_mark_raw(stmt)
 		bump_token(p)
+	}
+}
+
+parse_selection_screen_block_tail :: proc(
+	p: ^Parser,
+	stmt: ^ast.Selection_Screen_Stmt,
+	body_start: int,
+) {
+	for !simple_stmt_done(p, body_start) {
+		if allow_keyword(p, "WITH") {
+			if allow_keyword(p, "FRAME") {
+				stmt.with_frame = true
+			} else {
+				selection_screen_mark_raw(stmt)
+			}
+			continue
+		}
+		if allow_keyword(p, "TITLE") {
+			stmt.title, stmt.title_name = selection_screen_read_title(p)
+			continue
+		}
+		selection_screen_mark_raw(stmt)
+		bump_token(p)
+	}
+}
+
+parse_selection_screen_skip :: proc(p: ^Parser, stmt: ^ast.Selection_Screen_Stmt, body_start: int) {
+	stmt.kind = .Skip
+	if !simple_stmt_done(p, body_start) {
+		stmt.skip_lines = selection_screen_read_token_text(p, body_start)
+	}
+	selection_screen_consume_empty_tail(p, stmt, body_start)
+}
+
+parse_selection_screen_comment_position :: proc(p: ^Parser, stmt: ^ast.Selection_Screen_Stmt, body_start: int) {
+	stmt.line_break = allow_token(p, .Slash)
+	if !simple_stmt_done(p, body_start) && current_token(p).kind != .LParen {
+		stmt.position = selection_screen_read_token_text(p, body_start)
 	}
 	if allow_token(p, .LParen) {
+		start := current_token(p).range.start
 		for !simple_stmt_done(p, body_start) && current_token(p).kind != .RParen {
 			bump_token(p)
 		}
-		allow_token(p, .RParen)
+		end := current_token(p).range.start
+		if allow_token(p, .RParen) {
+			range := tokenizer.text_range(start, end)
+			stmt.length = parser_ast_token(parser_clone_range_text(p, range), range)
+		} else {
+			selection_screen_mark_raw(stmt)
+		}
 	}
 }
 
@@ -2092,6 +2185,73 @@ selection_screen_read_name :: proc(
 	validate_token_name_length(p, tok, max_length, limit_message)
 	bump_token(p)
 	return parser_ast_raw_name_token(p, tok)
+}
+
+selection_screen_read_title :: proc(p: ^Parser) -> (ast.Token_Text, ast.Token_Text) {
+	name := selection_screen_read_name(
+		p,
+		"syntax error: selection-screen frame title name can be up to eight characters long",
+	)
+	if name.text == "" {
+		return {}, {}
+	}
+	end := name.range.end
+	if current_token(p).kind == .Minus &&
+	   tokens_touch(previous_token(p), current_token(p)) &&
+	   p.index + 1 < len(p.tokens) &&
+	   selection_screen_title_suffix_token(p.tokens[p.index + 1]) &&
+	   tokens_touch(current_token(p), p.tokens[p.index + 1]) {
+		bump_token(p)
+		end = bump_token(p).range.end
+	}
+	range := tokenizer.text_range(name.range.start, end)
+	return parser_ast_token(parser_clone_range_text(p, range), range), name
+}
+
+selection_screen_title_suffix_token :: proc(tok: Token) -> bool {
+	return tok.kind == .Ident || tok.kind == .Number
+}
+
+selection_screen_read_token_text :: proc(p: ^Parser, body_start: int) -> ast.Token_Text {
+	if simple_stmt_done(p, body_start) {
+		return {}
+	}
+	tok := bump_token(p)
+	if tok.kind == .String {
+		return parser_ast_token(parser_clone_token_text(p, tok), tok.range)
+	}
+	if tok.kind == .Ident || tok.kind == .Number {
+		return parser_ast_raw_name_token(p, tok)
+	}
+	return parser_ast_token(parser_clone_token_text(p, tok), tok.range)
+}
+
+selection_screen_consume_empty_tail :: proc(
+	p: ^Parser,
+	stmt: ^ast.Selection_Screen_Stmt,
+	body_start: int,
+) {
+	for !simple_stmt_done(p, body_start) {
+		selection_screen_mark_raw(stmt)
+		bump_token(p)
+	}
+}
+
+selection_screen_consume_raw_tail :: proc(
+	p: ^Parser,
+	stmt: ^ast.Selection_Screen_Stmt,
+	body_start: int,
+) {
+	selection_screen_mark_raw(stmt)
+	for !simple_stmt_done(p, body_start) {
+		bump_token(p)
+	}
+}
+
+selection_screen_mark_raw :: proc(stmt: ^ast.Selection_Screen_Stmt) {
+	if stmt.raw_text == "" {
+		stmt.raw_text = " "
+	}
 }
 
 oop_simple_stmt_starts :: proc(p: ^Parser) -> bool {
