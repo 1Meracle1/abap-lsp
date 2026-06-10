@@ -82,3 +82,31 @@ SELECT-OPTIONS s_id FOR ls_row-id.
       (identifier))
     (keyword)
     (field_path)))
+
+==================
+Keyword-like structured field name is identifier
+==================
+
+TYPES: BEGIN OF ty_result,
+         source TYPE string,
+       END OF ty_result.
+
+---
+
+(source_file
+  (types_declaration
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (punctuation)
+    (identifier)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (punctuation)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))))

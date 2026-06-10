@@ -31042,6 +31042,73 @@
       "type": "CHOICE",
       "members": [
         {
+          "type": "PREC",
+          "value": 3,
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
+                          "value": "[sS][oO][uU][rR][cC][eE]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "identifier"
+                  }
+                ]
+              },
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
+                          "value": "[tT][yY][pP][eE]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "keyword"
+                  },
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
+                          "value": "[lL][iI][kK][eE]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "keyword"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
           "type": "SYMBOL",
           "name": "_compound_tail_keyword"
         },

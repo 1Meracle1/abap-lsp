@@ -49,6 +49,16 @@ function assignmentTail($) {
   return repeat1(choice($._expression, keywordChoice($, EXPRESSION_KEYWORDS), $.operator, $.punctuation, $.tail_fragment));
 }
 
+function declarationKeywordFieldName($) {
+  return prec(
+    3,
+    seq(
+      keywordIdentifierChoice($, DECLARATION_FIELD_NAME_KEYWORDS),
+      keywordChoice($, ["TYPE", "LIKE"]),
+    ),
+  );
+}
+
 const DECLARATION_KEYWORDS = [
   "DATA",
   "TYPES",
@@ -459,6 +469,10 @@ const STATEMENT_TAIL_KEYWORDS = [
   "SHORTDUMP-ID",
   "TESTING",
   "VALUE",
+];
+
+const DECLARATION_FIELD_NAME_KEYWORDS = [
+  "SOURCE",
 ];
 
 module.exports = grammar({
@@ -1363,6 +1377,7 @@ module.exports = grammar({
 
     _tail_token: ($) =>
       choice(
+        declarationKeywordFieldName($),
         $._compound_tail_keyword,
         $.type_ref_tail,
         $.value_tail,
