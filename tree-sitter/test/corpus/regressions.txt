@@ -1191,3 +1191,42 @@ ENDCLASS.
         (qualified_name
           (identifier))))
     (keyword)))
+
+==================
+Event handler method signatures highlight event keyword
+==================
+
+CLASS lcl_report DEFINITION FINAL.
+  PRIVATE SECTION.
+    METHODS on_top_double_click FOR EVENT double_click OF cl_gui_alv_grid
+      IMPORTING
+        e_row.
+ENDCLASS.
+
+---
+
+(source_file
+  (class_definition
+    (keyword)
+    (identifier)
+    (keyword)
+    (keyword)
+    (visibility_section
+      (keyword)
+      (keyword))
+    (method_signature
+      (keyword)
+      (routine_name
+        (qualified_name
+          (identifier)))
+      (keyword)
+      (keyword)
+      (qualified_name
+        (identifier))
+      (keyword)
+      (qualified_name
+        (identifier))
+      (keyword)
+      (qualified_name
+        (identifier)))
+    (keyword)))

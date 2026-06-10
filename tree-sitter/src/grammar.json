@@ -4638,6 +4638,22 @@
                         "value": 2,
                         "content": {
                           "type": "PATTERN",
+                          "value": "[eE][vV][eE][nN][tT]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "keyword"
+                  },
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
                           "value": "[eE][xX][cC][eE][pP][tT][iI][oO][nN]"
                         }
                       }
@@ -17848,6 +17864,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[eE][vV][eE][nN][tT]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[eE][xX][cC][eE][pP][tT][iI][oO][nN]"
                   }
                 }
@@ -24236,6 +24268,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[eE][vV][eE][nN][tT]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[eE][xX][cC][eE][pP][tT][iI][oO][nN]"
                   }
                 }
@@ -25687,6 +25735,22 @@
                   "content": {
                     "type": "PATTERN",
                     "value": "[eE][nN][uU][mM]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[eE][vV][eE][nN][tT]"
                   }
                 }
               },
@@ -32317,6 +32381,22 @@
                   "content": {
                     "type": "PATTERN",
                     "value": "[eE][nN][uU][mM]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[eE][vV][eE][nN][tT]"
                   }
                 }
               },

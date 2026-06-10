@@ -456,6 +456,7 @@ const STATEMENT_TAIL_KEYWORDS = [
   "DEFINITION",
   "DEFERRED",
   "ENUM",
+  "EVENT",
   "EXCEPTION",
   "FOR",
   "GROUP",
