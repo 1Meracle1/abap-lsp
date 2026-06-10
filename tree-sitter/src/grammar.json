@@ -17394,7 +17394,7 @@
             "type": "REPEAT",
             "content": {
               "type": "SYMBOL",
-              "name": "_sql_tail_token"
+              "name": "_call_tail_token"
             }
           },
           {
@@ -17403,6 +17403,82 @@
           }
         ]
       }
+    },
+    "_call_tail_token": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "call_parameter_assignment"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_sql_tail_token"
+        }
+      ]
+    },
+    "call_parameter_assignment": {
+      "type": "PREC",
+      "value": 2,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "name",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_call_parameter_name"
+            }
+          },
+          {
+            "type": "SYMBOL",
+            "name": "equals"
+          },
+          {
+            "type": "FIELD",
+            "name": "value",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_call_parameter_value"
+            }
+          }
+        ]
+      }
+    },
+    "_call_parameter_name": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "_name"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "ALIAS",
+            "content": {
+              "type": "TOKEN",
+              "content": {
+                "type": "PREC",
+                "value": 2,
+                "content": {
+                  "type": "PATTERN",
+                  "value": "[rR][eE][tT][uU][rR][nN]"
+                }
+              }
+            },
+            "named": true,
+            "value": "keyword"
+          },
+          "named": true,
+          "value": "identifier"
+        }
+      ]
+    },
+    "_call_parameter_value": {
+      "type": "SYMBOL",
+      "name": "_sql_tail_token"
     },
     "select_statement": {
       "type": "PREC",

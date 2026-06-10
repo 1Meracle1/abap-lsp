@@ -760,6 +760,98 @@
     }
   },
   {
+    "type": "call_parameter_assignment",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "cte_identifier",
+            "named": true
+          },
+          {
+            "type": "escaped_identifier",
+            "named": true
+          },
+          {
+            "type": "field_symbol",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_literal",
+            "named": true
+          },
+          {
+            "type": "dynamic_name",
+            "named": true
+          },
+          {
+            "type": "field_path",
+            "named": true
+          },
+          {
+            "type": "field_symbol_path",
+            "named": true
+          },
+          {
+            "type": "keyword",
+            "named": true
+          },
+          {
+            "type": "operator",
+            "named": true
+          },
+          {
+            "type": "punctuation",
+            "named": true
+          },
+          {
+            "type": "qualified_name",
+            "named": true
+          },
+          {
+            "type": "sql_wildcard_selector",
+            "named": true
+          },
+          {
+            "type": "static_type_path",
+            "named": true
+          },
+          {
+            "type": "substring_expression",
+            "named": true
+          },
+          {
+            "type": "tail_fragment",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "equals",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "call_statement",
     "named": true,
     "fields": {},
@@ -769,6 +861,10 @@
       "types": [
         {
           "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "call_parameter_assignment",
           "named": true
         },
         {

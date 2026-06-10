@@ -342,6 +342,78 @@ ENDLOOP.
     (keyword)))
 
 ==================
+Call function return parameter name is an identifier
+==================
+
+CALL FUNCTION 'BAPI_DELIVERY_GETLIST' DESTINATION c_s4_dest
+  TABLES
+    it_vbeln           = lt_vbeln
+    it_wadat_ist       = lt_wadat_ist
+    it_wbstk           = lt_wbstk
+    et_delivery_header = lt_delivery_header
+    return             = lt_return
+  EXCEPTIONS
+    system_failure        = 1 MESSAGE lv_msg
+    communication_failure = 2 MESSAGE lv_msg
+    OTHERS                = 3.
+
+---
+
+(source_file
+  (call_statement
+    (keyword)
+    (keyword)
+    (string)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (qualified_name
+      (identifier))
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (qualified_name
+        (identifier)))
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (qualified_name
+        (identifier)))
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (qualified_name
+        (identifier)))
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (qualified_name
+        (identifier)))
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (qualified_name
+        (identifier)))
+    (keyword)
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (number))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (number))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (operator)
+    (number)))
+
+==================
 Call and runtime additions highlight as keywords
 ==================
 
@@ -616,22 +688,22 @@ ENDFORM.
     (qualified_name
       (identifier))
     (keyword)
-    (qualified_name
-      (identifier))
-    (operator)
-    (qualified_name
-      (identifier))
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (qualified_name
+        (identifier)))
     (keyword)
-    (qualified_name
-      (identifier))
-    (operator)
-    (qualified_name
-      (identifier))
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (qualified_name
+        (identifier)))
     (keyword)
-    (qualified_name
-      (identifier))
-    (operator)
-    (number)
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (number))
     (keyword)
     (qualified_name
       (identifier))
@@ -837,20 +909,20 @@ LEAVE TO SCREEN sy-dynnr.
     (qualified_name
       (identifier))
     (keyword)
-    (qualified_name
-      (identifier))
-    (operator)
-    (qualified_name
-      (identifier))
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (qualified_name
+        (identifier)))
     (keyword)
     (keyword)
     (qualified_name
       (identifier))
     (keyword)
-    (qualified_name
-      (identifier))
-    (operator)
-    (string))
+    (call_parameter_assignment
+      (identifier)
+      (equals)
+      (string)))
   (assignment_statement
     (qualified_name
       (identifier))

@@ -1068,10 +1068,34 @@ module.exports = grammar({
         seq(
           keyword($, "CALL"),
           keywordChoice($, ["FUNCTION", "METHOD", "TRANSFORMATION", "SCREEN", "SELECTION-SCREEN"]),
-          repeat($._sql_tail_token),
+          repeat($._call_tail_token),
           ".",
         ),
       ),
+
+    _call_tail_token: ($) =>
+      choice(
+        $.call_parameter_assignment,
+        $._sql_tail_token,
+      ),
+
+    call_parameter_assignment: ($) =>
+      prec(
+        2,
+        seq(
+          field("name", $._call_parameter_name),
+          $.equals,
+          field("value", $._call_parameter_value),
+        ),
+      ),
+
+    _call_parameter_name: ($) =>
+      choice(
+        $._name,
+        alias(keyword($, "RETURN"), $.identifier),
+      ),
+
+    _call_parameter_value: ($) => $._sql_tail_token,
 
     select_statement: ($) =>
       prec(
