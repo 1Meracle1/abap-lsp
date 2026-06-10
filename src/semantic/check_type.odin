@@ -478,8 +478,16 @@ checker_record_type_ref_key_clause_uses :: proc(
 			continue
 		}
 		if field, ok := checker_lookup_structure_field(row_structure, name); ok {
+			checker_check_entity_for_operand(ctx, field)
 			checker_add_entity_use_at_range(ctx, node, field, range)
+			continue
 		}
+		checker_add_diagnostic(
+			ctx,
+			.Unknown_Field,
+			range,
+			checker_table_component_message(ctx, "unknown internal table field ", name),
+		)
 	}
 }
 

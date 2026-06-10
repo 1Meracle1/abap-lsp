@@ -3354,6 +3354,89 @@ root_semantic_query_uses_precise_table_type_key_ranges :: proc(t: ^testing.T) {
 }
 
 @(test)
+root_semantic_table_type_keys_check_data_decl_components :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_so_link,
+    ebeln TYPE i,
+    vbeln TYPE i,
+    posnr TYPE i,
+  END OF ty_so_link,
+  BEGIN OF ty_vbpa,
+    vbeln TYPE i,
+    posnr TYPE i,
+    parvw TYPE i,
+    kunnr TYPE i,
+  END OF ty_vbpa.
+DATA:
+  lt_so_link TYPE SORTED TABLE OF ty_so_link WITH UNIQUE KEY ebeln vbeln posnr bad_component,
+  lt_vbpa TYPE SORTED TABLE OF ty_vbpa WITH NON-UNIQUE KEY vbeln posnr parvw kunnr bad_partner.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://data_decl_table_keys.abap")
+	query := semantic_query(&project, &checker, file)
+	ref_query := semantic_query_refs(query)
+
+	so_link := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_so_link", .Type_Def)
+	vbpa := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_vbpa", .Type_Def)
+	testing.expect(t, so_link != nil && vbpa != nil)
+	if so_link == nil || vbpa == nil {
+		return
+	}
+	so_link_structure := checker_type_structure(so_link.type)
+	vbpa_structure := checker_type_structure(vbpa.type)
+	ebeln_field := checker_test_structure_field(t, &project, so_link_structure, "ebeln")
+	parvw_field := checker_test_structure_field(t, &project, vbpa_structure, "parvw")
+
+	ebeln_offset := checker_test_find_text(source, "WITH UNIQUE KEY ebeln")
+	if ebeln_offset >= 0 {
+		ebeln_offset += len("WITH UNIQUE KEY ")
+	}
+	parvw_offset := checker_test_find_text(source, "WITH NON-UNIQUE KEY vbeln posnr parvw")
+	if parvw_offset >= 0 {
+		parvw_offset += len("WITH NON-UNIQUE KEY vbeln posnr ")
+	}
+	testing.expect(t, ebeln_offset >= 0 && parvw_offset >= 0)
+
+	ebeln_use := semantic_ref_use_at_offset(ref_query, ebeln_offset)
+	testing.expect(t, ebeln_use != nil)
+	if ebeln_use != nil {
+		testing.expect(t, ebeln_use.entity == ebeln_field)
+		range := semantic_entity_use_range(ebeln_use^)
+		testing.expect_value(t, source[range.start:range.end], "ebeln")
+	}
+	parvw_use := semantic_ref_use_at_offset(ref_query, parvw_offset)
+	testing.expect(t, parvw_use != nil)
+	if parvw_use != nil {
+		testing.expect(t, parvw_use.entity == parvw_field)
+		range := semantic_entity_use_range(parvw_use^)
+		testing.expect_value(t, source[range.start:range.end], "parvw")
+	}
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 2)
+	bad_component_offset := checker_test_find_text(source, "bad_component")
+	bad_partner_offset := checker_test_find_text(source, "bad_partner")
+	bad_component_found := false
+	bad_partner_found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unknown_Field {
+			continue
+		}
+		if diagnostic.range.start == bad_component_offset {
+			bad_component_found = true
+			testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "bad_component")
+		}
+		if diagnostic.range.start == bad_partner_offset {
+			bad_partner_found = true
+			testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "bad_partner")
+		}
+	}
+	testing.expect(t, bad_component_found)
+	testing.expect(t, bad_partner_found)
+}
+
+@(test)
 root_semantic_query_returns_project_owned_decl_and_builtin_use_pointers :: proc(t: ^testing.T) {
 	source := `DATA gv_value TYPE i.`
 

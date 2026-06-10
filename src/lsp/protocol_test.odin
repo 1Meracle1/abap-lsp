@@ -574,6 +574,37 @@ semantic_tokens_include_multiline_table_key_type_names :: proc(t: ^testing.T) {
 	)
 }
 
+@(test)
+lsp_hover_lookup_reports_table_key_field_declared_type :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/table_key_hover.abap"
+	source := `TYPES:
+  BEGIN OF ty_seen_po,
+    ebeln TYPE ekpo-ebeln,
+  END OF ty_seen_po.
+DATA lt_seen_po TYPE HASHED TABLE OF ty_seen_po WITH UNIQUE KEY ebeln.`
+
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "WITH UNIQUE KEY ebeln")
+	testing.expect(t, offset >= 0)
+	if offset < 0 {
+		return
+	}
+	offset += len("WITH UNIQUE KEY ")
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	found := entity_at_position(&state, params)
+
+	testing.expect(t, found.ok)
+	if !found.ok {
+		return
+	}
+	testing.expect_value(t, found.entity.kind, semantic.Entity_Kind.Field)
+	testing.expect_value(t, entity_label(found.snapshot.project, found.entity), "`ebeln` field")
+	testing.expect_value(t, entity_detail(found.snapshot.project, found.entity), "type: `ekpo-ebeln`")
+	testing.expect_value(t, source[found.range.start:found.range.end], "ebeln")
+}
+
 semantic_token_data_has_token :: proc(
 	source: string,
 	data: []u32,

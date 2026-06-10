@@ -1,6 +1,7 @@
 package abap_frontend_lsp
 
 import execution "src:execution"
+import "src:ast"
 import "src:parser"
 import "src:semantic"
 import string_interner "src:string_interner"
@@ -1823,10 +1824,13 @@ entity_label :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> st
 }
 
 entity_detail :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
-	if entity == nil || entity.type == nil {
+	if entity == nil {
 		return ""
 	}
 	type_text := type_label(project, entity.type)
+	if type_text == "" {
+		type_text = declared_entity_type_label(entity)
+	}
 	if type_text == "" {
 		return ""
 	}
@@ -1846,6 +1850,59 @@ entity_kind_label :: proc(kind: semantic.Entity_Kind) -> string {
 	lower := strings.to_lower(raw, context.temp_allocator)
 	label, _ := strings.replace_all(lower, "_", " ", context.temp_allocator)
 	return label
+}
+
+declared_entity_type_label :: proc(entity: ^semantic.Entity) -> string {
+	if entity == nil || entity.decl_info == nil || entity.decl_info.type_clause == nil {
+		return ""
+	}
+	return declared_type_clause_label(entity.decl_info.type_clause)
+}
+
+declared_type_clause_label :: proc(clause: ^ast.Data_Type_Clause) -> string {
+	if clause == nil {
+		return ""
+	}
+	base := declared_type_ref_label(clause.type_ref)
+	#partial switch clause.form {
+	case .Ref_To:
+		return fmt.tprintf("ref to %s", base) if base != "" else "ref"
+	case .Any_Table,
+	     .Table,
+	     .Like_Table,
+	     .Index_Table,
+	     .Standard_Table,
+	     .Sorted_Table,
+	     .Hashed_Table,
+	     .Like_Standard_Table,
+	     .Like_Sorted_Table,
+	     .Like_Hashed_Table:
+		return fmt.tprintf("table of %s", base) if base != "" else "table"
+	case .Like_Line_Of,
+	     .Type_Line_Of:
+		return fmt.tprintf("line of %s", base) if base != "" else ""
+	case .Range_Of:
+		return fmt.tprintf("range of %s", base) if base != "" else "range"
+	}
+	return base
+}
+
+declared_type_ref_label :: proc(expr: ^ast.Expr) -> string {
+	if expr == nil {
+		return ""
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Type_Ref_Expr:
+		if n.name.text != "" {
+			return n.name.text
+		}
+		return n.source.text
+	case ^ast.Ident_Expr:
+		return n.name
+	case ^ast.Literal_Expr:
+		return n.value
+	}
+	return ""
 }
 
 type_label :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
