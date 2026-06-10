@@ -1282,6 +1282,11 @@ parse_named_block_stmt :: proc(
 	when intrinsics.type_has_field(T, "function_parameters") {
 		stmt.function_parameters, stmt.exceptions = parse_function_header_parameters(p, start_index, period_index)
 	}
+	when intrinsics.type_has_field(T, "flow") {
+		when intrinsics.type_field_type(T, "flow") == ast.Module_Flow {
+			stmt.flow = module_header_flow(p, start_index, period_index)
+		}
+	}
 	if bodyless {
 		stmt.body = make([dynamic]^ast.Stmt, 0, 0, p.allocator)
 		stmt.range = stmt.header_range
@@ -1333,6 +1338,23 @@ named_block_header_has_keyword :: proc(
 		}
 	}
 	return false
+}
+
+module_header_flow :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> ast.Module_Flow {
+	i := header_body_start(start_index, period_index, "MODULE")
+	for i < period_index {
+		if at_keyword_index(p, i, "INPUT") {
+			return .Input
+		}
+		if at_keyword_index(p, i, "OUTPUT") {
+			return .Output
+		}
+		i += 1
+	}
+	return .None
 }
 
 class_header_public :: proc(

@@ -627,7 +627,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Function_Decl:
 		emit_function_decl(p, n)
 	case ^Module_Decl:
-		emit_named_block(p, "MODULE", n.name, n.header_text, n.body, "ENDMODULE")
+		emit_module_decl(p, n)
 	case ^Event_Block_Stmt:
 		emit_named_block(p, n.kind, "", n.header_text, n.body, "")
 	case ^Enhancement_Stmt:
@@ -3214,6 +3214,25 @@ function_parameter_section_text :: proc(section: Function_Parameter_Section) -> 
 		return "TABLES"
 	}
 	return ""
+}
+
+emit_module_decl :: proc(p: ^Printer, stmt: ^Module_Decl) {
+	emit_module_header(p, stmt)
+	emit_block(p, stmt.body, "ENDMODULE")
+}
+
+emit_module_header :: proc(p: ^Printer, stmt: ^Module_Decl) {
+	emit(p, "MODULE")
+	if stmt.name.text != "" {
+		emit_space(p)
+		emit(p, stmt.name)
+	}
+	#partial switch stmt.flow {
+	case .Input:
+		emit(p, " INPUT")
+	case .Output:
+		emit(p, " OUTPUT")
+	}
 }
 
 emit_named_block :: proc(

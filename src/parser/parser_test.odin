@@ -867,6 +867,33 @@ ENDFUNCTION.`
 }
 
 @(test)
+parsed_module_headers_survive_source_overwrite_and_print_structurally :: proc(t: ^testing.T) {
+	source := `MODULE z_plain.
+ENDMODULE.
+MODULE z_pai INPUT.
+ENDMODULE.
+MODULE z_pbo OUTPUT.
+ENDMODULE.`
+	parsed := parse_then_overwrite_source(source)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	plain := parsed.root.stmts[0].derived_stmt.(^ast.Module_Decl)
+	input := parsed.root.stmts[1].derived_stmt.(^ast.Module_Decl)
+	output := parsed.root.stmts[2].derived_stmt.(^ast.Module_Decl)
+
+	testing.expect_value(t, plain.name.text, "z_plain")
+	testing.expect_value(t, source[plain.name.range.start:plain.name.range.end], "z_plain")
+	testing.expect_value(t, plain.flow, ast.Module_Flow.None)
+	testing.expect_value(t, input.name.text, "z_pai")
+	testing.expect_value(t, source[input.name.range.start:input.name.range.end], "z_pai")
+	testing.expect_value(t, input.flow, ast.Module_Flow.Input)
+	testing.expect_value(t, output.name.text, "z_pbo")
+	testing.expect_value(t, source[output.name.range.start:output.name.range.end], "z_pbo")
+	testing.expect_value(t, output.flow, ast.Module_Flow.Output)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 cloned_oop_event_handler_survives_parse_arena_destroy :: proc(t: ^testing.T) {
 	root := clone_parse_after_source_overwrite(
 		t,

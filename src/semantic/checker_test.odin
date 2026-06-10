@@ -2180,6 +2180,32 @@ ENDFUNCTION.`
 }
 
 @(test)
+root_semantic_checker_collects_module_decl_at_name_range :: proc(t: ^testing.T) {
+	source := `MODULE z_pai INPUT.
+ENDMODULE.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://module_decl_range.abap")
+	module := checker_test_lookup(t, &project, file.root_scope, .Routine, "z_pai", .Module)
+	if module == nil {
+		return
+	}
+
+	testing.expect_value(t, source[module.name_range.start:module.name_range.end], "z_pai")
+
+	query := semantic_query(&project, &checker, file)
+	decl_query := semantic_query_decls(query)
+	name_offset := checker_test_find_text(source, "z_pai")
+	input_offset := checker_test_find_text(source, "INPUT")
+	testing.expect(t, name_offset >= 0 && input_offset >= 0)
+	testing.expect(t, semantic_decl_entity_at_offset(decl_query, name_offset) == module)
+	testing.expect(t, semantic_decl_entity_at_offset(decl_query, input_offset) == nil)
+	testing.expect(t, semantic_decl_entity_with_kind_and_decl_range(decl_query, .Module, module.name_range) == module)
+}
+
+@(test)
 root_semantic_stmt_checker_accepts_numeric_literals_for_numeric_text_arguments :: proc(t: ^testing.T) {
 	source := `TYPES lvc_outlen TYPE n.
 CLASS lcl_column DEFINITION.

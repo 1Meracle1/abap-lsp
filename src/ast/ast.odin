@@ -2367,12 +2367,18 @@ Function_Decl :: struct {
 	exceptions:          [dynamic]Function_Exception_Clause,
 }
 
+Module_Flow :: enum {
+	None,
+	Input,
+	Output,
+}
+
 Module_Decl :: struct {
 	using node:   Stmt,
-	name:         string,
+	name:         Token_Text,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
-	header_text:  string,
+	flow:         Module_Flow,
 }
 
 Event_Block_Stmt :: struct {

@@ -69,7 +69,8 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 		name_range := n.name.range if n.name.text != "" else n.header_range
 		checker_collect_routine_decl(ctx, n.name.text, .Module, n.range, name_range, "", &n.node.stmt_base)
 	case ^ast.Module_Decl:
-		checker_collect_routine_decl(ctx, n.name, .Module, n.range, n.header_range, n.header_text, &n.node.stmt_base)
+		name_range := n.name.range if n.name.text != "" else n.header_range
+		checker_collect_routine_decl(ctx, n.name.text, .Module, n.range, name_range, "", &n.node.stmt_base)
 	case ^ast.Event_Block_Stmt:
 		checker_collect_routine_decl(
 			ctx,
