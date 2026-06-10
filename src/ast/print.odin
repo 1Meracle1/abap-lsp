@@ -631,7 +631,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Event_Block_Stmt:
 		emit_event_block_stmt(p, n)
 	case ^Enhancement_Stmt:
-		emit_named_block(p, "ENHANCEMENT", n.name, n.header_text, n.body, "ENDENHANCEMENT")
+		emit_enhancement_stmt(p, n)
 	case ^Enhancement_Section_Stmt:
 		emit_named_block(p, "ENHANCEMENT-SECTION", n.name, n.header_text, n.body, "END-ENHANCEMENT-SECTION")
 	case ^Test_Seam_Stmt:
@@ -3301,6 +3301,15 @@ event_block_kind_text :: proc(kind: Event_Block_Kind) -> string {
 		return "AT SELECTION-SCREEN"
 	}
 	return ""
+}
+
+emit_enhancement_stmt :: proc(p: ^Printer, stmt: ^Enhancement_Stmt) {
+	emit(p, "ENHANCEMENT")
+	if stmt.name.text != "" {
+		emit_space(p)
+		emit(p, stmt.name)
+	}
+	emit_block(p, stmt.body, "ENDENHANCEMENT")
 }
 
 emit_named_block :: proc(

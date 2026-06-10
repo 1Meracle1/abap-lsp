@@ -1670,6 +1670,25 @@ CONSTANTS: BEGIN OF gc_pair,
 }
 
 @(test)
+root_semantic_collects_declarations_inside_enhancement_blocks :: proc(t: ^testing.T) {
+	source := `ENHANCEMENT enh.
+  DATA lv_inside TYPE i.
+ENDENHANCEMENT.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://enhancement_block_decl.abap")
+	entity := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_inside", .Variable)
+
+	name_offset := checker_test_find_text(source, "lv_inside")
+	testing.expect(t, name_offset >= 0)
+	query := semantic_query(&project, &checker, file)
+	decl := semantic_decl_entity_at_offset(semantic_query_decls(query), name_offset)
+	testing.expect(t, decl == entity)
+}
+
+@(test)
 root_semantic_selection_screen_event_variants_are_distinct :: proc(t: ^testing.T) {
 	source := `PARAMETERS p_field TYPE string.
 AT SELECTION-SCREEN OUTPUT.

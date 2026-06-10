@@ -2416,10 +2416,9 @@ Event_Block_Stmt :: struct {
 
 Enhancement_Stmt :: struct {
 	using node:   Stmt,
-	name:         string,
+	name:         Token_Text,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
-	header_text:  string,
 }
 
 Enhancement_Section_Stmt :: struct {

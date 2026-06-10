@@ -142,6 +142,34 @@ START-OF-SELECTION. WRITE 'start'.`
 }
 
 @(test)
+enhancement_block_header_is_structured_ast_fact :: proc(t: ^testing.T) {
+	source := `ENHANCEMENT enh.
+  WRITE 'e'.
+ENDENHANCEMENT.`
+	parsed := parse_then_overwrite_source(source)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 1)
+	enhancement := parsed.root.stmts[0].derived_stmt.(^ast.Enhancement_Stmt)
+	testing.expect_value(t, enhancement.name.text, "enh")
+	testing.expect_value(t, source[enhancement.name.range.start:enhancement.name.range.end], "enh")
+	testing.expect_value(
+		t,
+		ast.print_node(parsed.root, context.allocator),
+		"ENHANCEMENT enh.\n    WRITE 'e'.\nENDENHANCEMENT.",
+	)
+
+	cloned := clone_parse_after_source_overwrite(t, source)
+	cloned_enhancement := cloned.stmts[0].derived_stmt.(^ast.Enhancement_Stmt)
+	testing.expect_value(t, cloned_enhancement.name.text, "enh")
+	testing.expect_value(t, ast.print_node(cloned_enhancement, context.allocator), "ENHANCEMENT enh.\n    WRITE 'e'.\nENDENHANCEMENT.")
+
+	counts := count_nodes(cloned)
+	testing.expect_value(t, counts.enhancement, 1)
+	testing.expect_value(t, counts.write, 1)
+}
+
+@(test)
 event_block_headers_are_structured_ast_facts :: proc(t: ^testing.T) {
 	source := `START-OF-SELECTION.
 AT SELECTION-SCREEN.
