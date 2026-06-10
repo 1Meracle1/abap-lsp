@@ -3876,23 +3876,37 @@ parse_call_function_destination :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
 	if stmt.function_execution == .Normal {
 		stmt.function_execution = .Destination
 	}
+	destination_in_group := false
+	if allow_keyword(p, "IN") {
+		destination_in_group = true
+		expect_keyword(p, "GROUP")
+	}
 	if raw_period_done(p) || call_function_parameter_list_starts(p) {
-		error_current(p, "syntax error: expected destination after DESTINATION")
+		if destination_in_group {
+			error_current(p, "syntax error: expected group after DESTINATION IN GROUP")
+		} else {
+			error_current(p, "syntax error: expected destination after DESTINATION")
+		}
 		return
 	}
 	value := simple_expr(p, p.index, CALL_FUNCTION_TARGET_STOP_KEYWORDS)
 	if value == nil {
-		error_current(p, "syntax error: expected destination after DESTINATION")
+		if destination_in_group {
+			error_current(p, "syntax error: expected group after DESTINATION IN GROUP")
+		} else {
+			error_current(p, "syntax error: expected destination after DESTINATION")
+		}
 		return
 	}
 	if stmt.function_destination == nil {
 		stmt.function_destination = value
+		stmt.function_destination_in_group = destination_in_group
 	}
 }
 
 parse_call_function_starting_new_task :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
 	keyword := previous_token(p)
-	if stmt.function_execution != .Normal {
+	if stmt.function_execution != .Normal && stmt.function_execution != .Destination {
 		error(p, keyword.range, "syntax error: conflicting CALL FUNCTION execution addition")
 	}
 	stmt.function_execution = .Starting_New_Task

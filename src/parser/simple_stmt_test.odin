@@ -1325,6 +1325,40 @@ call_function_models_destination_sections_and_exception_messages :: proc(t: ^tes
 }
 
 @(test)
+call_function_accepts_async_destination_additions :: proc(t: ^testing.T) {
+	source := `CALL FUNCTION 'ABAP4_CALL_TRANSACTION'
+  DESTINATION 'NONE'
+  STARTING NEW TASK 'ABAPGIT'
+  EXPORTING tcode = iv_tcode.
+CALL FUNCTION 'Z_ABAPGIT_SERIALIZE_PARALLEL'
+  STARTING NEW TASK lv_task
+  DESTINATION IN GROUP mv_group
+  CALLING on_end_of_task ON END OF TASK
+  EXPORTING is_tadir = is_tadir.`
+	parsed := parse(source, "call_function_async_destination.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	first := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	first_destination := first.function_destination.derived_expr.(^ast.Literal_Expr)
+	first_task := first.function_task.derived_expr.(^ast.Literal_Expr)
+	testing.expect_value(t, first.function_execution, ast.Call_Function_Execution_Kind.Starting_New_Task)
+	testing.expect_value(t, first.function_destination_in_group, false)
+	testing.expect_value(t, first_destination.value, "'NONE'")
+	testing.expect_value(t, first_task.value, "'ABAPGIT'")
+
+	second := parsed.root.stmts[1].derived_stmt.(^ast.Call_Stmt)
+	second_destination := second.function_destination.derived_expr.(^ast.Ident_Expr)
+	second_task := second.function_task.derived_expr.(^ast.Ident_Expr)
+	handler := second.function_end_task_handler.derived_expr.(^ast.Ident_Expr)
+	testing.expect_value(t, second.function_execution, ast.Call_Function_Execution_Kind.Starting_New_Task)
+	testing.expect_value(t, second.function_destination_in_group, true)
+	testing.expect_value(t, second_destination.name, "mv_group")
+	testing.expect_value(t, second_task.name, "lv_task")
+	testing.expect_value(t, second.function_end_task_handler_kind, ast.Call_Function_End_Task_Handler_Kind.Calling)
+	testing.expect_value(t, handler.name, "on_end_of_task")
+}
+
+@(test)
 call_function_rejects_invalid_parameter_list_forms :: proc(t: ^testing.T) {
 	parsed := parse(
 		`CALL FUNCTION 'A' iv_value = lv_value.

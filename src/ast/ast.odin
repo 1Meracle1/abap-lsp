@@ -1510,6 +1510,7 @@ Call_Stmt :: struct {
 	target:                         ^Expr,
 	function_execution:             Call_Function_Execution_Kind,
 	function_destination:           ^Expr,
+	function_destination_in_group:  bool,
 	function_task:                  ^Expr,
 	function_end_task_handler_kind: Call_Function_End_Task_Handler_Kind,
 	function_end_task_handler:      ^Expr,
