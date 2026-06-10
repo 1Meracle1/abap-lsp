@@ -11,8 +11,8 @@
 (template_end) @punctuation.bracket
 (template_interpolation_start) @punctuation.bracket
 (template_interpolation_end) @punctuation.bracket
-(field_symbol) @variable.special
-(field_symbol_path) @variable.special
+(field_symbol) @variable
+(field_symbol_path) @variable
 (cte_identifier) @variable.special
 (field_path) @variable
 (static_type_path) @variable
