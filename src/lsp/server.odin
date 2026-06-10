@@ -1116,12 +1116,7 @@ handle_hover :: proc(ctx: ^Request_Context, params: json.Value) {
 		send_success(ctx.output, ctx.id, json.Null(nil), ctx.state.allocator)
 		return
 	}
-	label := entity_label(found.snapshot.project, found.entity)
-	detail := entity_detail(found.snapshot.project, found.entity)
-	text := label
-	if detail != "" {
-		text = fmt.tprintf("%s\n\n%s", label, detail)
-	}
+	text := entity_hover_text(found.snapshot.project, found.entity)
 	hover := Hover {
 		contents = Hover_Markup{kind = "markdown", value = text},
 		range = range_from_offsets(found.snapshot.source, found.range.start, found.range.end),
@@ -1835,6 +1830,87 @@ entity_detail :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> s
 		return ""
 	}
 	return fmt.tprintf("type: `%s`", type_text)
+}
+
+entity_hover_text :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
+	label := entity_label(project, entity)
+	detail := entity_detail(project, entity)
+	documentation := entity_documentation(project, entity)
+	out := strings.builder_make(context.temp_allocator)
+	strings.write_string(&out, label)
+	if detail != "" {
+		strings.write_string(&out, "\n\n")
+		strings.write_string(&out, detail)
+	}
+	if documentation != "" {
+		strings.write_string(&out, "\n\n")
+		strings.write_string(&out, documentation)
+	}
+	return strings.to_string(out)
+}
+
+entity_documentation :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
+	if entity == nil {
+		return ""
+	}
+	if .Builtin in entity.flags {
+		if payload, ok := entity.payload.(^semantic.Entity_Builtin_Payload); ok && payload != nil && payload.docs != "" {
+			return payload.docs
+		}
+		name := string_interner.load(project.interner, entity.name)
+		if entity.kind == .Field && entity.owner != nil {
+			owner_name := string_interner.load(project.interner, entity.owner.name)
+			if docs := semantic.checker_builtin_structure_field_description(owner_name, name); docs != "" {
+				return docs
+			}
+		}
+		if docs := semantic.checker_builtin_symbol_description(name, entity.kind); docs != "" {
+			return docs
+		}
+	}
+	if entity.decl_info == nil {
+		return ""
+	}
+	return decl_info_documentation(entity.decl_info, context.temp_allocator)
+}
+
+decl_info_documentation :: proc(info: ^semantic.Decl_Info, allocator: mem.Allocator) -> string {
+	if info == nil {
+		return ""
+	}
+	out := strings.builder_make(allocator)
+	write_comment_documentation(&out, info.docs)
+	if len(info.docs) > 0 && len(info.comment) > 0 {
+		strings.write_byte(&out, '\n')
+	}
+	write_comment_documentation(&out, info.comment)
+	return strings.to_string(out)
+}
+
+write_comment_documentation :: proc(out: ^strings.Builder, trivia: []ast.Ast_Trivia) {
+	wrote := false
+	for item in trivia {
+		if item.kind != .Comment {
+			continue
+		}
+		text := clean_comment_documentation(item.text)
+		if text == "" {
+			continue
+		}
+		if wrote {
+			strings.write_byte(out, '\n')
+		}
+		strings.write_string(out, text)
+		wrote = true
+	}
+}
+
+clean_comment_documentation :: proc(text: string) -> string {
+	trimmed := strings.trim_space(text)
+	if len(trimmed) > 0 && (trimmed[0] == '"' || trimmed[0] == '*') {
+		trimmed = strings.trim_space(trimmed[1:])
+	}
+	return trimmed
 }
 
 entity_kind_label :: proc(kind: semantic.Entity_Kind) -> string {

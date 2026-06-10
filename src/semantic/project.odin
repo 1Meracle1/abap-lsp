@@ -238,6 +238,7 @@ project_new_decl_info :: proc(
 	info := new(Decl_Info, project.allocator)
 	assert(info != nil)
 	info^ = value
+	decl_info_attach_trivia(info, name_range, project.allocator)
 	if entity != nil {
 		if kind != .Invalid {
 			if entity.kind == .Invalid {

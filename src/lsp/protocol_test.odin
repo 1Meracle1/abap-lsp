@@ -605,6 +605,65 @@ DATA lt_seen_po TYPE HASHED TABLE OF ty_seen_po WITH UNIQUE KEY ebeln.`
 	testing.expect_value(t, source[found.range.start:found.range.end], "ebeln")
 }
 
+@(test)
+lsp_hover_reports_builtin_procedure_documentation :: proc(t: ^testing.T) {
+	source := `DATA lv_len TYPE i.
+lv_len = strlen( 'abc' ).`
+
+	text := lsp_test_hover_text(t, source, "strlen( 'abc' )", "strlen")
+
+	testing.expect(t, strings.contains(text, "`strlen` builtin"))
+	testing.expect(t, strings.contains(text, "Number of characters in a text value."))
+}
+
+@(test)
+lsp_hover_reports_builtin_structure_field_documentation :: proc(t: ^testing.T) {
+	source := `DATA lv_subrc TYPE i.
+lv_subrc = sy-subrc.`
+
+	text := lsp_test_hover_text(t, source, "sy-subrc", "subrc")
+
+	testing.expect(t, strings.contains(text, "`subrc` field"))
+	testing.expect(t, strings.contains(text, "Return code set by many ABAP statements"))
+}
+
+@(test)
+lsp_hover_reports_leading_declaration_comment_documentation :: proc(t: ^testing.T) {
+	source := `DATA lv_seed TYPE i.
+" local accumulator
+DATA lv_total TYPE i.
+lv_total = 1.`
+
+	text := lsp_test_hover_text(t, source, "lv_total = 1", "lv_total")
+
+	testing.expect(t, strings.contains(text, "local accumulator"))
+	testing.expect(t, !strings.contains(text, `" local accumulator`))
+}
+
+@(test)
+lsp_hover_reports_same_line_declaration_comment_documentation :: proc(t: ^testing.T) {
+	source := `DATA lv_total TYPE i. " inline accumulator
+lv_total = 1.`
+
+	text := lsp_test_hover_text(t, source, "lv_total = 1", "lv_total")
+
+	testing.expect(t, strings.contains(text, "inline accumulator"))
+	testing.expect(t, !strings.contains(text, `" inline accumulator`))
+}
+
+@(test)
+lsp_hover_does_not_apply_leading_comment_to_chained_declarations :: proc(t: ^testing.T) {
+	source := `" shared heading
+DATA: lv_a TYPE i, lv_b TYPE i.
+lv_a = lv_b.`
+
+	first := lsp_test_hover_text(t, source, "lv_a = lv_b", "lv_a")
+	second := lsp_test_hover_text(t, source, "lv_a = lv_b", "lv_b")
+
+	testing.expect(t, !strings.contains(first, "shared heading"))
+	testing.expect(t, !strings.contains(second, "shared heading"))
+}
+
 semantic_token_data_has_token :: proc(
 	source: string,
 	data: []u32,
@@ -635,6 +694,31 @@ semantic_token_data_has_token :: proc(
 		}
 	}
 	return false
+}
+
+lsp_test_hover_text :: proc(
+	t: ^testing.T,
+	source: string,
+	occurrence: string,
+	target: string,
+) -> string {
+	uri := "file:///D:/repo/hover_documentation.abap"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	base := strings.index(source, occurrence)
+	inside := strings.index(occurrence, target)
+	testing.expect(t, base >= 0 && inside >= 0)
+	if base < 0 || inside < 0 {
+		return ""
+	}
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, base + inside), "")
+	found := entity_at_position(&state, params)
+	testing.expect(t, found.ok)
+	if !found.ok {
+		return ""
+	}
+	return entity_hover_text(found.snapshot.project, found.entity)
 }
 
 lsp_test_state_with_open_document :: proc(uri, source: string) -> Server_State {

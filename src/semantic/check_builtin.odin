@@ -31,6 +31,7 @@ Builtin_Symbol_Spec :: struct {
 	type_name:       string,
 	type_field_name: string,
 	value:           Builtin_Value_Spec,
+	docs:            string,
 }
 
 Builtin_Type_Metadata :: struct {
@@ -749,6 +750,31 @@ checker_builtin_structure_field_description :: proc(structure_name, field_name: 
 		}
 	}
 	return ""
+}
+
+checker_builtin_symbol_description :: proc(name: string, kind: Entity_Kind) -> string {
+	spec_kind, ok := checker_builtin_symbol_kind_from_entity_kind(kind)
+	if !ok {
+		return ""
+	}
+	for &spec in BUILTIN_SYMBOL_SPECS {
+		if spec.kind == spec_kind && strings.equal_fold(spec.name, name) {
+			return spec.docs
+		}
+	}
+	return ""
+}
+
+checker_builtin_symbol_kind_from_entity_kind :: proc(kind: Entity_Kind) -> (Builtin_Symbol_Kind, bool) {
+	#partial switch kind {
+	case .Type_Def:
+		return .Type, true
+	case .Constant:
+		return .Constant, true
+	case .Variable:
+		return .Variable, true
+	}
+	return .Type, false
 }
 
 checker_builtin_namespace_for_kind :: proc(kind: Entity_Kind) -> Namespace {

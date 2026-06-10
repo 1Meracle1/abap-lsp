@@ -3,12 +3,309 @@ package abap_frontend_semantic2
 import "src:ast"
 import string_interner "src:string_interner"
 
+import "core:mem"
 import "core:strings"
 
 Decl_Structure_Frame :: struct {
 	entity:    ^Entity,
 	structure: ^Structure,
 	scope:     ^Scope,
+}
+
+decl_info_attach_trivia :: proc(info: ^Decl_Info, name_range: Range, allocator: mem.Allocator) {
+	if info == nil || info.decl_node == nil {
+		return
+	}
+	if name_range.start >= name_range.end {
+		return
+	}
+	if len(info.docs) == 0 && decl_node_symbol_count(info.decl_node) == 1 {
+		info.docs = ast_comment_trivia(info.decl_node.leading_trivia[:], allocator)
+	}
+	if len(info.comment) == 0 {
+		info.comment = decl_trailing_comment_trivia(info.decl_node, name_range, allocator)
+	}
+}
+
+ast_comment_trivia :: proc(trivia: []ast.Ast_Trivia, allocator: mem.Allocator) -> []ast.Ast_Trivia {
+	out: [dynamic]ast.Ast_Trivia
+	for item in trivia {
+		if item.kind == .Comment {
+			if cap(out) == 0 {
+				out = make([dynamic]ast.Ast_Trivia, 0, len(trivia), allocator)
+			}
+			append(&out, item)
+		}
+	}
+	if cap(out) == 0 {
+		return nil
+	}
+	return out[:]
+}
+
+decl_trailing_comment_trivia :: proc(
+	node: ^ast.Node,
+	name_range: Range,
+	allocator: mem.Allocator,
+) -> []ast.Ast_Trivia {
+	if node == nil || name_range.start >= name_range.end {
+		return nil
+	}
+	out: [dynamic]ast.Ast_Trivia
+	for item in node.trailing_trivia {
+		if item.kind != .Comment {
+			continue
+		}
+		if decl_node_range_is_nearest_before(node, name_range, item.range.start) {
+			if cap(out) == 0 {
+				out = make([dynamic]ast.Ast_Trivia, 0, len(node.trailing_trivia), allocator)
+			}
+			append(&out, item)
+		}
+	}
+	if cap(out) == 0 {
+		return nil
+	}
+	return out[:]
+}
+
+decl_node_range_is_nearest_before :: proc(node: ^ast.Node, candidate: Range, limit: int) -> bool {
+	if node == nil || candidate.start >= candidate.end || candidate.end > limit {
+		return false
+	}
+	return !decl_node_has_symbol_range_between(node, candidate.end, limit)
+}
+
+decl_node_has_symbol_range_between :: proc(node: ^ast.Node, after, before: int) -> bool {
+	if node == nil {
+		return false
+	}
+	#partial switch n in node.derived {
+	case ^ast.Data_Chained_Decl:
+		for clause in n.decls {
+			if decl_range_between(decl_data_clause_name_range(clause), after, before) {
+				return true
+			}
+		}
+	case ^ast.Class_Data_Decl:
+		for clause in n.decls {
+			if decl_range_between(decl_data_clause_name_range(clause), after, before) {
+				return true
+			}
+		}
+	case ^ast.Types_Decl:
+		for clause in n.types {
+			if decl_range_between(decl_types_clause_name_range(clause), after, before) {
+				return true
+			}
+		}
+	case ^ast.Constants_Decl:
+		for clause in n.constants {
+			if decl_range_between(decl_constants_clause_name_range(clause), after, before) {
+				return true
+			}
+		}
+	case ^ast.Statics_Decl:
+		for clause in n.statics {
+			if decl_range_between(decl_statics_clause_name_range(clause), after, before) {
+				return true
+			}
+		}
+	case ^ast.Field_Symbols_Decl:
+		for clause in n.field_symbols {
+			if decl_range_between(clause.name.range, after, before) {
+				return true
+			}
+		}
+	case ^ast.Parameters_Decl:
+		for clause in n.parameters {
+			if decl_range_between(clause.name.range, after, before) {
+				return true
+			}
+		}
+	case ^ast.Ranges_Decl:
+		for clause in n.ranges {
+			if decl_range_between(clause.name.range, after, before) {
+				return true
+			}
+		}
+	case ^ast.Select_Options_Decl:
+		for clause in n.options {
+			if decl_range_between(clause.name.range, after, before) {
+				return true
+			}
+		}
+	case ^ast.Controls_Decl:
+		for clause in n.controls {
+			if decl_range_between(clause.name.range, after, before) {
+				return true
+			}
+		}
+	case ^ast.Include_Stmt:
+		for name in n.names {
+			if decl_range_between(name.name.range, after, before) {
+				return true
+			}
+		}
+	case ^ast.Oop_Simple_Stmt:
+		for member in n.members {
+			if decl_range_between(member.name.range, after, before) {
+				return true
+			}
+		}
+		for alias in n.aliases {
+			if decl_range_between(alias.name.range, after, before) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+decl_range_between :: proc(range: Range, after, before: int) -> bool {
+	return range.start < range.end && range.end > after && range.end <= before
+}
+
+decl_node_symbol_count :: proc(node: ^ast.Node) -> int {
+	if node == nil {
+		return 0
+	}
+	#partial switch n in node.derived {
+	case ^ast.Data_Chained_Decl:
+		count := 0
+		for clause in n.decls {
+			if decl_range_valid(decl_data_clause_name_range(clause)) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Class_Data_Decl:
+		count := 0
+		for clause in n.decls {
+			if decl_range_valid(decl_data_clause_name_range(clause)) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Types_Decl:
+		count := 0
+		for clause in n.types {
+			if decl_range_valid(decl_types_clause_name_range(clause)) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Constants_Decl:
+		count := 0
+		for clause in n.constants {
+			if decl_range_valid(decl_constants_clause_name_range(clause)) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Statics_Decl:
+		count := 0
+		for clause in n.statics {
+			if decl_range_valid(decl_statics_clause_name_range(clause)) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Field_Symbols_Decl:
+		count := 0
+		for clause in n.field_symbols {
+			if decl_range_valid(clause.name.range) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Parameters_Decl:
+		count := 0
+		for clause in n.parameters {
+			if decl_range_valid(clause.name.range) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Ranges_Decl:
+		count := 0
+		for clause in n.ranges {
+			if decl_range_valid(clause.name.range) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Select_Options_Decl:
+		count := 0
+		for clause in n.options {
+			if decl_range_valid(clause.name.range) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Controls_Decl:
+		count := 0
+		for clause in n.controls {
+			if decl_range_valid(clause.name.range) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Include_Stmt:
+		count := 0
+		for name in n.names {
+			if decl_range_valid(name.name.range) {
+				count += 1
+			}
+		}
+		return count
+	case ^ast.Oop_Simple_Stmt:
+		count := 0
+		for member in n.members {
+			if decl_range_valid(member.name.range) {
+				count += 1
+			}
+		}
+		for alias in n.aliases {
+			if decl_range_valid(alias.name.range) {
+				count += 1
+			}
+		}
+		return count
+	}
+	return 1
+}
+
+decl_range_valid :: proc(range: Range) -> bool {
+	return range.start < range.end
+}
+
+decl_data_clause_name_range :: proc(clause: ast.Data_Decl_Clause) -> Range {
+	if clause.as_name.text != "" {
+		return clause.as_name.range
+	}
+	return clause.name.range
+}
+
+decl_types_clause_name_range :: proc(clause: ast.Types_Clause) -> Range {
+	if clause.as_name.text != "" {
+		return clause.as_name.range
+	}
+	return clause.name.range
+}
+
+decl_constants_clause_name_range :: proc(clause: ast.Constants_Clause) -> Range {
+	if clause.as_name.text != "" {
+		return clause.as_name.range
+	}
+	return clause.name.range
+}
+
+decl_statics_clause_name_range :: proc(clause: ast.Statics_Clause) -> Range {
+	if clause.as_name.text != "" {
+		return clause.as_name.range
+	}
+	return clause.name.range
 }
 
 checker_collect_file_entities :: proc(ctx: ^Checker_Context, file: ^Project_File) {
@@ -1187,12 +1484,24 @@ checker_attach_routine_body_decl :: proc(
 ) {
 	assert(entity != nil)
 	decl_scope := entity.scope
+	previous_docs: []ast.Ast_Trivia
+	previous_comment: []ast.Ast_Trivia
+	if entity.decl_info != nil {
+		previous_docs = entity.decl_info.docs
+		previous_comment = entity.decl_info.comment
+	}
 	payload, ok := entity.payload.(^Entity_Routine_Payload)
 	assert(ok && payload != nil)
 	if payload.signature_scope != nil {
 		decl_scope = payload.signature_scope
 	}
 	decl := project_new_decl_info(ctx.project, nil, decl_scope, entity.name, entity.kind, header_range, node)
+	if len(decl.docs) == 0 {
+		decl.docs = previous_docs
+	}
+	if len(decl.comment) == 0 {
+		decl.comment = previous_comment
+	}
 	decl.entity = entity
 	entity.decl_info = decl
 	entity.node = node
