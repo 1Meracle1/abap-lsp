@@ -503,6 +503,8 @@ module.exports = grammar({
     [$.constructor_expression, $._tail_token],
     [$.constructor_expression, $._raw_token],
     [$.routine_name, $._expression],
+    [$._expression, $._method_signature_raw_token],
+    [$._method_signature_tail_token, $._method_signature_raw_token],
     [$.catch_clause],
   ],
 
@@ -1008,8 +1010,44 @@ module.exports = grammar({
     method_signature: ($) =>
       prec(
         2,
-        seq(keywordChoice($, ["METHODS", "CLASS-METHODS"]), optional(":"), field("name", optional($.routine_name)), optional($._statement_tail), "."),
+        seq(
+          keywordChoice($, ["METHODS", "CLASS-METHODS"]),
+          optional(":"),
+          optional($._method_signature_entries),
+          ".",
+        ),
       ),
+
+    _method_signature_entries: ($) =>
+      seq($._method_signature_entry, repeat(seq(",", $._method_signature_entry))),
+
+    _method_signature_entry: ($) =>
+      seq(field("name", $.routine_name), optional($._method_signature_tail)),
+
+    _method_signature_tail: ($) => repeat1($._method_signature_tail_token),
+
+    _method_signature_tail_token: ($) =>
+      choice(
+        $._compound_tail_keyword,
+        $.type_ref_tail,
+        $.value_tail,
+        keywordChoice($, STATEMENT_TAIL_KEYWORDS),
+        $._method_signature_raw_token,
+        $.tail_fragment,
+      ),
+
+    _method_signature_raw_token: ($) =>
+      choice(
+        $.static_type_path,
+        $.field_symbol_path,
+        $.field_path,
+        $._expression,
+        keywordChoice($, EXPRESSION_KEYWORDS),
+        $.operator,
+        $._method_signature_punctuation,
+      ),
+
+    _method_signature_punctuation: (_) => token(choice(":", "(", ")", "[", "]")),
 
     interface_definition: ($) =>
       seq(

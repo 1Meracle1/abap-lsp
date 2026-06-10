@@ -2743,7 +2743,7 @@
     "named": true,
     "fields": {
       "name": {
-        "multiple": false,
+        "multiple": true,
         "required": false,
         "types": [
           {
@@ -2767,10 +2767,6 @@
         },
         {
           "type": "operator",
-          "named": true
-        },
-        {
-          "type": "punctuation",
           "named": true
         },
         {

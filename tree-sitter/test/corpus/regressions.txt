@@ -1138,3 +1138,56 @@ GET TIME STAMP FIELD lv_now.
     (keyword)
     (qualified_name
       (identifier))))
+
+==================
+Chained method signatures keep keyword-like names as identifiers
+==================
+
+CLASS lcl_report DEFINITION FINAL.
+  PUBLIC SECTION.
+    METHODS:
+      run
+        RETURNING
+          VALUE(rv_ok) TYPE abap_bool,
+
+      display,
+      pbo,
+      free.
+
+ENDCLASS.
+
+---
+
+(source_file
+  (class_definition
+    (keyword)
+    (identifier)
+    (keyword)
+    (keyword)
+    (visibility_section
+      (keyword)
+      (keyword))
+    (method_signature
+      (keyword)
+      (routine_name
+        (qualified_name
+          (identifier)))
+      (keyword)
+      (value_tail
+        (keyword)
+        (parenthesized_expression
+          (qualified_name
+            (identifier))))
+      (keyword)
+      (qualified_name
+        (identifier))
+      (routine_name
+        (qualified_name
+          (identifier)))
+      (routine_name
+        (qualified_name
+          (identifier)))
+      (routine_name
+        (qualified_name
+          (identifier))))
+    (keyword)))

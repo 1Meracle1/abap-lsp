@@ -35,8 +35,9 @@ ENDCLASS.
       (keyword))
     (method_signature
       (keyword)
-      (qualified_name
-        (identifier))
+      (routine_name
+        (qualified_name
+          (identifier)))
       (keyword)
       (value_tail
         (keyword)
