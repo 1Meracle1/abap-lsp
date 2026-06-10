@@ -130,6 +130,31 @@ APPEND VALUE #(
       (identifier))))
 
 ==================
+Append constructor source field is an identifier
+==================
+
+APPEND VALUE #(
+      source = iv_source
+    ) TO mt_result.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (constructor_expression
+      (keyword)
+      (argument_list
+        (named_argument
+          (identifier)
+          (equals)
+          (qualified_name
+            (identifier)))))
+    (keyword)
+    (qualified_name
+      (identifier))))
+
+==================
 ABAP additions highlight as keywords
 ==================
 

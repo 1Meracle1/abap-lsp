@@ -37,6 +37,14 @@ function keywordChoice($, words) {
   return choice(...words.map((word) => keyword($, word)));
 }
 
+function keywordIdentifier($, word) {
+  return alias(token(prec(2, caseInsensitive(word))), $.identifier);
+}
+
+function keywordIdentifierChoice($, words) {
+  return choice(...words.map((word) => keywordIdentifier($, word)));
+}
+
 function assignmentTail($) {
   return repeat1(choice($._expression, keywordChoice($, EXPRESSION_KEYWORDS), $.operator, $.punctuation, $.tail_fragment));
 }
@@ -577,7 +585,7 @@ module.exports = grammar({
     _argument_name: ($) =>
       choice(
         $._name,
-        alias(keywordChoice($, COMPONENT_NAME_KEYWORDS), $.identifier),
+        keywordIdentifierChoice($, COMPONENT_NAME_KEYWORDS),
       ),
 
     component_name: ($) =>
@@ -585,7 +593,7 @@ module.exports = grammar({
         3,
         choice(
           $._name,
-          alias(keywordChoice($, COMPONENT_NAME_KEYWORDS), $.identifier),
+          keywordIdentifierChoice($, COMPONENT_NAME_KEYWORDS),
         ),
       ),
 
@@ -1092,7 +1100,7 @@ module.exports = grammar({
     _call_parameter_name: ($) =>
       choice(
         $._name,
-        alias(keyword($, "RETURN"), $.identifier),
+        keywordIdentifier($, "RETURN"),
       ),
 
     _call_parameter_value: ($) => $._sql_tail_token,
