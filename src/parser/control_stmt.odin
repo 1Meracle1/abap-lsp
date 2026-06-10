@@ -1025,10 +1025,19 @@ parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.qualifier = parser_ast_token(qualifier, qualifier_range)
 	stmt.member_name = parser_ast_token(member_name, member_range)
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
-	stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
 	stmt.kernel_modules, stmt.is_kernel = method_header_kernel_modules(p, start_index, p.previous_index, name_range)
-	if !stmt.is_kernel && method_header_is_amdp(p, start_index, p.previous_index) {
-		stmt.is_amdp = true
+	if !stmt.is_kernel {
+		amdp := method_header_amdp_info(p, start_index, p.previous_index, name_range)
+		if amdp.is_amdp {
+			stmt.is_amdp = true
+			stmt.amdp_kind = amdp.kind
+			stmt.amdp_database = amdp.database
+			stmt.amdp_language = amdp.language
+			stmt.amdp_options = amdp.options
+			stmt.amdp_using = amdp.using_names
+		}
+	}
+	if stmt.is_amdp {
 		stmt.body = make([dynamic]^ast.Stmt, 0, 0, p.allocator)
 		for !at_eof(p) && !at_keyword_phrase(p, "ENDMETHOD") {
 			bump_token(p)
@@ -1064,19 +1073,28 @@ parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+method_header_after_name_index :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+	name_range: tokenizer.Range,
+) -> int {
+	i := start_index + 1
+	for i < period_index && p.tokens[i].range.end <= name_range.end {
+		i += 1
+	}
+	return i
+}
+
 method_header_kernel_modules :: proc(
 	p: ^Parser,
 	start_index, period_index: int,
 	name_range: tokenizer.Range,
 ) -> (
-	[dynamic]string,
+	[dynamic]ast.Token_Text,
 	bool,
 ) {
-	modules := make([dynamic]string, 0, 0, p.allocator)
-	i := start_index + 1
-	for i < period_index && p.tokens[i].range.end <= name_range.end {
-		i += 1
-	}
+	modules := make([dynamic]ast.Token_Text, 0, 0, p.allocator)
+	i := method_header_after_name_index(p, start_index, period_index, name_range)
 	if i + 1 >= period_index ||
 	   !token_is_keyword(p, p.tokens[i], "BY") ||
 	   !token_is_keyword(p, p.tokens[i + 1], "KERNEL") {
@@ -1091,26 +1109,96 @@ method_header_kernel_modules :: proc(
 		error(p, p.tokens[period_index].range, "syntax error: expected kernel module name")
 		return modules, true
 	}
-	modules = make([dynamic]string, 0, period_index - i, p.allocator)
+	modules = make([dynamic]ast.Token_Text, 0, period_index - i, p.allocator)
 	for ; i < period_index; i += 1 {
 		tok := p.tokens[i]
 		if tok.kind != .Ident {
 			error(p, tok.range, "syntax error: expected kernel module name")
 			continue
 		}
-		append(&modules, parser_intern_token_name(p, tok))
+		append(&modules, parser_ast_raw_name_token(p, tok))
 	}
 	return modules, true
 }
 
-method_header_is_amdp :: proc(p: ^Parser, start_index, period_index: int) -> bool {
-	has_database := false
-	has_language := false
-	for i in start_index ..< period_index {
-		has_database = has_database || token_is_keyword(p, p.tokens[i], "DATABASE")
-		has_language = has_language || token_is_keyword(p, p.tokens[i], "SQLSCRIPT")
+Method_Header_Amdp_Info :: struct {
+	is_amdp:  bool,
+	kind:     ast.Method_Amdp_Kind,
+	database: ast.Method_Amdp_Database,
+	language: ast.Method_Amdp_Language,
+	options:  ast.Method_Amdp_Options,
+	using_names: [dynamic]ast.Token_Text,
+}
+
+method_header_amdp_info :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+	name_range: tokenizer.Range,
+) -> Method_Header_Amdp_Info {
+	info := Method_Header_Amdp_Info {
+		using_names = make([dynamic]ast.Token_Text, 0, 0, p.allocator),
 	}
-	return has_database && has_language
+	i := method_header_after_name_index(p, start_index, period_index, name_range)
+	if i + 2 >= period_index ||
+	   !token_is_keyword(p, p.tokens[i], "BY") ||
+	   !token_is_keyword(p, p.tokens[i + 1], "DATABASE") {
+		return info
+	}
+	if token_is_keyword(p, p.tokens[i + 2], "PROCEDURE") {
+		info.kind = .Database_Procedure
+	} else if token_is_keyword(p, p.tokens[i + 2], "FUNCTION") {
+		info.kind = .Database_Function
+	} else {
+		return info
+	}
+	i += 3
+	for i < period_index {
+		if token_is_keyword(p, p.tokens[i], "FOR") {
+			if i + 1 < period_index && token_is_keyword(p, p.tokens[i + 1], "HDB") {
+				info.database = .Hdb
+			}
+			i += 2
+			continue
+		}
+		if token_is_keyword(p, p.tokens[i], "LANGUAGE") {
+			if i + 1 < period_index && token_is_keyword(p, p.tokens[i + 1], "SQLSCRIPT") {
+				info.language = .Sqlscript
+			}
+			i += 2
+			continue
+		}
+		if token_is_keyword(p, p.tokens[i], "OPTIONS") {
+			i += 1
+			for i < period_index && !token_is_keyword(p, p.tokens[i], "USING") {
+				if keyword_phrase_at(p, i, "READ-ONLY") {
+					info.options += {.Read_Only}
+					i += 3
+					continue
+				}
+				i += 1
+			}
+			continue
+		}
+		if token_is_keyword(p, p.tokens[i], "USING") {
+			i += 1
+			info.using_names = make([dynamic]ast.Token_Text, 0, period_index - i, p.allocator)
+			for i < period_index {
+				tok := p.tokens[i]
+				if tok.kind == .Comma {
+					i += 1
+					continue
+				}
+				if tok.kind == .Ident || tok.kind == .Number {
+					append(&info.using_names, parser_ast_raw_name_token(p, tok))
+				}
+				i += 1
+			}
+			break
+		}
+		i += 1
+	}
+	info.is_amdp = info.kind != .None && info.language == .Sqlscript
+	return info
 }
 
 parse_named_block_stmt :: proc(

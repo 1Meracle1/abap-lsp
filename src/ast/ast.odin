@@ -2263,18 +2263,43 @@ Interface_Decl :: struct {
 	flags:        Interface_Decl_Flags,
 }
 
+Method_Amdp_Kind :: enum {
+	None,
+	Database_Procedure,
+	Database_Function,
+}
+
+Method_Amdp_Database :: enum {
+	Unspecified,
+	Hdb,
+}
+
+Method_Amdp_Language :: enum {
+	Unspecified,
+	Sqlscript,
+}
+
+Method_Amdp_Option :: enum {
+	Read_Only,
+}
+Method_Amdp_Options :: bit_set[Method_Amdp_Option]
+
 Method_Decl :: struct {
-	using node:     Stmt,
-	name:           Token_Text,
-	qualifier:      Token_Text,
-	member_name:    Token_Text,
-	body:           [dynamic]^Stmt,
-	header_range:   tokenizer.Range,
-	header_text:    string,
-	is_amdp:        bool,
-	amdp_body:      string,
-	is_kernel:      bool,
-	kernel_modules: [dynamic]string,
+	using node:       Stmt,
+	name:             Token_Text,
+	qualifier:        Token_Text,
+	member_name:      Token_Text,
+	body:             [dynamic]^Stmt,
+	header_range:     tokenizer.Range,
+	is_amdp:          bool,
+	amdp_kind:        Method_Amdp_Kind,
+	amdp_database:    Method_Amdp_Database,
+	amdp_language:    Method_Amdp_Language,
+	amdp_options:     Method_Amdp_Options,
+	amdp_using:       [dynamic]Token_Text,
+	amdp_body:        string,
+	is_kernel:        bool,
+	kernel_modules:   [dynamic]Token_Text,
 }
 
 Parameter_Passing_Kind :: enum {

@@ -621,11 +621,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Interface_Decl:
 		emit_interface_decl(p, n)
 	case ^Method_Decl:
-		if n.is_amdp {
-			emit_amdp_method(p, n)
-		} else {
-			emit_named_block(p, "METHOD", n.name.text, n.header_text, n.body, "ENDMETHOD")
-		}
+		emit_method_decl(p, n)
 	case ^Form_Decl:
 		emit_named_block(p, "FORM", n.name, n.header_text, n.body, "ENDFORM")
 	case ^Function_Decl:
@@ -2815,13 +2811,53 @@ emit_keyword_token_or_default :: proc(p: ^Printer, token: Token_Text, fallback: 
 	}
 }
 
-emit_amdp_method :: proc(p: ^Printer, stmt: ^Method_Decl) {
-	if stmt.header_text != "" {
-		emit(p, stmt.header_text)
-	} else {
-		emit(p, "METHOD ")
+emit_method_decl :: proc(p: ^Printer, stmt: ^Method_Decl) {
+	emit_method_header(p, stmt)
+	if stmt.is_amdp {
+		emit_amdp_method_body(p, stmt)
+		return
+	}
+	emit_block(p, stmt.body, "ENDMETHOD")
+}
+
+emit_method_header :: proc(p: ^Printer, stmt: ^Method_Decl) {
+	emit(p, "METHOD")
+	if stmt.name.text != "" {
+		emit_space(p)
 		emit(p, stmt.name)
 	}
+	if stmt.is_kernel {
+		emit(p, " BY KERNEL MODULE")
+		for module in stmt.kernel_modules {
+			emit_space(p)
+			emit(p, module)
+		}
+		return
+	}
+	if !stmt.is_amdp {
+		return
+	}
+	emit(p, " BY DATABASE ")
+	emit(p, method_amdp_kind_text(stmt.amdp_kind))
+	if stmt.amdp_database != .Unspecified {
+		emit(p, " FOR ")
+		emit(p, method_amdp_database_text(stmt.amdp_database))
+	}
+	emit(p, " LANGUAGE ")
+	emit(p, method_amdp_language_text(stmt.amdp_language))
+	if .Read_Only in stmt.amdp_options {
+		emit(p, " OPTIONS READ-ONLY")
+	}
+	if len(stmt.amdp_using) > 0 {
+		emit(p, " USING")
+		for name in stmt.amdp_using {
+			emit_space(p)
+			emit(p, name)
+		}
+	}
+}
+
+emit_amdp_method_body :: proc(p: ^Printer, stmt: ^Method_Decl) {
 	emit(p, ".")
 	if stmt.amdp_body != "" {
 		emit(p, stmt.amdp_body)
@@ -2829,6 +2865,30 @@ emit_amdp_method :: proc(p: ^Printer, stmt: ^Method_Decl) {
 		emit_newline(p)
 	}
 	emit(p, "ENDMETHOD.")
+}
+
+method_amdp_kind_text :: proc(kind: Method_Amdp_Kind) -> string {
+	#partial switch kind {
+	case .Database_Function:
+		return "FUNCTION"
+	}
+	return "PROCEDURE"
+}
+
+method_amdp_database_text :: proc(database: Method_Amdp_Database) -> string {
+	#partial switch database {
+	case .Hdb:
+		return "HDB"
+	}
+	return ""
+}
+
+method_amdp_language_text :: proc(language: Method_Amdp_Language) -> string {
+	#partial switch language {
+	case .Sqlscript:
+		return "SQLSCRIPT"
+	}
+	return "SQLSCRIPT"
 }
 
 emit_loop_stmt :: proc(p: ^Printer, stmt: ^Loop_Stmt) {

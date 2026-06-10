@@ -1164,6 +1164,51 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_collects_normal_amdp_and_kernel_method_implementations :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+    METHODS select_rows.
+    METHODS kernel_run.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+  ENDMETHOD.
+  METHOD select_rows BY DATABASE PROCEDURE FOR HDB LANGUAGE SQLSCRIPT OPTIONS READ-ONLY USING mara.
+    lt_rows = SELECT matnr FROM mara;
+  ENDMETHOD.
+  METHOD kernel_run BY KERNEL MODULE zkernel.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://method_impl_headers.abap")
+
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_demo", .Class)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	scope := class_payload.definition_scope
+	run := checker_test_lookup(t, &project, scope, .Routine, "run", .Method)
+	amdp := checker_test_lookup(t, &project, scope, .Routine, "select_rows", .Method)
+	kernel := checker_test_lookup(t, &project, scope, .Routine, "kernel_run", .Method)
+	methods := [?]^Entity{run, amdp, kernel}
+	for method in methods {
+		if method == nil {
+			continue
+		}
+		payload := method.payload.(^Entity_Routine_Payload)
+		testing.expect(t, payload.has_implementation)
+		testing.expect(t, payload.implementation_range.end > payload.implementation_range.start)
+		testing.expect_value(t, payload.signature, "")
+	}
+}
+
+@(test)
 root_semantic_oop_checker_inherits_redefinition_signature_and_receivers :: proc(t: ^testing.T) {
 	source := `CLASS lcl_root DEFINITION.
   PUBLIC SECTION.

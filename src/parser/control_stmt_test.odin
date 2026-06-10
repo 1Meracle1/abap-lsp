@@ -824,8 +824,17 @@ ENDCLASS.`
 	testing.expect_value(t, counts.method_decl, 1)
 	method := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[0].derived_stmt.(^ast.Method_Decl)
 	testing.expect(t, method.is_amdp)
+	testing.expect_value(t, method.amdp_kind, ast.Method_Amdp_Kind.Database_Procedure)
+	testing.expect_value(t, method.amdp_database, ast.Method_Amdp_Database.Hdb)
+	testing.expect_value(t, method.amdp_language, ast.Method_Amdp_Language.Sqlscript)
+	testing.expect(t, .Read_Only in method.amdp_options)
+	testing.expect_value(t, len(method.amdp_using), 1)
+	testing.expect_value(t, method.amdp_using[0].text, "mara")
 	testing.expect(t, method.amdp_body != "")
 	testing.expect_value(t, len(method.body), 0)
+	testing.expect_value(t, ast.print_node(method, context.allocator), `METHOD select_rows BY DATABASE PROCEDURE FOR HDB LANGUAGE SQLSCRIPT OPTIONS READ-ONLY USING mara.
+    lt_rows = SELECT matnr FROM mara;
+  ENDMETHOD.`)
 }
 
 @(test)
@@ -840,8 +849,10 @@ ENDCLASS.`
 	method := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[0].derived_stmt.(^ast.Method_Decl)
 	testing.expect(t, method.is_kernel)
 	testing.expect_value(t, len(method.kernel_modules), 2)
-	testing.expect_value(t, method.kernel_modules[0], "abkm_Run")
-	testing.expect_value(t, method.kernel_modules[1], "IGNORE")
+	testing.expect_value(t, method.kernel_modules[0].text, "abkm_Run")
+	testing.expect_value(t, method.kernel_modules[1].text, "IGNORE")
+	testing.expect_value(t, ast.print_node(method, context.allocator), `METHOD run BY KERNEL MODULE abkm_Run IGNORE.
+ENDMETHOD.`)
 
 	with_body := parse(
 		`CLASS lcl IMPLEMENTATION.
@@ -867,4 +878,6 @@ ENDCLASS.`
 	testing.expect_value(t, len(parsed.errors), 0)
 	method := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[0].derived_stmt.(^ast.Method_Decl)
 	testing.expect_value(t, method.name.text, "if_demo~run")
+	testing.expect_value(t, ast.print_node(method, context.allocator), `METHOD if_demo~run.
+ENDMETHOD.`)
 }
