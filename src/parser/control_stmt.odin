@@ -1141,39 +1141,52 @@ parse_named_block_stmt :: proc(
 	}
 	period_index := p.previous_index
 	bodyless := named_block_header_is_bodyless(p, start_keyword, start_index, period_index)
-	when intrinsics.type_has_field(T, "is_bodyless") {
-		stmt.is_bodyless = bodyless
-	}
 	when intrinsics.type_has_field(T, "flags") {
-		if class_header_public(p, start_index, period_index) {
-			stmt.flags += {.Public}
+		when intrinsics.type_field_type(T, "flags") == ast.Class_Decl_Flags {
+			if class_header_public(p, start_index, period_index) {
+				stmt.flags += {.Public}
+			}
+			if bodyless {
+				stmt.flags += {.Bodyless}
+			}
+			if named_block_header_has_keyword(p, start_index, period_index, "DEFERRED") {
+				stmt.flags += {.Deferred}
+			}
+			if named_block_header_has_keyword(p, start_index, period_index, "IMPLEMENTATION") {
+				stmt.flags += {.Implementation}
+			}
+			if named_block_header_has_keyword(p, start_index, period_index, "ABSTRACT") {
+				stmt.flags += {.Abstract}
+			}
+			if named_block_header_has_keyword(p, start_index, period_index, "FINAL") {
+				stmt.flags += {.Final}
+			}
+			stmt.create_visibility = class_header_create_visibility(p, start_index, period_index)
+			stmt.superclass_name = named_block_header_superclass(p, start_index, period_index)
+			if class_header_shared_memory_enabled(p, start_index, period_index) {
+				stmt.flags += {.Shared_Memory_Enabled}
+			}
+			if class_header_for_testing(p, start_index, period_index) {
+				stmt.flags += {.For_Testing}
+			}
+			stmt.risk_level = class_header_risk_level(p, start_index, period_index)
+			stmt.duration = class_header_duration(p, start_index, period_index)
+			stmt.friends = named_block_header_friends(p, start_index, period_index)
 		}
-		if bodyless {
-			stmt.flags += {.Bodyless}
+		when intrinsics.type_field_type(T, "flags") == ast.Interface_Decl_Flags {
+			if bodyless {
+				stmt.flags += {.Bodyless}
+			}
+			if named_block_header_has_keyword(p, start_index, period_index, "DEFERRED") {
+				stmt.flags += {.Deferred}
+			}
+			if named_block_header_has_keyword(p, start_index, period_index, "LOAD") {
+				stmt.flags += {.Load}
+			}
+			if named_block_header_has_keyword(p, start_index, period_index, "PUBLIC") {
+				stmt.flags += {.Public}
+			}
 		}
-		if named_block_header_has_keyword(p, start_index, period_index, "DEFERRED") {
-			stmt.flags += {.Deferred}
-		}
-		if named_block_header_has_keyword(p, start_index, period_index, "IMPLEMENTATION") {
-			stmt.flags += {.Implementation}
-		}
-		if named_block_header_has_keyword(p, start_index, period_index, "ABSTRACT") {
-			stmt.flags += {.Abstract}
-		}
-		if named_block_header_has_keyword(p, start_index, period_index, "FINAL") {
-			stmt.flags += {.Final}
-		}
-		stmt.create_visibility = class_header_create_visibility(p, start_index, period_index)
-		stmt.superclass_name = named_block_header_superclass(p, start_index, period_index)
-		if class_header_shared_memory_enabled(p, start_index, period_index) {
-			stmt.flags += {.Shared_Memory_Enabled}
-		}
-		if class_header_for_testing(p, start_index, period_index) {
-			stmt.flags += {.For_Testing}
-		}
-		stmt.risk_level = class_header_risk_level(p, start_index, period_index)
-		stmt.duration = class_header_duration(p, start_index, period_index)
-		stmt.friends = named_block_header_friends(p, start_index, period_index)
 	}
 	when intrinsics.type_has_field(T, "form_parameters") {
 		stmt.form_parameters = parse_form_header_parameters(p, start_index, period_index)

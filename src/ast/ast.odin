@@ -2246,13 +2246,21 @@ Class_Decl :: struct {
 	friends:           [dynamic]Class_Friend_Clause,
 }
 
+Interface_Decl_Flag :: enum {
+	Bodyless,
+	Deferred,
+	Load,
+	Public,
+}
+
+Interface_Decl_Flags :: bit_set[Interface_Decl_Flag]
+
 Interface_Decl :: struct {
 	using node:   Stmt,
 	name:         Token_Text,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
-	header_text:  string,
-	is_bodyless:  bool,
+	flags:        Interface_Decl_Flags,
 }
 
 Method_Decl :: struct {

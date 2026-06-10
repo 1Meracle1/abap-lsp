@@ -2780,6 +2780,23 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_interface_payload_keeps_structured_header_metadata :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_meta PUBLIC.
+ENDINTERFACE.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://interface_header_metadata.abap")
+	entity := checker_test_lookup(t, &project, file.root_scope, .Type, "lif_meta", .Interface)
+	payload, ok := entity.payload.(^Entity_Object_Payload)
+	testing.expect(t, ok)
+	if ok && payload != nil {
+		testing.expect(t, payload.is_public)
+	}
+}
+
+@(test)
 root_semantic_oop_load_records_type_uses_and_candidates :: proc(t: ^testing.T) {
 	source := `CLASS lcl_target DEFINITION.
 ENDCLASS.

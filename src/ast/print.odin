@@ -619,7 +619,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Class_Decl:
 		emit_class_decl(p, n)
 	case ^Interface_Decl:
-		emit_named_block(p, "INTERFACE", n.name.text, n.header_text, n.body, "ENDINTERFACE")
+		emit_interface_decl(p, n)
 	case ^Method_Decl:
 		if n.is_amdp {
 			emit_amdp_method(p, n)
@@ -2784,6 +2784,27 @@ emit_class_decl :: proc(p: ^Printer, stmt: ^Class_Decl) {
 		}
 	}
 	emit_block(p, stmt.body, "ENDCLASS")
+}
+
+emit_interface_decl :: proc(p: ^Printer, stmt: ^Interface_Decl) {
+	emit(p, "INTERFACE")
+	if stmt.name.text != "" {
+		emit_space(p)
+		emit(p, stmt.name)
+	}
+	if .Public in stmt.flags {
+		emit_space(p)
+		emit(p, "PUBLIC")
+	}
+	if .Deferred in stmt.flags {
+		emit_space(p)
+		emit(p, "DEFERRED")
+	}
+	if .Load in stmt.flags {
+		emit_space(p)
+		emit(p, "LOAD")
+	}
+	emit_block(p, stmt.body, "ENDINTERFACE")
 }
 
 emit_keyword_token_or_default :: proc(p: ^Printer, token: Token_Text, fallback: string) {

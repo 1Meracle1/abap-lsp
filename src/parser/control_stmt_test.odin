@@ -374,6 +374,34 @@ ENDCLASS.`
 }
 
 @(test)
+interface_header_facts_are_ast_fields :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_public PUBLIC.
+  METHODS run.
+ENDINTERFACE.
+INTERFACE lif_deferred DEFERRED.`
+	parsed := parse(source, "interface_header_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 2)
+
+	public := parsed.root.stmts[0].derived_stmt.(^ast.Interface_Decl)
+	deferred := parsed.root.stmts[1].derived_stmt.(^ast.Interface_Decl)
+
+	testing.expect(t, .Public in public.flags)
+	testing.expect(t, !(.Bodyless in public.flags))
+	testing.expect_value(t, len(public.body), 1)
+	testing.expect_value(
+		t,
+		ast.print_node(public, context.allocator),
+		"INTERFACE lif_public PUBLIC.\n    METHODS run.\nENDINTERFACE.",
+	)
+	testing.expect(t, .Bodyless in deferred.flags)
+	testing.expect(t, .Deferred in deferred.flags)
+	testing.expect(t, !(.Load in deferred.flags))
+	testing.expect_value(t, len(deferred.body), 0)
+}
+
+@(test)
 oop_load_statements_are_not_class_or_interface_declarations :: proc(t: ^testing.T) {
 	source := `INTERFACE if_demo.
   CLASS cl_gui_column_tree DEFINITION LOAD.

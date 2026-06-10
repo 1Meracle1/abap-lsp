@@ -810,11 +810,14 @@ checker_collect_interface_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Interfa
 	if entity == nil {
 		return nil
 	}
-	if decl.is_bodyless {
+	payload, ok := entity.payload.(^Entity_Object_Payload)
+	assert(ok && payload != nil)
+	if .Bodyless in decl.flags {
 		entity.flags += {.Forward}
 		return entity
 	}
 	entity.flags -= {.Forward}
+	payload.is_public = .Public in decl.flags
 	scope := checker_ensure_object_definition_scope(ctx, entity, .Interface, decl.range)
 	body_ctx := ctx^
 	body_ctx.scope = scope
