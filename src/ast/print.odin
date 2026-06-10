@@ -629,7 +629,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Module_Decl:
 		emit_module_decl(p, n)
 	case ^Event_Block_Stmt:
-		emit_named_block(p, n.kind, "", n.header_text, n.body, "")
+		emit_event_block_stmt(p, n)
 	case ^Enhancement_Stmt:
 		emit_named_block(p, "ENHANCEMENT", n.name, n.header_text, n.body, "ENDENHANCEMENT")
 	case ^Enhancement_Section_Stmt:
@@ -3233,6 +3233,74 @@ emit_module_header :: proc(p: ^Printer, stmt: ^Module_Decl) {
 	case .Output:
 		emit(p, " OUTPUT")
 	}
+}
+
+emit_event_block_stmt :: proc(p: ^Printer, stmt: ^Event_Block_Stmt) {
+	emit_event_block_header(p, stmt)
+	emit(p, ".")
+	p.indent_level += 1
+	if len(stmt.body) > 0 {
+		emit_newline(p)
+		emit_stmt_list(p, stmt.body)
+	}
+	p.indent_level -= 1
+}
+
+emit_event_block_header :: proc(p: ^Printer, stmt: ^Event_Block_Stmt) {
+	emit(p, event_block_kind_text(stmt.kind))
+	#partial switch stmt.addition {
+	case .Selection_Screen_Output:
+		emit(p, " OUTPUT")
+	case .Selection_Screen_On:
+		emit(p, " ON")
+		emit_event_block_target(p, stmt.target)
+	case .Selection_Screen_On_End_Of:
+		emit(p, " ON END OF")
+		emit_event_block_target(p, stmt.target)
+	case .Selection_Screen_On_Help_Request_For:
+		emit(p, " ON HELP-REQUEST FOR")
+		emit_event_block_target(p, stmt.target)
+	case .Selection_Screen_On_Value_Request_For:
+		emit(p, " ON VALUE-REQUEST FOR")
+		emit_event_block_target(p, stmt.target)
+	case .Selection_Screen_On_Radiobutton_Group:
+		emit(p, " ON RADIOBUTTON GROUP")
+		emit_event_block_target(p, stmt.target)
+	case .Selection_Screen_On_Block:
+		emit(p, " ON BLOCK")
+		emit_event_block_target(p, stmt.target)
+	case .Selection_Screen_On_Exit_Command:
+		emit(p, " ON EXIT-COMMAND")
+	case .Top_Of_Page_During_Line_Selection:
+		emit(p, " DURING LINE-SELECTION")
+	}
+}
+
+emit_event_block_target :: proc(p: ^Printer, target: Token_Text) {
+	if target.text != "" {
+		emit_space(p)
+		emit(p, target)
+	}
+}
+
+event_block_kind_text :: proc(kind: Event_Block_Kind) -> string {
+	#partial switch kind {
+	case .Initialization:
+		return "INITIALIZATION"
+	case .Load_Of_Program:
+		return "LOAD-OF-PROGRAM"
+	case .Start_Of_Selection:
+		return "START-OF-SELECTION"
+	case .End_Of_Selection:
+		return "END-OF-SELECTION"
+	case .Top_Of_Page:
+		return "TOP-OF-PAGE"
+	case .End_Of_Page:
+		return "END-OF-PAGE"
+	case .At_Selection_Screen:
+		return "AT SELECTION-SCREEN"
+	}
+	return ""
 }
 
 emit_named_block :: proc(

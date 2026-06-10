@@ -1671,22 +1671,47 @@ CONSTANTS: BEGIN OF gc_pair,
 
 @(test)
 root_semantic_selection_screen_event_variants_are_distinct :: proc(t: ^testing.T) {
-	source := `AT SELECTION-SCREEN OUTPUT.
+	source := `PARAMETERS p_field TYPE string.
+AT SELECTION-SCREEN OUTPUT.
   DATA lv_output TYPE i.
 AT   SELECTION-SCREEN   ON   EXIT-COMMAND.
   DATA lv_exit TYPE i.
+AT SELECTION-SCREEN ON p_field.
+  DATA lv_field TYPE i.
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_field.
+  DATA lv_value TYPE i.
 AT SELECTION-SCREEN.
-  DATA lv_event TYPE i.`
+  DATA lv_event TYPE i.
+START-OF-SELECTION.
+  DATA lv_start TYPE i.`
 
 	project := project_make()
 	defer project_destroy(&project)
 
 	checker, file := checker_test_check_source(t, &project, source, "mem://selection_screen_events.abap")
 
+	p_field := checker_test_lookup(t, &project, file.root_scope, .Value, "p_field", .Variable)
 	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen output", .Event)
 	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen on exit-command", .Event)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen on p_field", .Event)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen on value-request for p_field", .Event)
 	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen", .Event)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "start-of-selection", .Event)
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Duplicate_Declaration), 0)
+
+	target_offset := checker_test_find_text(source, "ON p_field") + len("ON ")
+	testing.expect(t, target_offset >= len("ON "))
+	if target_offset < len("ON ") {
+		return
+	}
+	target_range := tokenizer.text_range(target_offset, target_offset + len("p_field"))
+	query := semantic_query(&project, &checker, file)
+	use := semantic_ref_use_at_range(semantic_query_refs(query), target_range)
+	testing.expect(t, use != nil)
+	if use != nil {
+		testing.expect(t, use.entity == p_field)
+		testing.expect_value(t, source[use.range.start:use.range.end], "p_field")
+	}
 }
 
 @(test)

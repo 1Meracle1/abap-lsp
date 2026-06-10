@@ -142,6 +142,49 @@ START-OF-SELECTION. WRITE 'start'.`
 }
 
 @(test)
+event_block_headers_are_structured_ast_facts :: proc(t: ^testing.T) {
+	source := `START-OF-SELECTION.
+AT SELECTION-SCREEN.
+AT SELECTION-SCREEN OUTPUT.
+AT SELECTION-SCREEN ON p_field.
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.
+TOP-OF-PAGE DURING LINE-SELECTION.`
+	parsed := parse(source, "event_header_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 6)
+	start := parsed.root.stmts[0].derived_stmt.(^ast.Event_Block_Stmt)
+	selection := parsed.root.stmts[1].derived_stmt.(^ast.Event_Block_Stmt)
+	output := parsed.root.stmts[2].derived_stmt.(^ast.Event_Block_Stmt)
+	field := parsed.root.stmts[3].derived_stmt.(^ast.Event_Block_Stmt)
+	value_request := parsed.root.stmts[4].derived_stmt.(^ast.Event_Block_Stmt)
+	top := parsed.root.stmts[5].derived_stmt.(^ast.Event_Block_Stmt)
+
+	testing.expect_value(t, start.kind, ast.Event_Block_Kind.Start_Of_Selection)
+	testing.expect_value(t, start.addition, ast.Event_Block_Addition.None)
+	testing.expect_value(t, start.target.text, "")
+
+	testing.expect_value(t, selection.kind, ast.Event_Block_Kind.At_Selection_Screen)
+	testing.expect_value(t, selection.addition, ast.Event_Block_Addition.None)
+
+	testing.expect_value(t, output.kind, ast.Event_Block_Kind.At_Selection_Screen)
+	testing.expect_value(t, output.addition, ast.Event_Block_Addition.Selection_Screen_Output)
+	testing.expect_value(t, output.target.text, "")
+
+	testing.expect_value(t, field.addition, ast.Event_Block_Addition.Selection_Screen_On)
+	testing.expect_value(t, field.target.text, "p_field")
+	testing.expect_value(t, source[field.target.range.start:field.target.range.end], "p_field")
+
+	testing.expect_value(t, value_request.addition, ast.Event_Block_Addition.Selection_Screen_On_Value_Request_For)
+	testing.expect_value(t, value_request.target.text, "p_pub")
+	testing.expect_value(t, source[value_request.target.range.start:value_request.target.range.end], "p_pub")
+
+	testing.expect_value(t, top.kind, ast.Event_Block_Kind.Top_Of_Page)
+	testing.expect_value(t, top.addition, ast.Event_Block_Addition.Top_Of_Page_During_Line_Selection)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 structural_keyword_variable_assignment_stays_in_current_block :: proc(t: ^testing.T) {
 	source := `FUNCTION z_fm.
   IF suppress_corr_check IS INITIAL.

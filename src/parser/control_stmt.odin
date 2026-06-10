@@ -2086,7 +2086,9 @@ skip_header_addition_value :: proc(
 parse_event_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := current_token(p)
 	kind := event_block_kind(p)
-	consume_event_header(p)
+	expect_keyword_phrase(p, event_block_kind_text(kind))
+	addition, target := parse_event_block_header_addition(p, kind)
+	consume_raw_until_period(p)
 	period := expect_token(p, .Period)
 	if period.kind != .Period {
 		return nil
@@ -2097,8 +2099,9 @@ parse_event_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		p.allocator,
 	)
 	stmt.kind = kind
+	stmt.addition = addition
+	stmt.target = target
 	stmt.header_range = stmt.range
-	stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
 	stmt.body = parse_stmt_list_until(
 		p,
 		[]string {
@@ -2147,30 +2150,107 @@ event_block_starts :: proc(p: ^Parser) -> bool {
 	)
 }
 
-event_block_kind :: proc(p: ^Parser) -> string {
+event_block_kind :: proc(p: ^Parser) -> ast.Event_Block_Kind {
 	if at_keyword_phrase(p, "AT SELECTION-SCREEN") {
-		return "AT SELECTION-SCREEN"
+		return .At_Selection_Screen
 	}
 	if at_keyword(p, "INITIALIZATION") {
-		return "INITIALIZATION"
+		return .Initialization
 	}
 	if at_keyword_phrase(p, "LOAD-OF-PROGRAM") {
-		return "LOAD-OF-PROGRAM"
+		return .Load_Of_Program
 	}
 	if at_keyword_phrase(p, "START-OF-SELECTION") {
-		return "START-OF-SELECTION"
+		return .Start_Of_Selection
 	}
 	if at_keyword_phrase(p, "END-OF-SELECTION") {
-		return "END-OF-SELECTION"
+		return .End_Of_Selection
 	}
 	if at_keyword_phrase(p, "TOP-OF-PAGE") {
-		return "TOP-OF-PAGE"
+		return .Top_Of_Page
 	}
-	return "END-OF-PAGE"
+	if at_keyword_phrase(p, "END-OF-PAGE") {
+		return .End_Of_Page
+	}
+	return .Invalid
 }
 
-consume_event_header :: proc(p: ^Parser) {
-	kind := event_block_kind(p)
-	expect_keyword_phrase(p, kind)
-	consume_raw_until_period(p)
+event_block_kind_text :: proc(kind: ast.Event_Block_Kind) -> string {
+	#partial switch kind {
+	case .Initialization:
+		return "INITIALIZATION"
+	case .Load_Of_Program:
+		return "LOAD-OF-PROGRAM"
+	case .Start_Of_Selection:
+		return "START-OF-SELECTION"
+	case .End_Of_Selection:
+		return "END-OF-SELECTION"
+	case .Top_Of_Page:
+		return "TOP-OF-PAGE"
+	case .End_Of_Page:
+		return "END-OF-PAGE"
+	case .At_Selection_Screen:
+		return "AT SELECTION-SCREEN"
+	}
+	return ""
+}
+
+parse_event_block_header_addition :: proc(
+	p: ^Parser,
+	kind: ast.Event_Block_Kind,
+) -> (ast.Event_Block_Addition, ast.Token_Text) {
+	#partial switch kind {
+	case .At_Selection_Screen:
+		return parse_selection_screen_event_addition(p)
+	case .Top_Of_Page:
+		if allow_keyword(p, "DURING") && allow_hyphen2(p, "LINE", "SELECTION") {
+			return .Top_Of_Page_During_Line_Selection, {}
+		}
+	}
+	return .None, {}
+}
+
+parse_selection_screen_event_addition :: proc(p: ^Parser) -> (ast.Event_Block_Addition, ast.Token_Text) {
+	if allow_keyword(p, "OUTPUT") {
+		return .Selection_Screen_Output, {}
+	}
+	if !allow_keyword(p, "ON") {
+		return .None, {}
+	}
+	if allow_hyphen2(p, "EXIT", "COMMAND") {
+		return .Selection_Screen_On_Exit_Command, {}
+	}
+	if allow_keyword(p, "END") {
+		allow_keyword(p, "OF")
+		return .Selection_Screen_On_End_Of, parse_event_block_target(p)
+	}
+	if allow_hyphen2(p, "HELP", "REQUEST") {
+		allow_keyword(p, "FOR")
+		return .Selection_Screen_On_Help_Request_For, parse_event_block_target(p)
+	}
+	if allow_hyphen2(p, "VALUE", "REQUEST") {
+		allow_keyword(p, "FOR")
+		return .Selection_Screen_On_Value_Request_For, parse_event_block_target(p)
+	}
+	if allow_keyword(p, "RADIOBUTTON") {
+		allow_keyword(p, "GROUP")
+		return .Selection_Screen_On_Radiobutton_Group, parse_event_block_target(p)
+	}
+	if allow_keyword(p, "BLOCK") {
+		return .Selection_Screen_On_Block, parse_event_block_target(p)
+	}
+	return .Selection_Screen_On, parse_event_block_target(p)
+}
+
+parse_event_block_target :: proc(p: ^Parser) -> ast.Token_Text {
+	tok := current_token(p)
+	if !event_block_target_token(tok) {
+		return {}
+	}
+	bump_token(p)
+	return parser_ast_raw_name_token(p, tok)
+}
+
+event_block_target_token :: #force_inline proc(tok: Token) -> bool {
+	return tok.kind == .Ident || tok.kind == .Number
 }

@@ -72,13 +72,14 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 		name_range := n.name.range if n.name.text != "" else n.header_range
 		checker_collect_routine_decl(ctx, n.name.text, .Module, n.range, name_range, "", &n.node.stmt_base)
 	case ^ast.Event_Block_Stmt:
+		signature := checker_event_block_decl_signature(n)
 		checker_collect_routine_decl(
 			ctx,
-			checker_event_block_decl_name(n),
+			signature,
 			.Event,
 			n.range,
 			n.header_range,
-			n.header_text,
+			signature,
 			&n.node.stmt_base,
 		)
 	case ^ast.Oop_Simple_Stmt:
@@ -86,31 +87,63 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 	}
 }
 
-checker_event_block_decl_name :: proc(stmt: ^ast.Event_Block_Stmt) -> string {
-	text := stmt.kind
-	if stmt.header_text != "" {
-		text = stmt.header_text
-	}
-	return checker_normalize_event_block_decl_name(text)
-}
-
-checker_normalize_event_block_decl_name :: proc(text: string) -> string {
+checker_event_block_decl_signature :: proc(stmt: ^ast.Event_Block_Stmt) -> string {
 	builder := strings.builder_make(context.temp_allocator)
-	pending_space := false
-	wrote := false
-	for ch in text {
-		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
-			pending_space = wrote
-			continue
-		}
-		if pending_space {
-			strings.write_byte(&builder, ' ')
-			pending_space = false
-		}
-		strings.write_rune(&builder, ch)
-		wrote = true
+	strings.write_string(&builder, checker_event_block_kind_text(stmt.kind))
+	#partial switch stmt.addition {
+	case .Selection_Screen_Output:
+		strings.write_string(&builder, " OUTPUT")
+	case .Selection_Screen_On:
+		strings.write_string(&builder, " ON")
+		checker_event_block_write_target(&builder, stmt.target)
+	case .Selection_Screen_On_End_Of:
+		strings.write_string(&builder, " ON END OF")
+		checker_event_block_write_target(&builder, stmt.target)
+	case .Selection_Screen_On_Help_Request_For:
+		strings.write_string(&builder, " ON HELP-REQUEST FOR")
+		checker_event_block_write_target(&builder, stmt.target)
+	case .Selection_Screen_On_Value_Request_For:
+		strings.write_string(&builder, " ON VALUE-REQUEST FOR")
+		checker_event_block_write_target(&builder, stmt.target)
+	case .Selection_Screen_On_Radiobutton_Group:
+		strings.write_string(&builder, " ON RADIOBUTTON GROUP")
+		checker_event_block_write_target(&builder, stmt.target)
+	case .Selection_Screen_On_Block:
+		strings.write_string(&builder, " ON BLOCK")
+		checker_event_block_write_target(&builder, stmt.target)
+	case .Selection_Screen_On_Exit_Command:
+		strings.write_string(&builder, " ON EXIT-COMMAND")
+	case .Top_Of_Page_During_Line_Selection:
+		strings.write_string(&builder, " DURING LINE-SELECTION")
 	}
 	return strings.to_string(builder)
+}
+
+checker_event_block_write_target :: proc(builder: ^strings.Builder, target: ast.Token_Text) {
+	if target.text != "" {
+		strings.write_byte(builder, ' ')
+		strings.write_string(builder, target.text)
+	}
+}
+
+checker_event_block_kind_text :: proc(kind: ast.Event_Block_Kind) -> string {
+	#partial switch kind {
+	case .Initialization:
+		return "INITIALIZATION"
+	case .Load_Of_Program:
+		return "LOAD-OF-PROGRAM"
+	case .Start_Of_Selection:
+		return "START-OF-SELECTION"
+	case .End_Of_Selection:
+		return "END-OF-SELECTION"
+	case .Top_Of_Page:
+		return "TOP-OF-PAGE"
+	case .End_Of_Page:
+		return "END-OF-PAGE"
+	case .At_Selection_Screen:
+		return "AT SELECTION-SCREEN"
+	}
+	return ""
 }
 
 checker_collect_data_chained_decl :: proc(
@@ -1472,6 +1505,13 @@ checker_check_routine_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl:
 	entity.type.routine.exceptions = payload.exceptions
 	entity.type.base = checker_routine_result_type(ctx, payload)
 	body := checker_routine_body_from_decl(decl)
+	if event := checker_event_block_from_decl(decl); event != nil {
+		header_ctx := ctx^
+		header_ctx.scope = payload.body_scope
+		header_ctx.current_routine = entity
+		header_ctx.current_signature = entity.type
+		checker_check_event_block_header(&header_ctx, event)
+	}
 	if len(body) > 0 {
 		body_ctx := ctx^
 		if payload.implementation_unit != nil {
@@ -1482,6 +1522,55 @@ checker_check_routine_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl:
 		body_ctx.current_signature = entity.type
 		checker_check_stmt_list(&body_ctx, body)
 	}
+}
+
+checker_event_block_from_decl :: proc(decl: ^Decl_Info) -> ^ast.Event_Block_Stmt {
+	if decl == nil || decl.decl_node == nil {
+		return nil
+	}
+	if event, ok := decl.decl_node.derived.(^ast.Event_Block_Stmt); ok {
+		return event
+	}
+	return nil
+}
+
+checker_check_event_block_header :: proc(ctx: ^Checker_Context, stmt: ^ast.Event_Block_Stmt) {
+	target, ok := checker_event_block_semantic_target(stmt)
+	if !ok || target.text == "" {
+		return
+	}
+	interned := checker_intern_name(ctx.project, target.text)
+	if !string_interner.is_valid(interned) {
+		return
+	}
+	if _, entity, found := checker_lookup_reference(ctx, .Value, interned); found {
+		checker_add_entity_use_at_range(ctx, &stmt.node.stmt_base, entity, target.range)
+		checker_check_entity_for_operand(ctx, entity)
+		return
+	}
+	checker_add_unresolved_candidate(
+		ctx,
+		interned,
+		.Value,
+		.Global_Symbol,
+		.Identifier,
+		.Unresolved_Reference,
+		target.range,
+		&stmt.node.stmt_base,
+	)
+}
+
+checker_event_block_semantic_target :: proc(stmt: ^ast.Event_Block_Stmt) -> (ast.Token_Text, bool) {
+	#partial switch stmt.addition {
+	case .Selection_Screen_On,
+	     .Selection_Screen_On_End_Of,
+	     .Selection_Screen_On_Help_Request_For,
+	     .Selection_Screen_On_Value_Request_For,
+	     .Selection_Screen_On_Radiobutton_Group,
+	     .Selection_Screen_On_Block:
+		return stmt.target, stmt.target.text != ""
+	}
+	return {}, false
 }
 
 checker_check_routine_exception_type_refs :: proc(

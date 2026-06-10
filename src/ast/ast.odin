@@ -2381,12 +2381,37 @@ Module_Decl :: struct {
 	flow:         Module_Flow,
 }
 
+Event_Block_Kind :: enum {
+	Invalid,
+	Initialization,
+	Load_Of_Program,
+	Start_Of_Selection,
+	End_Of_Selection,
+	Top_Of_Page,
+	End_Of_Page,
+	At_Selection_Screen,
+}
+
+Event_Block_Addition :: enum {
+	None,
+	Selection_Screen_Output,
+	Selection_Screen_On,
+	Selection_Screen_On_End_Of,
+	Selection_Screen_On_Help_Request_For,
+	Selection_Screen_On_Value_Request_For,
+	Selection_Screen_On_Radiobutton_Group,
+	Selection_Screen_On_Block,
+	Selection_Screen_On_Exit_Command,
+	Top_Of_Page_During_Line_Selection,
+}
+
 Event_Block_Stmt :: struct {
 	using node:   Stmt,
-	kind:         string,
+	kind:         Event_Block_Kind,
+	addition:     Event_Block_Addition,
+	target:       Token_Text,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
-	header_text:  string,
 }
 
 Enhancement_Stmt :: struct {
