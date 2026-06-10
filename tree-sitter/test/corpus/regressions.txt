@@ -1,4 +1,35 @@
 ==================
+Sort direction additions highlight as keywords
+==================
+
+SORT mt_trn BY docnum creation_time DESCENDING.
+SORT mt_trn BY docnum creation_time ASCENDING.
+
+---
+
+(source_file
+  (sort_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (qualified_name
+      (identifier))
+    (keyword))
+  (sort_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (qualified_name
+      (identifier))
+    (keyword)))
+
+==================
 Inline constructor rows and bare DO
 ==================
 
