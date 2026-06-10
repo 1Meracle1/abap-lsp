@@ -2131,8 +2131,8 @@ clone_select_options_clauses :: proc(list: [dynamic]Select_Options_Clause, alloc
 			memory_id        = clone(clause.memory_id, allocator),
 			matchcode_object = clone(clause.matchcode_object, allocator),
 			visible_length   = clone(clause.visible_length, allocator),
-			help_request    = clone_selection_request_clause(clause.help_request, allocator),
-			value_request   = clone_selection_request_clause(clause.value_request, allocator),
+			help_request    = clone_optional_selection_request_clause(clause.help_request, allocator),
+			value_request   = clone_optional_selection_request_clause(clause.value_request, allocator),
 		})
 	}
 	return res
@@ -2233,12 +2233,13 @@ clone_using_screen_clause :: proc(clause: ^Using_Screen_Clause, allocator: mem.A
 	return res
 }
 
-clone_selection_request_clause :: proc(clause: ^Selection_Request_Clause, allocator: mem.Allocator) -> ^Selection_Request_Clause {
-	if clause == nil {
-		return nil
+clone_optional_selection_request_clause :: proc(
+	clause: Maybe(Selection_Request_Clause),
+	allocator: mem.Allocator,
+) -> Maybe(Selection_Request_Clause) {
+	if value, ok := clause.?; ok {
+		value.target = clone_token_text(value.target, allocator)
+		return value
 	}
-	res, _ := mem.new(Selection_Request_Clause, allocator)
-	res.kind = clause.kind
-	res.target = strings.clone(clause.target, allocator)
-	return res
+	return nil
 }

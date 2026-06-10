@@ -806,13 +806,33 @@ INCLUDE zinc IF FOUND.`
 	select_option_modif_id, select_option_has_modif_id := select_options_decl.options[0].modif_id.?
 	testing.expect(t, select_option_has_modif_id)
 	testing.expect_value(t, select_option_modif_id.text, "sid")
-	testing.expect_value(t, select_options_decl.options[0].help_request.target, "LOW")
-	testing.expect_value(t, select_options_decl.options[0].value_request.target, "HIGH")
+	help_request, has_help_request := select_options_decl.options[0].help_request.?
+	value_request, has_value_request := select_options_decl.options[0].value_request.?
+	testing.expect(t, has_help_request)
+	testing.expect(t, has_value_request)
+	testing.expect_value(t, help_request.target.text, "LOW")
+	testing.expect_value(t, value_request.target.text, "HIGH")
 	testing.expect_value(t, controls_decl.controls[0].name.text, "tc_one")
 	testing.expect_value(t, type_pools_decl.pools[0].text, "abap")
 	testing.expect_value(t, function_pool_decl.name.text, "zfg")
 	testing.expect_value(t, function_pool_decl.message_id.text, "zmsg")
 	testing.expect_value(t, include_stmt.names[0].name.text, "zinc")
+}
+
+@(test)
+cloned_select_option_request_targets_survive_source_overwrite :: proc(t: ^testing.T) {
+	source := `SELECT-OPTIONS s_date FOR sy-datum HELP-REQUEST FOR LOW VALUE-REQUEST FOR HIGH.`
+	root := clone_parse_after_source_overwrite(t, source)
+	stmt := root.stmts[0].derived_stmt.(^ast.Select_Options_Decl)
+	clause := stmt.options[0]
+	help_request, has_help_request := clause.help_request.?
+	value_request, has_value_request := clause.value_request.?
+
+	testing.expect(t, has_help_request)
+	testing.expect(t, has_value_request)
+	testing.expect_value(t, help_request.target.text, "LOW")
+	testing.expect_value(t, value_request.target.text, "HIGH")
+	testing.expect_value(t, ast.print_node(root, context.allocator), source)
 }
 
 @(test)

@@ -973,8 +973,8 @@ Select_Options_Clause :: struct {
 	memory_id:        ^Expr,
 	matchcode_object: ^Expr,
 	visible_length:   ^Expr,
-	help_request:     ^Selection_Request_Clause,
-	value_request:    ^Selection_Request_Clause,
+	help_request:     Maybe(Selection_Request_Clause),
+	value_request:    Maybe(Selection_Request_Clause),
 }
 
 // ABAP syntax: CONTROLS statement, for example `CONTROLS tc TYPE TABLEVIEW USING SCREEN 100.`
@@ -1066,7 +1066,7 @@ Using_Screen_Clause :: struct {
 // ABAP syntax: selection-screen request addition, for example `HELP-REQUEST FOR LOW` or `VALUE-REQUEST FOR HIGH`.
 Selection_Request_Clause :: struct {
 	kind:   Selection_Request_Kind,
-	target: string,
+	target: Token_Text,
 }
 
 // ABAP syntax: assignment statement `lhs = rhs.`

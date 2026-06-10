@@ -161,6 +161,27 @@ SELECT-OPTIONS s_matnr FOR mara-matnr NO-DISPLAY VISIBLE LENGTH 20 DEFAULT 'A' T
 }
 
 @(test)
+select_options_request_additions_keep_target_tokens :: proc(t: ^testing.T) {
+	source := `SELECT-OPTIONS s_date FOR sy-datum HELP-REQUEST FOR LOW VALUE-REQUEST FOR HIGH.`
+	parsed := parse(source, "select_option_requests.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Options_Decl)
+	clause := stmt.options[0]
+	help_request, has_help_request := clause.help_request.?
+	value_request, has_value_request := clause.value_request.?
+	testing.expect(t, has_help_request)
+	testing.expect(t, has_value_request)
+	testing.expect_value(t, help_request.kind, ast.Selection_Request_Kind.Help_Request)
+	testing.expect_value(t, value_request.kind, ast.Selection_Request_Kind.Value_Request)
+	testing.expect_value(t, help_request.target.text, "LOW")
+	testing.expect_value(t, source[help_request.target.range.start:help_request.target.range.end], "LOW")
+	testing.expect_value(t, value_request.target.text, "HIGH")
+	testing.expect_value(t, source[value_request.target.range.start:value_request.target.range.end], "HIGH")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 parameters_declaration_keeps_structural_print_facts :: proc(t: ^testing.T) {
 	source := `PARAMETER p_one TYPE c LENGTH 3 AS CHECKBOX DEFAULT 'X' MODIF ID md.
 PARAMETERS: p_two TYPE string.`

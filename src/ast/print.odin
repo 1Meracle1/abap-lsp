@@ -1591,13 +1591,13 @@ emit_select_option_additions :: proc(p: ^Printer, clause: Select_Options_Clause)
 		emit(p, " VISIBLE LENGTH ")
 		emit_node(p, clause.visible_length)
 	}
-	if clause.help_request != nil {
+	if request, ok := clause.help_request.?; ok {
 		emit(p, " HELP-REQUEST FOR ")
-		emit(p, clause.help_request.target)
+		emit(p, request.target)
 	}
-	if clause.value_request != nil {
+	if request, ok := clause.value_request.?; ok {
 		emit(p, " VALUE-REQUEST FOR ")
-		emit(p, clause.value_request.target)
+		emit(p, request.target)
 	}
 }
 

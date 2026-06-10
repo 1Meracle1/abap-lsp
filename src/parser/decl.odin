@@ -1664,12 +1664,18 @@ parse_select_option_addition :: proc(
 		return true, clause.visible_length != nil
 	}
 	if at_keyword_phrase(p, "HELP-REQUEST") {
-		clause.help_request = parse_required_selection_request_clause(p, .Help_Request)
-		return true, clause.help_request != nil
+		request, ok := parse_required_selection_request_clause(p, .Help_Request)
+		if ok {
+			clause.help_request = request
+		}
+		return true, ok
 	}
 	if at_keyword_phrase(p, "VALUE-REQUEST") {
-		clause.value_request = parse_required_selection_request_clause(p, .Value_Request)
-		return true, clause.value_request != nil
+		request, ok := parse_required_selection_request_clause(p, .Value_Request)
+		if ok {
+			clause.value_request = request
+		}
+		return true, ok
 	}
 	return false, true
 }
@@ -1759,29 +1765,17 @@ parse_required_visible_length :: proc(p: ^Parser) -> ^ast.Expr {
 parse_required_selection_request_clause :: proc(
 	p: ^Parser,
 	kind: ast.Selection_Request_Kind,
-) -> ^ast.Selection_Request_Clause {
+) -> (ast.Selection_Request_Clause, bool) {
 	expect_keyword_phrase(p, "HELP-REQUEST" if kind == .Help_Request else "VALUE-REQUEST")
 	if !allow_keyword(p, "FOR") {
 		error_current(p, "syntax error: expected keyword")
-		return nil
+		return ast.Selection_Request_Clause{}, false
 	}
-	target, ok := parse_required_addition_name(p)
+	target, ok := parse_required_addition_token_text(p)
 	if !ok {
-		return nil
+		return ast.Selection_Request_Clause{}, false
 	}
-	clause, _ := mem.new(ast.Selection_Request_Clause, p.allocator)
-	clause.kind = kind
-	clause.target = target
-	return clause
-}
-
-parse_required_addition_name :: proc(
-	p: ^Parser,
-	max_length := 0,
-	limit_message := "",
-) -> (string, bool) {
-	token, ok := parse_required_addition_token_text(p, max_length, limit_message)
-	return token.text, ok
+	return ast.Selection_Request_Clause{kind = kind, target = target}, true
 }
 
 parse_required_addition_token_text :: proc(
