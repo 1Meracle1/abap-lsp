@@ -38,6 +38,7 @@ Server_State :: struct {
 	workspaces:           [dynamic]Server_Workspace,
 	pending_removed_uris: [dynamic]string,
 	pending_disk_refresh_uris: [dynamic]string,
+	materialize_dependency_documents: bool,
 	initialized:          bool,
 	shutdown_requested:   bool,
 }
@@ -159,6 +160,8 @@ handle_request :: proc(ctx: ^Request_Context, method: string, params: json.Value
 		handle_semantic_tokens(ctx, params)
 	case METHOD_FOLDING_RANGE:
 		handle_folding_ranges(ctx, params)
+	case METHOD_READ_DEPENDENCY_DOCUMENT:
+		handle_read_dependency_document(ctx, params)
 	case:
 		send_error(
 			ctx.output,

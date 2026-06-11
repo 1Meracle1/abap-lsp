@@ -92,6 +92,16 @@ impl zed::Extension for AbapExtension {
             env: binary.env,
         })
     }
+
+    fn language_server_initialization_options(
+        &mut self,
+        _language_server_id: &LanguageServerId,
+        _worktree: &zed::Worktree,
+    ) -> Result<Option<zed::serde_json::Value>> {
+        Ok(Some(zed::serde_json::json!({
+            "materializeDependencyDocuments": true,
+        })))
+    }
 }
 
 fn binary_name() -> &'static str {

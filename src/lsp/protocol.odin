@@ -29,6 +29,7 @@ METHOD_RENAME :: "textDocument/rename"
 METHOD_SEMANTIC_TOKENS_FULL :: "textDocument/semanticTokens/full"
 METHOD_FOLDING_RANGE :: "textDocument/foldingRange"
 METHOD_PUBLISH_DIAGNOSTICS :: "textDocument/publishDiagnostics"
+METHOD_READ_DEPENDENCY_DOCUMENT :: "abapls/readDependencyDocument"
 
 RPC_PARSE_ERROR :: -32700
 RPC_INVALID_REQUEST :: -32600
@@ -106,6 +107,10 @@ Hover_Markup :: struct {
 Hover :: struct {
 	contents: Hover_Markup `json:"contents"`,
 	range:    Range `json:"range"`,
+}
+
+Read_Dependency_Document_Result :: struct {
+	source_text: string `json:"sourceText"`
 }
 
 Text_Edit :: struct {
@@ -277,6 +282,14 @@ object_integer :: #force_inline proc "contextless" (object: json.Object, key: st
 		return cast(int)res, res_ok
 	}
 	return 0, false
+}
+
+object_boolean :: #force_inline proc "contextless" (object: json.Object, key: string) -> (bool, bool) {
+	if value, ok := object[key]; ok {
+		res, res_ok := value.(json.Boolean)
+		return bool(res), res_ok
+	}
+	return false, false
 }
 
 object_object :: #force_inline proc "contextless" (object: json.Object, key: string) -> (json.Object, bool) {

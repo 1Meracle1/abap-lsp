@@ -189,6 +189,35 @@ initialize_result_exposes_implementation_provider :: proc(t: ^testing.T) {
 }
 
 @(test)
+initialize_honors_materialized_dependency_documents_option :: proc(t: ^testing.T) {
+	output_path := `tmp\lsp_initialize_materialized_dependency_documents.out`
+	os.remove(output_path)
+	output, output_err := os.create(output_path)
+	testing.expect(t, output_err == nil)
+	if output_err != nil {
+		return
+	}
+	defer os.close(output)
+	defer os.remove(output_path)
+
+	state := lsp_test_empty_state()
+	defer lsp_test_state_destroy(&state)
+	params := make(json.Object, 1, context.allocator)
+	init_options := make(json.Object, 1, context.allocator)
+	init_options["materializeDependencyDocuments"] = json.Boolean(true)
+	params["initializationOptions"] = init_options
+
+	ctx := Request_Context {
+		state  = &state,
+		output = output,
+		id     = json.Integer(1),
+	}
+	handle_initialize(&ctx, params)
+
+	testing.expect(t, state.materialize_dependency_documents)
+}
+
+@(test)
 lsp_reanalysis_preserves_workspace_analysis_session :: proc(t: ^testing.T) {
 	state := Server_State {
 		allocator         = context.allocator,
@@ -456,6 +485,109 @@ ENDCLASS.`
 		end := position_to_offset(source, location.range.end)
 		testing.expect_value(t, source[start:end], "run")
 	}
+}
+
+@(test)
+lsp_definition_location_uses_virtual_dependency_ast_source :: proc(t: ^testing.T) {
+	uri := "abapls-cache:/global-interface/zif_filter.abap"
+	source := `INTERFACE zif_filter.
+  METHODS convert_select_option.
+ENDINTERFACE.`
+	parsed := parser.parse(source, uri, context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+
+	project := semantic.project_make()
+	defer semantic.project_destroy(&project)
+	file := semantic.project_add_file(&project, uri, parsed.root)
+
+	state := lsp_test_empty_state()
+	defer lsp_test_state_destroy(&state)
+
+	name := "convert_select_option"
+	offset := strings.index(source, name)
+	testing.expect(t, offset >= 0)
+	if offset < 0 {
+		return
+	}
+	location, ok := location_for_project_file_range(
+		&state,
+		Snapshot_Lookup{},
+		file,
+		semantic.Range{start = offset, end = offset + len(name)},
+	)
+
+	testing.expect(t, ok)
+	testing.expect_value(t, location.uri, uri)
+	testing.expect_value(t, location.range.start.line, 1)
+	testing.expect_value(t, location.range.start.character, 10)
+	testing.expect_value(t, location.range.end.character, 31)
+}
+
+@(test)
+lsp_definition_location_materializes_virtual_dependency_when_requested :: proc(t: ^testing.T) {
+	root := lsp_test_temp_root(t, `tmp\lsp_materialized_dependency_document`)
+	defer os.remove_all(root)
+	store_path := lsp_test_join_path(t, root, "cache.sqlite3")
+	uri := "abapls-cache:/global-interface/zif_filter.abap"
+	source := `INTERFACE zif_filter.
+  METHODS convert_select_option.
+ENDINTERFACE.`
+	parsed := parser.parse(source, uri, context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+
+	project := semantic.project_make()
+	defer semantic.project_destroy(&project)
+	file := semantic.project_add_file(&project, uri, parsed.root)
+
+	state := lsp_test_empty_state()
+	defer lsp_test_state_destroy(&state)
+	state.materialize_dependency_documents = true
+	state.options.dependency_store_path = store_path
+	state.documents[uri] = Document{uri = uri, text = source, version = 1}
+
+	name := "convert_select_option"
+	offset := strings.index(source, name)
+	testing.expect(t, offset >= 0)
+	if offset < 0 {
+		return
+	}
+	location, ok := location_for_project_file_range(
+		&state,
+		Snapshot_Lookup{},
+		file,
+		semantic.Range{start = offset, end = offset + len(name)},
+	)
+
+	testing.expect(t, ok)
+	testing.expect(t, strings.has_prefix(location.uri, "file://"))
+	testing.expect_value(t, location.range.start.line, 1)
+	testing.expect_value(t, location.range.start.character, 10)
+	testing.expect_value(t, location.range.end.character, 31)
+
+	path, path_ok := file_uri_to_path(location.uri, context.allocator)
+	testing.expect(t, path_ok)
+	if !path_ok {
+		return
+	}
+	testing.expect(t, strings.contains(path, "dependency-documents"))
+	written, written_ok := workspace.read_text_file(path, context.allocator)
+	testing.expect(t, written_ok)
+	testing.expect_value(t, written, source)
+}
+
+@(test)
+read_dependency_document_source_returns_open_virtual_document :: proc(t: ^testing.T) {
+	uri := "abapls-cache:/global-interface/zif_filter.abap"
+	source := "INTERFACE zif_filter.\nENDINTERFACE."
+
+	state := lsp_test_empty_state()
+	defer lsp_test_state_destroy(&state)
+	state.documents[uri] = Document{uri = uri, text = source, version = 1}
+
+	result, ok := read_dependency_document_source(&state, uri, context.allocator)
+
+	testing.expect(t, ok)
+	testing.expect_value(t, result, source)
 }
 
 @(test)

@@ -1,6 +1,8 @@
 package abap_frontend_lsp
 
 import "src:ast"
+import dep_store "src:dependency_store"
+import remote_deps "src:remote_dependencies"
 import "src:semantic"
 import workspace "src:workspace"
 import string_interner "src:string_interner"
@@ -8,6 +10,8 @@ import string_interner "src:string_interner"
 import json "core:encoding/json"
 import "core:fmt"
 import "core:mem"
+import net "core:net"
+import "core:os"
 import "core:strings"
 
 handle_hover :: proc(ctx: ^Request_Context, params: json.Value) {
@@ -396,8 +400,19 @@ location_for_project_file_range :: proc(
 	if source == "" {
 		return {}, false
 	}
+	uri := file.path
+	if state.materialize_dependency_documents {
+		if materialized_uri, materialized_ok := materialize_dependency_document_uri(
+			state,
+			file.path,
+			source,
+			context.temp_allocator,
+		); materialized_ok {
+			uri = materialized_uri
+		}
+	}
 	return Location {
-			uri   = file.path,
+			uri   = uri,
 			range = range_from_offsets(source, range.start, range.end),
 		},
 		true
@@ -411,14 +426,257 @@ source_for_project_file :: proc(state: ^Server_State, file: ^semantic.Project_Fi
 		return doc.text
 	}
 	path, path_ok := file_uri_to_path(file.path, context.temp_allocator)
+	if path_ok {
+		source, source_ok := workspace.read_text_file(path, context.temp_allocator)
+		if source_ok {
+			return source
+		}
+	}
+	if source, ok := dependency_source_for_uri(state, file.path, context.temp_allocator); ok {
+		return source
+	}
+	if file.root != nil {
+		return ast.print_node(file.root, context.temp_allocator)
+	}
+	return ""
+}
+
+handle_read_dependency_document :: proc(ctx: ^Request_Context, params: json.Value) {
+	uri, ok := read_dependency_document_uri_from_params(params)
+	if !ok {
+		send_error(
+			ctx.output,
+			ctx.id,
+			RPC_INVALID_PARAMS,
+			"abapls/readDependencyDocument requires uri",
+			ctx.state.allocator,
+		)
+		return
+	}
+	if source, source_ok := read_dependency_document_source(
+		ctx.state,
+		uri,
+		ctx.state.allocator,
+	); source_ok {
+		send_success(
+			ctx.output,
+			ctx.id,
+			Read_Dependency_Document_Result{source_text = source},
+			ctx.state.allocator,
+		)
+		return
+	}
+	send_success(ctx.output, ctx.id, json.Null(nil), ctx.state.allocator)
+}
+
+read_dependency_document_uri_from_params :: proc(params: json.Value) -> (string, bool) {
+	object, ok := params.(json.Object)
+	if !ok {
+		return "", false
+	}
+	uri, uri_ok := object_string(object, "uri")
+	if !uri_ok || strings.trim_space(uri) == "" {
+		return "", false
+	}
+	return normalize_lsp_uri(uri, context.allocator), true
+}
+
+read_dependency_document_source :: proc(
+	state: ^Server_State,
+	uri: string,
+	allocator: mem.Allocator,
+) -> (string, bool) {
+	if doc, ok := state.documents[uri]; ok {
+		return strings.clone(doc.text, allocator), true
+	}
+	if source, ok := dependency_source_for_uri(state, uri, allocator); ok {
+		return source, true
+	}
+	return dependency_ast_source_for_uri(state, uri, allocator)
+}
+
+dependency_source_for_uri :: proc(
+	state: ^Server_State,
+	uri: string,
+	allocator: mem.Allocator,
+) -> (string, bool) {
+	object_kind, object_name, ok := dependency_object_from_virtual_uri(uri, allocator)
+	if !ok {
+		return "", false
+	}
+	for &slot in state.workspaces {
+		config := workspace.remote_dependency_config_from_workspace(&slot.root)
+		source, source_ok, _ := remote_deps.open_source(
+			&config,
+			object_kind,
+			object_name,
+			allocator,
+		)
+		if source_ok && source.source_text != "" {
+			return source.source_text, true
+		}
+	}
+	return "", false
+}
+
+dependency_ast_source_for_uri :: proc(
+	state: ^Server_State,
+	uri: string,
+	allocator: mem.Allocator,
+) -> (string, bool) {
+	for &slot in state.workspaces {
+		if !slot.has_analysis {
+			continue
+		}
+		analysis := semantic.semantic_graph_session_current_analysis(&slot.analysis.session)
+		if analysis == nil {
+			continue
+		}
+		for &result in analysis.project_results {
+			file := project_file_for_uri(&result, uri)
+			if file != nil && file.root != nil {
+				return ast.print_node(file.root, allocator), true
+			}
+		}
+	}
+	return "", false
+}
+
+materialize_dependency_document_uri :: proc(
+	state: ^Server_State,
+	uri: string,
+	source: string,
+	allocator: mem.Allocator,
+) -> (string, bool) {
+	if source == "" {
+		return "", false
+	}
+	path, path_ok := materialized_dependency_document_path(state, uri, allocator)
 	if !path_ok {
-		return ""
+		return "", false
 	}
-	source, source_ok := workspace.read_text_file(path, context.temp_allocator)
-	if !source_ok {
-		return ""
+	parent := os.dir(path)
+	if parent != "" && parent != "." {
+		if os.make_directory_all(parent) != nil {
+			return "", false
+		}
 	}
-	return source
+	if os.write_entire_file(path, source) != nil {
+		return "", false
+	}
+	return file_uri_from_path(path, allocator)
+}
+
+materialized_dependency_document_path :: proc(
+	state: ^Server_State,
+	uri: string,
+	allocator: mem.Allocator,
+) -> (string, bool) {
+	object_kind, object_name, ok := dependency_object_from_virtual_uri(uri, context.temp_allocator)
+	if !ok {
+		return "", false
+	}
+	store_path, store_path_ok := dep_store.resolve_dependency_store_path(
+		state.options.dependency_store_path,
+		context.temp_allocator,
+	)
+	if !store_path_ok {
+		return "", false
+	}
+	cache_root, root_err := os.join_path(
+		{os.dir(store_path), "dependency-documents"},
+		context.temp_allocator,
+	)
+	if root_err != nil {
+		return "", false
+	}
+	kind := dependency_document_path_segment(object_kind, "dependency", context.temp_allocator)
+	stem := dependency_document_path_segment(object_name, "document", context.temp_allocator)
+	file_name := strings.concatenate({stem, ".abap"}, context.temp_allocator)
+	path, path_err := os.join_path({cache_root, kind, file_name}, allocator)
+	return path, path_err == nil
+}
+
+dependency_document_path_segment :: proc(
+	value: string,
+	fallback: string,
+	allocator: mem.Allocator,
+) -> string {
+	lower := strings.to_lower(strings.trim_space(value), context.temp_allocator)
+	out := strings.builder_make(allocator)
+	wrote := false
+	last_separator := false
+	for ch in lower {
+		if (ch >= 'a' && ch <= 'z') ||
+		   (ch >= '0' && ch <= '9') ||
+		   ch == '_' ||
+		   ch == '-' {
+			strings.write_rune(&out, ch)
+			wrote = true
+			last_separator = false
+			continue
+		}
+		if wrote && !last_separator {
+			strings.write_byte(&out, '_')
+			last_separator = true
+		}
+	}
+	segment := strings.to_string(out)
+	for len(segment) > 0 && segment[len(segment) - 1] == '_' {
+		segment = segment[:len(segment) - 1]
+	}
+	if segment == "" {
+		return strings.clone(fallback, allocator)
+	}
+	return segment
+}
+
+dependency_object_from_virtual_uri :: proc(
+	uri: string,
+	allocator: mem.Allocator,
+) -> (object_kind, object_name: string, ok: bool) {
+	lower := strings.to_lower(uri, context.temp_allocator)
+	if strings.has_prefix(lower, "abapls-cache:") {
+		return dependency_object_from_cache_uri(uri[len("abapls-cache:"):], allocator)
+	}
+	return "", "", false
+}
+
+dependency_object_from_cache_uri :: proc(
+	raw_uri: string,
+	allocator: mem.Allocator,
+) -> (object_kind, object_name: string, ok: bool) {
+	path := raw_uri
+	if query_start := strings.index_byte(path, '?'); query_start >= 0 {
+		path = path[:query_start]
+	}
+	if fragment_start := strings.index_byte(path, '#'); fragment_start >= 0 {
+		path = path[:fragment_start]
+	}
+	for len(path) > 0 && path[0] == '/' {
+		path = path[1:]
+	}
+	separator := strings.index_byte(path, '/')
+	if separator < 0 {
+		return "", "", false
+	}
+	kind := strings.trim_space(path[:separator])
+	name := strings.trim_space(path[separator + 1:])
+	if kind == "" || name == "" {
+		return "", "", false
+	}
+	lower_name := strings.to_lower(name, context.temp_allocator)
+	if strings.has_suffix(lower_name, ".abap") {
+		name = name[:len(name) - len(".abap")]
+	} else if strings.has_suffix(lower_name, ".xml") {
+		name = name[:len(name) - len(".xml")]
+	}
+	if decoded, decode_ok := net.percent_decode(name, allocator); decode_ok {
+		name = decoded
+	} else {
+		name = strings.clone(name, allocator)
+	}
+	return strings.clone(kind, allocator), name, true
 }
 
 location_present :: proc(locations: []Location, location: Location) -> bool {

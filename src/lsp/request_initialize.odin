@@ -11,6 +11,12 @@ handle_initialize :: proc(ctx: ^Request_Context, params: json.Value) {
 			if path, path_ok := object_string(init_options, "dependencyCachePath"); path_ok {
 				state.options.dependency_store_path = strings.clone(path, state.allocator)
 			}
+			if materialize, materialize_ok := object_boolean(
+				init_options,
+				"materializeDependencyDocuments",
+			); materialize_ok {
+				state.materialize_dependency_documents = materialize
+			}
 		}
 		opened := false
 		if folders, folders_ok := object_array(object, "workspaceFolders");

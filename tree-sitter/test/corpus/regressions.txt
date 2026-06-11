@@ -1358,3 +1358,37 @@ DATA(lv_direction) = SWITCH string( lv_direction_raw WHEN '' THEN 'ASCENDING' EL
           (string)
           (keyword)
           (string))))))
+
+==================
+Open SQL row limit highlights rows as keyword
+==================
+
+SELECT *
+  FROM ztt_osmm_aif_job
+  WHERE status = 'P'
+  INTO TABLE @DATA(lt_jobs)
+  UP TO 50 ROWS.
+
+---
+
+(source_file
+  (select_statement
+    (keyword)
+    (operator)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (operator)
+    (string)
+    (keyword)
+    (keyword)
+    (operator)
+    (keyword)
+    (dynamic_name)
+    (keyword)
+    (keyword)
+    (number)
+    (keyword)))

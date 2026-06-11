@@ -248,6 +248,7 @@ const EXPRESSION_KEYWORDS = [
   "ALL",
   "DISTINCT",
   "UP",
+  "ROWS",
   "PACKAGE",
   "SIZE",
   "OFFSET",
