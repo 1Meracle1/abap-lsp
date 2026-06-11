@@ -1284,3 +1284,32 @@ CONCATENATE LINES OF lt_order_parts INTO rv_orderby SEPARATED BY `, `.
     (keyword)
     (keyword)
     (string)))
+
+==================
+Switch constructor highlights as keyword
+==================
+
+DATA(lv_direction) = SWITCH string( lv_direction_raw WHEN '' THEN 'ASCENDING' ELSE '' ).
+
+---
+
+(source_file
+  (data_declaration
+    (keyword)
+    (binary_expression
+      (parenthesized_expression
+        (qualified_name
+          (identifier)))
+      (constructor_expression
+        (keyword)
+        (qualified_name
+          (identifier))
+        (argument_list
+          (qualified_name
+            (identifier))
+          (keyword)
+          (string)
+          (keyword)
+          (string)
+          (keyword)
+          (string))))))
