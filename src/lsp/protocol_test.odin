@@ -687,6 +687,34 @@ DATA lt_seen_po TYPE HASHED TABLE OF ty_seen_po WITH UNIQUE KEY ebeln.`
 }
 
 @(test)
+lsp_hover_lookup_uses_precise_raise_exporting_value_range :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/raise_exporting_hover.abap"
+	source := `DATA lo_msg TYPE REF TO object.
+RAISE EXCEPTION TYPE cx_demo
+  EXPORTING
+    message_container = lo_msg.`
+
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "message_container = lo_msg")
+	testing.expect(t, offset >= 0)
+	if offset < 0 {
+		return
+	}
+	offset += len("message_container = ")
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	found := entity_at_position(&state, params)
+
+	testing.expect(t, found.ok)
+	if !found.ok {
+		return
+	}
+	testing.expect_value(t, found.entity.kind, semantic.Entity_Kind.Variable)
+	testing.expect_value(t, source[found.range.start:found.range.end], "lo_msg")
+}
+
+@(test)
 lsp_hover_reports_builtin_procedure_documentation :: proc(t: ^testing.T) {
 	source := `DATA lv_len TYPE i.
 lv_len = strlen( 'abc' ).`

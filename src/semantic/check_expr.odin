@@ -237,8 +237,9 @@ checker_check_ident_expr :: proc(
 	name: string,
 	namespace: Namespace,
 	lhs: bool,
+	use_range: Range = {},
 ) -> Operand {
-	entity, ok := checker_check_ident_name(ctx, node, name, namespace, lhs)
+	entity, ok := checker_check_ident_name(ctx, node, name, namespace, lhs, use_range)
 	if !ok {
 		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
 	}
@@ -251,9 +252,10 @@ checker_check_ident_name :: proc(
 	name: string,
 	namespace: Namespace,
 	lhs: bool,
+	use_range: Range = {},
 ) -> (^Entity, bool) {
 	_ = lhs
-	if entity, ok, handled := checker_check_oop_receiver_ident(ctx, node, name, namespace); handled {
+	if entity, ok, handled := checker_check_oop_receiver_ident(ctx, node, name, namespace, use_range); handled {
 		return entity, ok
 	}
 	interned := checker_intern_name(ctx.project, name)
@@ -269,12 +271,41 @@ checker_check_ident_name :: proc(
 		} else if namespace == .Routine {
 			reason = .Unresolved_Routine
 		}
-		checker_add_unresolved_candidate(ctx, interned, namespace, kind, .Identifier, reason, node.range if node != nil else Range{}, node)
+		checker_add_unresolved_candidate(
+			ctx,
+			interned,
+			namespace,
+			kind,
+			.Identifier,
+			reason,
+			checker_use_range(node, use_range),
+			node,
+		)
 		return nil, false
 	}
-	checker_add_entity_use(ctx, node, entity)
+	checker_add_entity_use_precise(ctx, node, entity, use_range)
 	checker_check_entity_for_operand(ctx, entity)
 	return entity, true
+}
+
+checker_use_range :: proc(node: ^ast.Node, range: Range) -> Range {
+	if range.end > range.start {
+		return range
+	}
+	return node.range if node != nil else Range{}
+}
+
+checker_add_entity_use_precise :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	entity: ^Entity,
+	range: Range,
+) {
+	if range.end > range.start {
+		checker_add_entity_use_at_range(ctx, node, entity, range)
+		return
+	}
+	checker_add_entity_use(ctx, node, entity)
 }
 
 checker_record_expr_info :: proc(
@@ -322,10 +353,11 @@ checker_record_entity_operand :: proc(
 	entity: ^Entity,
 	lhs := false,
 	record_use := true,
+	use_range: Range = {},
 ) -> Operand {
 	assert(entity != nil)
 	if record_use {
-		checker_add_entity_use(ctx, node, entity)
+		checker_add_entity_use_precise(ctx, node, entity, use_range)
 	}
 	checker_check_entity_for_operand(ctx, entity)
 	typ := entity.type if entity.type != nil else project_type_unknown(ctx.project)
@@ -404,6 +436,7 @@ checker_lookup_selector_member :: proc(
 	namespace: Namespace,
 	node: ^ast.Node,
 	lhs: bool,
+	use_range: Range = {},
 ) -> Operand {
 	interned := checker_intern_name(ctx.project, name)
 	if !string_interner.is_valid(interned) {
@@ -416,7 +449,7 @@ checker_lookup_selector_member :: proc(
 	if op == .Dash {
 		if structure := checker_type_structure(base.type); structure != nil {
 			if field, ok := checker_lookup_structure_field(structure, interned); ok {
-				return checker_record_entity_operand(ctx, node, field, lhs)
+				return checker_record_entity_operand(ctx, node, field, lhs, use_range = use_range)
 			}
 		}
 		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
@@ -425,12 +458,12 @@ checker_lookup_selector_member :: proc(
 		target := checker_type_ref_target(ctx, base.type)
 		if structure := checker_type_structure(target); structure != nil {
 			if field, ok := checker_lookup_structure_field(structure, interned); ok {
-				return checker_record_entity_operand(ctx, node, field, lhs)
+				return checker_record_entity_operand(ctx, node, field, lhs, use_range = use_range)
 			}
 		}
 		if owner := checker_type_object_entity(target); owner != nil {
-			if member, ok := checker_lookup_object_member_visible(ctx, owner, namespace, interned, node.range if node != nil else Range{}); ok {
-				return checker_record_entity_operand(ctx, node, member, lhs)
+			if member, ok := checker_lookup_object_member_visible(ctx, owner, namespace, interned, checker_use_range(node, use_range)); ok {
+				return checker_record_entity_operand(ctx, node, member, lhs, use_range = use_range)
 			}
 		}
 		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
@@ -441,8 +474,8 @@ checker_lookup_selector_member :: proc(
 			owner = checker_type_object_entity(base.type)
 		}
 		if owner != nil && (owner.kind == .Class || owner.kind == .Interface) {
-			if member, ok := checker_lookup_object_member_visible(ctx, owner, namespace, interned, node.range if node != nil else Range{}); ok {
-				return checker_record_entity_operand(ctx, node, member, lhs)
+			if member, ok := checker_lookup_object_member_visible(ctx, owner, namespace, interned, checker_use_range(node, use_range)); ok {
+				return checker_record_entity_operand(ctx, node, member, lhs, use_range = use_range)
 			}
 		}
 	}
@@ -564,10 +597,26 @@ checker_check_raw_operand_ref :: proc(
 	if ref.type_base {
 		namespace = .Type
 	}
-	base := checker_check_ident_expr(ctx, node, ref.name.text, namespace, lhs && len(ref.path) == 0 && !ref.dynamic_path)
+	base := checker_check_ident_expr(
+		ctx,
+		node,
+		ref.name.text,
+		namespace,
+		lhs && len(ref.path) == 0 && !ref.dynamic_path,
+		ref.name.range,
+	)
 	for segment in ref.path {
 		member_namespace := checker_selector_member_namespace(segment.selector, namespace)
-		member := checker_lookup_selector_member(ctx, base, segment.selector, segment.name.text, member_namespace, node, lhs)
+		member := checker_lookup_selector_member(
+			ctx,
+			base,
+			segment.selector,
+			segment.name.text,
+			member_namespace,
+			node,
+			lhs,
+			segment.name.range,
+		)
 		if member.entity == nil {
 			member.mode = .Field
 		}

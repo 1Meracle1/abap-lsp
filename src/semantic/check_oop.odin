@@ -394,6 +394,7 @@ checker_check_oop_receiver_ident :: proc(
 	node: ^ast.Node,
 	name: string,
 	namespace: Namespace,
+	use_range: Range = {},
 ) -> (^Entity, bool, bool) {
 	if namespace != .Value {
 		return nil, false, false
@@ -404,10 +405,10 @@ checker_check_oop_receiver_ident :: proc(
 		return nil, false, false
 	}
 	if _, entity, ok := checker_lookup_declaration(ctx, .Value, interned); ok {
-		checker_add_entity_use(ctx, node, entity)
+		checker_add_entity_use_precise(ctx, node, entity, use_range)
 		return entity, true, true
 	}
-	checker_add_diagnostic(ctx, .Invalid_Context, node.range if node != nil else Range{}, "invalid object receiver")
+	checker_add_diagnostic(ctx, .Invalid_Context, checker_use_range(node, use_range), "invalid object receiver")
 	return nil, false, true
 }
 

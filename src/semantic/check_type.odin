@@ -428,7 +428,14 @@ checker_record_type_ref_raw_uses :: proc(ctx: ^Checker_Context, expr: ^ast.Expr)
 	if n, ok := expr.derived_expr.(^ast.Type_Ref_Expr); ok {
 		for raw_ref in n.raw_refs {
 			ref_namespace := Namespace.Type if raw_ref.type_base else Namespace.Value
-			checker_check_ident_name(ctx, &expr.expr_base, raw_ref.name.text, ref_namespace, false)
+			checker_check_ident_name(
+				ctx,
+				&expr.expr_base,
+				raw_ref.name.text,
+				ref_namespace,
+				false,
+				raw_ref.name.range,
+			)
 		}
 	}
 }
