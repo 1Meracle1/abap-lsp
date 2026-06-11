@@ -2611,8 +2611,8 @@ root_semantic_sql_checker_reports_local_source_and_field_diagnostics :: proc(t: 
        END OF zflight.
 DATA lv_text TYPE string.
 
-SELECT connid FROM zflight INTO @lv_text.
-SELECT carrid FROM zmissing INTO @DATA(lt_missing).`
+SELECT SINGLE connid FROM zflight INTO @lv_text.
+SELECT SINGLE carrid FROM zmissing INTO @DATA(lt_missing).`
 
 	project := project_make()
 	defer project_destroy(&project)

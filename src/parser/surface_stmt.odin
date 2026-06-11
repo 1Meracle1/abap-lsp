@@ -662,8 +662,12 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	stmt.query = parse_select_query_clause(p, body_start)
 	stmt.range = data_stmt_range(p, start)
-	if (select_query_has_loop_body(stmt.query) && endselect_ahead(p)) ||
-	   at_keyword(p, "ENDSELECT") {
+	requires_endselect := select_query_has_loop_body(stmt.query)
+	if requires_endselect && !endselect_ahead(p) {
+		error(p, select_missing_endselect_range(stmt), OPEN_SQL_MISSING_ENDSELECT_MESSAGE)
+		return stmt
+	}
+	if (requires_endselect && endselect_ahead(p)) || at_keyword(p, "ENDSELECT") {
 		stmt.body = parse_stmt_list_until(p, []string{"ENDSELECT"})
 		end := expect_keyword(p, "ENDSELECT")
 		if token_is_keyword(p, end, "ENDSELECT") {
@@ -672,6 +676,13 @@ parse_select_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 	}
 	return stmt
+}
+
+select_missing_endselect_range :: proc(stmt: ^ast.Select_Stmt) -> tokenizer.Range {
+	if select_range_valid(stmt.query.into_clause) {
+		return stmt.query.into_clause
+	}
+	return stmt.range
 }
 
 endselect_ahead :: proc(p: ^Parser) -> bool {
@@ -743,6 +754,29 @@ Select_Clause_State :: struct {
 }
 
 OPEN_SQL_HOST_ESCAPE_MESSAGE :: "syntax error: when escaped, all host variables in an Open SQL statement must be escaped using @"
+OPEN_SQL_INLINE_DATA_TARGET_MESSAGE :: "syntax error: Open SQL inline DATA target requires @"
+OPEN_SQL_RESULT_TARGET_MESSAGE :: "syntax error: invalid SELECT result target"
+OPEN_SQL_MISSING_ENDSELECT_MESSAGE :: "syntax error: SELECT without SINGLE or INTO TABLE requires ENDSELECT"
+
+SELECT_RESULT_TARGET_STOP_KEYWORDS :: []string {
+	"PACKAGE",
+	"WHERE",
+	"GROUP",
+	"FIELDS",
+	"HAVING",
+	"ORDER",
+	"UP",
+	"FOR",
+	"FROM",
+	"OFFSET",
+	"BYPASSING",
+	"CONNECTION",
+	"CLIENT",
+	"UNION",
+	"INTERSECT",
+	"EXCEPT",
+	"SELECT",
+}
 
 select_reject_clause :: proc(
 	p: ^Parser,
@@ -898,7 +932,7 @@ parse_select_query_clause :: proc(
 				)
 				continue
 			}
-			query.result = parse_select_result_tail(p, .Into, body_start)
+			query.result = parse_select_result_tail(p, .Into, body_start, true)
 			query.into_clause = query.result.range if query.result != nil else tokenizer.Range{}
 			state.result = true
 			state.result_closes_tail =
@@ -917,7 +951,7 @@ parse_select_query_clause :: proc(
 				)
 				continue
 			}
-			query.result = parse_select_result_tail(p, .Appending, body_start)
+			query.result = parse_select_result_tail(p, .Appending, body_start, true)
 			query.into_clause = query.result.range if query.result != nil else tokenizer.Range{}
 			state.result = true
 			state.result_closes_tail =
@@ -1807,6 +1841,7 @@ parse_select_result_tail :: proc(
 	p: ^Parser,
 	kind: ast.Select_Result_Kind,
 	body_start: int,
+	validate_open_sql_target := false,
 ) -> ^ast.Select_Result_Clause {
 	clause, _ := mem.new(ast.Select_Result_Clause, p.allocator)
 	start := previous_token(p)
@@ -1817,59 +1852,47 @@ parse_select_result_tail :: proc(
 		clause.corresponding_fields = true
 	}
 	clause.table = allow_keyword(p, "TABLE")
-	if current_token(p).kind == .LParen {
+	target_start := current_token(p)
+	parenthesized_target := target_start.kind == .LParen
+	if parenthesized_target && !validate_open_sql_target {
 		clause.target = parse_raw_operand_to_period(
 			p,
-			[]string {
-				"PACKAGE",
-				"WHERE",
-				"GROUP",
-				"FIELDS",
-				"HAVING",
-				"ORDER",
-				"UP",
-				"FOR",
-				"FROM",
-				"OFFSET",
-				"BYPASSING",
-				"CONNECTION",
-				"CLIENT",
-				"UNION",
-				"INTERSECT",
-				"EXCEPT",
-				"SELECT",
-			},
+			SELECT_RESULT_TARGET_STOP_KEYWORDS,
 		)
 	} else {
 		clause.target = sql_data_expr(
 			p,
 			body_start,
-			[]string {
-				"PACKAGE",
-				"WHERE",
-				"GROUP",
-				"FIELDS",
-				"HAVING",
-				"ORDER",
-				"UP",
-				"FOR",
-				"FROM",
-				"OFFSET",
-				"BYPASSING",
-				"CONNECTION",
-				"CLIENT",
-				"UNION",
-				"INTERSECT",
-				"EXCEPT",
-				"SELECT",
-			},
+			SELECT_RESULT_TARGET_STOP_KEYWORDS,
 		)
+	}
+	if validate_open_sql_target && parenthesized_target {
+		target_range := clause.target.range if clause.target != nil else target_start.range
+		error(p, target_range, OPEN_SQL_RESULT_TARGET_MESSAGE)
+	}
+	if validate_open_sql_target && select_result_target_unescaped_inline_data(clause.target) {
+		error(p, clause.target.range, OPEN_SQL_INLINE_DATA_TARGET_MESSAGE)
 	}
 	if clause.target == nil {
 		error_current(p, "syntax error: expected SELECT result target")
+	} else if validate_open_sql_target {
+		_ = closing_delimiter_error(p)
 	}
 	clause.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 	return clause
+}
+
+select_result_target_unescaped_inline_data :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	#partial switch _ in expr.derived_expr {
+	case ^ast.Data_Inline_Name_Expr:
+		return true
+	case ^ast.Host_Expr:
+		return false
+	}
+	return false
 }
 
 select_clause_starts :: proc(p: ^Parser) -> bool {
@@ -2770,10 +2793,44 @@ select_query_has_loop_body :: proc(query: ast.Select_Query_Clause) -> bool {
 	if query.single {
 		return false
 	}
+	if select_query_limits_to_one_row(query) {
+		return false
+	}
 	if select_projection_list_is_aggregate(query.projections[:]) {
 		return false
 	}
-	return query.result == nil || !query.result.table
+	result := select_query_effective_result(query)
+	return result == nil || !result.table
+}
+
+select_query_effective_result :: proc(query: ast.Select_Query_Clause) -> ^ast.Select_Result_Clause {
+	if query.result != nil {
+		return query.result
+	}
+	if len(query.set_ops) == 0 {
+		return nil
+	}
+	return select_query_effective_result(query.set_ops[len(query.set_ops) - 1].query)
+}
+
+select_query_limits_to_one_row :: proc(query: ast.Select_Query_Clause) -> bool {
+	if select_expr_is_one_literal(query.up_to_rows) {
+		return true
+	}
+	if len(query.set_ops) == 0 {
+		return false
+	}
+	return select_query_limits_to_one_row(query.set_ops[len(query.set_ops) - 1].query)
+}
+
+select_expr_is_one_literal :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	if literal, ok := expr.derived_expr.(^ast.Literal_Expr); ok {
+		return literal.value == "1"
+	}
+	return false
 }
 
 select_projection_list_is_aggregate :: proc(projections: []^ast.Expr) -> bool {

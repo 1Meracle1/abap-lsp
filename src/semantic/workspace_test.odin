@@ -1068,7 +1068,7 @@ CLASS lcl_child DEFINITION INHERITING FROM zcl_remote_parent.
 ENDCLASS.
 DATA lr_remote TYPE REF TO zcl_remote.
 CALL FUNCTION 'Z_REMOTE_FM'.
-SELECT carrid FROM ztab INTO @DATA(lv_carrid).`),
+SELECT SINGLE carrid FROM ztab INTO @DATA(lv_carrid).`),
 	}
 
 	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:]})
@@ -1108,7 +1108,7 @@ semantic_workspace_resolves_external_type_and_sql_summaries_without_candidates :
 	files := [?]Workspace_File_Input {
 		workspace_test_file(t, "mem://zmain.report.abap", `REPORT zmain.
 DATA lr_remote TYPE REF TO zcl_remote.
-SELECT carrid FROM scarr INTO @DATA(lv_carrid).`),
+SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).`),
 	}
 
 	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external, interner = interner})
@@ -1178,7 +1178,7 @@ INCLUDE zmain_impl.`),
 ENDCLASS.`),
 		workspace_test_file(t, "mem://zmain_impl.include.abap", `CLASS lcl_app IMPLEMENTATION.
   METHOD run.
-    SELECT carrid FROM zmissing_table INTO @DATA(lv_carrid).
+    SELECT SINGLE carrid FROM zmissing_table INTO @DATA(lv_carrid).
   ENDMETHOD.
 ENDCLASS.`),
 	}

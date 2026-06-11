@@ -4,6 +4,16 @@ import "src:ast"
 
 import "core:testing"
 
+parse_error_message_count :: proc(errors: []Parse_Error, message: string) -> int {
+	count := 0
+	for err in errors {
+		if err.message == message {
+			count += 1
+		}
+	}
+	return count
+}
+
 @(test)
 statement_batch_open_sql_and_data_access :: proc(t: ^testing.T) {
 	source := `SELECT * FROM mara INTO wa. WRITE wa. ENDSELECT.
@@ -581,7 +591,7 @@ MODIFY zmodify FROM ls_old WHERE id = lv_id WHERE id = lv_other.`
 
 @(test)
 cursor_dataset_report_and_textpool_fields :: proc(t: ^testing.T) {
-	source := `SELECT SINGLE matnr FROM mara INTO DATA(lv_matnr) WHERE matnr = lv_key.
+	source := `SELECT SINGLE matnr FROM mara INTO @DATA(lv_matnr) WHERE matnr = @lv_key.
 OPEN CURSOR WITH HOLD cv FOR SELECT matnr FROM mara WHERE matnr = lv_key.
 FETCH NEXT CURSOR cv INTO TABLE lt_mara PACKAGE SIZE lv_size.
 CLOSE CURSOR cv.
@@ -695,14 +705,14 @@ MODIFY CURRENT LINE FIELD VALUE mara-matnr INTO lv_matnr.`
 
 @(test)
 open_sql_host_expressions_are_ast_nodes :: proc(t: ^testing.T) {
-	source := `SELECT matnr FROM mara INTO @DATA(lv_matnr) WHERE matnr = @lv_key.`
+	source := `SELECT SINGLE matnr FROM mara INTO @DATA(lv_matnr) WHERE matnr = @lv_key.`
 	parsed := parse(source, "sql_host.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(t, counts.host_expr, 2)
 	printed := ast.print_node(parsed.root, context.allocator)
-	testing.expect_value(t, printed, "SELECT matnr FROM mara INTO @DATA(lv_matnr) WHERE matnr = @lv_key.")
+	testing.expect_value(t, printed, "SELECT SINGLE matnr FROM mara INTO @DATA(lv_matnr) WHERE matnr = @lv_key.")
 }
 
 @(test)
@@ -794,7 +804,7 @@ ENDSELECT.`
 
 @(test)
 open_sql_projection_sql_shapes_are_parser_modeled :: proc(t: ^testing.T) {
-	source := `SELECT COUNT( DISTINCT rel~evtid ) AS total_events,
+	source := `SELECT SINGLE COUNT( DISTINCT rel~evtid ) AS total_events,
        COUNT( ALL evt~evtid ) AS active_events,
        COALESCE( evt~name, @lv_name ) AS event_name,
        rel~*, evt~evtid
@@ -841,12 +851,12 @@ open_sql_projection_sql_shapes_are_parser_modeled :: proc(t: ^testing.T) {
 	right := join_on.right.derived_expr.(^ast.Sql_Column_Expr)
 	testing.expect_value(t, left.qualifier.text, "evt")
 	testing.expect_value(t, right.qualifier.text, "rel")
-	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), "SELECT COUNT( DISTINCT rel~evtid ) AS total_events, COUNT( ALL evt~evtid ) AS active_events, COALESCE( evt~name, @lv_name ) AS event_name, rel~*, evt~evtid FROM zrel AS rel INNER JOIN zevt AS evt ON evt~evtid = rel~evtid INTO @DATA(ls_row).")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), "SELECT SINGLE COUNT( DISTINCT rel~evtid ) AS total_events, COUNT( ALL evt~evtid ) AS active_events, COALESCE( evt~name, @lv_name ) AS event_name, rel~*, evt~evtid FROM zrel AS rel INNER JOIN zevt AS evt ON evt~evtid = rel~evtid INTO @DATA(ls_row).")
 }
 
 @(test)
 open_sql_function_arguments_named_like_modifiers_are_not_aggregate_modifiers :: proc(t: ^testing.T) {
-	source := `SELECT COALESCE( all, @lv_value ) AS value FROM ztab INTO @DATA(ls_row).`
+	source := `SELECT SINGLE COALESCE( all, @lv_value ) AS value FROM ztab INTO @DATA(ls_row).`
 	parsed := parse(source, "sql_function_modifier_words.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -892,8 +902,8 @@ ENDSELECT.`
 @(test)
 open_sql_projection_source_and_result_operands_are_modeled :: proc(t: ^testing.T) {
 	source := `SELECT a~matnr AS material, a~* FROM mara AS a INTO CORRESPONDING FIELDS OF TABLE @DATA(lt_rows).
-SELECT (lv_fields) FROM (lv_table) AS d INTO (lv_target) WHERE (lv_where).
-SELECT matnr FROM @lt_source AS s INTO FIELD-SYMBOL(<row>).`
+SELECT SINGLE (lv_fields) FROM (lv_table) AS d INTO @lv_target WHERE (lv_where).
+SELECT SINGLE matnr FROM @lt_source AS s INTO FIELD-SYMBOL(<row>).`
 	parsed := parse(source, "sql_operand_shapes.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -911,7 +921,7 @@ SELECT matnr FROM @lt_source AS s INTO FIELD-SYMBOL(<row>).`
 	dynamic_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt)
 	_, dynamic_projection := dynamic_stmt.query.projection_clauses[0].value.derived_expr.(^ast.Paren_Expr)
 	_, dynamic_source := dynamic_stmt.query.source_clause.source.derived_expr.(^ast.Paren_Expr)
-	_, dynamic_target := dynamic_stmt.query.result.target.derived_expr.(^ast.Type_Ref_Expr)
+	_, dynamic_target := dynamic_stmt.query.result.target.derived_expr.(^ast.Host_Expr)
 	testing.expect(t, dynamic_projection)
 	testing.expect(t, dynamic_stmt.query.projection_clauses[0].is_dynamic)
 	testing.expect(t, dynamic_source)
@@ -924,6 +934,60 @@ SELECT matnr FROM @lt_source AS s INTO FIELD-SYMBOL(<row>).`
 	testing.expect(t, host_source_expr)
 	testing.expect_value(t, host_source.query.source_clause.alias.text, "s")
 	testing.expect(t, fs_target)
+}
+
+@(test)
+open_sql_scalar_row_select_without_endselect_is_diagnosed :: proc(t: ^testing.T) {
+	source := `SELECT *
+  FROM e070
+  WHERE trstatus = 'S'
+  INTO @DATA(lt_tbl).
+
+SELECT *
+  FROM e070
+  WHERE trstatus = 'S'
+  INTO lt_tbl.
+
+SELECT *
+  FROM e070
+  WHERE trstatus = 'S'
+   lt_tbl.`
+	parsed := parse(source, "sql_missing_endselect.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, OPEN_SQL_MISSING_ENDSELECT_MESSAGE), 3)
+}
+
+@(test)
+open_sql_inline_data_target_requires_host_escape :: proc(t: ^testing.T) {
+	source := `SELECT SINGLE *
+  FROM e070
+  WHERE trstatus = 'S'
+  INTO DATA(lt_tbl).`
+	parsed := parse(source, "sql_unescaped_inline_target.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, OPEN_SQL_INLINE_DATA_TARGET_MESSAGE), 1)
+}
+
+@(test)
+open_sql_invalid_parenthesized_result_targets_are_diagnosed :: proc(t: ^testing.T) {
+	source := `SELECT SINGLE *
+  FROM e070
+  WHERE trstatus = 'S'
+  INTO (lt_tbl).
+
+SELECT SINGLE *
+  FROM e070
+  WHERE trstatus = 'S'
+  INTO (lt_tbl.
+
+SELECT SINGLE *
+  FROM e070
+  WHERE trstatus = 'S'
+  INTO lt_tbl).`
+	parsed := parse(source, "sql_invalid_result_targets.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, OPEN_SQL_RESULT_TARGET_MESSAGE), 2)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: unmatched closing ')'"), 1)
 }
 
 @(test)
@@ -1177,8 +1241,8 @@ open_sql_duplicate_from_clause_is_diagnosed_without_overwriting_source :: proc(t
 
 @(test)
 open_sql_classic_and_modern_result_orderings_are_valid :: proc(t: ^testing.T) {
-	source := `SELECT matnr INTO @DATA(lv_old) FROM mara WHERE matnr = @lv_key.
-SELECT matnr FROM mara INTO @DATA(lv_new) WHERE matnr = @lv_key.`
+	source := `SELECT SINGLE matnr INTO @DATA(lv_old) FROM mara WHERE matnr = @lv_key.
+SELECT SINGLE matnr FROM mara INTO @DATA(lv_new) WHERE matnr = @lv_key.`
 	parsed := parse(source, "sql_classic_modern_order.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
