@@ -21,6 +21,7 @@ Options :: struct {
 
 Workspace :: struct {
 	root_path:          string,
+	flags:              Option_Flags,
 	manifest:           Workspace_Manifest,
 	has_manifest:       bool,
 	store:              dep_store.Dependency_Store,
@@ -50,6 +51,7 @@ open :: proc(
 		return {}, false, "invalid workspace path"
 	}
 	workspace.root_path = root_path
+	workspace.flags = options.flags
 
 	manifest_path, join_err := os.join_path(
 		{root_path, MANIFEST_FILE_NAME},
@@ -121,6 +123,7 @@ open_standalone :: proc(
 		return {}, false, "invalid workspace path"
 	}
 	workspace.root_path = abs_root
+	workspace.flags = options.flags
 
 	if strings.trim_space(options.dependency_store_path) != "" {
 		store, err := dep_store.dependency_store_from_override_path(

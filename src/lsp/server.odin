@@ -75,7 +75,7 @@ serve_stdio :: proc(allocator: mem.Allocator) -> int {
 server_init :: proc(state: ^Server_State, allocator: mem.Allocator) {
 	state^ = Server_State {
 		allocator         = allocator,
-		options           = workspace.Options{},
+		options           = server_default_workspace_options(),
 		documents         = make(map[string]Document, 16, allocator),
 		parse_diagnostics = make([dynamic]Parse_Diagnostic_Bucket, 0, 16, allocator),
 		workspaces        = make([dynamic]Server_Workspace, 0, 4, allocator),
@@ -93,6 +93,12 @@ server_init :: proc(state: ^Server_State, allocator: mem.Allocator) {
 	)
 	if state.pool.options.worker_count > 0 {
 		execution.pool_start(&state.pool)
+	}
+}
+
+server_default_workspace_options :: proc "contextless" () -> workspace.Options {
+	return workspace.Options {
+		flags = workspace.Option_Flags{.Enable_ADT, .Enable_Dependency_Diagnostics},
 	}
 }
 

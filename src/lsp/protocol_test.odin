@@ -189,6 +189,14 @@ initialize_result_exposes_implementation_provider :: proc(t: ^testing.T) {
 }
 
 @(test)
+lsp_default_workspace_options_enable_dependency_resolution_diagnostics :: proc(t: ^testing.T) {
+	options := server_default_workspace_options()
+
+	testing.expect(t, .Enable_ADT in options.flags)
+	testing.expect(t, .Enable_Dependency_Diagnostics in options.flags)
+}
+
+@(test)
 initialize_honors_materialized_dependency_documents_option :: proc(t: ^testing.T) {
 	output_path := `tmp\lsp_initialize_materialized_dependency_documents.out`
 	os.remove(output_path)

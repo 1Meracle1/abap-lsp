@@ -375,7 +375,8 @@ checker_check_selector_expr :: proc(
 	namespace: Namespace,
 	lhs: bool,
 ) -> Operand {
-	base := checker_check_expr(ctx, expr.base, .Value)
+	base_namespace := Namespace.Type if expr.op == .Fat_Arrow || expr.op == .Tilde else Namespace.Value
+	base := checker_check_expr(ctx, expr.base, base_namespace)
 	member_namespace := checker_selector_member_namespace(expr.op, namespace)
 	name, member_node, name_ok := checker_expr_simple_name(expr.field)
 	if !name_ok {

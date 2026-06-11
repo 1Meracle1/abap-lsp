@@ -30,8 +30,8 @@ analyze_workspace :: proc(
 	options: Options,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
-	_ = options
 	assert(pool != nil)
+	workspace.flags += options.flags
 	paths := make([dynamic]string, 0, 32, context.temp_allocator)
 	collect_workspace_abap_files(workspace.root_path, &paths, context.temp_allocator)
 	for include_path in include_paths {
@@ -61,8 +61,8 @@ analyze_path :: proc(
 	options: Options,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
-	_ = options
 	assert(pool != nil)
+	workspace.flags += options.flags
 	target_abs, target_ok := absolute_clean_path(target_path, allocator)
 	if !target_ok {
 		return Analysis_Result{ok = false, error = "invalid target path"}
@@ -199,7 +199,109 @@ analysis_result_update_inputs :: proc(
 	}
 
 	result.last_update = last
+	workspace_add_dependency_diagnostics(result, workspace)
 	return result.ok
+}
+
+workspace_add_dependency_diagnostics :: proc(result: ^Analysis_Result, workspace: ^Workspace) {
+	if result == nil ||
+	   workspace == nil ||
+	   !(.Enable_Dependency_Diagnostics in workspace.flags) {
+		return
+	}
+	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
+	if analysis == nil {
+		return
+	}
+	for &project_result in analysis.project_results {
+		if project_result.project == nil || project_result.checker == nil {
+			continue
+		}
+		for candidate in project_result.checker.info.unresolved {
+			kind, message, ok := dependency_diagnostic_from_candidate(
+				analysis.interner,
+				candidate,
+				context.temp_allocator,
+			)
+			if !ok || dependency_diagnostic_present(
+				project_result.checker.info.diagnostics[:],
+				kind,
+				candidate.range,
+				candidate.file,
+			) {
+				continue
+			}
+			append(
+				&project_result.checker.info.diagnostics,
+				semantic.Checker_Diagnostic {
+					kind     = kind,
+					severity = .Error,
+					range    = candidate.range,
+					message  = strings.clone(message, project_result.project.allocator),
+					file     = candidate.file,
+				},
+			)
+		}
+	}
+}
+
+dependency_diagnostic_from_candidate :: proc(
+	interner: ^string_interner.Interner,
+	candidate: semantic.Checker_Unresolved_Candidate,
+	allocator: mem.Allocator,
+) -> (
+	semantic.Checker_Diagnostic_Kind,
+	string,
+	bool,
+) {
+	if interner == nil || !string_interner.is_valid(candidate.name) {
+		return {}, "", false
+	}
+	name := string_interner.load(interner, candidate.name)
+	if strings.trim_space(name) == "" {
+		return {}, "", false
+	}
+	switch candidate.reason {
+	case .Unresolved_Include:
+		return .Unresolved_Include, dependency_diagnostic_message("unresolved include ", name, allocator), true
+	case .Unresolved_Type:
+		return .Unresolved_Type, dependency_diagnostic_message("unresolved external type ", name, allocator), true
+	case .Unresolved_Routine:
+		return .Unresolved_Reference, dependency_diagnostic_message("unresolved external routine ", name, allocator), true
+	case .Unresolved_SQL_Source:
+		return .Unresolved_Open_Sql_Source, dependency_diagnostic_message("unresolved Open SQL source ", name, allocator), true
+	case .Type_Pool_Import:
+		return .Unresolved_Type, dependency_diagnostic_message("unresolved type pool ", name, allocator), true
+	case .Unresolved_Reference:
+		if candidate.kind == .Global_Symbol && candidate.namespace == .Value {
+			return {}, "", false
+		}
+		return .Unresolved_Reference, dependency_diagnostic_message("unresolved external reference ", name, allocator), true
+	}
+	return {}, "", false
+}
+
+dependency_diagnostic_message :: proc(prefix, name: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, prefix)
+	strings.write_string(&out, name)
+	return strings.to_string(out)
+}
+
+dependency_diagnostic_present :: proc(
+	diagnostics: []semantic.Checker_Diagnostic,
+	kind: semantic.Checker_Diagnostic_Kind,
+	range: semantic.Range,
+	file: ^semantic.Project_File,
+) -> bool {
+	for diagnostic in diagnostics {
+		if diagnostic.kind == kind &&
+		   diagnostic.range == range &&
+		   diagnostic.file == file {
+			return true
+		}
+	}
+	return false
 }
 
 analysis_result_destroy :: proc(result: ^Analysis_Result, allocator: mem.Allocator) {
