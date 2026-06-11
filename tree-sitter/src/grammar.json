@@ -31455,6 +31455,22 @@
                     },
                     "named": true,
                     "value": "keyword"
+                  },
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
+                          "value": "[eE][nN][dD][sS][eE][lL][eE][cC][tT]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "keyword"
                   }
                 ]
               }

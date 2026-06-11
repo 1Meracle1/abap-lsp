@@ -1392,3 +1392,47 @@ SELECT *
     (keyword)
     (number)
     (keyword)))
+
+==================
+Open SQL select loop highlights ENDSELECT as keyword
+==================
+
+SELECT *
+  FROM zosmm_aif_job
+  WHERE vbeln_vl = @lv_delivery_number
+  ORDER BY created_at DESCENDING
+  INTO @rs_job_db
+  UP TO 1 ROWS.
+ENDSELECT.
+
+---
+
+(source_file
+  (select_statement
+    (keyword)
+    (operator)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (operator)
+    (operator)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (operator)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (number)
+    (keyword))
+  (simple_statement
+    (keyword)))
