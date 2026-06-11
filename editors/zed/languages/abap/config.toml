@@ -4,7 +4,7 @@ path_suffixes = ["abap"]
 line_comments = ["\" "]
 tab_size = 2
 hard_tabs = false
-word_characters = ["-", "_", "~", ">", "="]
+word_characters = ["_"]
 
 brackets = [
   { start = "(", end = ")", close = true, newline = false },
@@ -17,3 +17,6 @@ brackets = [
 
 [overrides.string]
 completion_query_characters = ["-", "_", "~", ">", "="]
+
+[overrides.field_symbol]
+word_characters = ["_", "<", ">"]
