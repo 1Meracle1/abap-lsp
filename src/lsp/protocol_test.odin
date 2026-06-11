@@ -128,6 +128,46 @@ workspace_index_for_non_file_uri_uses_first_workspace :: proc(t: ^testing.T) {
 }
 
 @(test)
+lsp_reanalysis_uses_disk_workspace_files_for_include_resolution :: proc(t: ^testing.T) {
+	root := lsp_test_temp_root(t, `tmp\lsp_include_seed`)
+	defer os.remove_all(root)
+	src := lsp_test_join_path(t, root, "src")
+	testing.expect(t, os.make_directory_all(src) == nil)
+	report_path := lsp_test_join_path(t, src, "zmain.abap")
+	include_path := lsp_test_join_path(t, src, "zinc.abap")
+	report_source := `REPORT zmain.
+INCLUDE zinc.
+WRITE gv_value.`
+	include_source := "DATA gv_value TYPE i."
+	testing.expect(t, os.write_entire_file(report_path, report_source) == nil)
+	testing.expect(t, os.write_entire_file(include_path, include_source) == nil)
+
+	uri, uri_ok := file_uri_from_path(report_path, context.allocator)
+	testing.expect(t, uri_ok)
+	if !uri_ok {
+		return
+	}
+	opened, workspace_ok, _ := workspace.open(root, workspace.Options{}, context.allocator)
+	testing.expect(t, workspace_ok)
+	if !workspace_ok {
+		return
+	}
+	state := lsp_test_empty_state()
+	append(&state.workspaces, Server_Workspace{root = opened})
+	defer lsp_test_state_destroy(&state)
+
+	testing.expect(t, update_document_from_open(&state, lsp_test_did_open_params(uri, report_source)))
+	server_reanalyze(&state)
+	diagnostics := diagnostics_for_uri(&state, uri, context.allocator)
+
+	for diagnostic in diagnostics {
+		testing.expect(t, diagnostic.code != "Unresolved_Include")
+	}
+	testing.expect(t, state.workspaces[0].has_analysis)
+	testing.expect(t, len(state.workspaces[0].analysis.session.editable_files) >= 2)
+}
+
+@(test)
 lsp_uri_matches_or_under_accepts_file_uris_and_paths :: proc(t: ^testing.T) {
 	testing.expect(t, lsp_uri_matches_or_under(`D:\repo\pkg\zmain.abap`, "file:///D:/repo/pkg"))
 	testing.expect(t, lsp_uri_matches_or_under("file:///D:/repo/pkg/zmain.abap", `D:\repo\pkg`))
@@ -721,13 +761,19 @@ lsp_test_hover_text :: proc(
 	return entity_hover_text(found.snapshot.project, found.entity)
 }
 
-lsp_test_state_with_open_document :: proc(uri, source: string) -> Server_State {
-	state := Server_State {
+lsp_test_empty_state :: proc() -> Server_State {
+	return Server_State {
 		allocator         = context.allocator,
 		documents         = make(map[string]Document, 1, context.allocator),
 		parse_diagnostics = make([dynamic]Parse_Diagnostic_Bucket, 0, 2, context.allocator),
 		workspaces        = make([dynamic]Server_Workspace, 0, 1, context.allocator),
+		pending_removed_uris = make([dynamic]string, 0, 2, context.allocator),
+		pending_disk_refresh_uris = make([dynamic]string, 0, 2, context.allocator),
 	}
+}
+
+lsp_test_state_with_open_document :: proc(uri, source: string) -> Server_State {
+	state := lsp_test_empty_state()
 	append(&state.workspaces, Server_Workspace{root = workspace.Workspace{root_path = `D:\repo`}})
 	params := lsp_test_did_open_params(uri, source)
 	testing_ok := update_document_from_open(&state, params)
@@ -744,8 +790,36 @@ lsp_test_state_destroy :: proc(state: ^Server_State) {
 		workspace.workspace_destroy(&slot.root, state.allocator)
 	}
 	delete(state.workspaces)
+	if state.pending_disk_refresh_uris.allocator.procedure != nil {
+		delete(state.pending_disk_refresh_uris)
+	}
+	if state.pending_removed_uris.allocator.procedure != nil {
+		delete(state.pending_removed_uris)
+	}
 	delete(state.parse_diagnostics)
 	delete(state.documents)
+}
+
+lsp_test_temp_root :: proc(t: ^testing.T, path: string) -> string {
+	root := path
+	if absolute, abs_err := os.get_absolute_path(root, context.allocator); abs_err == nil {
+		root = absolute
+	}
+	if cleaned, clean_err := os.clean_path(root, context.allocator); clean_err == nil {
+		root = cleaned
+	}
+	os.remove_all(root)
+	testing.expect(t, os.make_directory_all(root) == nil)
+	return root
+}
+
+lsp_test_join_path :: proc(t: ^testing.T, a, b: string) -> string {
+	path, err := os.join_path({a, b}, context.allocator)
+	testing.expect(t, err == nil)
+	if err != nil {
+		return ""
+	}
+	return path
 }
 
 lsp_test_rename_position_params :: proc(

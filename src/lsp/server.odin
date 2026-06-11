@@ -37,6 +37,7 @@ Server_State :: struct {
 	parse_diagnostics:    [dynamic]Parse_Diagnostic_Bucket,
 	workspaces:           [dynamic]Server_Workspace,
 	pending_removed_uris: [dynamic]string,
+	pending_disk_refresh_uris: [dynamic]string,
 	initialized:          bool,
 	shutdown_requested:   bool,
 }
@@ -78,6 +79,7 @@ server_init :: proc(state: ^Server_State, allocator: mem.Allocator) {
 		parse_diagnostics = make([dynamic]Parse_Diagnostic_Bucket, 0, 16, allocator),
 		workspaces        = make([dynamic]Server_Workspace, 0, 4, allocator),
 		pending_removed_uris = make([dynamic]string, 0, 8, allocator),
+		pending_disk_refresh_uris = make([dynamic]string, 0, 8, allocator),
 	}
 	execution.pool_init(
 		&state.pool,
@@ -103,6 +105,9 @@ server_destroy :: proc(state: ^Server_State) {
 	delete(state.workspaces)
 	if state.pending_removed_uris.allocator.procedure != nil {
 		delete(state.pending_removed_uris)
+	}
+	if state.pending_disk_refresh_uris.allocator.procedure != nil {
+		delete(state.pending_disk_refresh_uris)
 	}
 	execution.pool_destroy(&state.pool)
 }

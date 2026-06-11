@@ -5,6 +5,7 @@ import "src:semantic"
 import workspace "src:workspace"
 
 import json "core:encoding/json"
+import "core:mem"
 import "core:os"
 import "core:strings"
 
@@ -73,12 +74,13 @@ handle_notification :: proc(
 				}
 				changed = true
 			case FILE_CHANGE_CHANGED, FILE_CHANGE_CREATED:
+				queue_pending_uri(&state.pending_disk_refresh_uris, uri, state.allocator)
+				changed = true
 				for doc_uri, &doc in state.documents {
 					if !lsp_uri_matches_or_under(doc_uri, uri) {
 						continue
 					}
 					doc.dirty = true
-					changed = true
 				}
 			case:
 			}
@@ -107,12 +109,13 @@ handle_notification :: proc(
 				continue
 			}
 			uri = normalize_lsp_uri(uri, context.temp_allocator)
+			queue_pending_uri(&state.pending_disk_refresh_uris, uri, state.allocator)
+			changed = true
 			for doc_uri, &doc in state.documents {
 				if !lsp_uri_matches_or_under(doc_uri, uri) {
 					continue
 				}
 				doc.dirty = true
-				changed = true
 			}
 		}
 		if changed {
@@ -344,6 +347,7 @@ close_document :: proc(state: ^Server_State, params: json.Value) -> bool {
 	uri := object_string(text_document, "uri") or_return
 	uri = normalize_lsp_uri(uri, context.temp_allocator)
 	delete_key(&state.documents, uri)
+	queue_disk_refresh_or_remove(state, uri)
 	return true
 }
 
@@ -360,6 +364,9 @@ server_reanalyze :: proc(state: ^Server_State) {
 			state.allocator,
 		)
 		removed_paths := make([dynamic]string, 0, 4, context.temp_allocator)
+		if !slot.has_analysis {
+			append_workspace_disk_inputs(state, &slot.root, &inputs)
+		}
 		for _, workspace_doc in state.documents {
 			doc_workspace_index, doc_workspace_ok := workspace_index_for_uri(state, workspace_doc.uri)
 			if !doc_workspace_ok || doc_workspace_index != workspace_index {
@@ -380,16 +387,25 @@ server_reanalyze :: proc(state: ^Server_State) {
 			)
 		}
 		if slot.has_analysis {
+			for refresh_uri in state.pending_disk_refresh_uris {
+				refresh_workspace_index, refresh_workspace_ok := workspace_index_for_uri(
+					state,
+					refresh_uri,
+				)
+				if !refresh_workspace_ok || refresh_workspace_index != workspace_index {
+					continue
+				}
+				if _, still_open := state.documents[refresh_uri]; still_open {
+					continue
+				}
+				append_disk_inputs_for_uri(state, refresh_uri, &inputs)
+			}
 			for file in slot.analysis.session.editable_files {
-				_, still_open := state.documents[file.path]
-				doc_workspace_index, doc_workspace_ok := workspace_index_for_uri(state, file.path)
-				removed := !(still_open && doc_workspace_ok && doc_workspace_index == workspace_index)
-				if !removed {
-					for removed_uri in state.pending_removed_uris {
-						if lsp_uri_matches_or_under(file.path, removed_uri) {
-							removed = true
-							break
-						}
+				removed := false
+				for removed_uri in state.pending_removed_uris {
+					if lsp_uri_matches_or_under(file.path, removed_uri) {
+						removed = true
+						break
 					}
 				}
 				if removed {
@@ -415,4 +431,138 @@ server_reanalyze :: proc(state: ^Server_State) {
 	if state.pending_removed_uris.allocator.procedure != nil {
 		clear(&state.pending_removed_uris)
 	}
+	if state.pending_disk_refresh_uris.allocator.procedure != nil {
+		clear(&state.pending_disk_refresh_uris)
+	}
+}
+
+queue_pending_uri :: proc(list: ^[dynamic]string, uri: string, allocator: mem.Allocator) {
+	if uri == "" {
+		return
+	}
+	if list.allocator.procedure == nil {
+		list^ = make([dynamic]string, 0, 8, allocator)
+	}
+	for existing in list^ {
+		if existing == uri {
+			return
+		}
+	}
+	append(list, strings.clone(uri, allocator))
+}
+
+queue_disk_refresh_or_remove :: proc(state: ^Server_State, uri: string) {
+	path, path_ok := file_uri_to_path(uri, context.temp_allocator)
+	if !path_ok {
+		return
+	}
+	info, stat_err := os.stat(path, context.temp_allocator)
+	if stat_err == nil &&
+	   info.type == .Regular &&
+	   lsp_is_abap_path(path) {
+		queue_pending_uri(&state.pending_disk_refresh_uris, uri, state.allocator)
+		return
+	}
+	queue_pending_uri(&state.pending_removed_uris, uri, state.allocator)
+}
+
+append_workspace_disk_inputs :: proc(
+	state: ^Server_State,
+	root: ^workspace.Workspace,
+	out: ^[dynamic]semantic.Workspace_File_Input,
+) {
+	paths := make([dynamic]string, 0, 32, context.temp_allocator)
+	workspace.collect_workspace_abap_files(root.root_path, &paths, context.temp_allocator)
+	for path in paths {
+		append_disk_input_for_path(state, path, out)
+	}
+}
+
+append_disk_inputs_for_uri :: proc(
+	state: ^Server_State,
+	uri: string,
+	out: ^[dynamic]semantic.Workspace_File_Input,
+) {
+	path, path_ok := file_uri_to_path(uri, context.temp_allocator)
+	if !path_ok {
+		return
+	}
+	info, stat_err := os.stat(path, context.temp_allocator)
+	if stat_err != nil {
+		return
+	}
+	#partial switch info.type {
+	case .Directory:
+		paths := make([dynamic]string, 0, 16, context.temp_allocator)
+		workspace.collect_workspace_abap_files(path, &paths, context.temp_allocator)
+		for file_path in paths {
+			append_disk_input_for_path(state, file_path, out)
+		}
+	case .Regular:
+		if lsp_is_abap_path(path) {
+			append_disk_input_for_path(state, path, out)
+		}
+	}
+}
+
+append_disk_input_for_path :: proc(
+	state: ^Server_State,
+	path: string,
+	out: ^[dynamic]semantic.Workspace_File_Input,
+) {
+	source, source_ok := workspace.read_text_file(path, state.allocator)
+	if !source_ok {
+		return
+	}
+	uri, uri_ok := file_uri_from_path(path, state.allocator)
+	if !uri_ok {
+		return
+	}
+	parsed := parser.parse(source, uri, state.allocator)
+	append(
+		out,
+		semantic.Workspace_File_Input {
+			path = uri,
+			root = parsed.root,
+			kind = .Unknown,
+		},
+	)
+}
+
+file_uri_from_path :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
+	abs_path, path_ok := workspace.absolute_clean_path(path, context.temp_allocator)
+	if !path_ok {
+		return "", false
+	}
+	normalized := normalize_lsp_uri(abs_path, context.temp_allocator)
+	out := strings.builder_make(allocator)
+	if len(normalized) >= 2 && normalized[1] == ':' {
+		strings.write_string(&out, "file:///")
+	} else {
+		strings.write_string(&out, "file://")
+	}
+	write_file_uri_path(&out, normalized)
+	return strings.to_string(out), true
+}
+
+write_file_uri_path :: proc(out: ^strings.Builder, path: string) {
+	for ch in path {
+		switch ch {
+		case ' ':
+			strings.write_string(out, "%20")
+		case '#':
+			strings.write_string(out, "%23")
+		case '%':
+			strings.write_string(out, "%25")
+		case '?':
+			strings.write_string(out, "%3F")
+		case:
+			strings.write_rune(out, ch)
+		}
+	}
+}
+
+lsp_is_abap_path :: proc(path: string) -> bool {
+	lower := strings.to_lower(path, context.temp_allocator)
+	return strings.has_suffix(lower, ".abap")
 }
