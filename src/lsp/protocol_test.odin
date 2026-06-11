@@ -733,6 +733,43 @@ lv_total = 1.`
 }
 
 @(test)
+lsp_hover_reports_method_signature_and_documentation :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    " Build instance from display name.
+    CLASS-METHODS create
+      IMPORTING !iv_name TYPE string
+                !iv_id TYPE i
+      RETURNING VALUE(ro_result) TYPE REF TO lcl_demo
+      RAISING zcx_demo.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD create.
+  ENDMETHOD.
+ENDCLASS.`
+
+	text := lsp_test_hover_text(t, source, "METHOD create", "create")
+
+	testing.expect(t, strings.contains(text, "```abap"))
+	testing.expect(
+		t,
+		strings.contains(
+			text,
+			`CLASS-METHODS create
+  IMPORTING
+    !iv_name TYPE string
+    !iv_id TYPE i
+  RETURNING
+    VALUE(ro_result) TYPE REF TO lcl_demo
+  RAISING
+    zcx_demo.`,
+		),
+	)
+	testing.expect(t, strings.contains(text, "Build instance from display name."))
+	testing.expect(t, !strings.contains(text, `" Build instance`))
+}
+
+@(test)
 lsp_hover_does_not_apply_leading_comment_to_chained_declarations :: proc(t: ^testing.T) {
 	source := `" shared heading
 DATA: lv_a TYPE i, lv_b TYPE i.

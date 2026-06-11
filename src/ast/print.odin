@@ -28,9 +28,30 @@ print_node :: proc(node: ^Node, allocator: mem.Allocator, options := DEFAULT_PRI
 	return strings.to_string(out)
 }
 
+print_oop_member_signature :: proc(
+	kind: Oop_Simple_Kind,
+	member: Oop_Member_Clause,
+	allocator: mem.Allocator,
+	options := DEFAULT_PRINT_OPTIONS,
+) -> string {
+	out := strings.builder_make(allocator)
+	write_oop_member_signature(&out, kind, member, options)
+	return strings.to_string(out)
+}
+
 write_node :: proc(out: ^strings.Builder, node: ^Node, options := DEFAULT_PRINT_OPTIONS) {
 	p := Printer{out = out, options = options}
 	emit_node(&p, node)
+}
+
+write_oop_member_signature :: proc(
+	out: ^strings.Builder,
+	kind: Oop_Simple_Kind,
+	member: Oop_Member_Clause,
+	options := DEFAULT_PRINT_OPTIONS,
+) {
+	p := Printer{out = out, options = options}
+	emit_oop_member_signature(&p, kind, member)
 }
 
 emit :: proc {
@@ -2718,6 +2739,14 @@ emit_oop_simple_stmt :: proc(p: ^Printer, stmt: ^Oop_Simple_Stmt) {
 }
 
 emit_oop_member_clause :: proc(p: ^Printer, member: Oop_Member_Clause) {
+	emit_oop_member_header(p, member)
+	emit_oop_member_event_handler(p, member, leading_space = true)
+	for sig in member.signatures {
+		emit_oop_signature_clause(p, sig)
+	}
+}
+
+emit_oop_member_header :: proc(p: ^Printer, member: Oop_Member_Clause) {
 	emit(p, member.name)
 	if .Redefinition in member.flags {
 		emit(p, " REDEFINITION")
@@ -2728,17 +2757,45 @@ emit_oop_member_clause :: proc(p: ^Printer, member: Oop_Member_Clause) {
 	if .Final in member.flags {
 		emit(p, " FINAL")
 	}
+}
+
+emit_oop_member_event_handler :: proc(
+	p: ^Printer,
+	member: Oop_Member_Clause,
+	leading_space := false,
+) {
 	if member.event_handler.event_name.text != "" {
-		emit(p, " FOR EVENT ")
+		if leading_space {
+			emit_space(p)
+		}
+		emit(p, "FOR EVENT ")
 		emit(p, member.event_handler.event_name)
 		if member.event_handler.source_type != nil {
 			emit(p, " OF ")
 			emit_node(p, member.event_handler.source_type)
 		}
 	}
-	for sig in member.signatures {
-		emit_oop_signature_clause(p, sig)
+}
+
+emit_oop_member_signature :: proc(p: ^Printer, kind: Oop_Simple_Kind, member: Oop_Member_Clause) {
+	assert(
+		kind == .Methods ||
+		kind == .Class_Methods ||
+		kind == .Events ||
+		kind == .Class_Events,
+	)
+	emit(p, oop_simple_kind_text(kind))
+	emit_space(p)
+	emit_oop_member_header(p, member)
+	if member.event_handler.event_name.text != "" {
+		p.indent_level = 1
+		emit_newline(p)
+		emit_oop_member_event_handler(p, member)
 	}
+	for sig in member.signatures {
+		emit_oop_signature_clause_multiline(p, sig)
+	}
+	emit(p, ".")
 }
 
 emit_oop_signature_clause :: proc(p: ^Printer, sig: Oop_Signature_Clause) {
@@ -2755,6 +2812,31 @@ emit_oop_signature_clause :: proc(p: ^Printer, sig: Oop_Signature_Clause) {
 	}
 	if sig.preferred_parameter.text != "" {
 		emit(p, " PREFERRED PARAMETER ")
+		emit(p, sig.preferred_parameter)
+	}
+}
+
+emit_oop_signature_clause_multiline :: proc(p: ^Printer, sig: Oop_Signature_Clause) {
+	p.indent_level = 1
+	emit_newline(p)
+	emit(p, oop_signature_kind_text(sig.kind))
+	if len(sig.parameters) > 0 {
+		for param in sig.parameters {
+			p.indent_level = 2
+			emit_newline(p)
+			emit_oop_parameter_clause(p, param)
+		}
+	} else if len(sig.values) > 0 {
+		for value in sig.values {
+			p.indent_level = 2
+			emit_newline(p)
+			emit_node(p, value)
+		}
+	}
+	if sig.preferred_parameter.text != "" {
+		p.indent_level = 2
+		emit_newline(p)
+		emit(p, "PREFERRED PARAMETER ")
 		emit(p, sig.preferred_parameter)
 	}
 }

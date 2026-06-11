@@ -142,20 +142,83 @@ entity_detail :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> s
 }
 
 entity_hover_text :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
-	label := entity_label(project, entity)
-	detail := entity_detail(project, entity)
+	signature := entity_hover_signature(entity)
 	documentation := entity_documentation(project, entity)
 	out := strings.builder_make(context.temp_allocator)
-	strings.write_string(&out, label)
-	if detail != "" {
-		strings.write_string(&out, "\n\n")
-		strings.write_string(&out, detail)
+	if signature != "" {
+		write_markdown_code_block(&out, "abap", signature)
+	} else {
+		label := entity_label(project, entity)
+		detail := entity_detail(project, entity)
+		strings.write_string(&out, label)
+		if detail != "" {
+			strings.write_string(&out, "\n\n")
+			strings.write_string(&out, detail)
+		}
 	}
 	if documentation != "" {
 		strings.write_string(&out, "\n\n")
 		strings.write_string(&out, documentation)
 	}
 	return strings.to_string(out)
+}
+
+entity_hover_signature :: proc(entity: ^semantic.Entity) -> string {
+	if entity == nil {
+		return ""
+	}
+	if entity.kind == .Method {
+		return method_hover_signature(entity)
+	}
+	if payload, ok := entity.payload.(^semantic.Entity_Routine_Payload); ok &&
+	   payload != nil &&
+	   payload.signature != "" {
+		return payload.signature
+	}
+	return ""
+}
+
+method_hover_signature :: proc(entity: ^semantic.Entity) -> string {
+	payload, ok := entity.payload.(^semantic.Entity_Routine_Payload)
+	if !ok || payload == nil || payload.signature_scope == nil {
+		return ""
+	}
+	if signature := method_hover_signature_from_decl(entity, payload.signature_scope.decl_info); signature != "" {
+		return signature
+	}
+	return method_hover_signature_from_decl(entity, entity.decl_info)
+}
+
+method_hover_signature_from_decl :: proc(entity: ^semantic.Entity, info: ^semantic.Decl_Info) -> string {
+	if entity == nil || info == nil || info.decl_node == nil {
+		return ""
+	}
+	oop, ok := info.decl_node.derived.(^ast.Oop_Simple_Stmt)
+	if !ok || (oop.kind != .Methods && oop.kind != .Class_Methods) {
+		return ""
+	}
+	for member in oop.members {
+		if member.name.range == entity.name_range {
+			return ast.print_oop_member_signature(
+				oop.kind,
+				member,
+				context.temp_allocator,
+				ast.Print_Options{newline = "\n", indent = "  "},
+			)
+		}
+	}
+	return ""
+}
+
+write_markdown_code_block :: proc(out: ^strings.Builder, language, text: string) {
+	strings.write_string(out, "```")
+	strings.write_string(out, language)
+	strings.write_byte(out, '\n')
+	strings.write_string(out, text)
+	if len(text) == 0 || text[len(text) - 1] != '\n' {
+		strings.write_byte(out, '\n')
+	}
+	strings.write_string(out, "```")
 }
 
 entity_documentation :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
