@@ -549,6 +549,7 @@ module.exports = grammar({
         $.class_definition,
         $.class_implementation,
         $.interface_definition,
+        $.method_signature,
         $.method_definition,
         $.form_definition,
         $.function_definition,

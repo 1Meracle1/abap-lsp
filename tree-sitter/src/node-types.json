@@ -192,6 +192,10 @@
         "named": true
       },
       {
+        "type": "method_signature",
+        "named": true
+      },
+      {
         "type": "module_definition",
         "named": true
       },

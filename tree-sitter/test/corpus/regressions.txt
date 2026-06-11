@@ -1232,6 +1232,51 @@ ENDCLASS.
     (keyword)))
 
 ==================
+Standalone method signatures parse for hover snippets
+==================
+
+METHODS build_orderby_from_request
+  IMPORTING
+    it_allowed_order TYPE tt_order_map
+    it_orderby TYPE /iwbep/t_mgw_tech_order
+  RETURNING
+    VALUE(rv_orderby) TYPE string
+  RAISING
+    /iwbep/cx_mgw_busi_exception.
+
+---
+
+(source_file
+  (method_signature
+    (keyword)
+    (routine_name
+      (qualified_name
+        (identifier)))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (value_tail
+      (keyword)
+      (parenthesized_expression
+        (qualified_name
+          (identifier))))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))))
+
+==================
 Keyword-like RAISE EXPORTING field names
 ==================
 

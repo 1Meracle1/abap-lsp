@@ -67,6 +67,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "method_signature"
+        },
+        {
+          "type": "SYMBOL",
           "name": "method_definition"
         },
         {
