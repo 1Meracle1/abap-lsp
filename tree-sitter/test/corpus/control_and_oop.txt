@@ -107,3 +107,31 @@ ENDCLASS.
           (identifier)))
       (keyword))
     (keyword)))
+
+===============================
+Class definition header additions
+===============================
+
+class ZCL_ZATTP_ODATA_MD_PRO_DPC definition
+  public
+  inheriting from /IWBEP/CL_MGW_PUSH_ABS_DATA
+  abstract
+  create public .
+ENDCLASS.
+
+---
+
+(source_file
+  (class_definition
+    (keyword)
+    (identifier)
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)))
