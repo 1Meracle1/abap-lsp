@@ -869,6 +869,18 @@ lv_subrc = sy-subrc.`
 }
 
 @(test)
+lsp_hover_reports_unknown_open_sql_inline_table_type :: proc(t: ^testing.T) {
+	source := `SELECT *
+  FROM zmissing_jobs
+  INTO TABLE @DATA(lt_jobs).`
+
+	text := lsp_test_hover_text(t, source, "@DATA(lt_jobs)", "lt_jobs")
+
+	testing.expect(t, strings.contains(text, "`lt_jobs` variable"))
+	testing.expect(t, strings.contains(text, "type: `STANDARD TABLE OF unknown`"))
+}
+
+@(test)
 lsp_hover_reports_leading_declaration_comment_documentation :: proc(t: ^testing.T) {
 	source := `DATA lv_seed TYPE i.
 " local accumulator

@@ -487,7 +487,7 @@ checker_check_table_line_target :: proc(
 
 checker_check_loop_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Loop_Stmt) {
 	source := checker_check_expr(ctx, stmt.source)
-	row_type := checker_type_row(ctx, source.type)
+	row_type := checker_loop_source_row_type(ctx, stmt, source)
 	row_structure := checker_type_structure(row_type)
 	checker_check_table_line_target(ctx, stmt.target, row_type, stmt.target_kind)
 	checker_check_expr(ctx, stmt.target_casting_type)
@@ -499,6 +499,90 @@ checker_check_loop_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Loop_Stmt) {
 	checker_check_expr(ctx, stmt.group_by)
 	checker_check_table_line_target(ctx, stmt.group_target, row_type, stmt.group_target_kind)
 	checker_check_stmt_list(ctx, stmt.body)
+}
+
+checker_loop_source_row_type :: proc(
+	ctx: ^Checker_Context,
+	stmt: ^ast.Loop_Stmt,
+	source: Operand,
+) -> ^Type {
+	if stmt.source_kind == .Group {
+		return checker_type_row(ctx, source.type)
+	}
+	if checker_type_is_table_like(ctx, source.type) {
+		return checker_type_row(ctx, source.type)
+	}
+	if checker_type_is_range_like(ctx, source.type) {
+		return source.type
+	}
+	if checker_type_is_unknown(source.type) && source.entity == nil {
+		if name, range, unresolved := checker_loop_source_unresolved_reference(stmt.source); unresolved {
+			checker_add_diagnostic(
+				ctx,
+				.Unresolved_Reference,
+				range,
+				checker_loop_source_unresolved_message(name),
+			)
+		}
+		return project_type_unknown(ctx.project)
+	}
+	if !checker_type_is_unknown(source.type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Loop_Source,
+			checker_expr_range(stmt.source),
+			"LOOP AT source is not an internal table or range",
+		)
+	}
+	return project_type_unknown(ctx.project)
+}
+
+checker_loop_source_unresolved_reference :: proc(expr: ^ast.Expr) -> (string, Range, bool) {
+	if expr == nil {
+		return "", {}, false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return n.name, n.range, n.name != ""
+	case ^ast.Type_Ref_Expr:
+		if n.raw_operand || n.name.text == "" || n.base_name.text != "" || len(n.path) > 0 {
+			return "", {}, false
+		}
+		return n.name.text, n.name.range, true
+	case ^ast.Host_Expr:
+		return checker_loop_source_unresolved_reference(n.value)
+	case ^ast.Paren_Expr:
+		return checker_loop_source_unresolved_reference(n.expr)
+	}
+	return "", {}, false
+}
+
+checker_loop_source_unresolved_message :: proc(name: string) -> string {
+	if name == "" {
+		return "unresolved variable"
+	}
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "unresolved variable ")
+	strings.write_string(&builder, name)
+	return strings.to_string(builder)
+}
+
+checker_type_is_range_like :: proc(ctx: ^Checker_Context, typ: ^Type) -> bool {
+	structure := checker_type_structure(typ)
+	if structure == nil {
+		return false
+	}
+	names := [?]string{"sign", "option", "low", "high"}
+	for name_text in names {
+		name := checker_intern_name(ctx.project, name_text)
+		if !string_interner.is_valid(name) {
+			return false
+		}
+		if _, ok := checker_lookup_structure_field(structure, name); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 checker_check_loop_transporting_fields :: proc(

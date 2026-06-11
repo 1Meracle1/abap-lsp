@@ -136,8 +136,10 @@ entity_detail :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> s
 		return ""
 	}
 	type_text := type_label(project, entity.type)
-	if type_text == "" {
-		type_text = declared_entity_type_label(entity)
+	if type_text == "" || type_text == "unknown" {
+		if declared := declared_entity_type_label(entity); declared != "" {
+			type_text = declared
+		}
 	}
 	if type_text == "" {
 		return ""
@@ -373,15 +375,54 @@ type_label :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
 		return "structure"
 	case .Table:
 		base := type_label(project, typ.base)
-		return fmt.tprintf("table of %s", base) if base != "" else "table"
+		if !table_type_form_has_row_type(typ.table_form) && (base == "" || base == "unknown") {
+			return table_type_form_label(typ.table_form)
+		}
+		if base == "" {
+			base = "unknown"
+		}
+		return fmt.tprintf("%s OF %s", table_type_form_label(typ.table_form), base)
 	case .Ref:
 		base := type_label(project, typ.base)
 		return fmt.tprintf("ref to %s", base) if base != "" else "ref"
 	case .Routine:
 		return "routine"
 	case .Unknown:
+		return "unknown"
 	}
 	return ""
+}
+
+table_type_form_label :: proc(form: ast.Data_Type_Form) -> string {
+	#partial switch form {
+	case .Any_Table:
+		return "ANY TABLE"
+	case .Index_Table:
+		return "INDEX TABLE"
+	case .Sorted_Table,
+	     .Like_Sorted_Table:
+		return "SORTED TABLE"
+	case .Hashed_Table,
+	     .Like_Hashed_Table:
+		return "HASHED TABLE"
+	case .Standard_Table,
+	     .Like_Standard_Table:
+		return "STANDARD TABLE"
+	case .Range_Of:
+		return "RANGE"
+	case .Table,
+	     .Like_Table:
+	}
+	return "TABLE"
+}
+
+table_type_form_has_row_type :: proc(form: ast.Data_Type_Form) -> bool {
+	#partial switch form {
+	case .Any_Table,
+	     .Index_Table:
+		return false
+	}
+	return true
 }
 
 location_for_project_file_range :: proc(

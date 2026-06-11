@@ -2546,6 +2546,42 @@ ENDLOOP.`
 }
 
 @(test)
+root_semantic_stmt_checker_rejects_non_iterable_loop_sources :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lv_count TYPE i.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+RANGES r_text FOR lv_text.
+
+LOOP AT lv_text INTO DATA(lv_char).
+ENDLOOP.
+LOOP AT lv_count INTO DATA(lv_num).
+ENDLOOP.
+LOOP AT lt_jobs INTO DATA(ls_job).
+ENDLOOP.
+LOOP AT lt_text INTO DATA(lv_ok).
+ENDLOOP.
+LOOP AT r_text INTO DATA(ls_range).
+ENDLOOP.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_loop_sources.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Loop_Source), 2)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Invalid_Loop_Source {
+			text := source[diagnostic.range.start:diagnostic.range.end]
+			testing.expect(t, text == "lv_text" || text == "lv_count")
+		} else if diagnostic.kind == .Unresolved_Reference {
+			testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "lt_jobs")
+			testing.expect_value(t, diagnostic.message, "unresolved variable lt_jobs")
+		}
+	}
+}
+
+@(test)
 root_semantic_stmt_checker_dispatches_control_and_write_operands :: proc(t: ^testing.T) {
 	source := `DATA lv_count TYPE i.
 DATA lv_target TYPE string.
