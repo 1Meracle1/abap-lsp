@@ -182,6 +182,13 @@ initialize_result_exposes_rename_prepare_provider :: proc(t: ^testing.T) {
 }
 
 @(test)
+initialize_result_exposes_implementation_provider :: proc(t: ^testing.T) {
+	result := initialize_result(context.allocator)
+
+	testing.expect(t, result.capabilities.implementation_provider)
+}
+
+@(test)
 lsp_reanalysis_preserves_workspace_analysis_session :: proc(t: ^testing.T) {
 	state := Server_State {
 		allocator         = context.allocator,
@@ -414,6 +421,40 @@ ENDCLASS.`
 	}
 	for item in edits {
 		testing.expect_value(t, item.new_text, "execute")
+	}
+}
+
+@(test)
+lsp_implementation_returns_method_body_for_definition_method_name :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/implementation_method.abap"
+	source := `CLASS lcl_demo DEFINITION.
+  PRIVATE SECTION.
+    METHODS run
+      IMPORTING iv_value TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "METHODS run") + len("METHODS ") + 1
+	testing.expect(t, offset > len("METHODS "))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	location, ok := implementation_location_for_params(&state, params)
+
+	testing.expect(t, ok)
+	testing.expect_value(t, location.uri, uri)
+	testing.expect_value(t, location.range.start.line, 7)
+	testing.expect_value(t, location.range.start.character, 9)
+	testing.expect_value(t, location.range.end.line, 7)
+	testing.expect_value(t, location.range.end.character, 12)
+	if ok {
+		start := position_to_offset(source, location.range.start)
+		end := position_to_offset(source, location.range.end)
+		testing.expect_value(t, source[start:end], "run")
 	}
 }
 

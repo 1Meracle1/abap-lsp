@@ -147,6 +147,8 @@ handle_request :: proc(ctx: ^Request_Context, method: string, params: json.Value
 		handle_hover(ctx, params)
 	case METHOD_DEFINITION:
 		handle_definition(ctx, params)
+	case METHOD_IMPLEMENTATION:
+		handle_implementation(ctx, params)
 	case METHOD_REFERENCES:
 		handle_references(ctx, params)
 	case METHOD_PREPARE_RENAME:

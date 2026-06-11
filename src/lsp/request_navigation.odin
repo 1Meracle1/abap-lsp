@@ -2,6 +2,7 @@ package abap_frontend_lsp
 
 import "src:ast"
 import "src:semantic"
+import workspace "src:workspace"
 import string_interner "src:string_interner"
 
 import json "core:encoding/json"
@@ -25,23 +26,50 @@ handle_hover :: proc(ctx: ^Request_Context, params: json.Value) {
 
 handle_definition :: proc(ctx: ^Request_Context, params: json.Value) {
 	found := entity_at_position(ctx.state, params)
-	if !found.ok || found.entity.source_file == nil {
+	if !found.ok {
 		send_success(ctx.output, ctx.id, json.Null(nil), ctx.state.allocator)
 		return
 	}
-	source := source_for_project_file(ctx.state, found.entity.source_file)
-	if source == "" {
-		source = found.snapshot.source
-	}
-	location := Location {
-		uri   = found.entity.source_file.path,
-		range = range_from_offsets(
-			source,
-			found.entity.name_range.start,
-			found.entity.name_range.end,
-		),
+	location, location_ok := location_for_project_file_range(
+		ctx.state,
+		found.snapshot,
+		found.entity.source_file,
+		found.entity.name_range,
+	)
+	if !location_ok {
+		send_success(ctx.output, ctx.id, json.Null(nil), ctx.state.allocator)
+		return
 	}
 	send_success(ctx.output, ctx.id, location, ctx.state.allocator)
+}
+
+handle_implementation :: proc(ctx: ^Request_Context, params: json.Value) {
+	location, ok := implementation_location_for_params(ctx.state, params)
+	if !ok {
+		send_success(ctx.output, ctx.id, json.Null(nil), ctx.state.allocator)
+		return
+	}
+	send_success(ctx.output, ctx.id, location, ctx.state.allocator)
+}
+
+implementation_location_for_params :: proc(
+	state: ^Server_State,
+	params: json.Value,
+) -> (Location, bool) {
+	found := entity_at_position(state, params)
+	if !found.ok {
+		return {}, false
+	}
+	payload, payload_ok := found.entity.payload.(^semantic.Entity_Routine_Payload)
+	if !payload_ok || payload == nil || payload.implementation_unit == nil {
+		return {}, false
+	}
+	return location_for_project_file_range(
+		state,
+		found.snapshot,
+		payload.implementation_unit,
+		payload.implementation_name_range,
+	)
 }
 
 handle_references :: proc(ctx: ^Request_Context, params: json.Value) {
@@ -289,6 +317,29 @@ type_label :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
 	return ""
 }
 
+location_for_project_file_range :: proc(
+	state: ^Server_State,
+	snapshot: Snapshot_Lookup,
+	file: ^semantic.Project_File,
+	range: semantic.Range,
+) -> (Location, bool) {
+	if file == nil || range.start >= range.end {
+		return {}, false
+	}
+	source := source_for_project_file(state, file)
+	if source == "" && file == snapshot.file {
+		source = snapshot.source
+	}
+	if source == "" {
+		return {}, false
+	}
+	return Location {
+			uri   = file.path,
+			range = range_from_offsets(source, range.start, range.end),
+		},
+		true
+}
+
 source_for_project_file :: proc(state: ^Server_State, file: ^semantic.Project_File) -> string {
 	if file == nil {
 		return ""
@@ -296,7 +347,15 @@ source_for_project_file :: proc(state: ^Server_State, file: ^semantic.Project_Fi
 	if doc, ok := state.documents[file.path]; ok {
 		return doc.text
 	}
-	return ""
+	path, path_ok := file_uri_to_path(file.path, context.temp_allocator)
+	if !path_ok {
+		return ""
+	}
+	source, source_ok := workspace.read_text_file(path, context.temp_allocator)
+	if !source_ok {
+		return ""
+	}
+	return source
 }
 
 location_present :: proc(locations: []Location, location: Location) -> bool {
