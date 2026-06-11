@@ -479,6 +479,10 @@ const DECLARATION_FIELD_NAME_KEYWORDS = [
   "SOURCE",
 ];
 
+const STATEMENT_FIELD_NAME_KEYWORDS = [
+  "METHOD",
+];
+
 module.exports = grammar({
   name: "abap",
 
@@ -1381,6 +1385,7 @@ module.exports = grammar({
 
     _tail_token: ($) =>
       choice(
+        $.keyword_field_assignment,
         declarationKeywordFieldName($),
         $._compound_tail_keyword,
         $.type_ref_tail,
@@ -1388,6 +1393,16 @@ module.exports = grammar({
         keywordChoice($, STATEMENT_TAIL_KEYWORDS),
         $._raw_token,
         $.tail_fragment,
+      ),
+
+    keyword_field_assignment: ($) =>
+      prec(
+        PREC.COMPARE + 1,
+        seq(
+          field("name", keywordIdentifierChoice($, STATEMENT_FIELD_NAME_KEYWORDS)),
+          $.equals,
+          field("value", $._argument_value),
+        ),
       ),
 
     type_ref_tail: ($) =>

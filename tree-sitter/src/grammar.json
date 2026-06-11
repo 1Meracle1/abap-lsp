@@ -31298,6 +31298,10 @@
       "type": "CHOICE",
       "members": [
         {
+          "type": "SYMBOL",
+          "name": "keyword_field_assignment"
+        },
+        {
           "type": "PREC",
           "value": 3,
           "content": {
@@ -32862,6 +32866,52 @@
           "name": "tail_fragment"
         }
       ]
+    },
+    "keyword_field_assignment": {
+      "type": "PREC",
+      "value": 5,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "name",
+            "content": {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "TOKEN",
+                    "content": {
+                      "type": "PREC",
+                      "value": 2,
+                      "content": {
+                        "type": "PATTERN",
+                        "value": "[mM][eE][tT][hH][oO][dD]"
+                      }
+                    }
+                  },
+                  "named": true,
+                  "value": "identifier"
+                }
+              ]
+            }
+          },
+          {
+            "type": "SYMBOL",
+            "name": "equals"
+          },
+          {
+            "type": "FIELD",
+            "name": "value",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_argument_value"
+            }
+          }
+        ]
+      }
     },
     "type_ref_tail": {
       "type": "PREC",

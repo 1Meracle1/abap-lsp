@@ -1230,3 +1230,35 @@ ENDCLASS.
       (qualified_name
         (identifier)))
     (keyword)))
+
+==================
+Keyword-like RAISE EXPORTING field names
+==================
+
+RAISE EXCEPTION TYPE /iwbep/cx_mgw_not_impl_exc
+    EXPORTING
+      textid = /iwbep/cx_mgw_not_impl_exc=>method_not_implemented
+      method = 'PRODSET_UPDATE_ENTITY'.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (binary_expression
+      (qualified_name
+        (identifier))
+      (selector_expression
+        (qualified_name
+          (identifier))
+        (component_name
+          (identifier))))
+    (keyword_field_assignment
+      (identifier)
+      (equals)
+      (string))))
