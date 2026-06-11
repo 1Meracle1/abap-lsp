@@ -1262,3 +1262,25 @@ RAISE EXCEPTION TYPE /iwbep/cx_mgw_not_impl_exc
       (identifier)
       (equals)
       (string))))
+
+==================
+Concatenate separated addition highlights as keyword
+==================
+
+CONCATENATE LINES OF lt_order_parts INTO rv_orderby SEPARATED BY `, `.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (string)))
