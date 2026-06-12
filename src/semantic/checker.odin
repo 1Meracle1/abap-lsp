@@ -26,6 +26,7 @@ Checker_Diagnostic_Kind :: enum {
 	Unknown_Field,
 	Invalid_Open_Sql_Into_Target,
 	Invalid_Loop_Source,
+	Invalid_Concatenate_Operand,
 	Unresolved_Include,
 	Unresolved_Include_If_Found,
 	Include_Cycle,

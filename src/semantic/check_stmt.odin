@@ -170,11 +170,7 @@ checker_check_stmt :: proc(
 			checker_check_assignment_stmt(ctx, entry.target, entry.source)
 		}
 	case ^ast.Concatenate_Stmt:
-		for entry in n.entries {
-			checker_check_expr_list(ctx, entry.sources[:])
-			checker_check_expr(ctx, entry.target, .Value, true)
-			checker_check_expr(ctx, entry.separator)
-		}
+		checker_check_concatenate_stmt(ctx, n)
 	case ^ast.Split_Stmt:
 		for entry in n.entries {
 			checker_check_expr(ctx, entry.source)
@@ -413,6 +409,66 @@ checker_check_stmt :: proc(
 		checker_check_expr(ctx, n.word, .Value, true)
 		checker_check_expr(ctx, n.offset, .Value, true)
 	}
+}
+
+checker_check_concatenate_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Concatenate_Stmt) {
+	for entry in stmt.entries {
+		if entry.lines_of {
+			for source_expr in entry.sources {
+				checker_check_concatenate_lines_source(ctx, source_expr)
+			}
+		} else {
+			checker_check_expr_list(ctx, entry.sources[:])
+		}
+		target := checker_check_expr(ctx, entry.target, .Value, true)
+		checker_check_concatenate_target(ctx, entry.target, target)
+		checker_check_expr(ctx, entry.separator)
+	}
+}
+
+checker_check_concatenate_lines_source :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) -> Operand {
+	source := checker_check_expr(ctx, expr)
+	if checker_check_unresolved_variable_operand(ctx, expr, source) || checker_type_is_unknown(source.type) {
+		return source
+	}
+	if !checker_type_is_table_like(ctx, source.type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Concatenate_Operand,
+			checker_expr_range(expr),
+			"CONCATENATE LINES OF source is not an internal table",
+		)
+	}
+	return source
+}
+
+checker_check_concatenate_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Concatenate_Operand,
+			checker_expr_range(expr),
+			"CONCATENATE INTO target is not writable",
+		)
+	}
+}
+
+checker_check_unresolved_variable_operand :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	operand: Operand,
+) -> bool {
+	if !checker_type_is_unknown(operand.type) || operand.entity != nil {
+		return false
+	}
+	if name, range, unresolved := checker_simple_unresolved_variable_expr(expr); unresolved {
+		checker_add_diagnostic(ctx, .Unresolved_Reference, range, checker_unresolved_variable_message(name))
+		return true
+	}
+	return false
 }
 
 checker_check_expr_list :: proc(

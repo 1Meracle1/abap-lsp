@@ -2146,6 +2146,77 @@ lr_i = lr_data.`
 }
 
 @(test)
+root_semantic_stmt_checker_resolves_concatenate_lines_of_operands :: proc(t: ^testing.T) {
+	source := `CLASS cl_abap_char_utilities DEFINITION.
+  PUBLIC SECTION.
+    CONSTANTS newline TYPE string VALUE '\n'.
+ENDCLASS.
+DATA lt_lines TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_text TYPE string.
+CONCATENATE LINES OF lt_lines INTO lv_text SEPARATED BY cl_abap_char_utilities=>newline.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_concatenate_lines_of.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lt_lines := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_lines", .Variable)
+	lv_text := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_text", .Variable)
+	char_utilities := checker_test_lookup(t, &project, file.root_scope, .Type, "cl_abap_char_utilities", .Class)
+	testing.expect(t, lt_lines != nil && .Used in lt_lines.flags)
+	testing.expect(t, lv_text != nil && .Used in lv_text.flags)
+	testing.expect(t, char_utilities != nil && .Used in char_utilities.flags)
+	if char_utilities == nil {
+		return
+	}
+	char_utilities_payload := char_utilities.payload.(^Entity_Object_Payload)
+	newline := checker_test_lookup(t, &project, char_utilities_payload.definition_scope, .Value, "newline", .Constant)
+	testing.expect(t, newline != nil && .Used in newline.flags)
+}
+
+@(test)
+root_semantic_stmt_checker_diagnoses_invalid_concatenate_lines_of_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_not_table TYPE string.
+CONSTANTS gc_text TYPE string VALUE ''.
+CONCATENATE LINES OF lv_not_table INTO gc_text.
+CONCATENATE LINES OF lt_missing INTO lv_missing.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_concatenate_lines_of_invalid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Concatenate_Operand), 2)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+
+	seen_not_table := false
+	seen_target := false
+	seen_missing_source := false
+	seen_missing_target := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Invalid_Concatenate_Operand && text == "lv_not_table" {
+			seen_not_table = true
+			testing.expect_value(t, diagnostic.message, "CONCATENATE LINES OF source is not an internal table")
+		} else if diagnostic.kind == .Invalid_Concatenate_Operand && text == "gc_text" {
+			seen_target = true
+			testing.expect_value(t, diagnostic.message, "CONCATENATE INTO target is not writable")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "lt_missing" {
+			seen_missing_source = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable lt_missing")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "lv_missing" {
+			seen_missing_target = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable lv_missing")
+		}
+	}
+	testing.expect(t, seen_not_table)
+	testing.expect(t, seen_target)
+	testing.expect(t, seen_missing_source)
+	testing.expect(t, seen_missing_target)
+}
+
+@(test)
 root_semantic_stmt_checker_accepts_dynamic_object_assign_to_typed_field_symbol :: proc(t: ^testing.T) {
 	source := `CLASS lcl_params DEFINITION.
 ENDCLASS.
