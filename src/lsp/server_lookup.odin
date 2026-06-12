@@ -13,6 +13,7 @@ Snapshot_Lookup :: struct {
 	project:        ^semantic.Project,
 	checker:        ^semantic.Checker,
 	file:           ^semantic.Project_File,
+	provider_index: ^semantic.External_Semantic_Index,
 	source:         string,
 	ok:             bool,
 }
@@ -93,6 +94,7 @@ snapshot_for_uri :: proc(state: ^Server_State, uri: string) -> Snapshot_Lookup {
 				project = result.project,
 				checker = result.checker,
 				file = file,
+				provider_index = &analysis.external_context.index,
 				source = doc.text,
 				ok = true,
 			}

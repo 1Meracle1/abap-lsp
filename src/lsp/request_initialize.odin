@@ -49,10 +49,11 @@ initialize_result :: proc(allocator: mem.Allocator) -> Initialize_Result {
 	token_modifiers[0] = "declaration"
 	token_modifiers[1] = "readonly"
 
-	trigger_characters := make([]string, 3, allocator)
+	trigger_characters := make([]string, 4, allocator)
 	trigger_characters[0] = "-"
 	trigger_characters[1] = ">"
 	trigger_characters[2] = "~"
+	trigger_characters[3] = "_"
 
 	file_operation_filters := make([]Workspace_File_Operation_Filter, 1, allocator)
 	file_operation_filters[0] = Workspace_File_Operation_Filter {

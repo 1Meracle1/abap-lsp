@@ -281,6 +281,78 @@ ENDCLASS.`,
 }
 
 @(test)
+semantic_workspace_completion_includes_editable_root_class_provider :: proc(t: ^testing.T) {
+	main_source := "REPORT zmain. zcl_repo=>run( )."
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", main_source),
+		workspace_test_file(
+			t,
+			"mem://zcl_repo.abap",
+			`CLASS zcl_repo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+CLASS zcl_repo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.`,
+		),
+	}
+
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:]})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	offset := checker_test_find_text(main_source, "zcl_") + len("zcl_")
+	testing.expect(t, offset >= len("zcl_"))
+
+	for result in analysis.project_results {
+		if result.root_path != "mem://zmain.report.abap" || result.checker == nil {
+			continue
+		}
+		file: ^Project_File
+		for candidate in result.files {
+			if candidate.path == "mem://zmain.report.abap" {
+				file = candidate
+				break
+			}
+		}
+		testing.expect(t, file != nil)
+		if file == nil {
+			return
+		}
+
+		query := semantic_query(
+			result.project,
+			result.checker,
+			file,
+			&analysis.external_context.index,
+		)
+		items := semantic_completion_items_at_offset(
+			semantic_query_completion(query),
+			offset,
+			"zcl_",
+			context.allocator,
+		)
+
+		found := false
+		for item in items {
+			name := string_interner.load(analysis.interner, item.name)
+			if name == "zcl_repo" &&
+			   item.namespace == .Type &&
+			   item.source == .Provider_Index &&
+			   item.entity != nil &&
+			   item.entity.kind == .Class {
+				found = true
+				break
+			}
+		}
+		testing.expect(t, found)
+		return
+	}
+	testing.expect(t, false)
+}
+
+@(test)
 semantic_graph_does_not_fetch_editable_root_class_provider :: proc(t: ^testing.T) {
 	interner := string_interner.create()
 	defer string_interner.destroy(interner)

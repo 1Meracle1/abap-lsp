@@ -14,7 +14,12 @@ handle_completion :: proc(ctx: ^Request_Context, params: json.Value) {
 		return
 	}
 	prefix := completion_prefix(snapshot.source, offset, context.temp_allocator)
-	query := semantic.semantic_query(snapshot.project, snapshot.checker, snapshot.file)
+	query := semantic.semantic_query(
+		snapshot.project,
+		snapshot.checker,
+		snapshot.file,
+		snapshot.provider_index,
+	)
 	items := semantic.semantic_completion_items_at_offset(
 		semantic.semantic_query_completion(query),
 		offset,

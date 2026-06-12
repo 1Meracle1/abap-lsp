@@ -5,6 +5,7 @@ line_comments = ["\" "]
 tab_size = 2
 hard_tabs = false
 word_characters = ["_"]
+completion_query_characters = ["-", "_", "~", ">", "="]
 
 brackets = [
   { start = "(", end = ")", close = true, newline = false },

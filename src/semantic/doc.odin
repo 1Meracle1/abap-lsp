@@ -66,7 +66,8 @@ Top-level usage:
      entity pointer.
    - `semantic_query_facts` returns expression/operand/type information.
    - `semantic_query_diagnostics` returns diagnostic copies.
-   - `semantic_query_completion` reads the lexical scope chain for completions.
+   - `semantic_query_completion` reads the lexical scope chain and, when
+     supplied, the workspace provider index for completions.
 
    The package intentionally does not expose stable semantic IDs or legacy
    provider handles. LSP/workspace consumers should replace whole snapshots after

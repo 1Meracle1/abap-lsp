@@ -8,9 +8,10 @@ import "core:slice"
 import "core:strings"
 
 Semantic_Query :: struct {
-	project: ^Project,
-	checker: ^Checker,
-	file:    ^Project_File,
+	project:        ^Project,
+	checker:        ^Checker,
+	file:           ^Project_File,
+	provider_index: ^External_Semantic_Index,
 }
 
 Semantic_Decl_Query :: struct {
@@ -38,9 +39,10 @@ Semantic_Diagnostic_Query :: struct {
 }
 
 Semantic_Completion_Query :: struct {
-	project: ^Project,
-	checker: ^Checker,
-	file:    ^Project_File,
+	project:        ^Project,
+	checker:        ^Checker,
+	file:           ^Project_File,
+	provider_index: ^External_Semantic_Index,
 }
 
 Semantic_Expression_Info_Kind :: enum {
@@ -60,6 +62,7 @@ Semantic_Expression_Info :: struct {
 Semantic_Completion_Item_Source :: enum {
 	Lexical_Scope,
 	Builtin_Scope,
+	Provider_Index,
 }
 
 Semantic_Completion_Item :: struct {
@@ -80,9 +83,15 @@ semantic_query :: proc(
 	project: ^Project,
 	checker: ^Checker,
 	file: ^Project_File = nil,
+	provider_index: ^External_Semantic_Index = nil,
 ) -> Semantic_Query {
 	assert(project != nil && checker != nil && checker.project == project)
-	return Semantic_Query{project = project, checker = checker, file = file}
+	return Semantic_Query {
+		project = project,
+		checker = checker,
+		file = file,
+		provider_index = provider_index,
+	}
 }
 
 semantic_query_decls :: proc(q: Semantic_Query) -> Semantic_Decl_Query {
@@ -107,7 +116,12 @@ semantic_query_diagnostics :: proc(q: Semantic_Query) -> Semantic_Diagnostic_Que
 
 semantic_query_completion :: proc(q: Semantic_Query) -> Semantic_Completion_Query {
 	assert(q.project != nil && q.checker != nil)
-	return Semantic_Completion_Query{project = q.project, checker = q.checker, file = q.file}
+	return Semantic_Completion_Query {
+		project = q.project,
+		checker = q.checker,
+		file = q.file,
+		provider_index = q.provider_index,
+	}
 }
 
 semantic_decl_entity_at_offset :: proc(q: Semantic_Decl_Query, offset: int) -> ^Entity {
@@ -401,6 +415,13 @@ semantic_completion_items_at_offset :: proc(
 			&out,
 		)
 	}
+	semantic_completion_append_provider_entities(
+		q.project,
+		q.provider_index,
+		canonical_prefix,
+		&seen,
+		&out,
+	)
 	return out
 }
 
@@ -654,6 +675,28 @@ semantic_completion_append_scope_entities :: proc(
 			seen,
 			out,
 			depth + 1,
+		)
+	}
+}
+
+semantic_completion_append_provider_entities :: proc(
+	project: ^Project,
+	index: ^External_Semantic_Index,
+	prefix: string,
+	seen: ^map[Semantic_Completion_Item_Key]bool,
+	out: ^[dynamic]Semantic_Completion_Item,
+) {
+	if index == nil {
+		return
+	}
+	for _, binding in index.providers {
+		semantic_completion_append_entity(
+			project,
+			binding.entity,
+			.Provider_Index,
+			prefix,
+			seen,
+			out,
 		)
 	}
 }
