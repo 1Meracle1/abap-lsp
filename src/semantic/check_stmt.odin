@@ -521,7 +521,7 @@ checker_loop_source_row_type :: proc(
 				ctx,
 				.Unresolved_Reference,
 				range,
-				checker_loop_source_unresolved_message(name),
+				checker_unresolved_variable_message(name),
 			)
 		}
 		return project_type_unknown(ctx.project)
@@ -555,16 +555,6 @@ checker_loop_source_unresolved_reference :: proc(expr: ^ast.Expr) -> (string, Ra
 		return checker_loop_source_unresolved_reference(n.expr)
 	}
 	return "", {}, false
-}
-
-checker_loop_source_unresolved_message :: proc(name: string) -> string {
-	if name == "" {
-		return "unresolved variable"
-	}
-	builder := strings.builder_make(context.temp_allocator)
-	strings.write_string(&builder, "unresolved variable ")
-	strings.write_string(&builder, name)
-	return strings.to_string(builder)
 }
 
 checker_type_is_range_like :: proc(ctx: ^Checker_Context, typ: ^Type) -> bool {

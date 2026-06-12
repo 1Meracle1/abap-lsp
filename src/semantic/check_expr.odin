@@ -3,6 +3,8 @@ package abap_frontend_semantic2
 import "src:ast"
 import string_interner "src:string_interner"
 
+import "core:strings"
+
 Operand :: struct {
 	mode:   ast.Addressing_Mode,
 	type:   ^Type,
@@ -83,8 +85,7 @@ checker_check_expr :: proc(
 		checker_check_expr(ctx, n.result, .Value, true)
 		return checker_record_operand(ctx, node, .Method, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Host_Expr:
-		operand := checker_check_expr(ctx, n.value, namespace, lhs)
-		return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity, lhs = lhs)
+		return checker_check_host_expr(ctx, node, n, namespace, lhs)
 	case ^ast.Table_Expr:
 		return checker_check_table_expr(ctx, node, n, lhs)
 	case ^ast.Selector_Expr:
@@ -229,6 +230,57 @@ checker_check_expr :: proc(
 		return checker_record_operand(ctx, node, .Variable, entity.type if entity != nil else project_type_unknown(ctx.project), entity, lhs)
 	}
 	return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
+}
+
+checker_check_host_expr :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Host_Expr,
+	namespace: Namespace,
+	lhs: bool,
+) -> Operand {
+	operand := checker_check_expr(ctx, expr.value, namespace, lhs)
+	if checker_type_is_unknown(operand.type) && operand.entity == nil {
+		if name, range, ok := checker_simple_unresolved_variable_expr(expr.value); ok {
+			checker_add_diagnostic(
+				ctx,
+				.Unresolved_Reference,
+				range,
+				checker_unresolved_variable_message(name),
+			)
+		}
+	}
+	return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity, lhs = lhs)
+}
+
+checker_simple_unresolved_variable_expr :: proc(expr: ^ast.Expr) -> (string, Range, bool) {
+	if expr == nil {
+		return "", {}, false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return n.name, n.range, n.name != ""
+	case ^ast.Type_Ref_Expr:
+		if n.raw_operand || n.name.text == "" || n.base_name.text != "" || len(n.path) > 0 {
+			return "", {}, false
+		}
+		return n.name.text, n.name.range, true
+	case ^ast.Paren_Expr:
+		return checker_simple_unresolved_variable_expr(n.expr)
+	case ^ast.Host_Expr:
+		return checker_simple_unresolved_variable_expr(n.value)
+	}
+	return "", {}, false
+}
+
+checker_unresolved_variable_message :: proc(name: string) -> string {
+	if name == "" {
+		return "unresolved variable"
+	}
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "unresolved variable ")
+	strings.write_string(&builder, name)
+	return strings.to_string(builder)
 }
 
 checker_check_ident_expr :: proc(

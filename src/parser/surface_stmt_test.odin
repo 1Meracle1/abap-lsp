@@ -1344,6 +1344,57 @@ open_cursor_select_accepts_where_and_order_by :: proc(t: ^testing.T) {
 }
 
 @(test)
+open_sql_cursor_package_loop_accepts_escaped_handle_and_inline_target :: proc(t: ^testing.T) {
+	source := `OPEN CURSOR WITH HOLD @lv_cursor FOR
+  SELECT trstatus
+    FROM e070
+    WHERE trstatus = @lv_value.
+
+DO.
+  FETCH NEXT CURSOR @lv_cursor
+    INTO TABLE @DATA(lt_package)
+    PACKAGE SIZE 100.
+
+  IF sy-subrc <> 0.
+    EXIT.
+  ENDIF.
+
+
+ENDDO.
+
+CLOSE CURSOR @lv_cursor.`
+	parsed := parse(source, "sql_cursor_package_loop.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 3)
+
+	open_cursor := parsed.root.stmts[0].derived_stmt.(^ast.Open_Cursor_Stmt)
+	testing.expect(t, open_cursor.with_hold)
+	_, open_handle_is_host := open_cursor.handle.derived_expr.(^ast.Host_Expr)
+	testing.expect(t, open_handle_is_host)
+	testing.expect(t, open_cursor.query.where_cond != nil)
+
+	do_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Do_Stmt)
+	testing.expect_value(t, len(do_stmt.body), 2)
+
+	fetch := do_stmt.body[0].derived_stmt.(^ast.Fetch_Stmt)
+	_, fetch_handle_is_host := fetch.handle.derived_expr.(^ast.Host_Expr)
+	testing.expect(t, fetch_handle_is_host)
+	testing.expect(t, fetch.result != nil)
+	testing.expect(t, fetch.result.table)
+	_, fetch_target_is_host := fetch.result.target.derived_expr.(^ast.Host_Expr)
+	testing.expect(t, fetch_target_is_host)
+	testing.expect(t, fetch.package_size != nil)
+
+	if_stmt := do_stmt.body[1].derived_stmt.(^ast.If_Stmt)
+	testing.expect_value(t, len(if_stmt.body), 1)
+
+	close_cursor := parsed.root.stmts[2].derived_stmt.(^ast.Close_Cursor_Stmt)
+	_, close_handle_is_host := close_cursor.handle.derived_expr.(^ast.Host_Expr)
+	testing.expect(t, close_handle_is_host)
+}
+
+@(test)
 open_sql_cte_and_set_operator_chain_is_modeled :: proc(t: ^testing.T) {
 	source := `WITH +base AS ( SELECT matnr FROM mara ) SELECT matnr FROM +base UNION SELECT matnr FROM makt INTERSECT SELECT matnr FROM zkeep EXCEPT SELECT matnr FROM zskip INTO TABLE @lt_rows.`
 	parsed := parse(source, "sql_cte_set_chain.abap", context.allocator)

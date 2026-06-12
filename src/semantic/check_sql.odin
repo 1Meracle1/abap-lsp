@@ -143,7 +143,7 @@ checker_sql_add_select_source :: proc(
 		return &sql.sources[len(sql.sources) - 1]
 	}
 	if host, ok := expr.derived_expr.(^ast.Host_Expr); ok {
-		operand := checker_check_expr(ctx, host.value)
+		operand := checker_check_host_expr(ctx, &expr.expr_base, host, .Value, false)
 		source := Sql_Source_Info {
 			alias     = checker_intern_name(ctx.project, alias.text),
 			range     = expr.range,
@@ -374,7 +374,7 @@ checker_check_sql_expr :: proc(
 	_ = predicate
 	#partial switch n in expr.derived_expr {
 	case ^ast.Host_Expr:
-		return checker_check_expr(ctx, n.value).type
+		return checker_check_host_expr(ctx, &expr.expr_base, n, .Value, false).type
 	case ^ast.Sql_Column_Expr:
 		field, ok := checker_sql_lookup_column(ctx, sql, n.name.text, n.qualifier.text, n.name.range)
 		if ok {

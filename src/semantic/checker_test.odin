@@ -2658,6 +2658,33 @@ SELECT SINGLE carrid FROM zmissing INTO @DATA(lt_missing).`
 }
 
 @(test)
+root_semantic_sql_cursor_checks_escaped_host_variables :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF e070,
+         trstatus TYPE string,
+       END OF e070.
+
+OPEN CURSOR WITH HOLD @lv_cursor FOR
+  SELECT trstatus
+    FROM e070
+    WHERE trstatus = @lv_value.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://sql_cursor_hosts.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Reference {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		testing.expect(t, text == "lv_cursor" || text == "lv_value")
+		testing.expect_value(t, diagnostic.message, checker_unresolved_variable_message(text))
+	}
+}
+
+@(test)
 root_semantic_sql_checker_infers_inline_table_row_fields :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF scarr,
          carrid TYPE string,
