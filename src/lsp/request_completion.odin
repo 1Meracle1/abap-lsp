@@ -25,6 +25,7 @@ handle_completion :: proc(ctx: ^Request_Context, params: json.Value) {
 		offset,
 		prefix,
 		context.temp_allocator,
+		snapshot.source,
 	)
 	out := make([]Completion_Item, len(items), ctx.state.allocator)
 	for item, i in items {

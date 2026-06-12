@@ -3746,3 +3746,77 @@ ENDFORM.`
 	testing.expect(t, global_found)
 	testing.expect(t, builtin_found)
 }
+
+@(test)
+root_semantic_query_completion_after_static_selector_returns_accessible_static_members :: proc(t: ^testing.T) {
+	source := `REPORT zmain.
+CLASS lcl_repo DEFINITION.
+  PUBLIC SECTION.
+    TYPES ty_public TYPE string.
+    CONSTANTS c_public TYPE string VALUE 'x'.
+    CLASS-DATA gv_public TYPE string.
+    DATA mv_instance TYPE string.
+    CLASS-METHODS get_instance.
+    METHODS scan.
+  PRIVATE SECTION.
+    CLASS-DATA gv_private TYPE string.
+ENDCLASS.
+CLASS lcl_repo IMPLEMENTATION.
+  METHOD get_instance.
+  ENDMETHOD.
+  METHOD scan.
+  ENDMETHOD.
+ENDCLASS.
+DATA lv_local TYPE i.
+lcl_repo=>get_instance( ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://query_static_completion.abap")
+	query := semantic_query(&project, &checker, file)
+	offset := checker_test_find_text(source, "lcl_repo=>") + len("lcl_repo=>")
+	testing.expect(t, offset >= len("lcl_repo=>"))
+
+	items := semantic_completion_items_at_offset(
+		semantic_query_completion(query),
+		offset,
+		"",
+		context.allocator,
+		source,
+	)
+
+	get_instance_found := false
+	gv_public_found := false
+	ty_public_found := false
+	c_public_found := false
+	unrelated_found := false
+	for item in items {
+		name := string_interner.load(project.interner, item.name)
+		if name == "get_instance" && item.namespace == .Routine && item.source == .Selector_Member {
+			get_instance_found = true
+		}
+		if name == "gv_public" && item.namespace == .Value && item.source == .Selector_Member {
+			gv_public_found = true
+		}
+		if name == "ty_public" && item.namespace == .Type && item.source == .Selector_Member {
+			ty_public_found = true
+		}
+		if name == "c_public" && item.namespace == .Value && item.source == .Selector_Member {
+			c_public_found = true
+		}
+		if name == "scan" ||
+		   name == "mv_instance" ||
+		   name == "gv_private" ||
+		   name == "lv_local" ||
+		   name == "strlen" ||
+		   name == "lcl_repo" {
+			unrelated_found = true
+		}
+	}
+	testing.expect(t, get_instance_found)
+	testing.expect(t, gv_public_found)
+	testing.expect(t, ty_public_found)
+	testing.expect(t, c_public_found)
+	testing.expect(t, !unrelated_found)
+}

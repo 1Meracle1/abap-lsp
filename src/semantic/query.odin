@@ -63,6 +63,7 @@ Semantic_Completion_Item_Source :: enum {
 	Lexical_Scope,
 	Builtin_Scope,
 	Provider_Index,
+	Selector_Member,
 }
 
 Semantic_Completion_Item :: struct {
@@ -77,6 +78,10 @@ Semantic_Completion_Item_Key :: struct {
 	name:      string_interner.String,
 	namespace: Namespace,
 	source:    Semantic_Completion_Item_Source,
+}
+
+Semantic_Completion_Selector_Context :: struct {
+	base_name: string,
 }
 
 semantic_query :: proc(
@@ -397,12 +402,26 @@ semantic_completion_items_at_offset :: proc(
 	offset: int,
 	prefix: string,
 	allocator: mem.Allocator,
+	source: string = "",
 ) -> [dynamic]Semantic_Completion_Item {
 	out := make([dynamic]Semantic_Completion_Item, 0, 32, allocator)
 	seen := make(map[Semantic_Completion_Item_Key]bool, 64, allocator)
 	canonical_prefix := strings.to_lower(prefix, context.temp_allocator)
 
 	scope := semantic_query_scope_at_offset(q.project, q.file, offset)
+	if selector, selector_ok := semantic_completion_selector_context_at_offset(source, offset);
+	   selector_ok {
+		semantic_completion_append_selector_entities(
+			q,
+			selector,
+			scope,
+			canonical_prefix,
+			&seen,
+			&out,
+		)
+		return out
+	}
+
 	for current := scope; current != nil; current = current.parent {
 		source :=
 			Semantic_Completion_Item_Source.Builtin_Scope if current.kind == .Builtin else Semantic_Completion_Item_Source.Lexical_Scope
@@ -425,6 +444,65 @@ semantic_completion_items_at_offset :: proc(
 	return out
 }
 
+semantic_completion_selector_context_at_offset :: proc(
+	source: string,
+	offset: int,
+) -> (
+	Semantic_Completion_Selector_Context,
+	bool,
+) {
+	if source == "" {
+		return {}, false
+	}
+	prefix_start := semantic_completion_prefix_start(source, offset)
+	i := semantic_completion_skip_space_backward(source, prefix_start)
+	if i < 2 || source[i - 2:i] != "=>" {
+		return {}, false
+	}
+	op_start := i - 2
+	base_end := semantic_completion_skip_space_backward(source, op_start)
+	base_start := base_end
+	for base_start > 0 && semantic_completion_name_char(source[base_start - 1]) {
+		base_start -= 1
+	}
+	if base_start == base_end {
+		return {}, false
+	}
+	return Semantic_Completion_Selector_Context {
+			base_name = source[base_start:base_end],
+		},
+		true
+}
+
+semantic_completion_prefix_start :: proc(source: string, offset: int) -> int {
+	start := clamp(offset, 0, len(source))
+	for start > 0 && semantic_completion_name_char(source[start - 1]) {
+		start -= 1
+	}
+	return start
+}
+
+semantic_completion_skip_space_backward :: proc(source: string, offset: int) -> int {
+	i := clamp(offset, 0, len(source))
+	for i > 0 {
+		switch source[i - 1] {
+		case ' ', '\t', '\r', '\n':
+			i -= 1
+			continue
+		}
+		break
+	}
+	return i
+}
+
+semantic_completion_name_char :: proc "contextless" (ch: u8) -> bool {
+	return ('a' <= ch && ch <= 'z') ||
+	       ('A' <= ch && ch <= 'Z') ||
+	       ('0' <= ch && ch <= '9') ||
+	       ch == '_' ||
+	       ch == '/'
+}
+
 semantic_query_scope_at_offset :: proc(
 	project: ^Project,
 	file: ^Project_File,
@@ -438,6 +516,144 @@ semantic_query_scope_at_offset :: proc(
 	best_width := semantic_range_width(file.root_scope.range) if file.root_scope != nil else 0
 	semantic_query_scope_at_offset_walk(file.root_scope, offset, &best, &best_width)
 	return best
+}
+
+semantic_completion_append_selector_entities :: proc(
+	q: Semantic_Completion_Query,
+	selector: Semantic_Completion_Selector_Context,
+	scope: ^Scope,
+	prefix: string,
+	seen: ^map[Semantic_Completion_Item_Key]bool,
+	out: ^[dynamic]Semantic_Completion_Item,
+) {
+	owner := semantic_completion_resolve_type_owner(q, scope, selector.base_name)
+	if owner == nil || (owner.kind != .Class && owner.kind != .Interface) {
+		return
+	}
+	semantic_completion_append_static_object_members(q, owner, scope, prefix, seen, out)
+}
+
+semantic_completion_resolve_type_owner :: proc(
+	q: Semantic_Completion_Query,
+	scope: ^Scope,
+	name: string,
+) -> ^Entity {
+	interned := checker_intern_name(q.project, name)
+	if !string_interner.is_valid(interned) {
+		return nil
+	}
+	if scope != nil {
+		if _, entity, ok := checker_lookup_declaration_from_scope(scope, .Type, interned);
+		   ok && entity != nil && (entity.kind == .Class || entity.kind == .Interface) {
+			return entity
+		}
+	}
+	if entity := semantic_completion_lookup_provider_type(q.provider_index, interned); entity != nil {
+		return entity
+	}
+	if q.checker != nil && q.checker.info.external != nil {
+		return semantic_completion_lookup_provider_type(&q.checker.info.external.index, interned)
+	}
+	return nil
+}
+
+semantic_completion_lookup_provider_type :: proc(
+	index: ^External_Semantic_Index,
+	name: string_interner.String,
+) -> ^Entity {
+	if index == nil {
+		return nil
+	}
+	kinds := [?]External_Candidate_Kind{.Class, .Interface, .Global_Symbol}
+	for kind in kinds {
+		if _, binding, ok := external_semantic_index_lookup(index, .Type, name, kind);
+		   ok &&
+		   binding.entity != nil &&
+		   (binding.entity.kind == .Class || binding.entity.kind == .Interface) {
+			return binding.entity
+		}
+	}
+	return nil
+}
+
+semantic_completion_append_static_object_members :: proc(
+	q: Semantic_Completion_Query,
+	owner: ^Entity,
+	access_scope: ^Scope,
+	prefix: string,
+	seen: ^map[Semantic_Completion_Item_Key]bool,
+	out: ^[dynamic]Semantic_Completion_Item,
+	depth := 0,
+) {
+	if owner == nil || depth > 64 {
+		return
+	}
+	payload, ok := owner.payload.(^Entity_Object_Payload)
+	if !ok || payload == nil || payload.definition_scope == nil {
+		return
+	}
+	for member in payload.definition_scope.declarations {
+		if !semantic_completion_static_member_accessible(member, access_scope) {
+			continue
+		}
+		semantic_completion_append_entity(q.project, member, .Selector_Member, prefix, seen, out)
+	}
+	for interface_name in payload.implemented_interfaces {
+		if !string_interner.is_valid(interface_name) {
+			continue
+		}
+		if iface := semantic_completion_resolve_type_owner(q, owner.scope, string_interner.load(q.project.interner, interface_name));
+		   iface != nil && iface.kind == .Interface {
+			semantic_completion_append_static_object_members(
+				q,
+				iface,
+				access_scope,
+				prefix,
+				seen,
+				out,
+				depth + 1,
+			)
+		}
+	}
+	if owner.kind == .Class && string_interner.is_valid(payload.superclass_name) {
+		if super := semantic_completion_resolve_type_owner(q, owner.scope, string_interner.load(q.project.interner, payload.superclass_name));
+		   super != nil && super.kind == .Class {
+			semantic_completion_append_static_object_members(
+				q,
+				super,
+				access_scope,
+				prefix,
+				seen,
+				out,
+				depth + 1,
+			)
+		}
+	}
+}
+
+semantic_completion_static_member_accessible :: proc(member: ^Entity, access_scope: ^Scope) -> bool {
+	if member == nil || !semantic_completion_static_member(member) {
+		return false
+	}
+	if checker_member_visibility(member) == .Public {
+		return true
+	}
+	return access_scope != nil && checker_member_visible_from_scope(access_scope, member)
+}
+
+semantic_completion_static_member :: proc(member: ^Entity) -> bool {
+	if member == nil {
+		return false
+	}
+	if .Static in member.flags {
+		return true
+	}
+	#partial switch member.kind {
+	case .Constant, .Enum_Member, .Type_Def:
+		return true
+	case:
+	}
+	return false
 }
 
 semantic_query_scope_at_offset_walk :: proc(
