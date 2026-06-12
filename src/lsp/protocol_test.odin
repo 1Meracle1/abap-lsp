@@ -663,6 +663,148 @@ lsp_completion_select_templates_expand_from_select_prefix :: proc(t: ^testing.T)
 }
 
 @(test)
+lsp_completion_try_template_expands_from_try_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_try_template.abap"
+	source := "REPORT zmain.\nFORM run.\n  tr"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "TRY ... CATCH ... ENDTRY")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+	testing.expect_value(t, item.sort_text, "2:try ... catch ... endtry")
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		"TRY.\n    ${1}\n  CATCH ${2:cx_root} INTO DATA(${3:lx_error}).\n    $0\n  ENDTRY.",
+	)
+}
+
+@(test)
+lsp_completion_commit_and_continue_templates_expand_from_co_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_commit_continue_template.abap"
+	source := "REPORT zmain.\nFORM run.\n  co"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	commit, commit_ok := lsp_test_find_completion_item(items, "COMMIT WORK")
+	commit_wait, commit_wait_ok := lsp_test_find_completion_item(items, "COMMIT WORK AND WAIT")
+	continue_item, continue_ok := lsp_test_find_completion_item(items, "CONTINUE")
+	testing.expect(t, commit_ok)
+	testing.expect(t, commit_wait_ok)
+	testing.expect(t, continue_ok)
+	if !commit_ok || !commit_wait_ok || !continue_ok {
+		return
+	}
+
+	testing.expect_value(t, commit.kind, COMPLETION_SNIPPET)
+	testing.expect_value(t, commit.sort_text, "2:commit work")
+	testing.expect_value(t, commit.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(t, commit.insert_text, "COMMIT WORK.$0")
+	testing.expect_value(t, commit_wait.insert_text, "COMMIT WORK AND WAIT.$0")
+	testing.expect_value(t, continue_item.sort_text, "2:continue")
+	testing.expect_value(t, continue_item.insert_text, "CONTINUE.$0")
+}
+
+@(test)
+lsp_completion_read_table_templates_expand_from_read_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_read_table_template.abap"
+	source := "REPORT zmain.\nFORM run.\n  re"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	labels := [?]string {
+		"READ TABLE ... INDEX ... INTO",
+		"READ TABLE ... INDEX ... ASSIGNING",
+		"READ TABLE ... INDEX ... USING KEY ... INTO",
+		"READ TABLE ... WITH KEY ... INTO",
+		"READ TABLE ... WITH KEY ... ASSIGNING",
+		"READ TABLE ... WITH KEY ... REFERENCE INTO",
+		"READ TABLE ... WITH KEY ... TRANSPORTING NO FIELDS",
+		"READ TABLE ... WITH KEY ... BINARY SEARCH",
+		"READ TABLE ... WITH TABLE KEY ... COMPONENTS ... INTO",
+		"READ TABLE ... WITH TABLE KEY ... COMPONENTS ... ASSIGNING",
+		"READ TABLE ... WITH TABLE KEY ... COMPONENTS ... TRANSPORTING NO FIELDS",
+	}
+	for label in labels {
+		item, item_ok := lsp_test_find_completion_item(items, label)
+		testing.expect(t, item_ok)
+		if item_ok {
+			testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+			testing.expect_value(t, item.sort_text, completion_sort_text("2", label, context.temp_allocator))
+			testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		}
+	}
+
+	index_into, index_into_ok := lsp_test_find_completion_item(
+		items,
+		"READ TABLE ... INDEX ... INTO",
+	)
+	index_assigning, index_assigning_ok := lsp_test_find_completion_item(
+		items,
+		"READ TABLE ... INDEX ... ASSIGNING",
+	)
+	table_key, table_key_ok := lsp_test_find_completion_item(
+		items,
+		"READ TABLE ... WITH TABLE KEY ... COMPONENTS ... ASSIGNING",
+	)
+	testing.expect(t, index_into_ok)
+	testing.expect(t, index_assigning_ok)
+	testing.expect(t, table_key_ok)
+	if !index_into_ok || !index_assigning_ok || !table_key_ok {
+		return
+	}
+
+	testing.expect_value(
+		t,
+		index_into.insert_text,
+		"READ TABLE ${1:itab} INDEX ${2:lv_index} INTO DATA(${3:ls_row}).$0",
+	)
+	testing.expect_value(
+		t,
+		index_assigning.insert_text,
+		"READ TABLE ${1:itab} INDEX ${2:lv_index} ASSIGNING FIELD-SYMBOL(<${3:ls_row}>).$0",
+	)
+	testing.expect_value(
+		t,
+		table_key.insert_text,
+		"READ TABLE ${1:itab} WITH TABLE KEY ${2:key_name} COMPONENTS ${3:id} = ${4:lv_id} ASSIGNING FIELD-SYMBOL(<${5:ls_row}>).$0",
+	)
+}
+
+@(test)
 lsp_completion_fetch_cursor_table_expr_fields :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_cursor_table_expr_field.abap"
 	source := `TYPES: BEGIN OF e070,
@@ -756,6 +898,95 @@ lsp_completion_get_time_stamp_field_template_falls_back_to_plain_text_without_sn
 
 	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
 	testing.expect_value(t, item.insert_text, "GET TIME STAMP FIELD lv_timestamp.")
+}
+
+@(test)
+lsp_completion_new_statement_templates_fall_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	try_uri := "file:///D:/repo/completion_try_template_plain.abap"
+	try_source := "REPORT zmain.\ntr"
+	try_state := lsp_test_state_with_open_document(try_uri, try_source)
+	defer lsp_test_state_destroy(&try_state)
+
+	try_offset := len(try_source)
+	try_params := lsp_test_rename_position_params(
+		try_uri,
+		offset_to_position(try_source, try_offset),
+		"",
+	)
+	try_snapshot, try_completion_offset, try_snapshot_ok := snapshot_for_position(
+		&try_state,
+		try_params,
+	)
+	testing.expect(t, try_snapshot_ok)
+	if !try_snapshot_ok {
+		return
+	}
+
+	try_items := completion_items_for_snapshot(
+		try_snapshot,
+		try_completion_offset,
+		false,
+		context.allocator,
+	)
+	try_item, try_item_ok := lsp_test_find_completion_item(
+		try_items,
+		"TRY ... CATCH ... ENDTRY",
+	)
+	testing.expect(t, try_item_ok)
+	if !try_item_ok {
+		return
+	}
+
+	testing.expect_value(t, try_item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(
+		t,
+		try_item.insert_text,
+		"TRY.\n  \nCATCH cx_root INTO DATA(lx_error).\n  \nENDTRY.",
+	)
+
+	read_uri := "file:///D:/repo/completion_read_table_template_plain.abap"
+	read_source := "REPORT zmain.\nre"
+	read_state := lsp_test_state_with_open_document(read_uri, read_source)
+	defer lsp_test_state_destroy(&read_state)
+
+	read_offset := len(read_source)
+	read_params := lsp_test_rename_position_params(
+		read_uri,
+		offset_to_position(read_source, read_offset),
+		"",
+	)
+	read_snapshot, read_completion_offset, read_snapshot_ok := snapshot_for_position(
+		&read_state,
+		read_params,
+	)
+	testing.expect(t, read_snapshot_ok)
+	if !read_snapshot_ok {
+		return
+	}
+
+	read_items := completion_items_for_snapshot(
+		read_snapshot,
+		read_completion_offset,
+		false,
+		context.allocator,
+	)
+	read_item, read_item_ok := lsp_test_find_completion_item(
+		read_items,
+		"READ TABLE ... INDEX ... INTO",
+	)
+	testing.expect(t, read_item_ok)
+	if !read_item_ok {
+		return
+	}
+
+	testing.expect_value(t, read_item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(
+		t,
+		read_item.insert_text,
+		"READ TABLE itab INDEX lv_index INTO DATA(ls_row).",
+	)
 }
 
 @(test)
@@ -991,6 +1222,94 @@ se`
 }
 
 @(test)
+lsp_completion_new_statement_templates_sort_after_matching_symbols :: proc(t: ^testing.T) {
+	read_uri := "file:///D:/repo/completion_read_table_template_priority.abap"
+	read_source := `DATA read_candidate TYPE i.
+re`
+	read_state := lsp_test_state_with_open_document(read_uri, read_source)
+	defer lsp_test_state_destroy(&read_state)
+
+	read_offset := len(read_source)
+	read_params := lsp_test_rename_position_params(
+		read_uri,
+		offset_to_position(read_source, read_offset),
+		"",
+	)
+	read_snapshot, read_completion_offset, read_snapshot_ok := snapshot_for_position(
+		&read_state,
+		read_params,
+	)
+	testing.expect(t, read_snapshot_ok)
+	if !read_snapshot_ok {
+		return
+	}
+
+	read_items := completion_items_for_snapshot(
+		read_snapshot,
+		read_completion_offset,
+		true,
+		context.allocator,
+	)
+	read_symbol_index := lsp_test_completion_item_index(read_items, "read_candidate")
+	read_template_index := lsp_test_completion_item_index(
+		read_items,
+		"READ TABLE ... INDEX ... INTO",
+	)
+	testing.expect(t, read_symbol_index >= 0)
+	testing.expect(t, read_template_index >= 0)
+	if read_symbol_index < 0 || read_template_index < 0 {
+		return
+	}
+
+	testing.expect(t, read_symbol_index < read_template_index)
+	testing.expect_value(t, read_items[read_symbol_index].sort_text, "1:read_candidate")
+	testing.expect_value(t, read_items[read_template_index].sort_text, "2:read table ... index ... into")
+
+	commit_uri := "file:///D:/repo/completion_commit_template_priority.abap"
+	commit_source := `DATA co_candidate TYPE i.
+co`
+	commit_state := lsp_test_state_with_open_document(commit_uri, commit_source)
+	defer lsp_test_state_destroy(&commit_state)
+
+	commit_offset := len(commit_source)
+	commit_params := lsp_test_rename_position_params(
+		commit_uri,
+		offset_to_position(commit_source, commit_offset),
+		"",
+	)
+	commit_snapshot, commit_completion_offset, commit_snapshot_ok := snapshot_for_position(
+		&commit_state,
+		commit_params,
+	)
+	testing.expect(t, commit_snapshot_ok)
+	if !commit_snapshot_ok {
+		return
+	}
+
+	commit_items := completion_items_for_snapshot(
+		commit_snapshot,
+		commit_completion_offset,
+		true,
+		context.allocator,
+	)
+	commit_symbol_index := lsp_test_completion_item_index(commit_items, "co_candidate")
+	commit_template_index := lsp_test_completion_item_index(commit_items, "COMMIT WORK")
+	continue_template_index := lsp_test_completion_item_index(commit_items, "CONTINUE")
+	testing.expect(t, commit_symbol_index >= 0)
+	testing.expect(t, commit_template_index >= 0)
+	testing.expect(t, continue_template_index >= 0)
+	if commit_symbol_index < 0 || commit_template_index < 0 || continue_template_index < 0 {
+		return
+	}
+
+	testing.expect(t, commit_symbol_index < commit_template_index)
+	testing.expect(t, commit_symbol_index < continue_template_index)
+	testing.expect_value(t, commit_items[commit_symbol_index].sort_text, "1:co_candidate")
+	testing.expect_value(t, commit_items[commit_template_index].sort_text, "2:commit work")
+	testing.expect_value(t, commit_items[continue_template_index].sort_text, "2:continue")
+}
+
+@(test)
 lsp_completion_get_time_stamp_field_template_does_not_match_expression_prefixes :: proc(
 	t: ^testing.T,
 ) {
@@ -1034,6 +1353,104 @@ WRITE se`
 	_, item_ok := lsp_test_find_completion_item(items, "SELECT ... WHERE")
 
 	testing.expect(t, !item_ok)
+}
+
+@(test)
+lsp_completion_new_statement_templates_do_not_match_expression_prefixes :: proc(t: ^testing.T) {
+	try_uri := "file:///D:/repo/completion_try_template_expression.abap"
+	try_source := `DATA try_value TYPE i.
+WRITE tr`
+	try_state := lsp_test_state_with_open_document(try_uri, try_source)
+	defer lsp_test_state_destroy(&try_state)
+
+	try_offset := len(try_source)
+	try_params := lsp_test_rename_position_params(
+		try_uri,
+		offset_to_position(try_source, try_offset),
+		"",
+	)
+	try_snapshot, try_completion_offset, try_snapshot_ok := snapshot_for_position(
+		&try_state,
+		try_params,
+	)
+	testing.expect(t, try_snapshot_ok)
+	if !try_snapshot_ok {
+		return
+	}
+
+	try_items := completion_items_for_snapshot(
+		try_snapshot,
+		try_completion_offset,
+		true,
+		context.allocator,
+	)
+	_, try_item_ok := lsp_test_find_completion_item(try_items, "TRY ... CATCH ... ENDTRY")
+	testing.expect(t, !try_item_ok)
+
+	commit_uri := "file:///D:/repo/completion_commit_template_expression.abap"
+	commit_source := `DATA commit_value TYPE i.
+WRITE co`
+	commit_state := lsp_test_state_with_open_document(commit_uri, commit_source)
+	defer lsp_test_state_destroy(&commit_state)
+
+	commit_offset := len(commit_source)
+	commit_params := lsp_test_rename_position_params(
+		commit_uri,
+		offset_to_position(commit_source, commit_offset),
+		"",
+	)
+	commit_snapshot, commit_completion_offset, commit_snapshot_ok := snapshot_for_position(
+		&commit_state,
+		commit_params,
+	)
+	testing.expect(t, commit_snapshot_ok)
+	if !commit_snapshot_ok {
+		return
+	}
+
+	commit_items := completion_items_for_snapshot(
+		commit_snapshot,
+		commit_completion_offset,
+		true,
+		context.allocator,
+	)
+	_, commit_ok := lsp_test_find_completion_item(commit_items, "COMMIT WORK")
+	_, continue_ok := lsp_test_find_completion_item(commit_items, "CONTINUE")
+	testing.expect(t, !commit_ok)
+	testing.expect(t, !continue_ok)
+
+	read_uri := "file:///D:/repo/completion_read_table_template_expression.abap"
+	read_source := `DATA read_value TYPE i.
+WRITE re`
+	read_state := lsp_test_state_with_open_document(read_uri, read_source)
+	defer lsp_test_state_destroy(&read_state)
+
+	read_offset := len(read_source)
+	read_params := lsp_test_rename_position_params(
+		read_uri,
+		offset_to_position(read_source, read_offset),
+		"",
+	)
+	read_snapshot, read_completion_offset, read_snapshot_ok := snapshot_for_position(
+		&read_state,
+		read_params,
+	)
+	testing.expect(t, read_snapshot_ok)
+	if !read_snapshot_ok {
+		return
+	}
+
+	read_items := completion_items_for_snapshot(
+		read_snapshot,
+		read_completion_offset,
+		true,
+		context.allocator,
+	)
+	_, read_ok := lsp_test_find_completion_item(
+		read_items,
+		"READ TABLE ... INDEX ... INTO",
+	)
+	testing.expect(t, !read_ok)
 }
 
 @(test)

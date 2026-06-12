@@ -51,15 +51,21 @@ completion_items_for_snapshot :: proc(
 	indent := completion_line_indent(snapshot.source, offset, context.temp_allocator)
 	if_template_count := completion_if_template_count(snapshot.source, offset, prefix)
 	class_template_count := completion_class_template_count(snapshot.source, offset, prefix)
+	try_template_count := completion_try_template_count(snapshot.source, offset, prefix)
 	loop_template_count := completion_loop_template_count(snapshot.source, offset, prefix)
 	select_template_count := completion_select_template_count(snapshot.source, offset, prefix)
+	commit_template_count := completion_commit_template_count(snapshot.source, offset, prefix)
+	continue_template_count := completion_continue_template_count(snapshot.source, offset, prefix)
+	read_table_template_count := completion_read_table_template_count(snapshot.source, offset, prefix)
 	get_time_stamp_template_count := completion_get_time_stamp_field_template_count(
 		snapshot.source,
 		offset,
 		prefix,
 	)
 	template_count := if_template_count + class_template_count + loop_template_count +
-	                  select_template_count + get_time_stamp_template_count
+	                  select_template_count + get_time_stamp_template_count +
+	                  try_template_count + commit_template_count + continue_template_count +
+	                  read_table_template_count
 	out := make([]Completion_Item, len(items) + template_count, allocator)
 	for item, i in items {
 		out[i] = completion_item_from_semantic_item(
@@ -89,6 +95,14 @@ completion_items_for_snapshot :: proc(
 		)
 		template_index += class_template_count
 	}
+	if try_template_count > 0 {
+		out[template_index] = completion_try_template_item(
+			indent,
+			snippets_supported,
+			allocator,
+		)
+		template_index += try_template_count
+	}
 	if loop_template_count > 0 {
 		completion_append_loop_templates(
 			out[template_index:template_index + loop_template_count],
@@ -106,6 +120,26 @@ completion_items_for_snapshot :: proc(
 			allocator,
 		)
 		template_index += select_template_count
+	}
+	if commit_template_count > 0 {
+		completion_append_commit_templates(
+			out[template_index:template_index + commit_template_count],
+			snippets_supported,
+			allocator,
+		)
+		template_index += commit_template_count
+	}
+	if continue_template_count > 0 {
+		out[template_index] = completion_continue_template_item(snippets_supported, allocator)
+		template_index += continue_template_count
+	}
+	if read_table_template_count > 0 {
+		completion_append_read_table_templates(
+			out[template_index:template_index + read_table_template_count],
+			snippets_supported,
+			allocator,
+		)
+		template_index += read_table_template_count
 	}
 	if get_time_stamp_template_count > 0 {
 		out[template_index] = completion_get_time_stamp_field_template_item(
@@ -189,6 +223,14 @@ completion_class_template_count :: proc(source: string, offset: int, prefix: str
 	return CLASS_TEMPLATE_COUNT
 }
 
+completion_try_template_count :: proc(source: string, offset: int, prefix: string) -> int {
+	if !completion_keyword_prefix_matches(prefix, "TRY") ||
+	   !completion_template_at_statement_start(source, offset) {
+		return 0
+	}
+	return 1
+}
+
 completion_loop_template_count :: proc(source: string, offset: int, prefix: string) -> int {
 	if !completion_keyword_prefix_matches(prefix, "LOOP") ||
 	   !completion_template_at_statement_start(source, offset) {
@@ -215,6 +257,53 @@ completion_select_template_count :: proc(source: string, offset: int, prefix: st
 		return 0
 	}
 	return SELECT_TEMPLATE_COUNT
+}
+
+COMMIT_TEMPLATE_COUNT :: 2
+
+Completion_Commit_Template :: enum {
+	Work,
+	Work_And_Wait,
+}
+
+completion_commit_template_count :: proc(source: string, offset: int, prefix: string) -> int {
+	if !completion_keyword_prefix_matches(prefix, "COMMIT") ||
+	   !completion_template_at_statement_start(source, offset) {
+		return 0
+	}
+	return COMMIT_TEMPLATE_COUNT
+}
+
+completion_continue_template_count :: proc(source: string, offset: int, prefix: string) -> int {
+	if !completion_keyword_prefix_matches(prefix, "CONTINUE") ||
+	   !completion_template_at_statement_start(source, offset) {
+		return 0
+	}
+	return 1
+}
+
+READ_TABLE_TEMPLATE_COUNT :: 11
+
+Completion_Read_Table_Template :: enum {
+	Index_Into,
+	Index_Assigning,
+	Index_Using_Key_Into,
+	Key_Into,
+	Key_Assigning,
+	Key_Reference_Into,
+	Key_Transporting_No_Fields,
+	Key_Binary_Search_Into,
+	Table_Key_Components_Into,
+	Table_Key_Components_Assigning,
+	Table_Key_Components_Transporting_No_Fields,
+}
+
+completion_read_table_template_count :: proc(source: string, offset: int, prefix: string) -> int {
+	if !completion_keyword_prefix_matches(prefix, "READ") ||
+	   !completion_template_at_statement_start(source, offset) {
+		return 0
+	}
+	return READ_TABLE_TEMPLATE_COUNT
 }
 
 completion_get_time_stamp_field_template_count :: proc(
@@ -787,6 +876,242 @@ completion_template_write_newline_indent :: proc(
 		strings.write_string(out, "  ")
 	}
 	strings.write_string(out, text)
+}
+
+completion_try_template_item :: proc(
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	label := "TRY ... CATCH ... ENDTRY"
+	return Completion_Item {
+		label = label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", label, allocator),
+		insert_text = completion_try_template_insert_text(indent, snippets_supported, allocator),
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+	}
+}
+
+completion_try_template_insert_text :: proc(
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "TRY.")
+	completion_template_write_newline_indent(&out, indent, 1, "${1}" if snippets_supported else "")
+	completion_template_write_newline_indent(
+		&out,
+		indent,
+		0,
+		"CATCH ${2:cx_root} INTO DATA(${3:lx_error})." if snippets_supported else "CATCH cx_root INTO DATA(lx_error).",
+	)
+	completion_template_write_newline_indent(&out, indent, 1, "$0" if snippets_supported else "")
+	completion_template_write_newline_indent(&out, indent, 0, "ENDTRY.")
+	return strings.to_string(out)
+}
+
+completion_append_commit_templates :: proc(
+	out: []Completion_Item,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) {
+	assert(len(out) == COMMIT_TEMPLATE_COUNT)
+	out[0] = completion_commit_template_item(
+		"COMMIT WORK",
+		.Work,
+		snippets_supported,
+		allocator,
+	)
+	out[1] = completion_commit_template_item(
+		"COMMIT WORK AND WAIT",
+		.Work_And_Wait,
+		snippets_supported,
+		allocator,
+	)
+}
+
+completion_commit_template_item :: proc(
+	label: string,
+	variant: Completion_Commit_Template,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	return Completion_Item {
+		label = label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", label, allocator),
+		insert_text = completion_commit_template_insert_text(variant, snippets_supported, allocator),
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+	}
+}
+
+completion_commit_template_insert_text :: proc(
+	variant: Completion_Commit_Template,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> string {
+	text: string
+	switch variant {
+	case .Work:
+		text = "COMMIT WORK.$0" if snippets_supported else "COMMIT WORK."
+	case .Work_And_Wait:
+		text = "COMMIT WORK AND WAIT.$0" if snippets_supported else "COMMIT WORK AND WAIT."
+	}
+	return strings.clone(text, allocator)
+}
+
+completion_continue_template_item :: proc(
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	label := "CONTINUE"
+	insert_text := "CONTINUE.$0" if snippets_supported else "CONTINUE."
+	return Completion_Item {
+		label = label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", label, allocator),
+		insert_text = strings.clone(insert_text, allocator),
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+	}
+}
+
+completion_append_read_table_templates :: proc(
+	out: []Completion_Item,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) {
+	assert(len(out) == READ_TABLE_TEMPLATE_COUNT)
+	out[0] = completion_read_table_template_item(
+		"READ TABLE ... INDEX ... INTO",
+		.Index_Into,
+		snippets_supported,
+		allocator,
+	)
+	out[1] = completion_read_table_template_item(
+		"READ TABLE ... INDEX ... ASSIGNING",
+		.Index_Assigning,
+		snippets_supported,
+		allocator,
+	)
+	out[2] = completion_read_table_template_item(
+		"READ TABLE ... INDEX ... USING KEY ... INTO",
+		.Index_Using_Key_Into,
+		snippets_supported,
+		allocator,
+	)
+	out[3] = completion_read_table_template_item(
+		"READ TABLE ... WITH KEY ... INTO",
+		.Key_Into,
+		snippets_supported,
+		allocator,
+	)
+	out[4] = completion_read_table_template_item(
+		"READ TABLE ... WITH KEY ... ASSIGNING",
+		.Key_Assigning,
+		snippets_supported,
+		allocator,
+	)
+	out[5] = completion_read_table_template_item(
+		"READ TABLE ... WITH KEY ... REFERENCE INTO",
+		.Key_Reference_Into,
+		snippets_supported,
+		allocator,
+	)
+	out[6] = completion_read_table_template_item(
+		"READ TABLE ... WITH KEY ... TRANSPORTING NO FIELDS",
+		.Key_Transporting_No_Fields,
+		snippets_supported,
+		allocator,
+	)
+	out[7] = completion_read_table_template_item(
+		"READ TABLE ... WITH KEY ... BINARY SEARCH",
+		.Key_Binary_Search_Into,
+		snippets_supported,
+		allocator,
+	)
+	out[8] = completion_read_table_template_item(
+		"READ TABLE ... WITH TABLE KEY ... COMPONENTS ... INTO",
+		.Table_Key_Components_Into,
+		snippets_supported,
+		allocator,
+	)
+	out[9] = completion_read_table_template_item(
+		"READ TABLE ... WITH TABLE KEY ... COMPONENTS ... ASSIGNING",
+		.Table_Key_Components_Assigning,
+		snippets_supported,
+		allocator,
+	)
+	out[10] = completion_read_table_template_item(
+		"READ TABLE ... WITH TABLE KEY ... COMPONENTS ... TRANSPORTING NO FIELDS",
+		.Table_Key_Components_Transporting_No_Fields,
+		snippets_supported,
+		allocator,
+	)
+}
+
+completion_read_table_template_item :: proc(
+	label: string,
+	variant: Completion_Read_Table_Template,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	return Completion_Item {
+		label = label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", label, allocator),
+		insert_text = completion_read_table_template_insert_text(
+			variant,
+			snippets_supported,
+			allocator,
+		),
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+	}
+}
+
+completion_read_table_template_insert_text :: proc(
+	variant: Completion_Read_Table_Template,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> string {
+	text: string
+	switch variant {
+	case .Index_Into:
+		text =
+			"READ TABLE ${1:itab} INDEX ${2:lv_index} INTO DATA(${3:ls_row}).$0" if snippets_supported else "READ TABLE itab INDEX lv_index INTO DATA(ls_row)."
+	case .Index_Assigning:
+		text =
+			"READ TABLE ${1:itab} INDEX ${2:lv_index} ASSIGNING FIELD-SYMBOL(<${3:ls_row}>).$0" if snippets_supported else "READ TABLE itab INDEX lv_index ASSIGNING FIELD-SYMBOL(<ls_row>)."
+	case .Index_Using_Key_Into:
+		text =
+			"READ TABLE ${1:itab} INDEX ${2:lv_index} USING KEY ${3:key_name} INTO DATA(${4:ls_row}).$0" if snippets_supported else "READ TABLE itab INDEX lv_index USING KEY key_name INTO DATA(ls_row)."
+	case .Key_Into:
+		text =
+			"READ TABLE ${1:itab} WITH KEY ${2:id} = ${3:lv_id} INTO DATA(${4:ls_row}).$0" if snippets_supported else "READ TABLE itab WITH KEY id = lv_id INTO DATA(ls_row)."
+	case .Key_Assigning:
+		text =
+			"READ TABLE ${1:itab} WITH KEY ${2:id} = ${3:lv_id} ASSIGNING FIELD-SYMBOL(<${4:ls_row}>).$0" if snippets_supported else "READ TABLE itab WITH KEY id = lv_id ASSIGNING FIELD-SYMBOL(<ls_row>)."
+	case .Key_Reference_Into:
+		text =
+			"READ TABLE ${1:itab} WITH KEY ${2:id} = ${3:lv_id} REFERENCE INTO DATA(${4:lr_row}).$0" if snippets_supported else "READ TABLE itab WITH KEY id = lv_id REFERENCE INTO DATA(lr_row)."
+	case .Key_Transporting_No_Fields:
+		text =
+			"READ TABLE ${1:itab} WITH KEY ${2:id} = ${3:lv_id} TRANSPORTING NO FIELDS.$0" if snippets_supported else "READ TABLE itab WITH KEY id = lv_id TRANSPORTING NO FIELDS."
+	case .Key_Binary_Search_Into:
+		text =
+			"READ TABLE ${1:itab} WITH KEY ${2:id} = ${3:lv_id} BINARY SEARCH INTO DATA(${4:ls_row}).$0" if snippets_supported else "READ TABLE itab WITH KEY id = lv_id BINARY SEARCH INTO DATA(ls_row)."
+	case .Table_Key_Components_Into:
+		text =
+			"READ TABLE ${1:itab} WITH TABLE KEY ${2:key_name} COMPONENTS ${3:id} = ${4:lv_id} INTO DATA(${5:ls_row}).$0" if snippets_supported else "READ TABLE itab WITH TABLE KEY key_name COMPONENTS id = lv_id INTO DATA(ls_row)."
+	case .Table_Key_Components_Assigning:
+		text =
+			"READ TABLE ${1:itab} WITH TABLE KEY ${2:key_name} COMPONENTS ${3:id} = ${4:lv_id} ASSIGNING FIELD-SYMBOL(<${5:ls_row}>).$0" if snippets_supported else "READ TABLE itab WITH TABLE KEY key_name COMPONENTS id = lv_id ASSIGNING FIELD-SYMBOL(<ls_row>)."
+	case .Table_Key_Components_Transporting_No_Fields:
+		text =
+			"READ TABLE ${1:itab} WITH TABLE KEY ${2:key_name} COMPONENTS ${3:id} = ${4:lv_id} TRANSPORTING NO FIELDS.$0" if snippets_supported else "READ TABLE itab WITH TABLE KEY key_name COMPONENTS id = lv_id TRANSPORTING NO FIELDS."
+	}
+	return strings.clone(text, allocator)
 }
 
 completion_get_time_stamp_field_template_item :: proc(
