@@ -290,6 +290,9 @@ simple_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^as
 	if !expr_lead_token(current_token(p)) {
 		return nil
 	}
+	old_stops := p.expr_stop_keywords
+	p.expr_stop_keywords = stop_keywords
+	defer p.expr_stop_keywords = old_stops
 	return parse_expr(p)
 }
 

@@ -1904,6 +1904,33 @@ EXPORT variscreens = lt_variscreens TO MEMORY ID '%_SCRNR_%'.`
 }
 
 @(test)
+memory_transfer_statements_accept_keyword_like_value_name :: proc(t: ^testing.T) {
+	source := `EXPORT name = value TO MEMORY ID 'id'.
+IMPORT name = value FROM MEMORY ID 'id'.`
+	parsed := parse(source, "import_export_memory_keyword_like_value.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	export_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Export_Stmt)
+	import_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Import_Stmt)
+	export_value := export_stmt.parameters[0].value.derived_expr.(^ast.Ident_Expr)
+	import_value := import_stmt.parameters[0].value.derived_expr.(^ast.Ident_Expr)
+	export_id := export_stmt.medium.id.derived_expr.(^ast.Literal_Expr)
+	import_id := import_stmt.medium.id.derived_expr.(^ast.Literal_Expr)
+
+	testing.expect_value(t, len(export_stmt.parameters), 1)
+	testing.expect_value(t, export_stmt.parameters[0].name.text, "name")
+	testing.expect_value(t, export_stmt.medium.kind, ast.Data_Cluster_Medium_Kind.Memory_ID)
+	testing.expect_value(t, export_value.name, "value")
+	testing.expect_value(t, export_id.value, "'id'")
+	testing.expect_value(t, len(import_stmt.parameters), 1)
+	testing.expect_value(t, import_stmt.parameters[0].name.text, "name")
+	testing.expect_value(t, import_stmt.medium.kind, ast.Data_Cluster_Medium_Kind.Memory_ID)
+	testing.expect_value(t, import_value.name, "value")
+	testing.expect_value(t, import_id.value, "'id'")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 export_to_memory_accepts_multiline_parameters_without_commas :: proc(t: ^testing.T) {
 	source := `EXPORT scpr3_display_only = lv_display_only
        scpr3_bcset_id     = lv_bcset_id
