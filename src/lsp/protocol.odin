@@ -56,6 +56,7 @@ COMPLETION_CLASS :: 7
 COMPLETION_INTERFACE :: 8
 COMPLETION_MODULE :: 9
 COMPLETION_PROPERTY :: 10
+COMPLETION_SNIPPET :: 15
 COMPLETION_ENUM_MEMBER :: 20
 COMPLETION_CONSTANT :: 21
 COMPLETION_STRUCT :: 22
@@ -95,6 +96,7 @@ Publish_Diagnostics_Params :: struct {
 Completion_Item :: struct {
 	label:              string `json:"label"`,
 	kind:               int    `json:"kind"`,
+	sort_text:          string `json:"sortText"`,
 	insert_text:        string `json:"insertText"`,
 	insert_text_format: int    `json:"insertTextFormat"`,
 }

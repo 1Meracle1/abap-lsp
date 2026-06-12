@@ -428,6 +428,151 @@ START-OF-SELECTION.
 }
 
 @(test)
+lsp_completion_loop_templates_expand_from_loop_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_loop_template.abap"
+	source := "REPORT zmain.\nFORM run.\n  lo"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	assigning, assigning_ok := lsp_test_find_completion_item(items, "LOOP AT ... ASSIGNING")
+	into, into_ok := lsp_test_find_completion_item(items, "LOOP AT ... INTO")
+	testing.expect(t, assigning_ok)
+	testing.expect(t, into_ok)
+	if !assigning_ok || !into_ok {
+		return
+	}
+
+	testing.expect_value(t, assigning.kind, COMPLETION_SNIPPET)
+	testing.expect_value(t, assigning.sort_text, "2:loop at ... assigning")
+	testing.expect_value(t, assigning.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(
+		t,
+		assigning.insert_text,
+		"LOOP AT ${1:itab} ASSIGNING FIELD-SYMBOL(<${2:row}>).\n    $0\n  ENDLOOP.",
+	)
+	testing.expect_value(t, into.kind, COMPLETION_SNIPPET)
+	testing.expect_value(t, into.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(
+		t,
+		into.insert_text,
+		"LOOP AT ${1:itab} INTO DATA(${2:row}).\n    $0\n  ENDLOOP.",
+	)
+}
+
+@(test)
+lsp_completion_loop_templates_fall_back_to_plain_text_without_snippet_support :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_loop_template_plain.abap"
+	source := "REPORT zmain.\nlo"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "LOOP AT ... INTO")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(t, item.insert_text, "LOOP AT itab INTO DATA(row).\n  \nENDLOOP.")
+}
+
+@(test)
+lsp_completion_loop_templates_sort_after_matching_symbols :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_loop_template_priority.abap"
+	source := `DATA lo_candidate TYPE i.
+lo`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	symbol_index := lsp_test_completion_item_index(items, "lo_candidate")
+	template_index := lsp_test_completion_item_index(items, "LOOP AT ... ASSIGNING")
+	testing.expect(t, symbol_index >= 0)
+	testing.expect(t, template_index >= 0)
+	if symbol_index < 0 || template_index < 0 {
+		return
+	}
+
+	testing.expect(t, symbol_index < template_index)
+	testing.expect_value(t, items[symbol_index].sort_text, "1:lo_candidate")
+	testing.expect_value(t, items[template_index].sort_text, "2:loop at ... assigning")
+}
+
+@(test)
+lsp_completion_loop_templates_do_not_match_other_prefixes :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_loop_template_unmatched.abap"
+	source := `DATA lv_value TYPE i.
+lv`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, assigning_ok := lsp_test_find_completion_item(items, "LOOP AT ... ASSIGNING")
+	_, into_ok := lsp_test_find_completion_item(items, "LOOP AT ... INTO")
+
+	testing.expect(t, !assigning_ok)
+	testing.expect(t, !into_ok)
+}
+
+@(test)
+lsp_completion_loop_templates_do_not_match_expression_prefixes :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_loop_template_expression.abap"
+	source := `DATA lo_value TYPE i.
+WRITE lo`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, assigning_ok := lsp_test_find_completion_item(items, "LOOP AT ... ASSIGNING")
+	_, into_ok := lsp_test_find_completion_item(items, "LOOP AT ... INTO")
+
+	testing.expect(t, !assigning_ok)
+	testing.expect(t, !into_ok)
+}
+
+@(test)
 watched_folder_delete_removes_analysis_inputs_under_folder :: proc(t: ^testing.T) {
 	output_path := `tmp\lsp_watched_folder_delete.out`
 	os.remove(output_path)
@@ -1274,6 +1419,15 @@ lsp_test_find_completion_item :: proc(
 		}
 	}
 	return {}, false
+}
+
+lsp_test_completion_item_index :: proc(items: []Completion_Item, label: string) -> int {
+	for item, i in items {
+		if item.label == label {
+			return i
+		}
+	}
+	return -1
 }
 
 lsp_test_empty_state :: proc() -> Server_State {

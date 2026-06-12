@@ -49,7 +49,8 @@ completion_items_for_snapshot :: proc(
 		snapshot.source,
 	)
 	indent := completion_line_indent(snapshot.source, offset, context.temp_allocator)
-	out := make([]Completion_Item, len(items), allocator)
+	template_count := completion_loop_template_count(snapshot.source, offset, prefix)
+	out := make([]Completion_Item, len(items) + template_count, allocator)
 	for item, i in items {
 		out[i] = completion_item_from_semantic_item(
 			snapshot.project,
@@ -58,6 +59,9 @@ completion_items_for_snapshot :: proc(
 			snippets_supported,
 			allocator,
 		)
+	}
+	if template_count > 0 {
+		completion_append_loop_templates(out[len(items):], indent, snippets_supported, allocator)
 	}
 	return out
 }
@@ -73,6 +77,7 @@ completion_item_from_semantic_item :: proc(
 	out := Completion_Item {
 		label = name,
 		kind = completion_kind(item.entity),
+		sort_text = completion_sort_text("1", name, allocator),
 		insert_text = name,
 		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
 	}
@@ -86,24 +91,140 @@ completion_item_from_semantic_item :: proc(
 	return out
 }
 
+completion_sort_text :: proc(priority, label: string, allocator: mem.Allocator) -> string {
+	lower := strings.to_lower(label, context.temp_allocator)
+	return strings.concatenate({priority, ":", lower}, allocator)
+}
+
+completion_loop_template_count :: proc(source: string, offset: int, prefix: string) -> int {
+	if !completion_loop_template_prefix_matches(prefix) ||
+	   !completion_loop_template_at_statement_start(source, offset) {
+		return 0
+	}
+	return 2
+}
+
+completion_loop_template_prefix_matches :: proc(prefix: string) -> bool {
+	if prefix == "" || len(prefix) > len("LOOP") {
+		return false
+	}
+	lower := strings.to_lower(prefix, context.temp_allocator)
+	return strings.has_prefix("loop", lower)
+}
+
+completion_loop_template_at_statement_start :: proc(source: string, offset: int) -> bool {
+	prefix_start := completion_prefix_start(source, offset)
+	i := prefix_start
+	for i > 0 {
+		switch source[i - 1] {
+		case ' ', '\t', '\r':
+			i -= 1
+			continue
+		}
+		break
+	}
+	if i == 0 {
+		return true
+	}
+	prev := source[i - 1]
+	return prev == '\n' || prev == '.'
+}
+
+completion_append_loop_templates :: proc(
+	out: []Completion_Item,
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) {
+	assert(len(out) == 2)
+	out[0] = completion_loop_template_item(
+		"LOOP AT ... ASSIGNING",
+		"assigning",
+		indent,
+		snippets_supported,
+		allocator,
+	)
+	out[1] = completion_loop_template_item(
+		"LOOP AT ... INTO",
+		"into",
+		indent,
+		snippets_supported,
+		allocator,
+	)
+}
+
+completion_loop_template_item :: proc(
+	label: string,
+	variant: string,
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	return Completion_Item {
+		label = label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", label, allocator),
+		insert_text = completion_loop_template_insert_text(variant, indent, snippets_supported, allocator),
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+	}
+}
+
+completion_loop_template_insert_text :: proc(
+	variant: string,
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> string {
+	out := strings.builder_make(allocator)
+	if variant == "assigning" {
+		if snippets_supported {
+			strings.write_string(&out, "LOOP AT ${1:itab} ASSIGNING FIELD-SYMBOL(<${2:row}>).")
+		} else {
+			strings.write_string(&out, "LOOP AT itab ASSIGNING FIELD-SYMBOL(<row>).")
+		}
+	} else {
+		assert(variant == "into")
+		if snippets_supported {
+			strings.write_string(&out, "LOOP AT ${1:itab} INTO DATA(${2:row}).")
+		} else {
+			strings.write_string(&out, "LOOP AT itab INTO DATA(row).")
+		}
+	}
+	strings.write_byte(&out, '\n')
+	strings.write_string(&out, indent)
+	strings.write_string(&out, "  ")
+	if snippets_supported {
+		strings.write_string(&out, "$0")
+	}
+	strings.write_byte(&out, '\n')
+	strings.write_string(&out, indent)
+	strings.write_string(&out, "ENDLOOP.")
+	return strings.to_string(out)
+}
+
 completion_prefix :: proc(source: string, offset: int, allocator: mem.Allocator) -> string {
 	end := clamp(offset, 0, len(source))
-	start := end
-	for start > 0 {
-		ch := source[start - 1]
-		if !(('a' <= ch && ch <= 'z') ||
-			   ('A' <= ch && ch <= 'Z') ||
-			   ('0' <= ch && ch <= '9') ||
-			   ch == '_' ||
-			   ch == '/') {
-			break
-		}
-		start -= 1
-	}
+	start := completion_prefix_start(source, offset)
 	if start == end {
 		return ""
 	}
 	return strings.clone(source[start:end], allocator)
+}
+
+completion_prefix_start :: proc(source: string, offset: int) -> int {
+	start := clamp(offset, 0, len(source))
+	for start > 0 && completion_prefix_char(source[start - 1]) {
+		start -= 1
+	}
+	return start
+}
+
+completion_prefix_char :: proc "contextless" (ch: u8) -> bool {
+	return ('a' <= ch && ch <= 'z') ||
+	       ('A' <= ch && ch <= 'Z') ||
+	       ('0' <= ch && ch <= '9') ||
+	       ch == '_' ||
+	       ch == '/'
 }
 
 completion_line_indent :: proc(source: string, offset: int, allocator: mem.Allocator) -> string {
