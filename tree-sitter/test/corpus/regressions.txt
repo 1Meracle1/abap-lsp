@@ -1436,3 +1436,85 @@ ENDSELECT.
     (keyword))
   (simple_statement
     (keyword)))
+
+==================
+Cursor statements highlight additions as keywords
+==================
+
+OPEN CURSOR WITH HOLD @lv_cursor FOR
+  SELECT trstatus
+    FROM e070
+    WHERE field = @lv_value.
+
+DO.
+  FETCH NEXT CURSOR @lv_cursor
+    INTO TABLE @DATA(lt_package)
+    PACKAGE SIZE 100.
+
+  IF sy-subrc <> 0.
+    EXIT.
+  ENDIF.
+ENDDO.
+
+CLOSE CURSOR @lv_cursor.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (host_expression
+      (qualified_name
+        (identifier)))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (operator)
+    (host_expression
+      (qualified_name
+        (identifier))))
+  (do_statement
+    (keyword)
+    (simple_statement
+      (keyword)
+      (keyword)
+      (keyword)
+      (host_expression
+        (qualified_name
+          (identifier)))
+      (keyword)
+      (keyword)
+      (host_expression
+        (call_expression
+          (qualified_name
+            (identifier))
+          (argument_list
+            (qualified_name
+              (identifier)))))
+      (keyword)
+      (keyword)
+      (number))
+    (if_statement
+      (keyword)
+      (binary_expression
+        (field_path)
+        (number))
+      (simple_statement
+        (keyword))
+      (keyword))
+    (keyword))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (host_expression
+      (qualified_name
+        (identifier)))))
