@@ -1523,3 +1523,48 @@ CLOSE CURSOR @lv_cursor.
     (host_expression
       (qualified_name
         (identifier)))))
+
+==================
+Message and memory transfer additions highlight as keywords
+==================
+
+MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+EXPORT name = value TO MEMORY ID 'id'.
+IMPORT name = value FROM MEMORY ID 'id'.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)
+    (field_path)
+    (keyword)
+    (field_path)
+    (keyword)
+    (field_path)
+    (keyword)
+    (field_path)
+    (field_path)
+    (field_path)
+    (field_path))
+  (simple_statement
+    (keyword)
+    (identifier)
+    (equals)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword)
+    (string))
+  (simple_statement
+    (keyword)
+    (identifier)
+    (equals)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword)
+    (string)))

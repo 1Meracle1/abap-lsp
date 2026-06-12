@@ -49,6 +49,14 @@ function assignmentTail($) {
   return repeat1(choice($._expression, keywordChoice($, EXPRESSION_KEYWORDS), $.operator, $.punctuation, $.tail_fragment));
 }
 
+function messageTail($) {
+  return repeat1(choice(keywordChoice($, MESSAGE_TAIL_KEYWORDS), $._raw_token, $.tail_fragment));
+}
+
+function memoryTransferTail($) {
+  return repeat1(choice($._memory_transfer_assignment, $._compound_tail_keyword, keywordChoice($, MEMORY_TRANSFER_KEYWORDS), $._raw_token, $.tail_fragment));
+}
+
 function declarationKeywordFieldName($) {
   return prec(
     3,
@@ -96,7 +104,6 @@ const SIMPLE_STATEMENT_KEYWORDS = [
   "FIND",
   "SEARCH",
   "PERFORM",
-  "MESSAGE",
   "WRITE",
   "ASSERT",
   "CHECK",
@@ -108,8 +115,6 @@ const SIMPLE_STATEMENT_KEYWORDS = [
   "COMMIT",
   "ROLLBACK",
   "DESCRIBE",
-  "EXPORT",
-  "IMPORT",
   "RECEIVE",
   "GET",
   "SET",
@@ -383,6 +388,31 @@ const CONSTRUCTOR_ARGUMENT_KEYWORDS = [
   "ELSE",
 ];
 
+const MESSAGE_TAIL_KEYWORDS = [
+  "ID",
+  "TYPE",
+  "NUMBER",
+  "WITH",
+  "INTO",
+  "DISPLAY",
+  "LIKE",
+  "RAISING",
+];
+
+const MEMORY_TRANSFER_KEYWORDS = [
+  "TO",
+  "FROM",
+  "MEMORY",
+  "ID",
+  "DATABASE",
+  "SHARED",
+  "BUFFER",
+  "INTERNAL",
+  "TABLE",
+  "DATA",
+  "CLIENT",
+];
+
 const STATEMENT_TAIL_KEYWORDS = [
   "ACCEPTING",
   "ADD",
@@ -532,7 +562,11 @@ module.exports = grammar({
     [$.dynamic_component, $._raw_token],
     [$.constructor_expression, $._tail_token],
     [$.constructor_expression, $._raw_token],
+    [$.simple_statement, $._raw_token],
+    [$.simple_statement, $._compound_tail_keyword, $._raw_token],
+    [$.simple_statement, $._compound_tail_keyword],
     [$.routine_name, $._expression],
+    [$._expression, $._memory_transfer_value],
     [$._expression, $._method_signature_raw_token],
     [$._method_signature_tail_token, $._method_signature_raw_token],
     [$.catch_clause],
@@ -1385,6 +1419,9 @@ module.exports = grammar({
     simple_statement: ($) =>
       choice(
         prec(1, seq(field("keyword", keyword($, "MODIFY")), keyword($, "SCREEN"), optional($._statement_tail), ".")),
+        prec(1, seq(field("keyword", keyword($, "MESSAGE")), optional(messageTail($)), ".")),
+        prec(1, seq(field("keyword", keyword($, "EXPORT")), optional(memoryTransferTail($)), ".")),
+        prec(1, seq(field("keyword", keyword($, "IMPORT")), optional(memoryTransferTail($)), ".")),
         seq(field("keyword", keywordChoice($, SIMPLE_STATEMENT_KEYWORDS)), optional($._statement_tail), "."),
       ),
 
@@ -1440,10 +1477,33 @@ module.exports = grammar({
         ),
       ),
 
+    _memory_transfer_assignment: ($) =>
+      prec(
+        PREC.COMPARE + 1,
+        seq(
+          field("name", $._argument_name),
+          $.equals,
+          field("value", $._memory_transfer_value),
+        ),
+      ),
+
+    _memory_transfer_value: ($) =>
+      choice(
+        $.static_type_path,
+        $.field_symbol_path,
+        $.field_path,
+        $.dynamic_name,
+        $.substring_expression,
+        $.host_expression,
+        $.qualified_name,
+        $._literal,
+      ),
+
     _compound_tail_keyword: ($) =>
       choice(
         seq(keyword($, "LOWER"), keyword($, "CASE")),
         seq(keyword($, "MODIF"), keyword($, "ID")),
+        seq(keyword($, "MEMORY"), keyword($, "ID")),
         seq(keyword($, "AS"), keyword($, "CHECKBOX")),
         seq(keyword($, "ON"), keyword($, "VALUE-REQUEST")),
         seq(keyword($, "TO"), keyword($, "SCREEN")),
