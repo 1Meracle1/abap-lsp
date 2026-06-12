@@ -35,6 +35,7 @@ completion_items_for_snapshot :: proc(
 	allocator: mem.Allocator,
 ) -> []Completion_Item {
 	prefix := completion_prefix(snapshot.source, offset, context.temp_allocator)
+	template_prefix := completion_template_prefix(snapshot.source, offset, context.temp_allocator)
 	query := semantic.semantic_query(
 		snapshot.project,
 		snapshot.checker,
@@ -49,23 +50,33 @@ completion_items_for_snapshot :: proc(
 		snapshot.source,
 	)
 	indent := completion_line_indent(snapshot.source, offset, context.temp_allocator)
-	if_template_count := completion_if_template_count(snapshot.source, offset, prefix)
-	class_template_count := completion_class_template_count(snapshot.source, offset, prefix)
-	try_template_count := completion_try_template_count(snapshot.source, offset, prefix)
-	loop_template_count := completion_loop_template_count(snapshot.source, offset, prefix)
-	select_template_count := completion_select_template_count(snapshot.source, offset, prefix)
-	commit_template_count := completion_commit_template_count(snapshot.source, offset, prefix)
-	continue_template_count := completion_continue_template_count(snapshot.source, offset, prefix)
-	read_table_template_count := completion_read_table_template_count(snapshot.source, offset, prefix)
+	template_replace_range := completion_template_replace_range(snapshot.source, offset)
+	if_template_count := completion_if_template_count(snapshot.source, offset, template_prefix)
+	class_template_count := completion_class_template_count(snapshot.source, offset, template_prefix)
+	try_template_count := completion_try_template_count(snapshot.source, offset, template_prefix)
+	loop_template_count := completion_loop_template_count(snapshot.source, offset, template_prefix)
+	select_template_count := completion_select_template_count(snapshot.source, offset, template_prefix)
+	commit_template_count := completion_commit_template_count(snapshot.source, offset, template_prefix)
+	continue_template_count := completion_continue_template_count(snapshot.source, offset, template_prefix)
+	read_table_template_count := completion_read_table_template_count(
+		snapshot.source,
+		offset,
+		template_prefix,
+	)
 	get_time_stamp_template_count := completion_get_time_stamp_field_template_count(
 		snapshot.source,
 		offset,
-		prefix,
+		template_prefix,
+	)
+	common_statement_template_count := completion_common_statement_template_count(
+		snapshot.source,
+		offset,
+		template_prefix,
 	)
 	template_count := if_template_count + class_template_count + loop_template_count +
 	                  select_template_count + get_time_stamp_template_count +
 	                  try_template_count + commit_template_count + continue_template_count +
-	                  read_table_template_count
+	                  read_table_template_count + common_statement_template_count
 	out := make([]Completion_Item, len(items) + template_count, allocator)
 	for item, i in items {
 		out[i] = completion_item_from_semantic_item(
@@ -143,6 +154,16 @@ completion_items_for_snapshot :: proc(
 	}
 	if get_time_stamp_template_count > 0 {
 		out[template_index] = completion_get_time_stamp_field_template_item(
+			snippets_supported,
+			allocator,
+		)
+		template_index += get_time_stamp_template_count
+	}
+	if common_statement_template_count > 0 {
+		completion_append_common_statement_templates(
+			out[template_index:template_index + common_statement_template_count],
+			template_prefix,
+			template_replace_range,
 			snippets_supported,
 			allocator,
 		)
@@ -318,6 +339,290 @@ completion_get_time_stamp_field_template_count :: proc(
 	return 1
 }
 
+Completion_Statement_Template :: struct {
+	keyword: string,
+	label:   string,
+	snippet: string,
+	plain:   string,
+}
+
+COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
+	{
+		keyword = "MESSAGE",
+		label = "MESSAGE ... TYPE",
+		snippet = "MESSAGE ${1:'Text'} TYPE ${2:'S'}.$0",
+		plain = "MESSAGE 'Text' TYPE 'S'.",
+	},
+	{
+		keyword = "MESSAGE",
+		label = "MESSAGE ID ... TYPE ... NUMBER",
+		snippet = "MESSAGE ID ${1:sy-msgid} TYPE ${2:sy-msgty} NUMBER ${3:sy-msgno} WITH ${4:sy-msgv1} ${5:sy-msgv2} ${6:sy-msgv3} ${7:sy-msgv4}.$0",
+		plain = "MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.",
+	},
+	{
+		keyword = "MESSAGE",
+		label = "MESSAGE ... TYPE ... INTO",
+		snippet = "MESSAGE ${1:'Text'} TYPE ${2:'S'} INTO ${3:lv_message}.$0",
+		plain = "MESSAGE 'Text' TYPE 'S' INTO lv_message.",
+	},
+	{
+		keyword = "DESCRIBE",
+		label = "DESCRIBE TABLE ... LINES",
+		snippet = "DESCRIBE TABLE ${1:itab} LINES ${2:lv_lines}.$0",
+		plain = "DESCRIBE TABLE itab LINES lv_lines.",
+	},
+	{
+		keyword = "DESCRIBE",
+		label = "DESCRIBE FIELD ... TYPE",
+		snippet = "DESCRIBE FIELD ${1:lv_value} TYPE ${2:lv_type}.$0",
+		plain = "DESCRIBE FIELD lv_value TYPE lv_type.",
+	},
+	{
+		keyword = "DESCRIBE",
+		label = "DESCRIBE FIELD ... LENGTH",
+		snippet = "DESCRIBE FIELD ${1:lv_value} LENGTH ${2:lv_length} IN CHARACTER MODE.$0",
+		plain = "DESCRIBE FIELD lv_value LENGTH lv_length IN CHARACTER MODE.",
+	},
+	{
+		keyword = "EXPORT",
+		label = "EXPORT ... TO MEMORY ID",
+		snippet = "EXPORT ${1:name} = ${2:value} TO MEMORY ID ${3:'id'}.$0",
+		plain = "EXPORT name = value TO MEMORY ID 'id'.",
+	},
+	{
+		keyword = "EXPORT",
+		label = "EXPORT ... TO DATABASE",
+		snippet = "EXPORT ${1:name} = ${2:value} TO DATABASE ${3:indx(st)} ID ${4:lv_id}.$0",
+		plain = "EXPORT name = value TO DATABASE indx(st) ID lv_id.",
+	},
+	{
+		keyword = "EXPORT",
+		label = "EXPORT ... TO DATA BUFFER",
+		snippet = "EXPORT ${1:data} TO DATA BUFFER ${2:lv_buffer}.$0",
+		plain = "EXPORT data TO DATA BUFFER lv_buffer.",
+	},
+	{
+		keyword = "IMPORT",
+		label = "IMPORT ... FROM MEMORY ID",
+		snippet = "IMPORT ${1:name} = ${2:value} FROM MEMORY ID ${3:'id'}.$0",
+		plain = "IMPORT name = value FROM MEMORY ID 'id'.",
+	},
+	{
+		keyword = "IMPORT",
+		label = "IMPORT ... FROM DATABASE",
+		snippet = "IMPORT ${1:name} = ${2:value} FROM DATABASE ${3:indx(st)} ID ${4:lv_id}.$0",
+		plain = "IMPORT name = value FROM DATABASE indx(st) ID lv_id.",
+	},
+	{
+		keyword = "IMPORT",
+		label = "IMPORT ... FROM DATA BUFFER",
+		snippet = "IMPORT ${1:data} FROM DATA BUFFER ${2:lv_buffer}.$0",
+		plain = "IMPORT data FROM DATA BUFFER lv_buffer.",
+	},
+	{
+		keyword = "RAISE",
+		label = "RAISE EXCEPTION TYPE",
+		snippet = "RAISE EXCEPTION TYPE ${1:cx_static_check}.$0",
+		plain = "RAISE EXCEPTION TYPE cx_static_check.",
+	},
+	{
+		keyword = "RAISE",
+		label = "RAISE EXCEPTION NEW",
+		snippet = "RAISE EXCEPTION NEW ${1:cx_static_check}( ${2} ).$0",
+		plain = "RAISE EXCEPTION NEW cx_static_check( ).",
+	},
+	{
+		keyword = "RAISE",
+		label = "RAISE ...",
+		snippet = "RAISE ${1:exception}.$0",
+		plain = "RAISE exception.",
+	},
+	{
+		keyword = "INSERT",
+		label = "INSERT ... INTO TABLE",
+		snippet = "INSERT ${1:wa} INTO TABLE ${2:itab}.$0",
+		plain = "INSERT wa INTO TABLE itab.",
+	},
+	{
+		keyword = "INSERT",
+		label = "INSERT ... INTO ... INDEX",
+		snippet = "INSERT ${1:wa} INTO ${2:itab} INDEX ${3:lv_index}.$0",
+		plain = "INSERT wa INTO itab INDEX lv_index.",
+	},
+	{
+		keyword = "INSERT",
+		label = "INSERT VALUE #( ... ) INTO TABLE",
+		snippet = "INSERT VALUE #( ${1} ) INTO TABLE ${2:itab}.$0",
+		plain = "INSERT VALUE #( ) INTO TABLE itab.",
+	},
+	{
+		keyword = "INSERT",
+		label = "INSERT ... FROM TABLE",
+		snippet = "INSERT ${1:dbtab} FROM TABLE ${2:itab}.$0",
+		plain = "INSERT dbtab FROM TABLE itab.",
+	},
+	{
+		keyword = "FIELD-SYMBOLS",
+		label = "FIELD-SYMBOLS ... TYPE",
+		snippet = "FIELD-SYMBOLS <${1:fs}> TYPE ${2:any}.$0",
+		plain = "FIELD-SYMBOLS <fs> TYPE any.",
+	},
+	{
+		keyword = "FIELD-SYMBOLS",
+		label = "FIELD-SYMBOLS ... LIKE LINE OF",
+		snippet = "FIELD-SYMBOLS <${1:fs}> LIKE LINE OF ${2:itab}.$0",
+		plain = "FIELD-SYMBOLS <fs> LIKE LINE OF itab.",
+	},
+	{
+		keyword = "FIELD-SYMBOLS",
+		label = "FIELD-SYMBOLS ... TYPE ANY TABLE",
+		snippet = "FIELD-SYMBOLS <${1:table}> TYPE ANY TABLE.$0",
+		plain = "FIELD-SYMBOLS <table> TYPE ANY TABLE.",
+	},
+	{
+		keyword = "MOVE-CORRESPONDING",
+		label = "MOVE-CORRESPONDING ... TO",
+		snippet = "MOVE-CORRESPONDING ${1:source} TO ${2:target}.$0",
+		plain = "MOVE-CORRESPONDING source TO target.",
+	},
+	{
+		keyword = "MOVE-CORRESPONDING",
+		label = "MOVE-CORRESPONDING EXACT ... TO",
+		snippet = "MOVE-CORRESPONDING EXACT ${1:source} TO ${2:target}.$0",
+		plain = "MOVE-CORRESPONDING EXACT source TO target.",
+	},
+	{
+		keyword = "CONCATENATE",
+		label = "CONCATENATE ... INTO",
+		snippet = "CONCATENATE ${1:lv_a} ${2:lv_b} INTO ${3:lv_text}.$0",
+		plain = "CONCATENATE lv_a lv_b INTO lv_text.",
+	},
+	{
+		keyword = "CONCATENATE",
+		label = "CONCATENATE ... INTO ... SEPARATED BY",
+		snippet = "CONCATENATE ${1:lv_a} ${2:lv_b} INTO ${3:lv_text} SEPARATED BY ${4:space}.$0",
+		plain = "CONCATENATE lv_a lv_b INTO lv_text SEPARATED BY space.",
+	},
+	{
+		keyword = "CONCATENATE",
+		label = "CONCATENATE LINES OF ... INTO",
+		snippet = "CONCATENATE LINES OF ${1:lt_lines} INTO ${2:lv_text} SEPARATED BY ${3:cl_abap_char_utilities=>newline}.$0",
+		plain = "CONCATENATE LINES OF lt_lines INTO lv_text SEPARATED BY cl_abap_char_utilities=>newline.",
+	},
+	{
+		keyword = "SPLIT",
+		label = "SPLIT ... AT ... INTO TABLE",
+		snippet = "SPLIT ${1:lv_text} AT ${2:','} INTO TABLE ${3:lt_parts}.$0",
+		plain = "SPLIT lv_text AT ',' INTO TABLE lt_parts.",
+	},
+	{
+		keyword = "SPLIT",
+		label = "SPLIT ... AT ... INTO",
+		snippet = "SPLIT ${1:lv_text} AT ${2:','} INTO ${3:lv_part1} ${4:lv_part2}.$0",
+		plain = "SPLIT lv_text AT ',' INTO lv_part1 lv_part2.",
+	},
+	{
+		keyword = "APPEND",
+		label = "APPEND ... TO",
+		snippet = "APPEND ${1:wa} TO ${2:itab}.$0",
+		plain = "APPEND wa TO itab.",
+	},
+	{
+		keyword = "APPEND",
+		label = "APPEND VALUE #( ... ) TO",
+		snippet = "APPEND VALUE #( ${1} ) TO ${2:itab}.$0",
+		plain = "APPEND VALUE #( ) TO itab.",
+	},
+	{
+		keyword = "APPEND",
+		label = "APPEND INITIAL LINE ... ASSIGNING",
+		snippet = "APPEND INITIAL LINE TO ${1:itab} ASSIGNING FIELD-SYMBOL(<${2:row}>).$0",
+		plain = "APPEND INITIAL LINE TO itab ASSIGNING FIELD-SYMBOL(<row>).",
+	},
+	{
+		keyword = "APPEND",
+		label = "APPEND LINES OF ... TO",
+		snippet = "APPEND LINES OF ${1:source} TO ${2:target}.$0",
+		plain = "APPEND LINES OF source TO target.",
+	},
+	{
+		keyword = "SORT",
+		label = "SORT ... BY",
+		snippet = "SORT ${1:itab} BY ${2:field}.$0",
+		plain = "SORT itab BY field.",
+	},
+	{
+		keyword = "SORT",
+		label = "SORT ... STABLE BY",
+		snippet = "SORT ${1:itab} STABLE BY ${2:field}.$0",
+		plain = "SORT itab STABLE BY field.",
+	},
+	{
+		keyword = "SORT",
+		label = "SORT ... BY ... DESCENDING",
+		snippet = "SORT ${1:itab} BY ${2:field} DESCENDING.$0",
+		plain = "SORT itab BY field DESCENDING.",
+	},
+}
+
+completion_common_statement_template_count :: proc(
+	source: string,
+	offset: int,
+	prefix: string,
+) -> int {
+	if !completion_template_at_statement_start(source, offset) {
+		return 0
+	}
+	count := 0
+	for template in COMMON_STATEMENT_TEMPLATES {
+		if completion_keyword_prefix_matches(prefix, template.keyword) {
+			count += 1
+		}
+	}
+	return count
+}
+
+completion_append_common_statement_templates :: proc(
+	out: []Completion_Item,
+	prefix: string,
+	replace_range: Range,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) {
+	index := 0
+	for template in COMMON_STATEMENT_TEMPLATES {
+		if !completion_keyword_prefix_matches(prefix, template.keyword) {
+			continue
+		}
+		assert(index < len(out))
+		out[index] = completion_statement_template_item(
+			template,
+			replace_range,
+			snippets_supported,
+			allocator,
+		)
+		index += 1
+	}
+	assert(index == len(out))
+}
+
+completion_statement_template_item :: proc(
+	template: Completion_Statement_Template,
+	replace_range: Range,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	insert_text := strings.clone(template.snippet if snippets_supported else template.plain, allocator)
+	return Completion_Item {
+		label = template.label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", template.label, allocator),
+		insert_text = insert_text,
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+		text_edit = Text_Edit{range = replace_range, new_text = insert_text},
+	}
+}
+
 completion_keyword_prefix_matches :: proc(prefix, keyword: string) -> bool {
 	if prefix == "" || len(prefix) > len(keyword) {
 		return false
@@ -328,7 +633,7 @@ completion_keyword_prefix_matches :: proc(prefix, keyword: string) -> bool {
 }
 
 completion_template_at_statement_start :: proc(source: string, offset: int) -> bool {
-	prefix_start := completion_prefix_start(source, offset)
+	prefix_start := completion_template_prefix_start(source, offset)
 	i := prefix_start
 	for i > 0 {
 		switch source[i - 1] {
@@ -1220,9 +1525,32 @@ completion_prefix :: proc(source: string, offset: int, allocator: mem.Allocator)
 	return strings.clone(source[start:end], allocator)
 }
 
+completion_template_prefix :: proc(source: string, offset: int, allocator: mem.Allocator) -> string {
+	end := clamp(offset, 0, len(source))
+	start := completion_template_prefix_start(source, offset)
+	if start == end {
+		return ""
+	}
+	return strings.clone(source[start:end], allocator)
+}
+
+completion_template_replace_range :: proc(source: string, offset: int) -> Range {
+	end := clamp(offset, 0, len(source))
+	start := completion_template_prefix_start(source, offset)
+	return range_from_offsets(source, start, end)
+}
+
 completion_prefix_start :: proc(source: string, offset: int) -> int {
 	start := clamp(offset, 0, len(source))
 	for start > 0 && completion_prefix_char(source[start - 1]) {
+		start -= 1
+	}
+	return start
+}
+
+completion_template_prefix_start :: proc(source: string, offset: int) -> int {
+	start := clamp(offset, 0, len(source))
+	for start > 0 && completion_template_prefix_char(source[start - 1]) {
 		start -= 1
 	}
 	return start
@@ -1236,6 +1564,10 @@ completion_prefix_char :: proc "contextless" (ch: u8) -> bool {
 		ch == '_' ||
 		ch == '/' \
 	)
+}
+
+completion_template_prefix_char :: proc "contextless" (ch: u8) -> bool {
+	return completion_prefix_char(ch) || ch == '-'
 }
 
 completion_line_indent :: proc(source: string, offset: int, allocator: mem.Allocator) -> string {

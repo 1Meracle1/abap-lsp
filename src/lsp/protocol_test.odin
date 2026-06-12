@@ -5,10 +5,17 @@ import "src:semantic"
 import workspace "src:workspace"
 
 import json "core:encoding/json"
+import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:testing"
+
+Completion_Template_Prefix_Test_Case :: struct {
+	prefix:      string,
+	label:       string,
+	insert_text: string,
+}
 
 @(test)
 file_uri_to_path_decodes_windows_paths :: proc(t: ^testing.T) {
@@ -805,6 +812,252 @@ lsp_completion_read_table_templates_expand_from_read_prefix :: proc(t: ^testing.
 }
 
 @(test)
+lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t: ^testing.T) {
+	cases := [?]Completion_Template_Prefix_Test_Case {
+		{
+			prefix = "me",
+			label = "MESSAGE ... TYPE",
+			insert_text = "MESSAGE ${1:'Text'} TYPE ${2:'S'}.$0",
+		},
+		{
+			prefix = "de",
+			label = "DESCRIBE TABLE ... LINES",
+			insert_text = "DESCRIBE TABLE ${1:itab} LINES ${2:lv_lines}.$0",
+		},
+		{
+			prefix = "ex",
+			label = "EXPORT ... TO MEMORY ID",
+			insert_text = "EXPORT ${1:name} = ${2:value} TO MEMORY ID ${3:'id'}.$0",
+		},
+		{
+			prefix = "im",
+			label = "IMPORT ... FROM MEMORY ID",
+			insert_text = "IMPORT ${1:name} = ${2:value} FROM MEMORY ID ${3:'id'}.$0",
+		},
+		{
+			prefix = "ra",
+			label = "RAISE EXCEPTION TYPE",
+			insert_text = "RAISE EXCEPTION TYPE ${1:cx_static_check}.$0",
+		},
+		{
+			prefix = "in",
+			label = "INSERT ... INTO TABLE",
+			insert_text = "INSERT ${1:wa} INTO TABLE ${2:itab}.$0",
+		},
+		{
+			prefix = "fi",
+			label = "FIELD-SYMBOLS ... TYPE",
+			insert_text = "FIELD-SYMBOLS <${1:fs}> TYPE ${2:any}.$0",
+		},
+		{
+			prefix = "mo",
+			label = "MOVE-CORRESPONDING ... TO",
+			insert_text = "MOVE-CORRESPONDING ${1:source} TO ${2:target}.$0",
+		},
+		{
+			prefix = "co",
+			label = "CONCATENATE ... INTO",
+			insert_text = "CONCATENATE ${1:lv_a} ${2:lv_b} INTO ${3:lv_text}.$0",
+		},
+		{
+			prefix = "sp",
+			label = "SPLIT ... AT ... INTO TABLE",
+			insert_text = "SPLIT ${1:lv_text} AT ${2:','} INTO TABLE ${3:lt_parts}.$0",
+		},
+		{
+			prefix = "ap",
+			label = "APPEND ... TO",
+			insert_text = "APPEND ${1:wa} TO ${2:itab}.$0",
+		},
+		{
+			prefix = "so",
+			label = "SORT ... BY",
+			insert_text = "SORT ${1:itab} BY ${2:field}.$0",
+		},
+	}
+
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_common_template_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		source := strings.concatenate({"REPORT zmain.\nFORM run.\n  ", test_case.prefix}, context.temp_allocator)
+		state := lsp_test_state_with_open_document(uri, source)
+		defer lsp_test_state_destroy(&state)
+
+		offset := len(source)
+		params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		item, item_ok := lsp_test_find_completion_item(items, test_case.label)
+		testing.expect(t, item_ok)
+		if !item_ok {
+			continue
+		}
+
+		testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+		testing.expect_value(
+			t,
+			item.sort_text,
+			completion_sort_text("2", test_case.label, context.temp_allocator),
+		)
+		testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		testing.expect_value(t, item.insert_text, test_case.insert_text)
+		edit, edit_ok := item.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			testing.expect_value(t, edit.new_text, item.insert_text)
+			testing.expect_value(t, edit.range.start.line, 2)
+			testing.expect_value(t, edit.range.start.character, 2)
+			testing.expect_value(t, edit.range.end.line, 2)
+			testing.expect_value(t, edit.range.end.character, 2 + len(test_case.prefix))
+		}
+		if i == 0 {
+			payload, payload_err := json.marshal(
+				item,
+				json.Marshal_Options{spec = .JSON},
+				context.allocator,
+			)
+			testing.expect(t, payload_err == nil)
+			if payload_err == nil {
+				testing.expect(t, strings.contains(string(payload), `"textEdit"`))
+				testing.expect(t, strings.contains(string(payload), `"newText"`))
+			}
+		}
+	}
+}
+
+@(test)
+lsp_completion_hyphenated_statement_templates_expand_from_hyphen_prefixes :: proc(
+	t: ^testing.T,
+) {
+	field_uri := "file:///D:/repo/completion_field_symbol_template.abap"
+	field_source := "REPORT zmain.\nFORM run.\n  field-sy"
+	field_state := lsp_test_state_with_open_document(field_uri, field_source)
+	defer lsp_test_state_destroy(&field_state)
+
+	field_offset := len(field_source)
+	field_params := lsp_test_rename_position_params(
+		field_uri,
+		offset_to_position(field_source, field_offset),
+		"",
+	)
+	field_snapshot, field_completion_offset, field_snapshot_ok := snapshot_for_position(
+		&field_state,
+		field_params,
+	)
+	testing.expect(t, field_snapshot_ok)
+	if field_snapshot_ok {
+		field_items := completion_items_for_snapshot(
+			field_snapshot,
+			field_completion_offset,
+			true,
+			context.allocator,
+		)
+		field_item, field_item_ok := lsp_test_find_completion_item(
+			field_items,
+			"FIELD-SYMBOLS ... TYPE",
+		)
+		testing.expect(t, field_item_ok)
+		if field_item_ok {
+			testing.expect_value(
+				t,
+				field_item.insert_text,
+				"FIELD-SYMBOLS <${1:fs}> TYPE ${2:any}.$0",
+			)
+			field_edit, field_edit_ok := field_item.text_edit.?
+			testing.expect(t, field_edit_ok)
+			if field_edit_ok {
+				testing.expect_value(t, field_edit.new_text, field_item.insert_text)
+				testing.expect_value(t, field_edit.range.start.line, 2)
+				testing.expect_value(t, field_edit.range.start.character, 2)
+				testing.expect_value(t, field_edit.range.end.line, 2)
+				testing.expect_value(t, field_edit.range.end.character, 10)
+			}
+		}
+	}
+
+	move_uri := "file:///D:/repo/completion_move_corresponding_template.abap"
+	move_source := "REPORT zmain.\nFORM run.\n  move-c"
+	move_state := lsp_test_state_with_open_document(move_uri, move_source)
+	defer lsp_test_state_destroy(&move_state)
+
+	move_offset := len(move_source)
+	move_params := lsp_test_rename_position_params(
+		move_uri,
+		offset_to_position(move_source, move_offset),
+		"",
+	)
+	move_snapshot, move_completion_offset, move_snapshot_ok := snapshot_for_position(
+		&move_state,
+		move_params,
+	)
+	testing.expect(t, move_snapshot_ok)
+	if move_snapshot_ok {
+		move_items := completion_items_for_snapshot(
+			move_snapshot,
+			move_completion_offset,
+			true,
+			context.allocator,
+		)
+		move_item, move_item_ok := lsp_test_find_completion_item(
+			move_items,
+			"MOVE-CORRESPONDING ... TO",
+		)
+		testing.expect(t, move_item_ok)
+		if move_item_ok {
+			testing.expect_value(
+				t,
+				move_item.insert_text,
+				"MOVE-CORRESPONDING ${1:source} TO ${2:target}.$0",
+			)
+			move_edit, move_edit_ok := move_item.text_edit.?
+			testing.expect(t, move_edit_ok)
+			if move_edit_ok {
+				testing.expect_value(t, move_edit.new_text, move_item.insert_text)
+				testing.expect_value(t, move_edit.range.start.line, 2)
+				testing.expect_value(t, move_edit.range.start.character, 2)
+				testing.expect_value(t, move_edit.range.end.line, 2)
+				testing.expect_value(t, move_edit.range.end.character, 8)
+			}
+		}
+	}
+}
+
+@(test)
+lsp_completion_common_statement_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_common_template_plain.abap"
+	source := "REPORT zmain.\nap"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "APPEND VALUE #( ... ) TO")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(t, item.insert_text, "APPEND VALUE #( ) TO itab.")
+}
+
+@(test)
 lsp_completion_fetch_cursor_table_expr_fields :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_cursor_table_expr_field.abap"
 	source := `TYPES: BEGIN OF e070,
@@ -1310,6 +1563,36 @@ co`
 }
 
 @(test)
+lsp_completion_common_statement_templates_sort_after_matching_symbols :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_common_template_priority.abap"
+	source := `DATA message_candidate TYPE i.
+me`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	symbol_index := lsp_test_completion_item_index(items, "message_candidate")
+	template_index := lsp_test_completion_item_index(items, "MESSAGE ... TYPE")
+	testing.expect(t, symbol_index >= 0)
+	testing.expect(t, template_index >= 0)
+	if symbol_index < 0 || template_index < 0 {
+		return
+	}
+
+	testing.expect(t, symbol_index < template_index)
+	testing.expect_value(t, items[symbol_index].sort_text, "1:message_candidate")
+	testing.expect_value(t, items[template_index].sort_text, "2:message ... type")
+}
+
+@(test)
 lsp_completion_get_time_stamp_field_template_does_not_match_expression_prefixes :: proc(
 	t: ^testing.T,
 ) {
@@ -1451,6 +1734,28 @@ WRITE re`
 		"READ TABLE ... INDEX ... INTO",
 	)
 	testing.expect(t, !read_ok)
+}
+
+@(test)
+lsp_completion_common_statement_templates_do_not_match_expression_prefixes :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_common_template_expression.abap"
+	source := `DATA message_value TYPE i.
+WRITE me`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, item_ok := lsp_test_find_completion_item(items, "MESSAGE ... TYPE")
+
+	testing.expect(t, !item_ok)
 }
 
 @(test)

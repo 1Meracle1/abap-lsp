@@ -99,6 +99,7 @@ Completion_Item :: struct {
 	sort_text:          string `json:"sortText"`,
 	insert_text:        string `json:"insertText"`,
 	insert_text_format: int    `json:"insertTextFormat"`,
+	text_edit:          Maybe(Text_Edit) `json:"textEdit,omitempty"`,
 }
 
 Completion_List :: struct {
