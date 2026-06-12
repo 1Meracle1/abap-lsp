@@ -497,6 +497,62 @@ lsp_completion_loop_templates_expand_from_loop_prefix :: proc(t: ^testing.T) {
 }
 
 @(test)
+lsp_completion_select_templates_expand_from_select_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_select_template.abap"
+	source := "REPORT zmain.\nFORM run.\n  se"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	labels := [?]string {
+		"SELECT ... WHERE",
+		"SELECT SINGLE ... WHERE",
+		"SELECT ... UP TO ... OFFSET",
+		"SELECT ... FOR ALL ENTRIES",
+		"SELECT ... JOIN",
+		"SELECT ... PACKAGE SIZE",
+		"SELECT ... CURSOR PACKAGE",
+	}
+	for label in labels {
+		item, item_ok := lsp_test_find_completion_item(items, label)
+		testing.expect(t, item_ok)
+		if item_ok {
+			testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+			testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		}
+	}
+
+	basic, basic_ok := lsp_test_find_completion_item(items, "SELECT ... WHERE")
+	cursor, cursor_ok := lsp_test_find_completion_item(items, "SELECT ... CURSOR PACKAGE")
+	testing.expect(t, basic_ok)
+	testing.expect(t, cursor_ok)
+	if !basic_ok || !cursor_ok {
+		return
+	}
+
+	testing.expect_value(t, basic.sort_text, "2:select ... where")
+	testing.expect_value(
+		t,
+		basic.insert_text,
+		`SELECT ${1:fields}
+    FROM ${2:table}
+    INTO TABLE @DATA(${3:lt_rows})
+    WHERE ${4:field} = @${5:lv_value}.$0`,
+	)
+	testing.expect(t, strings.contains(cursor.insert_text, "OPEN CURSOR WITH HOLD @${1:lv_cursor} FOR"))
+	testing.expect(t, strings.contains(cursor.insert_text, "FETCH NEXT CURSOR @${1:lv_cursor}"))
+	testing.expect(t, strings.contains(cursor.insert_text, "CLOSE CURSOR @${1:lv_cursor}."))
+}
+
+@(test)
 lsp_completion_get_time_stamp_field_template_expands_from_get_prefix :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_get_time_stamp_template.abap"
 	source := "REPORT zmain.\nFORM run.\n  ge"
@@ -550,6 +606,41 @@ lsp_completion_get_time_stamp_field_template_falls_back_to_plain_text_without_sn
 
 	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
 	testing.expect_value(t, item.insert_text, "GET TIME STAMP FIELD lv_timestamp.")
+}
+
+@(test)
+lsp_completion_select_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_select_template_plain.abap"
+	source := "REPORT zmain.\nse"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "SELECT ... WHERE")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		`SELECT fields
+  FROM table
+  INTO TABLE @DATA(lt_rows)
+  WHERE field = @lv_value.`,
+	)
 }
 
 @(test)
@@ -639,6 +730,36 @@ i`
 }
 
 @(test)
+lsp_completion_select_templates_sort_after_matching_symbols :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_select_template_priority.abap"
+	source := `DATA select_candidate TYPE i.
+se`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	symbol_index := lsp_test_completion_item_index(items, "select_candidate")
+	template_index := lsp_test_completion_item_index(items, "SELECT ... WHERE")
+	testing.expect(t, symbol_index >= 0)
+	testing.expect(t, template_index >= 0)
+	if symbol_index < 0 || template_index < 0 {
+		return
+	}
+
+	testing.expect(t, symbol_index < template_index)
+	testing.expect_value(t, items[symbol_index].sort_text, "1:select_candidate")
+	testing.expect_value(t, items[template_index].sort_text, "2:select ... where")
+}
+
+@(test)
 lsp_completion_get_time_stamp_field_template_does_not_match_expression_prefixes :: proc(
 	t: ^testing.T,
 ) {
@@ -658,6 +779,28 @@ WRITE ge`
 
 	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
 	_, item_ok := lsp_test_find_completion_item(items, "GET TIME STAMP FIELD")
+
+	testing.expect(t, !item_ok)
+}
+
+@(test)
+lsp_completion_select_templates_do_not_match_expression_prefixes :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_select_template_expression.abap"
+	source := `DATA select_value TYPE i.
+WRITE se`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, item_ok := lsp_test_find_completion_item(items, "SELECT ... WHERE")
 
 	testing.expect(t, !item_ok)
 }
