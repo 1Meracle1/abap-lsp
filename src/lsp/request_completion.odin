@@ -72,7 +72,8 @@ completion_items_for_snapshot :: proc(
 	}
 	template_index := len(items)
 	if if_template_count > 0 {
-		out[template_index] = completion_if_template_item(
+		completion_append_if_templates(
+			out[template_index:template_index + if_template_count],
 			indent,
 			snippets_supported,
 			allocator,
@@ -151,12 +152,22 @@ completion_sort_text :: proc(priority, label: string, allocator: mem.Allocator) 
 	return strings.concatenate({priority, ":", lower}, allocator)
 }
 
+IF_TEMPLATE_COUNT :: 5
+
+Completion_If_Template :: enum {
+	Generic,
+	Sy_Subrc_Zero,
+	Sy_Subrc_Not_Zero,
+	Is_Initial,
+	Is_Not_Initial,
+}
+
 completion_if_template_count :: proc(source: string, offset: int, prefix: string) -> int {
 	if !completion_keyword_prefix_matches(prefix, "IF") ||
 	   !completion_template_at_statement_start(source, offset) {
 		return 0
 	}
-	return 1
+	return IF_TEMPLATE_COUNT
 }
 
 CLASS_TEMPLATE_COUNT :: 6
@@ -245,32 +256,79 @@ completion_template_at_statement_start :: proc(source: string, offset: int) -> b
 	return prev == '\n' || prev == '.'
 }
 
+completion_append_if_templates :: proc(
+	out: []Completion_Item,
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) {
+	assert(len(out) == IF_TEMPLATE_COUNT)
+	out[0] = completion_if_template_item(
+		"IF ... ENDIF",
+		.Generic,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+	out[1] = completion_if_template_item(
+		"IF sy-subrc = 0",
+		.Sy_Subrc_Zero,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+	out[2] = completion_if_template_item(
+		"IF sy-subrc <> 0",
+		.Sy_Subrc_Not_Zero,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+	out[3] = completion_if_template_item(
+		"IF ... IS INITIAL",
+		.Is_Initial,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+	out[4] = completion_if_template_item(
+		"IF ... IS NOT INITIAL",
+		.Is_Not_Initial,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+}
+
 completion_if_template_item :: proc(
+	label: string,
+	variant: Completion_If_Template,
 	indent: string,
 	snippets_supported: bool,
 	allocator: mem.Allocator,
 ) -> Completion_Item {
-	label := "IF ... ENDIF"
 	return Completion_Item {
 		label = label,
 		kind = COMPLETION_SNIPPET,
 		sort_text = completion_sort_text("2", label, allocator),
-		insert_text = completion_if_template_insert_text(indent, snippets_supported, allocator),
+		insert_text = completion_if_template_insert_text(
+			variant,
+			indent,
+			snippets_supported,
+			allocator,
+		),
 		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
 	}
 }
 
 completion_if_template_insert_text :: proc(
+	variant: Completion_If_Template,
 	indent: string,
 	snippets_supported: bool,
 	allocator: mem.Allocator,
 ) -> string {
 	out := strings.builder_make(allocator)
-	if snippets_supported {
-		strings.write_string(&out, "IF ${1:condition}.")
-	} else {
-		strings.write_string(&out, "IF condition.")
-	}
+	strings.write_string(&out, completion_if_template_header(variant, snippets_supported))
 	strings.write_byte(&out, '\n')
 	strings.write_string(&out, indent)
 	strings.write_string(&out, "  ")
@@ -281,6 +339,25 @@ completion_if_template_insert_text :: proc(
 	strings.write_string(&out, indent)
 	strings.write_string(&out, "ENDIF.")
 	return strings.to_string(out)
+}
+
+completion_if_template_header :: proc "contextless" (
+	variant: Completion_If_Template,
+	snippets_supported: bool,
+) -> string {
+	switch variant {
+	case .Generic:
+		return "IF ${1:condition}." if snippets_supported else "IF condition."
+	case .Sy_Subrc_Zero:
+		return "IF sy-subrc = 0."
+	case .Sy_Subrc_Not_Zero:
+		return "IF sy-subrc <> 0."
+	case .Is_Initial:
+		return "IF ${1:lv_value} IS INITIAL." if snippets_supported else "IF lv_value IS INITIAL."
+	case .Is_Not_Initial:
+		return "IF ${1:lv_value} IS NOT INITIAL." if snippets_supported else "IF lv_value IS NOT INITIAL."
+	}
+	return ""
 }
 
 completion_append_class_templates :: proc(

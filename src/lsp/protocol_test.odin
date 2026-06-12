@@ -443,16 +443,46 @@ lsp_completion_if_template_expands_from_if_prefix :: proc(t: ^testing.T) {
 	}
 
 	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
-	item, item_ok := lsp_test_find_completion_item(items, "IF ... ENDIF")
-	testing.expect(t, item_ok)
-	if !item_ok {
+	labels := [?]string {
+		"IF ... ENDIF",
+		"IF sy-subrc = 0",
+		"IF sy-subrc <> 0",
+		"IF ... IS INITIAL",
+		"IF ... IS NOT INITIAL",
+	}
+	for label in labels {
+		item, item_ok := lsp_test_find_completion_item(items, label)
+		testing.expect(t, item_ok)
+		if item_ok {
+			testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+			testing.expect_value(t, item.sort_text, completion_sort_text("2", label, context.temp_allocator))
+			testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		}
+	}
+
+	generic, generic_ok := lsp_test_find_completion_item(items, "IF ... ENDIF")
+	subrc_zero, subrc_zero_ok := lsp_test_find_completion_item(items, "IF sy-subrc = 0")
+	subrc_not_zero, subrc_not_zero_ok := lsp_test_find_completion_item(items, "IF sy-subrc <> 0")
+	is_initial, is_initial_ok := lsp_test_find_completion_item(items, "IF ... IS INITIAL")
+	is_not_initial, is_not_initial_ok := lsp_test_find_completion_item(items, "IF ... IS NOT INITIAL")
+	testing.expect(t, generic_ok)
+	testing.expect(t, subrc_zero_ok)
+	testing.expect(t, subrc_not_zero_ok)
+	testing.expect(t, is_initial_ok)
+	testing.expect(t, is_not_initial_ok)
+	if !generic_ok || !subrc_zero_ok || !subrc_not_zero_ok || !is_initial_ok || !is_not_initial_ok {
 		return
 	}
 
-	testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
-	testing.expect_value(t, item.sort_text, "2:if ... endif")
-	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
-	testing.expect_value(t, item.insert_text, "IF ${1:condition}.\n    $0\n  ENDIF.")
+	testing.expect_value(t, generic.insert_text, "IF ${1:condition}.\n    $0\n  ENDIF.")
+	testing.expect_value(t, subrc_zero.insert_text, "IF sy-subrc = 0.\n    $0\n  ENDIF.")
+	testing.expect_value(t, subrc_not_zero.insert_text, "IF sy-subrc <> 0.\n    $0\n  ENDIF.")
+	testing.expect_value(t, is_initial.insert_text, "IF ${1:lv_value} IS INITIAL.\n    $0\n  ENDIF.")
+	testing.expect_value(
+		t,
+		is_not_initial.insert_text,
+		"IF ${1:lv_value} IS NOT INITIAL.\n    $0\n  ENDIF.",
+	)
 }
 
 @(test)
@@ -814,14 +844,23 @@ lsp_completion_if_template_falls_back_to_plain_text_without_snippet_support :: p
 	}
 
 	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
-	item, item_ok := lsp_test_find_completion_item(items, "IF ... ENDIF")
+	item, item_ok := lsp_test_find_completion_item(items, "IF sy-subrc = 0")
 	testing.expect(t, item_ok)
 	if !item_ok {
 		return
 	}
 
 	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
-	testing.expect_value(t, item.insert_text, "IF condition.\n  \nENDIF.")
+	testing.expect_value(t, item.insert_text, "IF sy-subrc = 0.\n  \nENDIF.")
+	not_initial, not_initial_ok := lsp_test_find_completion_item(items, "IF ... IS NOT INITIAL")
+	testing.expect(t, not_initial_ok)
+	if not_initial_ok {
+		testing.expect_value(
+			t,
+			not_initial.insert_text,
+			"IF lv_value IS NOT INITIAL.\n  \nENDIF.",
+		)
+	}
 }
 
 @(test)
@@ -872,7 +911,7 @@ i`
 
 	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
 	symbol_index := lsp_test_completion_item_index(items, "if_candidate")
-	template_index := lsp_test_completion_item_index(items, "IF ... ENDIF")
+	template_index := lsp_test_completion_item_index(items, "IF sy-subrc = 0")
 	testing.expect(t, symbol_index >= 0)
 	testing.expect(t, template_index >= 0)
 	if symbol_index < 0 || template_index < 0 {
@@ -881,7 +920,7 @@ i`
 
 	testing.expect(t, symbol_index < template_index)
 	testing.expect_value(t, items[symbol_index].sort_text, "1:if_candidate")
-	testing.expect_value(t, items[template_index].sort_text, "2:if ... endif")
+	testing.expect_value(t, items[template_index].sort_text, "2:if sy-subrc = 0")
 }
 
 @(test)
@@ -1014,9 +1053,17 @@ WRITE i`
 	}
 
 	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
-	_, item_ok := lsp_test_find_completion_item(items, "IF ... ENDIF")
-
-	testing.expect(t, !item_ok)
+	labels := [?]string {
+		"IF ... ENDIF",
+		"IF sy-subrc = 0",
+		"IF sy-subrc <> 0",
+		"IF ... IS INITIAL",
+		"IF ... IS NOT INITIAL",
+	}
+	for label in labels {
+		_, item_ok := lsp_test_find_completion_item(items, label)
+		testing.expect(t, !item_ok)
+	}
 }
 
 @(test)
