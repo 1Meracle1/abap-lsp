@@ -50,6 +50,7 @@ completion_items_for_snapshot :: proc(
 	)
 	indent := completion_line_indent(snapshot.source, offset, context.temp_allocator)
 	if_template_count := completion_if_template_count(snapshot.source, offset, prefix)
+	class_template_count := completion_class_template_count(snapshot.source, offset, prefix)
 	loop_template_count := completion_loop_template_count(snapshot.source, offset, prefix)
 	select_template_count := completion_select_template_count(snapshot.source, offset, prefix)
 	get_time_stamp_template_count := completion_get_time_stamp_field_template_count(
@@ -57,8 +58,8 @@ completion_items_for_snapshot :: proc(
 		offset,
 		prefix,
 	)
-	template_count := if_template_count + loop_template_count + select_template_count +
-	                  get_time_stamp_template_count
+	template_count := if_template_count + class_template_count + loop_template_count +
+	                  select_template_count + get_time_stamp_template_count
 	out := make([]Completion_Item, len(items) + template_count, allocator)
 	for item, i in items {
 		out[i] = completion_item_from_semantic_item(
@@ -77,6 +78,15 @@ completion_items_for_snapshot :: proc(
 			allocator,
 		)
 		template_index += if_template_count
+	}
+	if class_template_count > 0 {
+		completion_append_class_templates(
+			out[template_index:template_index + class_template_count],
+			indent,
+			snippets_supported,
+			allocator,
+		)
+		template_index += class_template_count
 	}
 	if loop_template_count > 0 {
 		completion_append_loop_templates(
@@ -147,6 +157,25 @@ completion_if_template_count :: proc(source: string, offset: int, prefix: string
 		return 0
 	}
 	return 1
+}
+
+CLASS_TEMPLATE_COUNT :: 6
+
+Completion_Class_Template :: enum {
+	Basic,
+	Public_Final_Create_Public,
+	Inheriting_From,
+	Final_Create_Public,
+	Abstract,
+	For_Testing,
+}
+
+completion_class_template_count :: proc(source: string, offset: int, prefix: string) -> int {
+	if !completion_keyword_prefix_matches(prefix, "CLASS") ||
+	   !completion_template_at_statement_start(source, offset) {
+		return 0
+	}
+	return CLASS_TEMPLATE_COUNT
 }
 
 completion_loop_template_count :: proc(source: string, offset: int, prefix: string) -> int {
@@ -252,6 +281,200 @@ completion_if_template_insert_text :: proc(
 	strings.write_string(&out, indent)
 	strings.write_string(&out, "ENDIF.")
 	return strings.to_string(out)
+}
+
+completion_append_class_templates :: proc(
+	out: []Completion_Item,
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) {
+	assert(len(out) == CLASS_TEMPLATE_COUNT)
+	out[0] = completion_class_template_item(
+		"CLASS ... DEFINITION / IMPLEMENTATION",
+		.Basic,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+	out[1] = completion_class_template_item(
+		"CLASS ... DEFINITION PUBLIC FINAL CREATE PUBLIC",
+		.Public_Final_Create_Public,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+	out[2] = completion_class_template_item(
+		"CLASS ... DEFINITION INHERITING FROM",
+		.Inheriting_From,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+	out[3] = completion_class_template_item(
+		"CLASS ... DEFINITION FINAL CREATE PUBLIC",
+		.Final_Create_Public,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+	out[4] = completion_class_template_item(
+		"CLASS ... DEFINITION ABSTRACT",
+		.Abstract,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+	out[5] = completion_class_template_item(
+		"CLASS ... DEFINITION FOR TESTING",
+		.For_Testing,
+		indent,
+		snippets_supported,
+		allocator,
+	)
+}
+
+completion_class_template_item :: proc(
+	label: string,
+	variant: Completion_Class_Template,
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	return Completion_Item {
+		label = label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", label, allocator),
+		insert_text = completion_class_template_insert_text(
+			variant,
+			indent,
+			snippets_supported,
+			allocator,
+		),
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+	}
+}
+
+completion_class_template_insert_text :: proc(
+	variant: Completion_Class_Template,
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> string {
+	out := strings.builder_make(allocator)
+	switch variant {
+	case .Basic:
+		class_name := "${1:lcl_class}" if snippets_supported else "lcl_class"
+		completion_write_class_definition_header(&out, class_name, "DEFINITION.")
+		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
+		completion_write_class_implementation(&out, class_name, indent)
+	case .Public_Final_Create_Public:
+		class_name := "${1:zcl_class}" if snippets_supported else "zcl_class"
+		completion_write_class_definition_header(
+			&out,
+			class_name,
+			"DEFINITION PUBLIC FINAL CREATE PUBLIC.",
+		)
+		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
+		completion_write_class_implementation(&out, class_name, indent)
+	case .Inheriting_From:
+		class_name := "${1:lcl_child}" if snippets_supported else "lcl_child"
+		superclass_name := "${2:lcl_parent}" if snippets_supported else "lcl_parent"
+		completion_write_class_definition_header(
+			&out,
+			class_name,
+			strings.concatenate({"DEFINITION INHERITING FROM ", superclass_name, "."}, context.temp_allocator),
+		)
+		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
+		completion_write_class_implementation(&out, class_name, indent)
+	case .Final_Create_Public:
+		class_name := "${1:lcl_class}" if snippets_supported else "lcl_class"
+		completion_write_class_definition_header(
+			&out,
+			class_name,
+			"DEFINITION FINAL CREATE PUBLIC.",
+		)
+		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
+		completion_write_class_implementation(&out, class_name, indent)
+	case .Abstract:
+		class_name := "${1:lcl_class}" if snippets_supported else "lcl_class"
+		completion_write_class_definition_header(
+			&out,
+			class_name,
+			"DEFINITION ABSTRACT.",
+		)
+		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
+		completion_write_class_implementation(&out, class_name, indent)
+	case .For_Testing:
+		class_name := "${1:ltc_class}" if snippets_supported else "ltc_class"
+		method_name := "${2:test_method}" if snippets_supported else "test_method"
+		completion_write_class_definition_header(
+			&out,
+			class_name,
+			"DEFINITION FINAL FOR TESTING RISK LEVEL HARMLESS DURATION SHORT.",
+		)
+		completion_template_write_newline_indent(&out, indent, 1, "PRIVATE SECTION.")
+		completion_template_write_newline_indent(
+			&out,
+			indent,
+			2,
+			strings.concatenate({"METHODS ", method_name, " FOR TESTING."}, context.temp_allocator),
+		)
+		completion_template_write_newline_indent(&out, indent, 0, "ENDCLASS.")
+		completion_template_write_newline_indent(&out, indent, 0, "")
+		completion_template_write_newline_indent(
+			&out,
+			indent,
+			0,
+			strings.concatenate({"CLASS ", class_name, " IMPLEMENTATION."}, context.temp_allocator),
+		)
+		completion_template_write_newline_indent(
+			&out,
+			indent,
+			1,
+			strings.concatenate({"METHOD ", method_name, "."}, context.temp_allocator),
+		)
+		completion_template_write_newline_indent(&out, indent, 2, "$0" if snippets_supported else "")
+		completion_template_write_newline_indent(&out, indent, 1, "ENDMETHOD.")
+		completion_template_write_newline_indent(&out, indent, 0, "ENDCLASS.")
+	}
+	return strings.to_string(out)
+}
+
+completion_write_class_definition_header :: proc(
+	out: ^strings.Builder,
+	class_name: string,
+	addition: string,
+) {
+	strings.write_string(out, "CLASS ")
+	strings.write_string(out, class_name)
+	strings.write_byte(out, ' ')
+	strings.write_string(out, addition)
+}
+
+completion_write_class_public_section :: proc(
+	out: ^strings.Builder,
+	indent: string,
+	body_text: string,
+) {
+	completion_template_write_newline_indent(out, indent, 1, "PUBLIC SECTION.")
+	completion_template_write_newline_indent(out, indent, 2, body_text)
+	completion_template_write_newline_indent(out, indent, 0, "ENDCLASS.")
+}
+
+completion_write_class_implementation :: proc(
+	out: ^strings.Builder,
+	class_name: string,
+	indent: string,
+) {
+	completion_template_write_newline_indent(out, indent, 0, "")
+	completion_template_write_newline_indent(
+		out,
+		indent,
+		0,
+		strings.concatenate({"CLASS ", class_name, " IMPLEMENTATION."}, context.temp_allocator),
+	)
+	completion_template_write_newline_indent(out, indent, 0, "ENDCLASS.")
 }
 
 completion_append_select_templates :: proc(

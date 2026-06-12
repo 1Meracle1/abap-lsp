@@ -456,6 +456,86 @@ lsp_completion_if_template_expands_from_if_prefix :: proc(t: ^testing.T) {
 }
 
 @(test)
+lsp_completion_class_templates_expand_from_class_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_class_template.abap"
+	source := "cla"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	labels := [?]string {
+		"CLASS ... DEFINITION / IMPLEMENTATION",
+		"CLASS ... DEFINITION PUBLIC FINAL CREATE PUBLIC",
+		"CLASS ... DEFINITION INHERITING FROM",
+		"CLASS ... DEFINITION FINAL CREATE PUBLIC",
+		"CLASS ... DEFINITION ABSTRACT",
+		"CLASS ... DEFINITION FOR TESTING",
+	}
+	for label in labels {
+		item, item_ok := lsp_test_find_completion_item(items, label)
+		testing.expect(t, item_ok)
+		if item_ok {
+			testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+			testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		}
+	}
+
+	basic, basic_ok := lsp_test_find_completion_item(
+		items,
+		"CLASS ... DEFINITION / IMPLEMENTATION",
+	)
+	public, public_ok := lsp_test_find_completion_item(
+		items,
+		"CLASS ... DEFINITION PUBLIC FINAL CREATE PUBLIC",
+	)
+	inheriting, inheriting_ok := lsp_test_find_completion_item(
+		items,
+		"CLASS ... DEFINITION INHERITING FROM",
+	)
+	testing_class, testing_ok := lsp_test_find_completion_item(
+		items,
+		"CLASS ... DEFINITION FOR TESTING",
+	)
+	testing.expect(t, basic_ok)
+	testing.expect(t, public_ok)
+	testing.expect(t, inheriting_ok)
+	testing.expect(t, testing_ok)
+	if !basic_ok || !public_ok || !inheriting_ok || !testing_ok {
+		return
+	}
+
+	testing.expect_value(t, basic.sort_text, "2:class ... definition / implementation")
+	testing.expect_value(
+		t,
+		basic.insert_text,
+		`CLASS ${1:lcl_class} DEFINITION.
+  PUBLIC SECTION.
+    $0
+ENDCLASS.
+
+CLASS ${1:lcl_class} IMPLEMENTATION.
+ENDCLASS.`,
+	)
+	testing.expect(
+		t,
+		strings.contains(public.insert_text, "DEFINITION PUBLIC FINAL CREATE PUBLIC."),
+	)
+	testing.expect(
+		t,
+		strings.contains(inheriting.insert_text, "INHERITING FROM ${2:lcl_parent}."),
+	)
+	testing.expect(t, strings.contains(testing_class.insert_text, "METHOD ${2:test_method}."))
+}
+
+@(test)
 lsp_completion_loop_templates_expand_from_loop_prefix :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_loop_template.abap"
 	source := "REPORT zmain.\nFORM run.\n  lo"
@@ -684,6 +764,41 @@ lsp_completion_select_template_falls_back_to_plain_text_without_snippet_support 
 }
 
 @(test)
+lsp_completion_class_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_class_template_plain.abap"
+	source := "cl"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(
+		items,
+		"CLASS ... DEFINITION / IMPLEMENTATION",
+	)
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		"CLASS lcl_class DEFINITION.\n  PUBLIC SECTION.\n    \nENDCLASS.\n\nCLASS lcl_class IMPLEMENTATION.\nENDCLASS.",
+	)
+}
+
+@(test)
 lsp_completion_if_template_falls_back_to_plain_text_without_snippet_support :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_if_template_plain.abap"
 	source := "REPORT zmain.\ni"
@@ -767,6 +882,43 @@ i`
 	testing.expect(t, symbol_index < template_index)
 	testing.expect_value(t, items[symbol_index].sort_text, "1:if_candidate")
 	testing.expect_value(t, items[template_index].sort_text, "2:if ... endif")
+}
+
+@(test)
+lsp_completion_class_templates_sort_after_matching_symbols :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_class_template_priority.abap"
+	source := `DATA class_candidate TYPE i.
+cla`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	symbol_index := lsp_test_completion_item_index(items, "class_candidate")
+	template_index := lsp_test_completion_item_index(
+		items,
+		"CLASS ... DEFINITION / IMPLEMENTATION",
+	)
+	testing.expect(t, symbol_index >= 0)
+	testing.expect(t, template_index >= 0)
+	if symbol_index < 0 || template_index < 0 {
+		return
+	}
+
+	testing.expect(t, symbol_index < template_index)
+	testing.expect_value(t, items[symbol_index].sort_text, "1:class_candidate")
+	testing.expect_value(
+		t,
+		items[template_index].sort_text,
+		"2:class ... definition / implementation",
+	)
 }
 
 @(test)
@@ -863,6 +1015,31 @@ WRITE i`
 
 	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
 	_, item_ok := lsp_test_find_completion_item(items, "IF ... ENDIF")
+
+	testing.expect(t, !item_ok)
+}
+
+@(test)
+lsp_completion_class_templates_do_not_match_expression_prefixes :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_class_template_expression.abap"
+	source := `DATA class_value TYPE i.
+WRITE cla`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, item_ok := lsp_test_find_completion_item(
+		items,
+		"CLASS ... DEFINITION / IMPLEMENTATION",
+	)
 
 	testing.expect(t, !item_ok)
 }
