@@ -172,11 +172,7 @@ checker_check_stmt :: proc(
 	case ^ast.Concatenate_Stmt:
 		checker_check_concatenate_stmt(ctx, n)
 	case ^ast.Split_Stmt:
-		for entry in n.entries {
-			checker_check_expr(ctx, entry.source)
-			checker_check_expr(ctx, entry.separator)
-			checker_check_expr_list(ctx, entry.targets[:], .Value, true)
-		}
+		checker_check_split_stmt(ctx, n)
 	case ^ast.Condense_Stmt:
 		checker_check_expr(ctx, n.target, .Value, true)
 	case ^ast.Replace_Stmt:
@@ -452,6 +448,97 @@ checker_check_concatenate_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr,
 			.Invalid_Concatenate_Operand,
 			checker_expr_range(expr),
 			"CONCATENATE INTO target is not writable",
+		)
+	}
+}
+
+checker_check_split_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Split_Stmt) {
+	for entry in stmt.entries {
+		checker_check_split_source(ctx, entry.source)
+		checker_check_expr(ctx, entry.separator)
+		if entry.into_table {
+			for target_expr in entry.targets {
+				target := checker_check_expr(ctx, target_expr, .Value, true)
+				checker_check_split_table_target(ctx, target_expr, target)
+			}
+		} else {
+			for target_expr in entry.targets {
+				target := checker_check_expr(ctx, target_expr, .Value, true)
+				checker_check_split_target(ctx, target_expr, target)
+			}
+		}
+	}
+}
+
+checker_check_split_source :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) -> Operand {
+	source := checker_check_expr(ctx, expr)
+	if checker_check_unresolved_variable_operand(ctx, expr, source) || checker_type_is_unknown(source.type) {
+		return source
+	}
+	if ok, known := checker_split_source_type_supported(ctx, source.type); known && !ok {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Split_Operand,
+			checker_expr_range(expr),
+			"SPLIT source is not character-like or byte-like",
+		)
+	}
+	return source
+}
+
+checker_split_source_type_supported :: proc(ctx: ^Checker_Context, typ: ^Type) -> (bool, bool) {
+	if checker_type_is_unknown(typ) {
+		return false, false
+	}
+	if checker_type_structure(typ) != nil || checker_type_is_table_like(ctx, typ) || checker_type_is_ref(typ) {
+		return false, true
+	}
+	name, ok := checker_type_builtin_name(ctx, typ)
+	if !ok {
+		return false, false
+	}
+	switch name {
+	case "c", "n", "d", "t", "string", "abap_bool", "x", "xstring", "clike", "csequence", "xsequence":
+		return true, true
+	case "any", "data", "simple":
+		return false, false
+	}
+	return false, true
+}
+
+checker_check_split_table_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Split_Operand,
+			checker_expr_range(expr),
+			"SPLIT INTO TABLE target is not writable",
+		)
+		return
+	}
+	if !checker_type_is_table_like(ctx, target.type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Split_Operand,
+			checker_expr_range(expr),
+			"SPLIT INTO TABLE target is not an internal table",
+		)
+	}
+}
+
+checker_check_split_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Split_Operand,
+			checker_expr_range(expr),
+			"SPLIT INTO target is not writable",
 		)
 	}
 }

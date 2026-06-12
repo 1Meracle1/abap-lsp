@@ -2217,6 +2217,72 @@ CONCATENATE LINES OF lt_missing INTO lv_missing.`
 }
 
 @(test)
+root_semantic_stmt_checker_resolves_split_into_table_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lt_parts TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+SPLIT lv_text AT ',' INTO TABLE lt_parts.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_split_into_table.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lv_text := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_text", .Variable)
+	lt_parts := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_parts", .Variable)
+	testing.expect(t, lv_text != nil && .Used in lv_text.flags)
+	testing.expect(t, lt_parts != nil && .Used in lt_parts.flags)
+}
+
+@(test)
+root_semantic_stmt_checker_diagnoses_invalid_split_operands :: proc(t: ^testing.T) {
+	source := `DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_not_table TYPE string.
+CONSTANTS gc_text TYPE string VALUE ''.
+SPLIT lt_text AT ',' INTO TABLE lv_not_table.
+SPLIT lv_missing AT ',' INTO TABLE lt_missing.
+SPLIT 'a,b' AT ',' INTO gc_text.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_split_invalid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Split_Operand), 3)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+
+	seen_source := false
+	seen_table_target := false
+	seen_scalar_target := false
+	seen_missing_source := false
+	seen_missing_target := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Invalid_Split_Operand && text == "lt_text" {
+			seen_source = true
+			testing.expect_value(t, diagnostic.message, "SPLIT source is not character-like or byte-like")
+		} else if diagnostic.kind == .Invalid_Split_Operand && text == "lv_not_table" {
+			seen_table_target = true
+			testing.expect_value(t, diagnostic.message, "SPLIT INTO TABLE target is not an internal table")
+		} else if diagnostic.kind == .Invalid_Split_Operand && text == "gc_text" {
+			seen_scalar_target = true
+			testing.expect_value(t, diagnostic.message, "SPLIT INTO target is not writable")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "lv_missing" {
+			seen_missing_source = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable lv_missing")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "lt_missing" {
+			seen_missing_target = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable lt_missing")
+		}
+	}
+	testing.expect(t, seen_source)
+	testing.expect(t, seen_table_target)
+	testing.expect(t, seen_scalar_target)
+	testing.expect(t, seen_missing_source)
+	testing.expect(t, seen_missing_target)
+}
+
+@(test)
 root_semantic_stmt_checker_accepts_dynamic_object_assign_to_typed_field_symbol :: proc(t: ^testing.T) {
 	source := `CLASS lcl_params DEFINITION.
 ENDCLASS.
