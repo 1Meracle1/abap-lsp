@@ -3820,3 +3820,71 @@ lcl_repo=>get_instance( ).`
 	testing.expect(t, c_public_found)
 	testing.expect(t, !unrelated_found)
 }
+
+@(test)
+root_semantic_query_completion_after_instance_selector_returns_accessible_instance_members :: proc(t: ^testing.T) {
+	source := `REPORT zmain.
+CLASS lcl_repo DEFINITION.
+  PUBLIC SECTION.
+    DATA mv_public TYPE string.
+    CLASS-DATA gv_static TYPE string.
+    CONSTANTS c_static TYPE string VALUE 'x'.
+    CLASS-METHODS get_instance RETURNING VALUE(ro_repo) TYPE REF TO lcl_repo.
+    METHODS scan.
+  PRIVATE SECTION.
+    DATA mv_private TYPE string.
+    METHODS private_scan.
+ENDCLASS.
+CLASS lcl_repo IMPLEMENTATION.
+  METHOD get_instance.
+  ENDMETHOD.
+  METHOD scan.
+  ENDMETHOD.
+  METHOD private_scan.
+  ENDMETHOD.
+ENDCLASS.
+DATA lv_local TYPE i.
+lcl_repo=>get_instance( )->scan( ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://query_instance_completion.abap")
+	query := semantic_query(&project, &checker, file)
+	offset := checker_test_find_text(source, ")->scan") + len(")->")
+	testing.expect(t, offset >= len(")->"))
+
+	items := semantic_completion_items_at_offset(
+		semantic_query_completion(query),
+		offset,
+		"",
+		context.allocator,
+		source,
+	)
+
+	scan_found := false
+	mv_public_found := false
+	unrelated_found := false
+	for item in items {
+		name := string_interner.load(project.interner, item.name)
+		if name == "scan" && item.namespace == .Routine && item.source == .Selector_Member {
+			scan_found = true
+		}
+		if name == "mv_public" && item.namespace == .Value && item.source == .Selector_Member {
+			mv_public_found = true
+		}
+		if name == "get_instance" ||
+		   name == "gv_static" ||
+		   name == "c_static" ||
+		   name == "mv_private" ||
+		   name == "private_scan" ||
+		   name == "lv_local" ||
+		   name == "strlen" ||
+		   name == "lcl_repo" {
+			unrelated_found = true
+		}
+	}
+	testing.expect(t, scan_found)
+	testing.expect(t, mv_public_found)
+	testing.expect(t, !unrelated_found)
+}

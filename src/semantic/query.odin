@@ -81,7 +81,9 @@ Semantic_Completion_Item_Key :: struct {
 }
 
 Semantic_Completion_Selector_Context :: struct {
+	op:        ast.Selector_Op,
 	base_name: string,
+	base_end:  int,
 }
 
 semantic_query :: proc(
@@ -456,7 +458,15 @@ semantic_completion_selector_context_at_offset :: proc(
 	}
 	prefix_start := semantic_completion_prefix_start(source, offset)
 	i := semantic_completion_skip_space_backward(source, prefix_start)
-	if i < 2 || source[i - 2:i] != "=>" {
+	if i < 2 {
+		return {}, false
+	}
+	op := ast.Selector_Op{}
+	if source[i - 2:i] == "=>" {
+		op = .Fat_Arrow
+	} else if source[i - 2:i] == "->" {
+		op = .Arrow
+	} else {
 		return {}, false
 	}
 	op_start := i - 2
@@ -465,11 +475,13 @@ semantic_completion_selector_context_at_offset :: proc(
 	for base_start > 0 && semantic_completion_name_char(source[base_start - 1]) {
 		base_start -= 1
 	}
-	if base_start == base_end {
+	if op == .Fat_Arrow && base_start == base_end {
 		return {}, false
 	}
 	return Semantic_Completion_Selector_Context {
+			op        = op,
 			base_name = source[base_start:base_end],
+			base_end  = base_end,
 		},
 		true
 }
@@ -526,11 +538,79 @@ semantic_completion_append_selector_entities :: proc(
 	seen: ^map[Semantic_Completion_Item_Key]bool,
 	out: ^[dynamic]Semantic_Completion_Item,
 ) {
-	owner := semantic_completion_resolve_type_owner(q, scope, selector.base_name)
-	if owner == nil || (owner.kind != .Class && owner.kind != .Interface) {
+	if selector.op == .Fat_Arrow {
+		owner := semantic_completion_resolve_type_owner(q, scope, selector.base_name)
+		if owner == nil || (owner.kind != .Class && owner.kind != .Interface) {
+			return
+		}
+		semantic_completion_append_object_members(q, owner, scope, prefix, seen, out, .Fat_Arrow)
 		return
 	}
-	semantic_completion_append_static_object_members(q, owner, scope, prefix, seen, out)
+	if selector.op == .Arrow {
+		owner := semantic_completion_resolve_instance_owner(q, selector.base_end)
+		if owner == nil || (owner.kind != .Class && owner.kind != .Interface) {
+			return
+		}
+		semantic_completion_append_object_members(q, owner, scope, prefix, seen, out, .Arrow)
+		return
+	}
+}
+
+semantic_completion_resolve_instance_owner :: proc(
+	q: Semantic_Completion_Query,
+	base_end: int,
+) -> ^Entity {
+	if q.checker == nil {
+		return nil
+	}
+	info, ok := semantic_completion_operand_info_before_offset(q, base_end)
+	if !ok {
+		return nil
+	}
+	target := checker_type_ref_target(&q.checker.builtin_context, info.type)
+	return checker_type_object_entity(target)
+}
+
+semantic_completion_operand_info_before_offset :: proc(
+	q: Semantic_Completion_Query,
+	offset: int,
+) -> (Checker_Expr_Info, bool) {
+	best := -1
+	best_exact := false
+	best_priority := 0
+	best_width := 0
+	probe := offset - 1
+	for record, i in q.checker.info.expr_infos {
+		if record.node == nil || !semantic_query_record_matches_file(record, q.file) {
+			continue
+		}
+		range := record.node.range
+		if range.start >= range.end {
+			continue
+		}
+		exact := range.end == offset
+		contains := range.start <= probe && probe < range.end
+		if !exact && !contains {
+			continue
+		}
+		kind := semantic_expression_info_kind_from_node(record.node)
+		priority := semantic_expression_info_priority(kind)
+		width := semantic_range_width(range)
+		if best < 0 ||
+		   (exact && !best_exact) ||
+		   (exact == best_exact &&
+		    (priority < best_priority ||
+		     (priority == best_priority && width < best_width))) {
+			best = i
+			best_exact = exact
+			best_priority = priority
+			best_width = width
+		}
+	}
+	if best < 0 {
+		return {}, false
+	}
+	return q.checker.info.expr_infos[best].info, true
 }
 
 semantic_completion_resolve_type_owner :: proc(
@@ -576,13 +656,14 @@ semantic_completion_lookup_provider_type :: proc(
 	return nil
 }
 
-semantic_completion_append_static_object_members :: proc(
+semantic_completion_append_object_members :: proc(
 	q: Semantic_Completion_Query,
 	owner: ^Entity,
 	access_scope: ^Scope,
 	prefix: string,
 	seen: ^map[Semantic_Completion_Item_Key]bool,
 	out: ^[dynamic]Semantic_Completion_Item,
+	op: ast.Selector_Op,
 	depth := 0,
 ) {
 	if owner == nil || depth > 64 {
@@ -593,7 +674,7 @@ semantic_completion_append_static_object_members :: proc(
 		return
 	}
 	for member in payload.definition_scope.declarations {
-		if !semantic_completion_static_member_accessible(member, access_scope) {
+		if !semantic_completion_object_member_accessible(member, access_scope, op) {
 			continue
 		}
 		semantic_completion_append_entity(q.project, member, .Selector_Member, prefix, seen, out)
@@ -604,13 +685,14 @@ semantic_completion_append_static_object_members :: proc(
 		}
 		if iface := semantic_completion_resolve_type_owner(q, owner.scope, string_interner.load(q.project.interner, interface_name));
 		   iface != nil && iface.kind == .Interface {
-			semantic_completion_append_static_object_members(
+			semantic_completion_append_object_members(
 				q,
 				iface,
 				access_scope,
 				prefix,
 				seen,
 				out,
+				op,
 				depth + 1,
 			)
 		}
@@ -618,21 +700,32 @@ semantic_completion_append_static_object_members :: proc(
 	if owner.kind == .Class && string_interner.is_valid(payload.superclass_name) {
 		if super := semantic_completion_resolve_type_owner(q, owner.scope, string_interner.load(q.project.interner, payload.superclass_name));
 		   super != nil && super.kind == .Class {
-			semantic_completion_append_static_object_members(
+			semantic_completion_append_object_members(
 				q,
 				super,
 				access_scope,
 				prefix,
 				seen,
 				out,
+				op,
 				depth + 1,
 			)
 		}
 	}
 }
 
-semantic_completion_static_member_accessible :: proc(member: ^Entity, access_scope: ^Scope) -> bool {
-	if member == nil || !semantic_completion_static_member(member) {
+semantic_completion_object_member_accessible :: proc(
+	member: ^Entity,
+	access_scope: ^Scope,
+	op: ast.Selector_Op,
+) -> bool {
+	if member == nil {
+		return false
+	}
+	if op == .Fat_Arrow && !semantic_completion_static_member(member) {
+		return false
+	}
+	if op == .Arrow && !semantic_completion_instance_member(member) {
 		return false
 	}
 	if checker_member_visibility(member) == .Public {
@@ -650,6 +743,18 @@ semantic_completion_static_member :: proc(member: ^Entity) -> bool {
 	}
 	#partial switch member.kind {
 	case .Constant, .Enum_Member, .Type_Def:
+		return true
+	case:
+	}
+	return false
+}
+
+semantic_completion_instance_member :: proc(member: ^Entity) -> bool {
+	if member == nil || .Static in member.flags {
+		return false
+	}
+	#partial switch member.kind {
+	case .Variable, .Method, .Event:
 		return true
 	case:
 	}

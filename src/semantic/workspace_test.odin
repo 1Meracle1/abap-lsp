@@ -440,6 +440,105 @@ ENDCLASS.`,
 }
 
 @(test)
+semantic_workspace_completion_after_instance_selector_uses_root_class_provider_signature :: proc(t: ^testing.T) {
+	main_source := "REPORT zmain. zcl_repo=>get_instance( )->run( )."
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", main_source),
+		workspace_test_file(
+			t,
+			"mem://zcl_repo.abap",
+			`CLASS zcl_repo DEFINITION.
+  PUBLIC SECTION.
+    DATA mv_public TYPE string.
+    CLASS-DATA gv_static TYPE string.
+    CLASS-METHODS get_instance RETURNING VALUE(ro_repo) TYPE REF TO zcl_repo.
+    METHODS run.
+  PRIVATE SECTION.
+    DATA mv_private TYPE string.
+    METHODS private_run.
+ENDCLASS.
+CLASS zcl_repo IMPLEMENTATION.
+  METHOD get_instance.
+  ENDMETHOD.
+  METHOD run.
+  ENDMETHOD.
+  METHOD private_run.
+  ENDMETHOD.
+ENDCLASS.`,
+		),
+	}
+
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:]})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	offset := checker_test_find_text(main_source, ")->run") + len(")->")
+	testing.expect(t, offset >= len(")->"))
+
+	for result in analysis.project_results {
+		if result.root_path != "mem://zmain.report.abap" || result.checker == nil {
+			continue
+		}
+		file: ^Project_File
+		for candidate in result.files {
+			if candidate.path == "mem://zmain.report.abap" {
+				file = candidate
+				break
+			}
+		}
+		testing.expect(t, file != nil)
+		if file == nil {
+			return
+		}
+
+		query := semantic_query(
+			result.project,
+			result.checker,
+			file,
+			&analysis.external_context.index,
+		)
+		items := semantic_completion_items_at_offset(
+			semantic_query_completion(query),
+			offset,
+			"",
+			context.allocator,
+			main_source,
+		)
+
+		run_found := false
+		mv_public_found := false
+		unrelated_found := false
+		for item in items {
+			name := string_interner.load(analysis.interner, item.name)
+			if name == "run" &&
+			   item.namespace == .Routine &&
+			   item.source == .Selector_Member &&
+			   item.entity != nil &&
+			   item.entity.kind == .Method {
+				run_found = true
+			}
+			if name == "mv_public" &&
+			   item.namespace == .Value &&
+			   item.source == .Selector_Member {
+				mv_public_found = true
+			}
+			if name == "get_instance" ||
+			   name == "gv_static" ||
+			   name == "mv_private" ||
+			   name == "private_run" ||
+			   name == "zcl_repo" ||
+			   name == "strlen" {
+				unrelated_found = true
+			}
+		}
+		testing.expect(t, run_found)
+		testing.expect(t, mv_public_found)
+		testing.expect(t, !unrelated_found)
+		return
+	}
+	testing.expect(t, false)
+}
+
+@(test)
 semantic_graph_does_not_fetch_editable_root_class_provider :: proc(t: ^testing.T) {
 	interner := string_interner.create()
 	defer string_interner.destroy(interner)
