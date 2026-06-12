@@ -496,6 +496,44 @@ ENDCLASS.`
 }
 
 @(test)
+lsp_references_include_method_declaration_implementation_and_call :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/references_method.abap"
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+    METHODS caller.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+  METHOD caller.
+    run( ).
+  ENDMETHOD.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "METHODS run") + len("METHODS ")
+	testing.expect(t, offset >= len("METHODS "))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	locations := reference_locations_for_params(&state, params, context.allocator)
+
+	testing.expect_value(t, len(locations), 3)
+	if len(locations) == 3 {
+		testing.expect_value(t, locations[0].range.start.line, 2)
+		testing.expect_value(t, locations[1].range.start.line, 7)
+		testing.expect_value(t, locations[2].range.start.line, 10)
+		for location in locations {
+			testing.expect_value(t, location.uri, uri)
+			start := position_to_offset(source, location.range.start)
+			end := position_to_offset(source, location.range.end)
+			testing.expect_value(t, source[start:end], "run")
+		}
+	}
+}
+
+@(test)
 lsp_definition_location_uses_virtual_dependency_ast_source :: proc(t: ^testing.T) {
 	uri := "abapls-cache:/global-interface/zif_filter.abap"
 	source := `INTERFACE zif_filter.

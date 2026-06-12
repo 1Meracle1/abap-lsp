@@ -77,50 +77,79 @@ implementation_location_for_params :: proc(
 }
 
 handle_references :: proc(ctx: ^Request_Context, params: json.Value) {
-	found := entity_at_position(ctx.state, params)
+	locations := reference_locations_for_params(ctx.state, params, ctx.state.allocator)
+	send_success(ctx.output, ctx.id, locations[:], ctx.state.allocator)
+}
+
+reference_locations_for_params :: proc(
+	state: ^Server_State,
+	params: json.Value,
+	allocator: mem.Allocator,
+) -> [dynamic]Location {
+	locations := make([dynamic]Location, 0, 4, allocator)
+	found := entity_at_position(state, params)
 	if !found.ok {
-		send_success(ctx.output, ctx.id, []Location{}, ctx.state.allocator)
+		return locations
+	}
+	append_entity_reference_locations(state, &locations, found.snapshot, found.entity)
+	return locations
+}
+
+append_entity_reference_locations :: proc(
+	state: ^Server_State,
+	locations: ^[dynamic]Location,
+	snapshot: Snapshot_Lookup,
+	entity: ^semantic.Entity,
+) {
+	if entity == nil {
 		return
 	}
-	query := semantic.semantic_query(found.snapshot.project, found.snapshot.checker)
-	refs := semantic.semantic_ref_resolving_to_entity(
-		semantic.semantic_query_refs(query),
-		found.entity,
-		context.temp_allocator,
-	)
-	locations := make([dynamic]Location, 0, len(refs) + 1, ctx.state.allocator)
-	if found.entity.source_file != nil {
-		source := source_for_project_file(ctx.state, found.entity.source_file)
-		append(
-			&locations,
-			Location {
-				uri = found.entity.source_file.path,
-				range = range_from_offsets(
-					source,
-					found.entity.name_range.start,
-					found.entity.name_range.end,
-				),
-			},
+	append_reference_location(state, locations, snapshot, entity.source_file, entity.name_range)
+
+	if payload, ok := entity.payload.(^semantic.Entity_Routine_Payload); ok &&
+	   payload != nil &&
+	   payload.implementation_unit != nil {
+		append_reference_location(
+			state,
+			locations,
+			snapshot,
+			payload.implementation_unit,
+			payload.implementation_name_range,
 		)
 	}
+
+	query := semantic.semantic_query(snapshot.project, snapshot.checker)
+	refs := semantic.semantic_ref_resolving_to_entity(
+		semantic.semantic_query_refs(query),
+		entity,
+		context.temp_allocator,
+	)
 	for ref in refs {
 		if ref == nil || ref.file == nil {
 			continue
 		}
-		source := source_for_project_file(ctx.state, ref.file)
-		range := semantic.semantic_entity_use_range(ref^)
-		if range.start >= range.end {
-			continue
-		}
-		location := Location {
-			uri   = ref.file.path,
-			range = range_from_offsets(source, range.start, range.end),
-		}
-		if !location_present(locations[:], location) {
-			append(&locations, location)
-		}
+		append_reference_location(
+			state,
+			locations,
+			snapshot,
+			ref.file,
+			semantic.semantic_entity_use_range(ref^),
+		)
 	}
-	send_success(ctx.output, ctx.id, locations[:], ctx.state.allocator)
+}
+
+append_reference_location :: proc(
+	state: ^Server_State,
+	locations: ^[dynamic]Location,
+	snapshot: Snapshot_Lookup,
+	file: ^semantic.Project_File,
+	range: semantic.Range,
+) {
+	location, ok := location_for_project_file_range(state, snapshot, file, range)
+	if !ok || location_present(locations[:], location) {
+		return
+	}
+	append(locations, location)
 }
 
 entity_label :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
