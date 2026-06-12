@@ -71,12 +71,18 @@ semantic_workspace_analyze :: proc(
 		interner,
 		allocator,
 	)
+	provider_context := external
+	owns_provider_context := owns_external
+	if input.external != nil || provider_context == nil {
+		provider_context = semantic_workspace_provider_context(external, interner, allocator)
+		owns_provider_context = true
+	}
 	analysis := Workspace_Analysis {
 		allocator             = allocator,
 		interner              = interner,
 		owns_interner         = owns_interner,
-		external_context      = external,
-		owns_external_context = owns_external,
+		external_context      = provider_context,
+		owns_external_context = owns_provider_context,
 		projects              = make([dynamic]^Project, 0, len(input.files), allocator),
 		project_results       = make(
 			[dynamic]Workspace_Project_Result,
@@ -99,14 +105,97 @@ semantic_workspace_analyze :: proc(
 		external_semantic_index_import_providers(&analysis.external_index, &external.index)
 		semantic_workspace_import_external_interface_records(&analysis, external)
 	}
-	analysis.discovery = project_discovery_build(input.files, interner, external, allocator)
+	analysis.discovery = project_discovery_build(
+		input.files,
+		interner,
+		provider_context,
+		allocator,
+	)
+	semantic_workspace_add_local_root_providers(provider_context, &analysis.discovery)
 	for diagnostic in analysis.discovery.diagnostics {
 		append(&analysis.workspace_diags, diagnostic)
 	}
 	for plan in analysis.discovery.plans {
-		semantic_workspace_build_project(&analysis, plan, external)
+		semantic_workspace_build_project(&analysis, plan, provider_context)
 	}
 	return analysis
+}
+
+semantic_workspace_provider_context :: proc(
+	external: ^External_Semantics,
+	interner: ^string_interner.Interner,
+	allocator: mem.Allocator,
+) -> ^External_Semantics {
+	provider := new(External_Semantics, allocator)
+	assert(provider != nil)
+	provider^ = external_semantics_make(interner, allocator)
+	if external == nil {
+		return provider
+	}
+	external_semantic_index_import_providers(&provider.index, &external.index)
+	for source in external.source_files {
+		names := make([dynamic]string_interner.String, 0, len(source.provided_names), allocator)
+		for name in source.provided_names {
+			append(&names, name)
+		}
+		append(
+			&provider.source_files,
+			External_Source_File {
+				path = strings.clone(source.path, allocator) if source.path != "" else "",
+				root = source.root,
+				provided_names = names,
+			},
+		)
+	}
+	return provider
+}
+
+semantic_workspace_add_local_root_providers :: proc(
+	external: ^External_Semantics,
+	discovery: ^Project_Discovery,
+) {
+	assert(external != nil && discovery != nil)
+	for plan in discovery.plans {
+		if plan.kind != .Root {
+			continue
+		}
+		facts := &discovery.facts[plan.root_index]
+		if facts.root == nil {
+			continue
+		}
+		role, role_ok := semantic_workspace_external_role_for_file_kind(facts.kind)
+		if !role_ok {
+			continue
+		}
+		key := semantic_workspace_root_object_key(facts, plan.kind)
+		if !semantic_object_key_is_valid(key) {
+			continue
+		}
+		_ = external_semantics_analyze_interface_input(
+			external,
+			External_Interface_Input{key = key, path = facts.path, root = facts.root, role = role},
+		)
+	}
+}
+
+semantic_workspace_external_role_for_file_kind :: proc(
+	kind: Workspace_File_Kind,
+) -> (
+	External_Interface_Object_Role,
+	bool,
+) {
+	#partial switch kind {
+	case .Report:
+		return .Report, true
+	case .Class:
+		return .Class, true
+	case .Interface:
+		return .Interface, true
+	case .Type_Pool:
+		return .Type_Pool, true
+	case:
+	}
+	return .Unknown, false
 }
 
 semantic_workspace_prepare_external_context :: proc(

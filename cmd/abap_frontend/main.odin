@@ -231,7 +231,8 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	when trace.ENABLED {
 		print_analyze_counts(&result)
 	}
-	had_error := print_analyze_diagnostics(&result, warnings_as_errors)
+	diagnostic_path_filter := analyze_diagnostic_path_filter(target_path, context.temp_allocator)
+	had_error := print_analyze_diagnostics(&result, warnings_as_errors, diagnostic_path_filter)
 	workspace.analysis_result_destroy(&result, context.allocator)
 	execution.pool_destroy(&pool)
 	when trace.ENABLED {
@@ -250,6 +251,18 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 			time.duration_milliseconds(time.since(start_time)),
 		)
 	}
+}
+
+analyze_diagnostic_path_filter :: proc(path: string, allocator: mem.Allocator) -> string {
+	abs_path, ok := workspace.absolute_clean_path(path, allocator)
+	if !ok {
+		return ""
+	}
+	info, err := os.stat(abs_path, allocator)
+	if err != nil || info.type != .Regular {
+		return ""
+	}
+	return abs_path
 }
 
 analyze_cli_path :: proc(
@@ -502,6 +515,7 @@ print_source_highlight :: proc(
 print_analyze_diagnostics :: proc(
 	result: ^workspace.Analysis_Result,
 	warnings_as_errors: bool,
+	path_filter: string = "",
 ) -> bool {
 	had_error := false
 	use_color := terminal.color_enabled && terminal.is_terminal(os.stdout)
@@ -532,6 +546,9 @@ print_analyze_diagnostics :: proc(
 	}
 	slice.sort_by(diagnostics[:], analyze_diagnostic_output_less)
 	for item in diagnostics {
+		if !analyze_diagnostic_output_matches_filter(item, path_filter) {
+			continue
+		}
 		if print_semantic_diagnostic(
 			item.diagnostic,
 			item.fallback_path,
@@ -543,6 +560,18 @@ print_analyze_diagnostics :: proc(
 		}
 	}
 	return had_error
+}
+
+analyze_diagnostic_output_matches_filter :: proc(
+	item: Analyze_Diagnostic_Output,
+	path_filter: string,
+) -> bool {
+	if path_filter == "" {
+		return true
+	}
+	path := analyze_diagnostic_output_path(item)
+	return workspace.normalized_uri_path_key(path, context.temp_allocator) ==
+	       workspace.normalized_uri_path_key(path_filter, context.temp_allocator)
 }
 
 analyze_diagnostic_output_less :: proc(left, right: Analyze_Diagnostic_Output) -> bool {

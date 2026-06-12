@@ -243,6 +243,86 @@ workspace_test_diagnostic_count :: proc(
 	return count
 }
 
+@(test)
+semantic_workspace_resolves_editable_root_class_provider :: proc(t: ^testing.T) {
+	files := [?]Workspace_File_Input {
+		workspace_test_file(
+			t,
+			"mem://zmain.report.abap",
+			"REPORT zmain. zcl_repo=>run( ).",
+		),
+		workspace_test_file(
+			t,
+			"mem://zcl_repo.abap",
+			`CLASS zcl_repo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+CLASS zcl_repo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.`,
+		),
+	}
+
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:]})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	testing.expect_value(t, workspace_test_candidate_count(&analysis, .Global_Symbol, "zcl_repo"), 0)
+	testing.expect_value(t, workspace_test_candidate_count(&analysis, .Class, "zcl_repo"), 0)
+	for result in analysis.project_results {
+		if result.root_path != "mem://zmain.report.abap" || result.checker == nil {
+			continue
+		}
+		testing.expect_value(t, workspace_test_diagnostic_count(result.checker, .Unresolved_Type), 0)
+		return
+	}
+	testing.expect(t, false)
+}
+
+@(test)
+semantic_graph_does_not_fetch_editable_root_class_provider :: proc(t: ^testing.T) {
+	interner := string_interner.create()
+	defer string_interner.destroy(interner)
+
+	session := semantic_graph_session_make(interner)
+	defer semantic_graph_session_destroy(&session)
+
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. zcl_repo=>run( )."),
+		workspace_test_file(
+			t,
+			"mem://zcl_repo.abap",
+			`CLASS zcl_repo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+CLASS zcl_repo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.`,
+		),
+	}
+
+	result := semantic_graph_session_apply_update(
+		&session,
+		Semantic_Graph_Update {
+			changed_files            = files[:],
+			external_frontier_stable = false,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&result)
+
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, result.new_fetch_requests[:], .Global_Symbol, "zcl_repo"), 0)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, result.new_fetch_requests[:], .Class, "zcl_repo"), 0)
+	analysis := semantic_graph_session_current_analysis(&session)
+	testing.expect(t, analysis != nil)
+	if analysis != nil {
+		testing.expect_value(t, workspace_test_candidate_count(analysis, .Global_Symbol, "zcl_repo"), 0)
+		testing.expect_value(t, workspace_test_candidate_count(analysis, .Class, "zcl_repo"), 0)
+	}
+}
+
 workspace_test_add_external_class_method_with_param :: proc(
 	external: ^External_Semantics,
 	class: ^Entity,

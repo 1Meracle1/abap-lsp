@@ -67,25 +67,37 @@ analyze_path :: proc(
 	if !target_ok {
 		return Analysis_Result{ok = false, error = "invalid target path"}
 	}
-	files := make([dynamic]semantic.Workspace_File_Input, 0, 1 + len(include_paths), allocator)
-	target, ok := workspace_file_input_from_path(target_abs, allocator)
-	if !ok {
-		return Analysis_Result{ok = false, error = "failed to read target file"}
-	}
-	append(&files, target)
+	paths := make([dynamic]string, 0, 1 + len(include_paths), context.temp_allocator)
+	collect_workspace_abap_files(workspace.root_path, &paths, context.temp_allocator)
+	workspace_path_list_add(&paths, target_abs)
 	for include_path in include_paths {
 		abs_path, abs_ok := absolute_clean_path(include_path, allocator)
 		if !abs_ok {
 			continue
 		}
-		include, include_ok := workspace_file_input_from_path(abs_path, allocator)
-		if include_ok {
-			append(&files, include)
+		workspace_path_list_add(&paths, abs_path)
+	}
+	files := make([dynamic]semantic.Workspace_File_Input, 0, len(paths), allocator)
+	for path in paths {
+		input, ok := workspace_file_input_from_path(path, allocator)
+		if !ok {
+			return Analysis_Result{ok = false, error = "failed to read workspace file"}
 		}
+		append(&files, input)
 	}
 	result := analyze_inputs(workspace, files[:], pool, allocator)
 	result.used_manifest = workspace.has_manifest
 	return result
+}
+
+workspace_path_list_add :: proc(paths: ^[dynamic]string, path: string) {
+	key := normalized_uri_path_key(path, context.temp_allocator)
+	for existing in paths^ {
+		if normalized_uri_path_key(existing, context.temp_allocator) == key {
+			return
+		}
+	}
+	append(paths, path)
 }
 
 analyze_inputs :: proc(
@@ -124,8 +136,8 @@ analysis_result_update_inputs :: proc(
 	last := semantic.semantic_graph_session_apply_update(
 		&result.session,
 		semantic.Semantic_Graph_Update {
-			changed_files            = changed_files,
-			removed_files            = removed_files,
+			changed_files = changed_files,
+			removed_files = removed_files,
 			external_frontier_stable = false,
 		},
 	)
@@ -204,9 +216,7 @@ analysis_result_update_inputs :: proc(
 }
 
 workspace_add_dependency_diagnostics :: proc(result: ^Analysis_Result, workspace: ^Workspace) {
-	if result == nil ||
-	   workspace == nil ||
-	   !(.Enable_Dependency_Diagnostics in workspace.flags) {
+	if result == nil || workspace == nil || !(.Enable_Dependency_Diagnostics in workspace.flags) {
 		return
 	}
 	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
@@ -223,22 +233,23 @@ workspace_add_dependency_diagnostics :: proc(result: ^Analysis_Result, workspace
 				candidate,
 				context.temp_allocator,
 			)
-			if !ok || dependency_diagnostic_present(
-				project_result.checker.info.diagnostics[:],
-				kind,
-				candidate.range,
-				candidate.file,
-			) {
+			if !ok ||
+			   dependency_diagnostic_present(
+				   project_result.checker.info.diagnostics[:],
+				   kind,
+				   candidate.range,
+				   candidate.file,
+			   ) {
 				continue
 			}
 			append(
 				&project_result.checker.info.diagnostics,
 				semantic.Checker_Diagnostic {
-					kind     = kind,
+					kind = kind,
 					severity = .Error,
-					range    = candidate.range,
-					message  = strings.clone(message, project_result.project.allocator),
-					file     = candidate.file,
+					range = candidate.range,
+					message = strings.clone(message, project_result.project.allocator),
+					file = candidate.file,
 				},
 			)
 		}
@@ -263,20 +274,32 @@ dependency_diagnostic_from_candidate :: proc(
 	}
 	switch candidate.reason {
 	case .Unresolved_Include:
-		return .Unresolved_Include, dependency_diagnostic_message("unresolved include ", name, allocator), true
+		return .Unresolved_Include,
+			dependency_diagnostic_message("unresolved include ", name, allocator),
+			true
 	case .Unresolved_Type:
-		return .Unresolved_Type, dependency_diagnostic_message("unresolved external type ", name, allocator), true
+		return .Unresolved_Type,
+			dependency_diagnostic_message("unresolved external type ", name, allocator),
+			true
 	case .Unresolved_Routine:
-		return .Unresolved_Reference, dependency_diagnostic_message("unresolved external routine ", name, allocator), true
+		return .Unresolved_Reference,
+			dependency_diagnostic_message("unresolved external routine ", name, allocator),
+			true
 	case .Unresolved_SQL_Source:
-		return .Unresolved_Open_Sql_Source, dependency_diagnostic_message("unresolved Open SQL source ", name, allocator), true
+		return .Unresolved_Open_Sql_Source,
+			dependency_diagnostic_message("unresolved Open SQL source ", name, allocator),
+			true
 	case .Type_Pool_Import:
-		return .Unresolved_Type, dependency_diagnostic_message("unresolved type pool ", name, allocator), true
+		return .Unresolved_Type,
+			dependency_diagnostic_message("unresolved type pool ", name, allocator),
+			true
 	case .Unresolved_Reference:
 		if candidate.kind == .Global_Symbol && candidate.namespace == .Value {
 			return {}, "", false
 		}
-		return .Unresolved_Reference, dependency_diagnostic_message("unresolved external reference ", name, allocator), true
+		return .Unresolved_Reference,
+			dependency_diagnostic_message("unresolved external reference ", name, allocator),
+			true
 	}
 	return {}, "", false
 }
@@ -295,9 +318,7 @@ dependency_diagnostic_present :: proc(
 	file: ^semantic.Project_File,
 ) -> bool {
 	for diagnostic in diagnostics {
-		if diagnostic.kind == kind &&
-		   diagnostic.range == range &&
-		   diagnostic.file == file {
+		if diagnostic.kind == kind && diagnostic.range == range && diagnostic.file == file {
 			return true
 		}
 	}
