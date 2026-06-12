@@ -811,17 +811,43 @@ checker_check_read_table_key_name :: proc(
 
 checker_check_append_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Append_Stmt) {
 	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	checker_check_append_target(ctx, stmt.target, target)
 	row_type := checker_type_row(ctx, target.type)
 	if stmt.source != nil {
 		source := checker_check_expr(ctx, stmt.source)
-		expected := row_type
-		if stmt.lines_of {
-			expected = target.type
+		if !checker_check_unresolved_variable_operand(ctx, stmt.source, source) {
+			expected := row_type
+			if stmt.lines_of {
+				expected = target.type
+			}
+			checker_check_assignment_compatibility(ctx, source.type, expected, checker_expr_range(stmt.source))
 		}
-		checker_check_assignment_compatibility(ctx, source.type, expected, checker_expr_range(stmt.source))
 	}
 	checker_check_table_line_target(ctx, stmt.assigning, row_type, .Assigning)
 	checker_check_table_line_target(ctx, stmt.reference_into, row_type, .Reference_Into)
+}
+
+checker_check_append_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Append_Operand,
+			checker_expr_range(expr),
+			"APPEND target is not writable",
+		)
+		return
+	}
+	if !checker_type_is_table_like(ctx, target.type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Append_Operand,
+			checker_expr_range(expr),
+			"APPEND target is not an internal table",
+		)
+	}
 }
 
 checker_check_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_Stmt) {

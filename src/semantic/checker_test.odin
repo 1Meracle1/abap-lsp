@@ -2146,6 +2146,72 @@ lr_i = lr_data.`
 }
 
 @(test)
+root_semantic_stmt_checker_resolves_append_operands :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         text TYPE string,
+       END OF ty_row.
+DATA ls_row TYPE ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+APPEND ls_row TO lt_rows.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_append.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	ls_row := checker_test_lookup(t, &project, file.root_scope, .Value, "ls_row", .Variable)
+	lt_rows := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_rows", .Variable)
+	testing.expect(t, ls_row != nil && .Used in ls_row.flags)
+	testing.expect(t, lt_rows != nil && .Used in lt_rows.flags)
+}
+
+@(test)
+root_semantic_stmt_checker_diagnoses_invalid_append_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lv_not_table TYPE string.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+CONSTANTS gc_text TYPE string VALUE ''.
+APPEND lv_text TO lv_not_table.
+APPEND lv_text TO gc_text.
+APPEND lv_missing TO lt_text.
+APPEND lv_text TO lt_missing.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_append_invalid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Append_Operand), 2)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+
+	seen_not_table := false
+	seen_not_writable := false
+	seen_missing_source := false
+	seen_missing_target := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Invalid_Append_Operand && text == "lv_not_table" {
+			seen_not_table = true
+			testing.expect_value(t, diagnostic.message, "APPEND target is not an internal table")
+		} else if diagnostic.kind == .Invalid_Append_Operand && text == "gc_text" {
+			seen_not_writable = true
+			testing.expect_value(t, diagnostic.message, "APPEND target is not writable")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "lv_missing" {
+			seen_missing_source = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable lv_missing")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "lt_missing" {
+			seen_missing_target = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable lt_missing")
+		}
+	}
+	testing.expect(t, seen_not_table)
+	testing.expect(t, seen_not_writable)
+	testing.expect(t, seen_missing_source)
+	testing.expect(t, seen_missing_target)
+}
+
+@(test)
 root_semantic_stmt_checker_resolves_concatenate_lines_of_operands :: proc(t: ^testing.T) {
 	source := `CLASS cl_abap_char_utilities DEFINITION.
   PUBLIC SECTION.
