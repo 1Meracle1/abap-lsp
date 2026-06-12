@@ -7,6 +7,9 @@ import "core:strings"
 handle_initialize :: proc(ctx: ^Request_Context, params: json.Value) {
 	state := ctx.state
 	if object, ok := params.(json.Object); ok {
+		if snippets, snippets_ok := initialize_completion_snippet_support(object); snippets_ok {
+			state.completion_snippets_supported = snippets
+		}
 		if init_options, init_ok := object_object(object, "initializationOptions"); init_ok {
 			if path, path_ok := object_string(init_options, "dependencyCachePath"); path_ok {
 				state.options.dependency_store_path = strings.clone(path, state.allocator)
@@ -42,6 +45,26 @@ handle_initialize :: proc(ctx: ^Request_Context, params: json.Value) {
 	}
 	state.initialized = true
 	send_success(ctx.output, ctx.id, initialize_result(state.allocator), state.allocator)
+}
+
+initialize_completion_snippet_support :: proc(params: json.Object) -> (bool, bool) {
+	capabilities, cap_ok := object_object(params, "capabilities")
+	if !cap_ok {
+		return false, false
+	}
+	text_document, text_ok := object_object(capabilities, "textDocument")
+	if !text_ok {
+		return false, false
+	}
+	completion, completion_ok := object_object(text_document, "completion")
+	if !completion_ok {
+		return false, false
+	}
+	completion_item, item_ok := object_object(completion, "completionItem")
+	if !item_ok {
+		return false, false
+	}
+	return object_boolean(completion_item, "snippetSupport")
 }
 
 initialize_result :: proc(allocator: mem.Allocator) -> Initialize_Result {

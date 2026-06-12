@@ -226,6 +226,25 @@ initialize_honors_materialized_dependency_documents_option :: proc(t: ^testing.T
 }
 
 @(test)
+initialize_honors_completion_snippet_support_false :: proc(t: ^testing.T) {
+	params := make(json.Object, 1, context.allocator)
+	capabilities := make(json.Object, 1, context.allocator)
+	text_document := make(json.Object, 1, context.allocator)
+	completion := make(json.Object, 1, context.allocator)
+	completion_item := make(json.Object, 1, context.allocator)
+	completion_item["snippetSupport"] = json.Boolean(false)
+	completion["completionItem"] = completion_item
+	text_document["completion"] = completion
+	capabilities["textDocument"] = text_document
+	params["capabilities"] = capabilities
+
+	snippets, ok := initialize_completion_snippet_support(params)
+
+	testing.expect(t, ok)
+	testing.expect(t, !snippets)
+}
+
+@(test)
 lsp_reanalysis_preserves_workspace_analysis_session :: proc(t: ^testing.T) {
 	state := Server_State {
 		allocator         = context.allocator,
@@ -267,6 +286,145 @@ lsp_reanalysis_preserves_workspace_analysis_session :: proc(t: ^testing.T) {
 
 	testing.expect(t, state.workspaces[0].has_analysis)
 	testing.expect(t, state.workspaces[0].analysis.session.generation > first_generation)
+}
+
+@(test)
+lsp_completion_selector_method_uses_full_call_snippet :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_method_snippet.abap"
+	source := `CLASS lcl_repo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS get_instance RETURNING VALUE(ro_repo) TYPE REF TO lcl_repo.
+    METHODS execute
+      IMPORTING iv_input TYPE string
+      EXPORTING ev_result TYPE string
+      CHANGING cv_state TYPE string.
+ENDCLASS.
+CLASS lcl_repo IMPLEMENTATION.
+  METHOD get_instance.
+  ENDMETHOD.
+  METHOD execute.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  lcl_repo=>get_instance( )->execute( ).`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, ")->execute") + len(")->")
+	testing.expect(t, offset >= len(")->"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "execute")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		`execute(
+    EXPORTING
+      iv_input = $1
+    IMPORTING
+      ev_result = $2
+    CHANGING
+      cv_state = $3
+  )$0`,
+	)
+}
+
+@(test)
+lsp_completion_selector_method_omits_exporting_for_only_exporting_args :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_method_exporting_shorthand.abap"
+	source := `CLASS lcl_repo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS get_instance RETURNING VALUE(ro_repo) TYPE REF TO lcl_repo.
+    METHODS execute
+      IMPORTING iv_input TYPE string
+                iv_other TYPE i.
+ENDCLASS.
+CLASS lcl_repo IMPLEMENTATION.
+  METHOD get_instance.
+  ENDMETHOD.
+  METHOD execute.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  lcl_repo=>get_instance( )->execute( ).`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, ")->execute") + len(")->")
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "execute")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		`execute(
+    iv_input = $1
+    iv_other = $2
+  )$0`,
+	)
+	testing.expect(t, !strings.contains(item.insert_text, "EXPORTING"))
+}
+
+@(test)
+lsp_completion_selector_method_falls_back_to_plain_text_without_snippet_support :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_method_plain.abap"
+	source := `CLASS lcl_repo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS get_instance RETURNING VALUE(ro_repo) TYPE REF TO lcl_repo.
+    METHODS execute IMPORTING iv_input TYPE string.
+ENDCLASS.
+CLASS lcl_repo IMPLEMENTATION.
+  METHOD get_instance.
+  ENDMETHOD.
+  METHOD execute.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  lcl_repo=>get_instance( )->execute( ).`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, ")->execute") + len(")->")
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "execute")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(t, item.insert_text, "execute")
 }
 
 @(test)
@@ -1106,6 +1264,18 @@ lsp_test_hover_text :: proc(
 	return entity_hover_text(found.snapshot.project, found.entity)
 }
 
+lsp_test_find_completion_item :: proc(
+	items: []Completion_Item,
+	label: string,
+) -> (Completion_Item, bool) {
+	for item in items {
+		if item.label == label {
+			return item, true
+		}
+	}
+	return {}, false
+}
+
 lsp_test_empty_state :: proc() -> Server_State {
 	return Server_State {
 		allocator         = context.allocator,
@@ -1114,6 +1284,7 @@ lsp_test_empty_state :: proc() -> Server_State {
 		workspaces        = make([dynamic]Server_Workspace, 0, 1, context.allocator),
 		pending_removed_uris = make([dynamic]string, 0, 2, context.allocator),
 		pending_disk_refresh_uris = make([dynamic]string, 0, 2, context.allocator),
+		completion_snippets_supported = true,
 	}
 }
 

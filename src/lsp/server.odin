@@ -38,6 +38,7 @@ Server_State :: struct {
 	workspaces:           [dynamic]Server_Workspace,
 	pending_removed_uris: [dynamic]string,
 	pending_disk_refresh_uris: [dynamic]string,
+	completion_snippets_supported: bool,
 	materialize_dependency_documents: bool,
 	initialized:          bool,
 	shutdown_requested:   bool,
@@ -81,6 +82,7 @@ server_init :: proc(state: ^Server_State, allocator: mem.Allocator) {
 		workspaces        = make([dynamic]Server_Workspace, 0, 4, allocator),
 		pending_removed_uris = make([dynamic]string, 0, 8, allocator),
 		pending_disk_refresh_uris = make([dynamic]string, 0, 8, allocator),
+		completion_snippets_supported = true,
 	}
 	execution.pool_init(
 		&state.pool,

@@ -61,6 +61,9 @@ COMPLETION_CONSTANT :: 21
 COMPLETION_STRUCT :: 22
 COMPLETION_EVENT :: 23
 
+COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT :: 1
+COMPLETION_INSERT_TEXT_FORMAT_SNIPPET :: 2
+
 Position :: struct {
 	line:      int `json:"line"`,
 	character: int `json:"character"`,
@@ -90,8 +93,10 @@ Publish_Diagnostics_Params :: struct {
 }
 
 Completion_Item :: struct {
-	label: string `json:"label"`,
-	kind:  int `json:"kind"`,
+	label:              string `json:"label"`,
+	kind:               int    `json:"kind"`,
+	insert_text:        string `json:"insertText"`,
+	insert_text_format: int    `json:"insertTextFormat"`,
 }
 
 Completion_List :: struct {
