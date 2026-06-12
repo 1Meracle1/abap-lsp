@@ -1638,6 +1638,26 @@ lsp_hover_reports_unknown_open_sql_inline_table_type :: proc(t: ^testing.T) {
 }
 
 @(test)
+lsp_hover_reports_open_cursor_inline_handle_type :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF e070,
+         trstatus TYPE string,
+       END OF e070.
+
+OPEN CURSOR WITH HOLD @DATA(lv_cursor) FOR
+  SELECT trstatus
+    FROM e070
+    WHERE trstatus = '1'.
+
+CLOSE CURSOR @lv_cursor.`
+
+	text := lsp_test_hover_text(t, source, "@DATA(lv_cursor)", "lv_cursor")
+
+	testing.expect(t, strings.contains(text, "`lv_cursor` variable"))
+	testing.expect(t, strings.contains(text, "type: `cursor`"))
+	testing.expect(t, !strings.contains(text, "type: `unknown`"))
+}
+
+@(test)
 lsp_hover_reports_leading_declaration_comment_documentation :: proc(t: ^testing.T) {
 	source := `DATA lv_seed TYPE i.
 " local accumulator

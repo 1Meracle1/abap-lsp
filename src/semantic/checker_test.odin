@@ -5,6 +5,7 @@ import "src:parser"
 import string_interner "src:string_interner"
 import "src:tokenizer"
 
+import "core:strings"
 import "core:testing"
 
 checker_test_check_source :: proc(
@@ -2682,6 +2683,69 @@ OPEN CURSOR WITH HOLD @lv_cursor FOR
 		testing.expect(t, text == "lv_cursor" || text == "lv_value")
 		testing.expect_value(t, diagnostic.message, checker_unresolved_variable_message(text))
 	}
+}
+
+@(test)
+root_semantic_sql_cursor_infers_inline_handle_type :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF e070,
+         trstatus TYPE string,
+       END OF e070.
+
+OPEN CURSOR WITH HOLD @DATA(lv_cursor) FOR
+  SELECT trstatus
+    FROM e070
+    WHERE trstatus = '1'.
+
+FETCH NEXT CURSOR @lv_cursor
+  INTO TABLE @DATA(lt_package)
+  PACKAGE SIZE 100.
+
+CLOSE CURSOR @lv_cursor.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://sql_cursor_inline.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 0)
+	lv_cursor := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_cursor", .Variable)
+	testing.expect(t, lv_cursor != nil && lv_cursor.type != nil)
+	if lv_cursor == nil || lv_cursor.type == nil {
+		return
+	}
+	testing.expect_value(t, checker_test_type_name(&project, lv_cursor.type), "cursor")
+}
+
+@(test)
+root_semantic_sql_cursor_reports_non_cursor_handle_type :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF e070,
+         trstatus TYPE string,
+       END OF e070.
+DATA lv_cursor TYPE string.
+
+OPEN CURSOR WITH HOLD @lv_cursor FOR
+  SELECT trstatus
+    FROM e070.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://sql_cursor_mismatch.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 1)
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Incompatible_Assignment_Type {
+			continue
+		}
+		found = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "@lv_cursor")
+		testing.expect(t, strings.contains(diagnostic.message, "cursor handle is not compatible"))
+		testing.expect(t, strings.contains(diagnostic.message, "current type 'string'"))
+		testing.expect(t, strings.contains(diagnostic.message, "expected type 'cursor'"))
+	}
+	testing.expect(t, found)
 }
 
 @(test)

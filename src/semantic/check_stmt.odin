@@ -362,10 +362,10 @@ checker_check_stmt :: proc(
 	case ^ast.Select_Stmt:
 		checker_check_select_stmt(ctx, n)
 	case ^ast.Open_Cursor_Stmt:
-		checker_check_expr(ctx, n.handle, .Value, true)
+		checker_check_cursor_handle_expr(ctx, n.handle, true)
 		checker_check_sql_select_query(ctx, n.query)
 	case ^ast.Fetch_Stmt:
-		checker_check_expr(ctx, n.handle)
+		checker_check_cursor_handle_expr(ctx, n.handle, false)
 		checker_check_sql_select_result(
 			ctx,
 			n.result,
@@ -376,7 +376,7 @@ checker_check_stmt :: proc(
 		)
 		checker_check_expr(ctx, n.package_size)
 	case ^ast.Close_Cursor_Stmt:
-		checker_check_expr(ctx, n.handle)
+		checker_check_cursor_handle_expr(ctx, n.handle, false)
 	case ^ast.Insert_Stmt:
 		checker_check_insert_stmt(ctx, n)
 	case ^ast.Append_Stmt:
@@ -2125,6 +2125,54 @@ checker_check_select_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Select_Stmt)
 	}
 	checker_check_sql_select_query(ctx, stmt.query)
 	checker_check_stmt_list(ctx, stmt.body)
+}
+
+checker_check_cursor_handle_expr :: proc(ctx: ^Checker_Context, handle: ^ast.Expr, lhs: bool) {
+	if handle == nil {
+		return
+	}
+	cursor_type := checker_builtin_type_from_name(ctx.checker, "cursor")
+	local := ctx^
+	local.type_hint = cursor_type
+	local.type_hint_expr = handle
+	operand := checker_check_expr(&local, handle, .Value, lhs)
+	checker_check_cursor_handle_type(ctx, operand.type, cursor_type, checker_expr_range(handle))
+}
+
+checker_check_cursor_handle_type :: proc(
+	ctx: ^Checker_Context,
+	actual: ^Type,
+	expected: ^Type,
+	range: Range,
+) {
+	if checker_type_is_unknown(actual) || checker_type_is_unknown(expected) {
+		return
+	}
+	actual_name, actual_ok := checker_type_builtin_name(ctx, actual)
+	expected_name, expected_ok := checker_type_builtin_name(ctx, expected)
+	if actual_ok && expected_ok {
+		if actual_name == expected_name {
+			return
+		}
+		checker_add_diagnostic(
+			ctx,
+			.Incompatible_Assignment_Type,
+			range,
+			checker_type_mismatch_message(ctx, "cursor handle is not compatible", actual, expected),
+		)
+		return
+	}
+	if checker_type_same(actual, expected) {
+		return
+	}
+	if checker_type_is_ref(actual) || checker_type_is_table_like(ctx, actual) || checker_type_structure(actual) != nil {
+		checker_add_diagnostic(
+			ctx,
+			.Incompatible_Assignment_Type,
+			range,
+			checker_type_mismatch_message(ctx, "cursor handle is not compatible", actual, expected),
+		)
+	}
 }
 
 checker_type_assignment_compatible :: proc(
