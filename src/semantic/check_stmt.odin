@@ -362,18 +362,16 @@ checker_check_stmt :: proc(
 	case ^ast.Select_Stmt:
 		checker_check_select_stmt(ctx, n)
 	case ^ast.Open_Cursor_Stmt:
-		checker_check_cursor_handle_expr(ctx, n.handle, true)
-		checker_check_sql_select_query(ctx, n.query)
+		handle := checker_check_cursor_handle_expr(ctx, n.handle, true)
+		shape := checker_check_sql_select_query(ctx, n.query)
+		checker_sql_register_cursor_query(ctx, handle.entity, shape)
 	case ^ast.Fetch_Stmt:
-		checker_check_cursor_handle_expr(ctx, n.handle, false)
-		checker_check_sql_select_result(
-			ctx,
-			n.result,
-			Sql_Query_Shape {
-				row_type    = project_type_unknown(ctx.project),
-				scalar_type = project_type_unknown(ctx.project),
-			},
-		)
+		handle := checker_check_cursor_handle_expr(ctx, n.handle, false)
+		shape, ok := checker_sql_cursor_query_shape(ctx, handle.entity)
+		if !ok {
+			shape = checker_sql_unknown_query_shape(ctx)
+		}
+		checker_check_sql_select_result(ctx, n.result, shape)
 		checker_check_expr(ctx, n.package_size)
 	case ^ast.Close_Cursor_Stmt:
 		checker_check_cursor_handle_expr(ctx, n.handle, false)
@@ -2127,9 +2125,9 @@ checker_check_select_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Select_Stmt)
 	checker_check_stmt_list(ctx, stmt.body)
 }
 
-checker_check_cursor_handle_expr :: proc(ctx: ^Checker_Context, handle: ^ast.Expr, lhs: bool) {
+checker_check_cursor_handle_expr :: proc(ctx: ^Checker_Context, handle: ^ast.Expr, lhs: bool) -> Operand {
 	if handle == nil {
-		return
+		return checker_invalid_operand()
 	}
 	cursor_type := checker_builtin_type_from_name(ctx.checker, "cursor")
 	local := ctx^
@@ -2137,6 +2135,7 @@ checker_check_cursor_handle_expr :: proc(ctx: ^Checker_Context, handle: ^ast.Exp
 	local.type_hint_expr = handle
 	operand := checker_check_expr(&local, handle, .Value, lhs)
 	checker_check_cursor_handle_type(ctx, operand.type, cursor_type, checker_expr_range(handle))
+	return operand
 }
 
 checker_check_cursor_handle_type :: proc(

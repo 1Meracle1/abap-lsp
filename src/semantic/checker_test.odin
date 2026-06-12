@@ -2690,15 +2690,21 @@ root_semantic_sql_cursor_infers_inline_handle_type :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF e070,
          trstatus TYPE string,
        END OF e070.
+DATA lv_status TYPE string.
 
 OPEN CURSOR WITH HOLD @DATA(lv_cursor) FOR
   SELECT trstatus
     FROM e070
     WHERE trstatus = '1'.
 
-FETCH NEXT CURSOR @lv_cursor
-  INTO TABLE @DATA(lt_package)
-  PACKAGE SIZE 100.
+DO.
+  FETCH NEXT CURSOR @lv_cursor
+    INTO TABLE @DATA(lt_package)
+    PACKAGE SIZE 100.
+
+  lv_status = lt_package[ 1 ]-trstatus.
+  lv_status = lt_package[ 1 ]-trstatus1.
+ENDDO.
 
 CLOSE CURSOR @lv_cursor.`
 
@@ -2709,12 +2715,40 @@ CLOSE CURSOR @lv_cursor.`
 
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 0)
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 1)
 	lv_cursor := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_cursor", .Variable)
 	testing.expect(t, lv_cursor != nil && lv_cursor.type != nil)
 	if lv_cursor == nil || lv_cursor.type == nil {
 		return
 	}
 	testing.expect_value(t, checker_test_type_name(&project, lv_cursor.type), "cursor")
+
+	lt_package := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_package", .Variable)
+	testing.expect(t, lt_package != nil && lt_package.type != nil)
+	if lt_package == nil || lt_package.type == nil {
+		return
+	}
+	testing.expect_value(t, lt_package.type.kind, Type_Kind.Table)
+	row_structure := checker_type_structure(checker_type_row(&checker.builtin_context, lt_package.type))
+	testing.expect(t, row_structure != nil)
+	if row_structure == nil {
+		return
+	}
+	trstatus := checker_test_structure_field(t, &project, row_structure, "trstatus")
+	testing.expect(t, trstatus != nil)
+	if trstatus != nil {
+		testing.expect_value(t, checker_test_type_name(&project, trstatus.type), "string")
+		testing.expect(t, .Used in trstatus.flags)
+	}
+	found_bad_field := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unknown_Field {
+			continue
+		}
+		found_bad_field = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "trstatus1")
+	}
+	testing.expect(t, found_bad_field)
 }
 
 @(test)

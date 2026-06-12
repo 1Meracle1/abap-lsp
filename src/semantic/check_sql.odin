@@ -35,6 +35,50 @@ Sql_Query_Shape :: struct {
 	scalar_type: ^Type,
 }
 
+Checker_Cursor_Query :: struct {
+	handle: ^Entity,
+	shape:  Sql_Query_Shape,
+}
+
+checker_sql_unknown_query_shape :: proc(ctx: ^Checker_Context) -> Sql_Query_Shape {
+	return Sql_Query_Shape {
+		row_type    = project_type_unknown(ctx.project),
+		scalar_type = project_type_unknown(ctx.project),
+	}
+}
+
+checker_sql_register_cursor_query :: proc(
+	ctx: ^Checker_Context,
+	handle: ^Entity,
+	shape: Sql_Query_Shape,
+) {
+	if handle == nil {
+		return
+	}
+	for &cursor_query in ctx.cursor_shapes {
+		if cursor_query.handle == handle {
+			cursor_query.shape = shape
+			return
+		}
+	}
+	append(&ctx.cursor_shapes, Checker_Cursor_Query{handle = handle, shape = shape})
+}
+
+checker_sql_cursor_query_shape :: proc(
+	ctx: ^Checker_Context,
+	handle: ^Entity,
+) -> (Sql_Query_Shape, bool) {
+	if handle == nil {
+		return {}, false
+	}
+	for cursor_query in ctx.cursor_shapes {
+		if cursor_query.handle == handle {
+			return cursor_query.shape, true
+		}
+	}
+	return {}, false
+}
+
 checker_check_sql_select_query :: proc(ctx: ^Checker_Context, query: ast.Select_Query_Clause) -> Sql_Query_Shape {
 	sql := checker_sql_source_scope_make()
 	defer delete(sql.sources)

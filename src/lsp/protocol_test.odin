@@ -553,6 +553,46 @@ lsp_completion_select_templates_expand_from_select_prefix :: proc(t: ^testing.T)
 }
 
 @(test)
+lsp_completion_fetch_cursor_table_expr_fields :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_cursor_table_expr_field.abap"
+	source := `TYPES: BEGIN OF e070,
+         trstatus TYPE string,
+       END OF e070.
+
+OPEN CURSOR WITH HOLD @DATA(lv_cursor) FOR
+  SELECT trstatus
+    FROM e070
+    WHERE trstatus = '1'.
+
+DO.
+  FETCH NEXT CURSOR @lv_cursor
+    INTO TABLE @DATA(lt_package)
+    PACKAGE SIZE 100.
+
+  lt_package[ 1 ]-.
+ENDDO.
+
+CLOSE CURSOR @lv_cursor.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "lt_package[ 1 ]-.") + len("lt_package[ 1 ]-")
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "trstatus")
+	testing.expect(t, item_ok)
+	if item_ok {
+		testing.expect_value(t, item.kind, COMPLETION_FIELD)
+	}
+}
+
+@(test)
 lsp_completion_get_time_stamp_field_template_expands_from_get_prefix :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_get_time_stamp_template.abap"
 	source := "REPORT zmain.\nFORM run.\n  ge"
@@ -1638,7 +1678,7 @@ lsp_hover_reports_unknown_open_sql_inline_table_type :: proc(t: ^testing.T) {
 }
 
 @(test)
-lsp_hover_reports_open_cursor_inline_handle_type :: proc(t: ^testing.T) {
+lsp_hover_reports_cursor_inline_handle_and_fetch_table_types :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF e070,
          trstatus TYPE string,
        END OF e070.
@@ -1648,13 +1688,27 @@ OPEN CURSOR WITH HOLD @DATA(lv_cursor) FOR
     FROM e070
     WHERE trstatus = '1'.
 
+DO.
+  FETCH NEXT CURSOR @lv_cursor
+    INTO TABLE @DATA(lt_package)
+    PACKAGE SIZE 100.
+
+  IF sy-subrc <> 0.
+    EXIT.
+  ENDIF.
+ENDDO.
+
 CLOSE CURSOR @lv_cursor.`
 
-	text := lsp_test_hover_text(t, source, "@DATA(lv_cursor)", "lv_cursor")
+	cursor_text := lsp_test_hover_text(t, source, "@DATA(lv_cursor)", "lv_cursor")
+	package_text := lsp_test_hover_text(t, source, "@DATA(lt_package)", "lt_package")
 
-	testing.expect(t, strings.contains(text, "`lv_cursor` variable"))
-	testing.expect(t, strings.contains(text, "type: `cursor`"))
-	testing.expect(t, !strings.contains(text, "type: `unknown`"))
+	testing.expect(t, strings.contains(cursor_text, "`lv_cursor` variable"))
+	testing.expect(t, strings.contains(cursor_text, "type: `cursor`"))
+	testing.expect(t, !strings.contains(cursor_text, "type: `unknown`"))
+	testing.expect(t, strings.contains(package_text, "`lt_package` variable"))
+	testing.expect(t, strings.contains(package_text, "type: `STANDARD TABLE OF"))
+	testing.expect(t, !strings.contains(package_text, "STANDARD TABLE OF unknown"))
 }
 
 @(test)

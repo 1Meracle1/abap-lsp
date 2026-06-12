@@ -504,6 +504,12 @@ checker_lookup_selector_member :: proc(
 			if field, ok := checker_lookup_structure_field(structure, interned); ok {
 				return checker_record_entity_operand(ctx, node, field, lhs, use_range = use_range)
 			}
+			checker_add_diagnostic(
+				ctx,
+				.Unknown_Field,
+				checker_use_range(node, use_range),
+				checker_table_component_message(ctx, "unknown internal table field ", interned),
+			)
 		}
 		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
 	}

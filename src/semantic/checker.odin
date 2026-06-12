@@ -102,6 +102,7 @@ Checker_Context :: struct {
 	decl:              ^Decl_Info,
 	type_hint:         ^Type,
 	type_hint_expr:    ^ast.Node,
+	cursor_shapes:     [dynamic]Checker_Cursor_Query,
 	current_decl:      ^Decl_Info,
 	current_routine:   ^Entity,
 	current_signature: ^Type,
@@ -173,11 +174,12 @@ checker_info_make :: proc(
 checker_context_make :: proc(checker: ^Checker, file: ^Project_File = nil) -> Checker_Context {
 	assert(checker != nil && checker.project != nil && checker.info.builtin_scope != nil)
 	ctx := Checker_Context {
-		checker   = checker,
-		info      = &checker.info,
-		project   = checker.project,
-		scope     = checker.info.builtin_scope,
-		type_path = make([dynamic]^Entity, 0, 16, checker.project.allocator),
+		checker       = checker,
+		info          = &checker.info,
+		project       = checker.project,
+		scope         = checker.info.builtin_scope,
+		cursor_shapes = make([dynamic]Checker_Cursor_Query, 0, 4, checker.project.allocator),
+		type_path     = make([dynamic]^Entity, 0, 16, checker.project.allocator),
 	}
 	if file != nil {
 		checker_context_set_file(&ctx, file)
@@ -189,14 +191,17 @@ checker_context_reset :: proc(ctx: ^Checker_Context, file: ^Project_File = nil) 
 	assert(ctx != nil && ctx.checker != nil)
 	checker := ctx.checker
 
+	cursor_shapes := ctx.cursor_shapes
+	clear(&cursor_shapes)
 	type_path := ctx.type_path
 	clear(&type_path)
 	ctx^ = Checker_Context {
-		checker   = checker,
-		info      = &checker.info,
-		project   = checker.project,
-		scope     = checker.info.builtin_scope,
-		type_path = type_path,
+		checker       = checker,
+		info          = &checker.info,
+		project       = checker.project,
+		scope         = checker.info.builtin_scope,
+		cursor_shapes = cursor_shapes,
+		type_path     = type_path,
 	}
 	if file != nil {
 		checker_context_set_file(ctx, file)

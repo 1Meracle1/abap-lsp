@@ -466,21 +466,34 @@ semantic_completion_selector_context_at_offset :: proc(
 		op = .Fat_Arrow
 	} else if source[i - 2:i] == "->" {
 		op = .Arrow
+	} else if source[i - 1] == '-' && !semantic_completion_space_char(source[i - 2]) {
+		op = .Dash
 	} else {
 		return {}, false
 	}
-	op_start := i - 2
+	op_start := i - 2 if op != .Dash else i - 1
 	base_end := semantic_completion_skip_space_backward(source, op_start)
-	base_start := base_end
+	base_name_end := base_end
+	base_start := base_name_end
 	for base_start > 0 && semantic_completion_name_char(source[base_start - 1]) {
 		base_start -= 1
 	}
-	if op == .Fat_Arrow && base_start == base_end {
+	if op == .Dash && base_start == base_name_end {
+		table_base_end := semantic_completion_table_expr_base_end(source, base_end)
+		if table_base_end < base_end {
+			base_name_end = table_base_end
+			base_start = base_name_end
+			for base_start > 0 && semantic_completion_name_char(source[base_start - 1]) {
+				base_start -= 1
+			}
+		}
+	}
+	if op == .Fat_Arrow && base_start == base_name_end {
 		return {}, false
 	}
 	return Semantic_Completion_Selector_Context {
 			op        = op,
-			base_name = source[base_start:base_end],
+			base_name = source[base_start:base_name_end],
 			base_end  = base_end,
 		},
 		true
@@ -497,14 +510,38 @@ semantic_completion_prefix_start :: proc(source: string, offset: int) -> int {
 semantic_completion_skip_space_backward :: proc(source: string, offset: int) -> int {
 	i := clamp(offset, 0, len(source))
 	for i > 0 {
-		switch source[i - 1] {
-		case ' ', '\t', '\r', '\n':
+		if semantic_completion_space_char(source[i - 1]) {
 			i -= 1
 			continue
 		}
 		break
 	}
 	return i
+}
+
+semantic_completion_table_expr_base_end :: proc(source: string, offset: int) -> int {
+	i := semantic_completion_skip_space_backward(source, offset)
+	if i == 0 || source[i - 1] != ']' {
+		return offset
+	}
+	depth := 0
+	for i > 0 {
+		i -= 1
+		switch source[i] {
+		case ']':
+			depth += 1
+		case '[':
+			depth -= 1
+			if depth == 0 {
+				return semantic_completion_skip_space_backward(source, i)
+			}
+		}
+	}
+	return offset
+}
+
+semantic_completion_space_char :: proc "contextless" (ch: u8) -> bool {
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
 }
 
 semantic_completion_name_char :: proc "contextless" (ch: u8) -> bool {
@@ -554,6 +591,11 @@ semantic_completion_append_selector_entities :: proc(
 		semantic_completion_append_object_members(q, owner, scope, prefix, seen, out, .Arrow)
 		return
 	}
+	if selector.op == .Dash {
+		structure := semantic_completion_resolve_structure(q, scope, selector)
+		semantic_completion_append_structure_fields(q.project, structure, prefix, seen, out)
+		return
+	}
 }
 
 semantic_completion_resolve_instance_owner :: proc(
@@ -569,6 +611,36 @@ semantic_completion_resolve_instance_owner :: proc(
 	}
 	target := checker_type_ref_target(&q.checker.builtin_context, info.type)
 	return checker_type_object_entity(target)
+}
+
+semantic_completion_resolve_structure :: proc(
+	q: Semantic_Completion_Query,
+	scope: ^Scope,
+	selector: Semantic_Completion_Selector_Context,
+) -> ^Structure {
+	if q.checker == nil {
+		return nil
+	}
+	if info, ok := semantic_completion_operand_info_before_offset(q, selector.base_end); ok {
+		if structure := checker_type_structure(info.type); structure != nil {
+			return structure
+		}
+	}
+	if selector.base_name == "" || scope == nil {
+		return nil
+	}
+	interned := checker_intern_name(q.project, selector.base_name)
+	if !string_interner.is_valid(interned) {
+		return nil
+	}
+	_, entity, ok := checker_lookup_declaration_from_scope(scope, .Value, interned)
+	if !ok || entity == nil || entity.type == nil {
+		return nil
+	}
+	if row_structure := checker_type_structure(checker_type_row(&q.checker.builtin_context, entity.type)); row_structure != nil {
+		return row_structure
+	}
+	return checker_type_structure(entity.type)
 }
 
 semantic_completion_operand_info_before_offset :: proc(
@@ -711,6 +783,21 @@ semantic_completion_append_object_members :: proc(
 				depth + 1,
 			)
 		}
+	}
+}
+
+semantic_completion_append_structure_fields :: proc(
+	project: ^Project,
+	structure: ^Structure,
+	prefix: string,
+	seen: ^map[Semantic_Completion_Item_Key]bool,
+	out: ^[dynamic]Semantic_Completion_Item,
+) {
+	if structure == nil {
+		return
+	}
+	for field in structure.fields {
+		semantic_completion_append_entity(project, field, .Selector_Member, prefix, seen, out)
 	}
 }
 
