@@ -1312,7 +1312,12 @@ checker_check_routine_call_arguments :: proc(
 		formal, formal_ok := checker_call_find_named_parameter(ctx, routine, payload.parameters[:], arg.name, section)
 		if !formal_ok {
 			checker_check_call_argument_value(ctx, arg, nil, checker_call_arg_requires_writable(section))
-			checker_add_diagnostic(ctx, .Unknown_Named_Parameter, arg.name_range, "unknown named parameter")
+			checker_add_diagnostic(
+				ctx,
+				.Unknown_Named_Parameter,
+				arg.name_range,
+				checker_unknown_named_parameter_message(ctx, routine, arg, section),
+			)
 			required_mapping_ok = false
 			continue
 		}
@@ -1356,6 +1361,75 @@ checker_check_routine_call_arguments :: proc(
 	if required_mapping_ok && !has_parameter_table {
 		checker_check_missing_required_parameters(ctx, routine, payload.parameters[:], supplied[:], call_range)
 	}
+}
+
+checker_unknown_named_parameter_message :: proc(
+	ctx: ^Checker_Context,
+	routine: ^Entity,
+	arg: Checker_Call_Argument,
+	section: ast.Call_Arg_Section_Kind,
+) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "unknown named parameter")
+	name := arg.name_text
+	if name == "" && string_interner.is_valid(arg.name) {
+		name = string_interner.load(ctx.project.interner, arg.name)
+	}
+	if name != "" {
+		strings.write_string(&builder, " '")
+		strings.write_string(&builder, name)
+		strings.write_string(&builder, "'")
+	}
+	section_text := checker_call_arg_section_text(section)
+	if section_text != "" {
+		strings.write_string(&builder, " in ")
+		strings.write_string(&builder, section_text)
+		strings.write_string(&builder, " section")
+	}
+	if routine != nil && string_interner.is_valid(routine.name) {
+		routine_kind := checker_routine_kind_text(routine.kind)
+		if routine_kind != "" {
+			strings.write_string(&builder, " for ")
+			strings.write_string(&builder, routine_kind)
+			strings.write_string(&builder, " '")
+			strings.write_string(&builder, string_interner.load(ctx.project.interner, routine.name))
+			strings.write_string(&builder, "'")
+		}
+	}
+	return strings.to_string(builder)
+}
+
+checker_call_arg_section_text :: proc(section: ast.Call_Arg_Section_Kind) -> string {
+	switch section {
+	case .Exporting:
+		return "EXPORTING"
+	case .Importing:
+		return "IMPORTING"
+	case .Changing:
+		return "CHANGING"
+	case .Tables:
+		return "TABLES"
+	case .Receiving:
+		return "RECEIVING"
+	case .Exceptions:
+		return "EXCEPTIONS"
+	case .Unknown:
+		return ""
+	}
+	return ""
+}
+
+checker_routine_kind_text :: proc(kind: Entity_Kind) -> string {
+	#partial switch kind {
+	case .Method:
+		return "method"
+	case .Module:
+		return "function module"
+	case .Form:
+		return "form"
+	case:
+	}
+	return ""
 }
 
 checker_check_call_argument_with_parameter :: proc(

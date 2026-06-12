@@ -2198,6 +2198,39 @@ lcl_demo=>run( ).`
 }
 
 @(test)
+root_semantic_stmt_checker_names_unknown_method_parameter :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING iv_known TYPE i.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+DATA lv_value TYPE i.
+lcl_demo=>run( EXPORTING iv_missing = lv_value ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_unknown_method_arg.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Named_Parameter), 1)
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Unknown_Named_Parameter {
+			found = true
+			testing.expect_value(
+				t,
+				diagnostic.message,
+				"unknown named parameter 'iv_missing' in EXPORTING section for method 'run'",
+			)
+		}
+	}
+	testing.expect(t, found)
+}
+
+@(test)
 root_semantic_stmt_checker_ignores_form_raising_for_perform_arguments :: proc(t: ^testing.T) {
 	source := `PERFORM open_gui.
 FORM open_gui RAISING zcx_abapgit_exception.
