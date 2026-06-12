@@ -154,6 +154,7 @@ const CALLABLE_KEYWORDS = [
   "CALL",
   "CLEANUP",
   "CREATE",
+  "DATA",
   "DELETE",
   "FORM",
   "GET",

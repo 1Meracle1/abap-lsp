@@ -568,10 +568,11 @@ ENDLOOP.
     (qualified_name
       (identifier))
     (keyword)
-    (keyword)
-    (parenthesized_expression
-      (qualified_name
-        (identifier)))
+    (call_expression
+      (keyword)
+      (argument_list
+        (qualified_name
+          (identifier))))
     (keyword)))
 
 ==================
@@ -905,10 +906,11 @@ LEAVE TO SCREEN sy-dynnr.
     (qualified_name
       (identifier))
     (keyword)
-    (keyword)
-    (parenthesized_expression
-      (qualified_name
-        (identifier)))
+    (call_expression
+      (keyword)
+      (argument_list
+        (qualified_name
+          (identifier))))
     (at_statement
       (keyword)
       (keyword)
@@ -1100,10 +1102,11 @@ READ TABLE lt_docnum ASSIGNING FIELD-SYMBOL(<ls_docnum>)
     (qualified_name
       (identifier))
     (keyword)
-    (keyword)
-    (parenthesized_expression
-      (qualified_name
-        (identifier)))
+    (call_expression
+      (keyword)
+      (argument_list
+        (qualified_name
+          (identifier))))
     (keyword))
   (simple_statement
     (keyword)
@@ -1441,7 +1444,7 @@ ENDSELECT.
 Cursor statements highlight additions as keywords
 ==================
 
-OPEN CURSOR WITH HOLD @lv_cursor FOR
+OPEN CURSOR WITH HOLD @DATA(lv_cursor) FOR
   SELECT trstatus
     FROM e070
     WHERE field = @lv_value.
@@ -1467,8 +1470,11 @@ CLOSE CURSOR @lv_cursor.
     (keyword)
     (keyword)
     (host_expression
-      (qualified_name
-        (identifier)))
+      (call_expression
+        (keyword)
+        (argument_list
+          (qualified_name
+            (identifier)))))
     (keyword)
     (keyword)
     (qualified_name
@@ -1495,8 +1501,7 @@ CLOSE CURSOR @lv_cursor.
       (keyword)
       (host_expression
         (call_expression
-          (qualified_name
-            (identifier))
+          (keyword)
           (argument_list
             (qualified_name
               (identifier)))))

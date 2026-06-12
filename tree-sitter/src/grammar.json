@@ -8305,6 +8305,22 @@
                           "value": 2,
                           "content": {
                             "type": "PATTERN",
+                            "value": "[dD][aA][tT][aA]"
+                          }
+                        }
+                      },
+                      "named": true,
+                      "value": "keyword"
+                    },
+                    {
+                      "type": "ALIAS",
+                      "content": {
+                        "type": "TOKEN",
+                        "content": {
+                          "type": "PREC",
+                          "value": 2,
+                          "content": {
+                            "type": "PATTERN",
                             "value": "[dD][eE][lL][eE][tT][eE]"
                           }
                         }
