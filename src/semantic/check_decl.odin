@@ -838,17 +838,27 @@ checker_collect_structure_include :: proc(
 	assert(structure != nil && scope != nil && owner != nil)
 	assert(kind == .Include_Type || kind == .Include_Structure)
 	name := as_name.text
+	name_range := as_name.range if name != "" else Range{}
 	entity := project_new_entity(ctx.project, .Field)
 	entity.node = node
 	entity.owner = owner
 	entity.source_file = ctx.file
 	interned := checker_intern_name(ctx.project, name) if name != "" else string_interner.String(0)
-	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Field, range, node, value_clause = value_clause)
+	decl := project_new_decl_info(
+		ctx.project,
+		entity,
+		scope,
+		interned,
+		.Field,
+		name_range,
+		node,
+		value_clause = value_clause,
+	)
 	payload, ok := entity.payload.(^Entity_Field_Payload)
 	assert(ok && payload != nil)
 	payload.owner_structure = structure
 	payload.decl_unit = ctx.file
-	payload.decl_range = range
+	payload.decl_range = name_range
 	payload.field_index = i32(len(structure.fields))
 	payload.value_clause = value_clause
 	payload.type_ref = checker_type_ref_data_from_expr(

@@ -827,6 +827,55 @@ DATA lt_seen_po TYPE HASHED TABLE OF ty_seen_po WITH UNIQUE KEY ebeln.`
 }
 
 @(test)
+lsp_hover_lookup_uses_precise_structured_type_field_ranges :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/structured_type_field_hover.abap"
+	source := `CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES:
+      BEGIN OF ty_customer_ref,
+        kunnr TYPE kunnr,
+        gln   TYPE char13,
+      END OF ty_customer_ref,
+      BEGIN OF ty_delivery_summary,
+        destination_owner_customer TYPE ty_customer_ref,
+      END OF ty_delivery_summary,
+      BEGIN OF ty_delivery_detail,
+        INCLUDE TYPE ty_delivery_summary.
+    TYPES:
+        fetched_at TYPE timestampl,
+      END OF ty_delivery_detail.
+ENDCLASS.`
+
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	field_offset := strings.index(source, "kunnr TYPE")
+	testing.expect(t, field_offset >= 0)
+	if field_offset < 0 {
+		return
+	}
+	field_params := lsp_test_rename_position_params(uri, offset_to_position(source, field_offset), "")
+	field_found := entity_at_position(&state, field_params)
+	testing.expect(t, field_found.ok)
+	if field_found.ok {
+		testing.expect_value(t, field_found.entity.kind, semantic.Entity_Kind.Field)
+		testing.expect_value(t, source[field_found.range.start:field_found.range.end], "kunnr")
+	}
+
+	type_offset := strings.index(source, "char13")
+	testing.expect(t, type_offset >= 0)
+	if type_offset < 0 {
+		return
+	}
+	type_params := lsp_test_rename_position_params(uri, offset_to_position(source, type_offset), "")
+	type_found := entity_at_position(&state, type_params)
+	testing.expect(t, !type_found.ok)
+	if type_found.ok {
+		testing.expect(t, type_found.range.end <= type_found.range.start)
+	}
+}
+
+@(test)
 lsp_hover_lookup_uses_precise_raise_exporting_value_range :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/raise_exporting_hover.abap"
 	source := `DATA lo_msg TYPE REF TO object.
