@@ -428,6 +428,34 @@ START-OF-SELECTION.
 }
 
 @(test)
+lsp_completion_if_template_expands_from_if_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_if_template.abap"
+	source := "REPORT zmain.\nFORM run.\n  i"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "IF ... ENDIF")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+	testing.expect_value(t, item.sort_text, "2:if ... endif")
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(t, item.insert_text, "IF ${1:condition}.\n    $0\n  ENDIF.")
+}
+
+@(test)
 lsp_completion_loop_templates_expand_from_loop_prefix :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_loop_template.abap"
 	source := "REPORT zmain.\nFORM run.\n  lo"
@@ -525,6 +553,32 @@ lsp_completion_get_time_stamp_field_template_falls_back_to_plain_text_without_sn
 }
 
 @(test)
+lsp_completion_if_template_falls_back_to_plain_text_without_snippet_support :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_if_template_plain.abap"
+	source := "REPORT zmain.\ni"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "IF ... ENDIF")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(t, item.insert_text, "IF condition.\n  \nENDIF.")
+}
+
+@(test)
 lsp_completion_get_time_stamp_field_template_sorts_after_matching_symbols :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_get_time_stamp_template_priority.abap"
 	source := `DATA get_candidate TYPE i.
@@ -555,6 +609,36 @@ ge`
 }
 
 @(test)
+lsp_completion_if_template_sorts_after_matching_symbols :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_if_template_priority.abap"
+	source := `DATA if_candidate TYPE i.
+i`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	symbol_index := lsp_test_completion_item_index(items, "if_candidate")
+	template_index := lsp_test_completion_item_index(items, "IF ... ENDIF")
+	testing.expect(t, symbol_index >= 0)
+	testing.expect(t, template_index >= 0)
+	if symbol_index < 0 || template_index < 0 {
+		return
+	}
+
+	testing.expect(t, symbol_index < template_index)
+	testing.expect_value(t, items[symbol_index].sort_text, "1:if_candidate")
+	testing.expect_value(t, items[template_index].sort_text, "2:if ... endif")
+}
+
+@(test)
 lsp_completion_get_time_stamp_field_template_does_not_match_expression_prefixes :: proc(
 	t: ^testing.T,
 ) {
@@ -574,6 +658,28 @@ WRITE ge`
 
 	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
 	_, item_ok := lsp_test_find_completion_item(items, "GET TIME STAMP FIELD")
+
+	testing.expect(t, !item_ok)
+}
+
+@(test)
+lsp_completion_if_template_does_not_match_expression_prefixes :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_if_template_expression.abap"
+	source := `DATA if_value TYPE i.
+WRITE i`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, item_ok := lsp_test_find_completion_item(items, "IF ... ENDIF")
 
 	testing.expect(t, !item_ok)
 }

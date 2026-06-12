@@ -49,13 +49,14 @@ completion_items_for_snapshot :: proc(
 		snapshot.source,
 	)
 	indent := completion_line_indent(snapshot.source, offset, context.temp_allocator)
+	if_template_count := completion_if_template_count(snapshot.source, offset, prefix)
 	loop_template_count := completion_loop_template_count(snapshot.source, offset, prefix)
 	get_time_stamp_template_count := completion_get_time_stamp_field_template_count(
 		snapshot.source,
 		offset,
 		prefix,
 	)
-	template_count := loop_template_count + get_time_stamp_template_count
+	template_count := if_template_count + loop_template_count + get_time_stamp_template_count
 	out := make([]Completion_Item, len(items) + template_count, allocator)
 	for item, i in items {
 		out[i] = completion_item_from_semantic_item(
@@ -67,6 +68,14 @@ completion_items_for_snapshot :: proc(
 		)
 	}
 	template_index := len(items)
+	if if_template_count > 0 {
+		out[template_index] = completion_if_template_item(
+			indent,
+			snippets_supported,
+			allocator,
+		)
+		template_index += if_template_count
+	}
 	if loop_template_count > 0 {
 		completion_append_loop_templates(
 			out[template_index:template_index + loop_template_count],
@@ -121,6 +130,14 @@ completion_sort_text :: proc(priority, label: string, allocator: mem.Allocator) 
 	return strings.concatenate({priority, ":", lower}, allocator)
 }
 
+completion_if_template_count :: proc(source: string, offset: int, prefix: string) -> int {
+	if !completion_keyword_prefix_matches(prefix, "IF") ||
+	   !completion_template_at_statement_start(source, offset) {
+		return 0
+	}
+	return 1
+}
+
 completion_loop_template_count :: proc(source: string, offset: int, prefix: string) -> int {
 	if !completion_keyword_prefix_matches(prefix, "LOOP") ||
 	   !completion_template_at_statement_start(source, offset) {
@@ -166,6 +183,44 @@ completion_template_at_statement_start :: proc(source: string, offset: int) -> b
 	}
 	prev := source[i - 1]
 	return prev == '\n' || prev == '.'
+}
+
+completion_if_template_item :: proc(
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	label := "IF ... ENDIF"
+	return Completion_Item {
+		label = label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", label, allocator),
+		insert_text = completion_if_template_insert_text(indent, snippets_supported, allocator),
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+	}
+}
+
+completion_if_template_insert_text :: proc(
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> string {
+	out := strings.builder_make(allocator)
+	if snippets_supported {
+		strings.write_string(&out, "IF ${1:condition}.")
+	} else {
+		strings.write_string(&out, "IF condition.")
+	}
+	strings.write_byte(&out, '\n')
+	strings.write_string(&out, indent)
+	strings.write_string(&out, "  ")
+	if snippets_supported {
+		strings.write_string(&out, "$0")
+	}
+	strings.write_byte(&out, '\n')
+	strings.write_string(&out, indent)
+	strings.write_string(&out, "ENDIF.")
+	return strings.to_string(out)
 }
 
 completion_get_time_stamp_field_template_item :: proc(
