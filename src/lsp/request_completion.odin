@@ -49,7 +49,13 @@ completion_items_for_snapshot :: proc(
 		snapshot.source,
 	)
 	indent := completion_line_indent(snapshot.source, offset, context.temp_allocator)
-	template_count := completion_loop_template_count(snapshot.source, offset, prefix)
+	loop_template_count := completion_loop_template_count(snapshot.source, offset, prefix)
+	get_time_stamp_template_count := completion_get_time_stamp_field_template_count(
+		snapshot.source,
+		offset,
+		prefix,
+	)
+	template_count := loop_template_count + get_time_stamp_template_count
 	out := make([]Completion_Item, len(items) + template_count, allocator)
 	for item, i in items {
 		out[i] = completion_item_from_semantic_item(
@@ -60,8 +66,21 @@ completion_items_for_snapshot :: proc(
 			allocator,
 		)
 	}
-	if template_count > 0 {
-		completion_append_loop_templates(out[len(items):], indent, snippets_supported, allocator)
+	template_index := len(items)
+	if loop_template_count > 0 {
+		completion_append_loop_templates(
+			out[template_index:template_index + loop_template_count],
+			indent,
+			snippets_supported,
+			allocator,
+		)
+		template_index += loop_template_count
+	}
+	if get_time_stamp_template_count > 0 {
+		out[template_index] = completion_get_time_stamp_field_template_item(
+			snippets_supported,
+			allocator,
+		)
 	}
 	return out
 }
@@ -75,17 +94,23 @@ completion_item_from_semantic_item :: proc(
 ) -> Completion_Item {
 	name := string_interner.load(project.interner, item.name)
 	out := Completion_Item {
-		label = name,
-		kind = completion_kind(item.entity),
-		sort_text = completion_sort_text("1", name, allocator),
-		insert_text = name,
+		label              = name,
+		kind               = completion_kind(item.entity),
+		sort_text          = completion_sort_text("1", name, allocator),
+		insert_text        = name,
 		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
 	}
 	if snippets_supported &&
 	   item.source == .Selector_Member &&
 	   item.entity != nil &&
 	   item.entity.kind == .Method {
-		out.insert_text = completion_method_call_snippet(project, item.entity, name, indent, allocator)
+		out.insert_text = completion_method_call_snippet(
+			project,
+			item.entity,
+			name,
+			indent,
+			allocator,
+		)
 		out.insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET
 	}
 	return out
@@ -97,22 +122,35 @@ completion_sort_text :: proc(priority, label: string, allocator: mem.Allocator) 
 }
 
 completion_loop_template_count :: proc(source: string, offset: int, prefix: string) -> int {
-	if !completion_loop_template_prefix_matches(prefix) ||
-	   !completion_loop_template_at_statement_start(source, offset) {
+	if !completion_keyword_prefix_matches(prefix, "LOOP") ||
+	   !completion_template_at_statement_start(source, offset) {
 		return 0
 	}
 	return 2
 }
 
-completion_loop_template_prefix_matches :: proc(prefix: string) -> bool {
-	if prefix == "" || len(prefix) > len("LOOP") {
+completion_get_time_stamp_field_template_count :: proc(
+	source: string,
+	offset: int,
+	prefix: string,
+) -> int {
+	if !completion_keyword_prefix_matches(prefix, "GET") ||
+	   !completion_template_at_statement_start(source, offset) {
+		return 0
+	}
+	return 1
+}
+
+completion_keyword_prefix_matches :: proc(prefix, keyword: string) -> bool {
+	if prefix == "" || len(prefix) > len(keyword) {
 		return false
 	}
 	lower := strings.to_lower(prefix, context.temp_allocator)
-	return strings.has_prefix("loop", lower)
+	keyword_lower := strings.to_lower(keyword, context.temp_allocator)
+	return strings.has_prefix(keyword_lower, lower)
 }
 
-completion_loop_template_at_statement_start :: proc(source: string, offset: int) -> bool {
+completion_template_at_statement_start :: proc(source: string, offset: int) -> bool {
 	prefix_start := completion_prefix_start(source, offset)
 	i := prefix_start
 	for i > 0 {
@@ -128,6 +166,26 @@ completion_loop_template_at_statement_start :: proc(source: string, offset: int)
 	}
 	prev := source[i - 1]
 	return prev == '\n' || prev == '.'
+}
+
+completion_get_time_stamp_field_template_item :: proc(
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	label := "GET TIME STAMP FIELD"
+	insert_text: string
+	if snippets_supported {
+		insert_text = strings.clone("GET TIME STAMP FIELD ${1:lv_timestamp}.$0", allocator)
+	} else {
+		insert_text = strings.clone("GET TIME STAMP FIELD lv_timestamp.", allocator)
+	}
+	return Completion_Item {
+		label = label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", label, allocator),
+		insert_text = insert_text,
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+	}
 }
 
 completion_append_loop_templates :: proc(
@@ -164,7 +222,12 @@ completion_loop_template_item :: proc(
 		label = label,
 		kind = COMPLETION_SNIPPET,
 		sort_text = completion_sort_text("2", label, allocator),
-		insert_text = completion_loop_template_insert_text(variant, indent, snippets_supported, allocator),
+		insert_text = completion_loop_template_insert_text(
+			variant,
+			indent,
+			snippets_supported,
+			allocator,
+		),
 		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
 	}
 }
@@ -220,11 +283,13 @@ completion_prefix_start :: proc(source: string, offset: int) -> int {
 }
 
 completion_prefix_char :: proc "contextless" (ch: u8) -> bool {
-	return ('a' <= ch && ch <= 'z') ||
-	       ('A' <= ch && ch <= 'Z') ||
-	       ('0' <= ch && ch <= '9') ||
-	       ch == '_' ||
-	       ch == '/'
+	return(
+		('a' <= ch && ch <= 'z') ||
+		('A' <= ch && ch <= 'Z') ||
+		('0' <= ch && ch <= '9') ||
+		ch == '_' ||
+		ch == '/' \
+	)
 }
 
 completion_line_indent :: proc(source: string, offset: int, allocator: mem.Allocator) -> string {
@@ -363,7 +428,9 @@ completion_write_method_call_section :: proc(
 	return wrote
 }
 
-completion_parameter_section :: proc(param: ^semantic.Entity) -> semantic.Entity_Parameter_Section {
+completion_parameter_section :: proc(
+	param: ^semantic.Entity,
+) -> semantic.Entity_Parameter_Section {
 	assert(param != nil)
 	payload, ok := param.payload.(^semantic.Entity_Variable_Payload)
 	assert(ok && payload != nil)
