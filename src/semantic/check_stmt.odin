@@ -2136,7 +2136,8 @@ checker_check_data_cluster_parameters :: proc(
 	lhs := false,
 ) {
 	for param in parameters {
-		checker_check_expr(ctx, param.value, .Value, lhs)
+		value := checker_check_expr(ctx, param.value, .Value, lhs)
+		checker_check_unresolved_variable_operand(ctx, param.value, value)
 	}
 }
 
@@ -2144,7 +2145,10 @@ checker_check_data_cluster_medium :: proc(ctx: ^Checker_Context, medium: ast.Dat
 	checker_check_expr(ctx, medium.object)
 	checker_check_expr(ctx, medium.work_area)
 	checker_check_expr(ctx, medium.client)
-	checker_check_expr(ctx, medium.id)
+	id := checker_check_expr(ctx, medium.id)
+	if medium.kind == .Memory_ID {
+		checker_check_unresolved_variable_operand(ctx, medium.id, id)
+	}
 }
 
 checker_check_assign_field_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Assign_Field_Stmt) {

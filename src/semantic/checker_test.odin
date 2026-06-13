@@ -2957,6 +2957,77 @@ WRITE lv_count TO lv_target.`
 }
 
 @(test)
+root_semantic_stmt_checker_resolves_data_cluster_memory_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_export TYPE string.
+DATA lv_import TYPE string.
+DATA lv_id TYPE c LENGTH 10.
+EXPORT cluster_name = lv_export TO MEMORY ID lv_id.
+IMPORT cluster_name = lv_import FROM MEMORY ID lv_id.
+EXPORT cluster_name FROM lv_export TO MEMORY ID 'ID'.
+IMPORT cluster_name TO lv_import FROM MEMORY ID 'ID'.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_data_cluster_memory.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lv_export := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_export", .Variable)
+	lv_import := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_import", .Variable)
+	lv_id := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_id", .Variable)
+	testing.expect(t, lv_export != nil && .Used in lv_export.flags)
+	testing.expect(t, lv_import != nil && .Used in lv_import.flags)
+	testing.expect(t, lv_id != nil && .Used in lv_id.flags)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "cluster_name"), 0)
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_data_cluster_memory_operands :: proc(t: ^testing.T) {
+	source := `EXPORT cluster_name = lv_missing TO MEMORY ID lv_missing_id.
+IMPORT cluster_name = lv_target FROM MEMORY ID lv_missing_id.
+EXPORT cluster_name = lv_other TO MEMORY ID 'ID'.
+IMPORT cluster_name = lv_other_target FROM MEMORY ID 'ID'.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_data_cluster_memory_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 6)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "cluster_name"), 0)
+	seen_missing := false
+	seen_target := false
+	seen_other := false
+	seen_other_target := false
+	seen_missing_id := 0
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Reference {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		testing.expect_value(t, diagnostic.message, checker_unresolved_variable_message(text))
+		if text == "lv_missing" {
+			seen_missing = true
+		} else if text == "lv_target" {
+			seen_target = true
+		} else if text == "lv_other" {
+			seen_other = true
+		} else if text == "lv_other_target" {
+			seen_other_target = true
+		} else if text == "lv_missing_id" {
+			seen_missing_id += 1
+		} else {
+			testing.expect(t, false)
+		}
+	}
+	testing.expect(t, seen_missing)
+	testing.expect(t, seen_target)
+	testing.expect(t, seen_other)
+	testing.expect(t, seen_other_target)
+	testing.expect_value(t, seen_missing_id, 2)
+}
+
+@(test)
 root_semantic_sql_checker_reports_local_source_and_field_diagnostics :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF zflight,
          carrid TYPE string,
