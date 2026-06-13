@@ -611,7 +611,7 @@ Constructor_Else_Clause_Expr :: struct {
 	result:     ^Expr,
 }
 
-// ABAP syntax: `FOR name IN source [WHERE (...)] ...` or `FOR name = init THEN next UNTIL|WHILE condition ...`.
+// ABAP syntax: `FOR name IN source [WHERE (...)] ...` or `FOR name = init [THEN next] UNTIL|WHILE condition ...`.
 Constructor_For_Clause_Expr :: struct {
 	using node:   Expr,
 	kind:         Constructor_For_Kind,

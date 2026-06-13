@@ -2988,7 +2988,8 @@ ENDCASE.
 
 lt_filtered = FILTER #( lt_rows WHERE id = lv_id ).
 lv_sum = REDUCE i( INIT total = 0 FOR row IN lt_rows WHERE ( id = lv_id ) NEXT total = total + row-id ).
-lv_sum = REDUCE i( INIT total = 0 FOR idx = 1 THEN idx + 1 UNTIL idx > 3 NEXT total = total + idx ).`
+lv_sum = REDUCE i( INIT total = 0 FOR idx = 1 THEN idx + 1 UNTIL idx > 3 NEXT total = total + idx ).
+lv_sum = REDUCE i( INIT total = 0 FOR idx = 1 UNTIL idx > 3 NEXT total = total + idx ).`
 
 	project := project_make()
 	defer project_destroy(&project)
@@ -3019,15 +3020,14 @@ ENDCASE.
 lv_result = FILTER i( lv_scalar ).
 lv_result = REDUCE i( FOR x IN lv_scalar NEXT total = total + x ).
 lv_result = REDUCE i( INIT total = 0 NEXT total = total + 1 ).
-lv_result = VALUE i( FOR x IN lv_scalar ( x ) ).
-lv_result = VALUE i( FOR x = 1 UNTIL x > 3 ( x ) ).`
+lv_result = VALUE i( FOR x IN lv_scalar ( x ) ).`
 
 	project := project_make()
 	defer project_destroy(&project)
 
 	checker, _ := checker_test_check_source(t, &project, source, "mem://constructor_forms_invalid.abap")
 
-	testing.expect(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form) >= 10)
+	testing.expect(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form) >= 9)
 	testing.expect_value(
 		t,
 		checker_test_diagnostic_message_count(
@@ -3106,15 +3106,6 @@ lv_result = VALUE i( FOR x = 1 UNTIL x > 3 ( x ) ).`
 			&checker,
 			.Invalid_Syntax_Form,
 			"REDUCE requires a FOR clause",
-		),
-		1,
-	)
-	testing.expect_value(
-		t,
-		checker_test_diagnostic_message_count(
-			&checker,
-			.Invalid_Syntax_Form,
-			"FOR THEN requires a next value",
 		),
 		1,
 	)

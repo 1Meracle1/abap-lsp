@@ -1228,14 +1228,7 @@ checker_check_constructor_for_then_clause :: proc(
 	if expr.variable.text != "" {
 		checker_collect_inferred_expr_decl(ctx, expr.variable.text, .Variable, expr.variable.range, node, iter_type)
 	}
-	if expr.then_expr == nil {
-		checker_add_diagnostic(
-			ctx,
-			.Invalid_Syntax_Form,
-			expr.range,
-			"FOR THEN requires a next value",
-		)
-	} else {
+	if expr.then_expr != nil {
 		then_ctx := ctx^
 		then_ctx.type_hint = iter_type
 		then_ctx.type_hint_expr = expr.then_expr

@@ -385,6 +385,33 @@ reduce_constructor_builds_init_for_and_next_clauses :: proc(t: ^testing.T) {
 }
 
 @(test)
+reduce_constructor_allows_for_until_without_then :: proc(t: ^testing.T) {
+	source := "DATA(lv_res1) = REDUCE string( INIT text = `Count up:`\n" +
+	          "                               FOR n = 1 UNTIL n > 10\n" +
+	          "                               NEXT text = text && | { n }| )."
+	parsed := parse(source, "reduce_for_until.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Inline_Decl)
+	constructor := decl.expr.derived_expr.(^ast.Constructor_Expr)
+	for_clause := constructor.args[1].derived_expr.(^ast.Constructor_For_Clause_Expr)
+
+	testing.expect_value(t, for_clause.kind, ast.Constructor_For_Kind.For_Then_Until)
+	testing.expect(t, for_clause.then_expr == nil)
+	testing.expect_value(t, len(for_clause.body), 1)
+	_, next_ok := for_clause.body[0].derived_expr.(^ast.Constructor_Next_Clause_Expr)
+	testing.expect(t, next_ok)
+
+	counts := count_nodes(parsed.root)
+	testing.expect_value(t, counts.constructor_init, 1)
+	testing.expect_value(t, counts.constructor_for, 1)
+	testing.expect_value(t, counts.constructor_next, 1)
+	testing.expect_value(t, counts.constructor_named, 2)
+	testing.expect_value(t, counts.template, 1)
+	testing.expect_value(t, counts.interpolation, 1)
+}
+
+@(test)
 filter_constructor_accepts_using_key_before_where :: proc(t: ^testing.T) {
 	source := `DATA(lt_filtered) = FILTER #( lt_rows USING KEY primary_key WHERE id = lv_id ).`
 	parsed := parse(source, "filter_using_key.abap", context.allocator)
