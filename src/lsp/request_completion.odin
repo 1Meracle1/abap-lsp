@@ -191,6 +191,7 @@ completion_items_for_snapshot :: proc(
 			out[template_index:template_index + common_statement_template_count],
 			template_prefix,
 			template_replace_range,
+			indent,
 			snippets_supported,
 			allocator,
 		)
@@ -447,6 +448,60 @@ EXPRESSION_TEMPLATES :: [?]Completion_Statement_Template {
 }
 
 COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
+	{
+		keyword = "TYPES",
+		label = "TYPES: BEGIN OF ... END OF",
+		snippet = "TYPES: BEGIN OF ${1:ty_line},\n         ${2:field} TYPE ${3:string},\n       END OF ${1:ty_line}.$0",
+		plain = "TYPES: BEGIN OF ty_line,\n         field TYPE string,\n       END OF ty_line.",
+	},
+	{
+		keyword = "DATA",
+		label = "DATA: BEGIN OF ... END OF",
+		snippet = "DATA: BEGIN OF ${1:ls_row},\n        ${2:field} TYPE ${3:string},\n      END OF ${1:ls_row}.$0",
+		plain = "DATA: BEGIN OF ls_row,\n        field TYPE string,\n      END OF ls_row.",
+	},
+	{
+		keyword = "DATA",
+		label = "DATA: BEGIN OF COMMON PART ... END OF COMMON PART",
+		snippet = "DATA: BEGIN OF COMMON PART ${1:common_part}.\nDATA: END OF COMMON PART.$0",
+		plain = "DATA: BEGIN OF COMMON PART common_part.\nDATA: END OF COMMON PART.",
+	},
+	{
+		keyword = "CONSTANTS",
+		label = "CONSTANTS: BEGIN OF ... END OF",
+		snippet = "CONSTANTS: BEGIN OF ${1:c_values},\n             ${2:name} TYPE ${3:string} VALUE ${4:''},\n           END OF ${1:c_values}.$0",
+		plain = "CONSTANTS: BEGIN OF c_values,\n             name TYPE string VALUE '',\n           END OF c_values.",
+	},
+	{
+		keyword = "STATICS",
+		label = "STATICS: BEGIN OF ... END OF",
+		snippet = "STATICS: BEGIN OF ${1:s_state},\n           ${2:field} TYPE ${3:string},\n         END OF ${1:s_state}.$0",
+		plain = "STATICS: BEGIN OF s_state,\n           field TYPE string,\n         END OF s_state.",
+	},
+	{
+		keyword = "CLASS-DATA",
+		label = "CLASS-DATA: BEGIN OF ... END OF",
+		snippet = "CLASS-DATA: BEGIN OF ${1:gs_row},\n              ${2:field} TYPE ${3:string},\n            END OF ${1:gs_row}.$0",
+		plain = "CLASS-DATA: BEGIN OF gs_row,\n              field TYPE string,\n            END OF gs_row.",
+	},
+	{
+		keyword = "SELECTION-SCREEN",
+		label = "SELECTION-SCREEN BEGIN OF SCREEN ... END OF SCREEN",
+		snippet = "SELECTION-SCREEN BEGIN OF SCREEN ${1:1000} TITLE ${2:sy-title}.\n  $0\nSELECTION-SCREEN END OF SCREEN ${1:1000}.",
+		plain = "SELECTION-SCREEN BEGIN OF SCREEN 1000 TITLE sy-title.\n  \nSELECTION-SCREEN END OF SCREEN 1000.",
+	},
+	{
+		keyword = "SELECTION-SCREEN",
+		label = "SELECTION-SCREEN BEGIN OF BLOCK ... END OF BLOCK",
+		snippet = "SELECTION-SCREEN BEGIN OF BLOCK ${1:b1} WITH FRAME TITLE ${2:text-001}.\n  $0\nSELECTION-SCREEN END OF BLOCK ${1:b1}.",
+		plain = "SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.\n  \nSELECTION-SCREEN END OF BLOCK b1.",
+	},
+	{
+		keyword = "SELECTION-SCREEN",
+		label = "SELECTION-SCREEN BEGIN OF LINE ... END OF LINE",
+		snippet = "SELECTION-SCREEN BEGIN OF LINE.\n  $0\nSELECTION-SCREEN END OF LINE.",
+		plain = "SELECTION-SCREEN BEGIN OF LINE.\n  \nSELECTION-SCREEN END OF LINE.",
+	},
 	{
 		keyword = "MESSAGE",
 		label = "MESSAGE ... TYPE",
@@ -748,6 +803,7 @@ completion_append_expression_templates :: proc(
 		out[index] = completion_statement_template_item(
 			template,
 			replace_range,
+			"",
 			snippets_supported,
 			allocator,
 		)
@@ -777,6 +833,7 @@ completion_append_common_statement_templates :: proc(
 	out: []Completion_Item,
 	prefix: string,
 	replace_range: Range,
+	indent: string,
 	snippets_supported: bool,
 	allocator: mem.Allocator,
 ) {
@@ -789,6 +846,7 @@ completion_append_common_statement_templates :: proc(
 		out[index] = completion_statement_template_item(
 			template,
 			replace_range,
+			indent,
 			snippets_supported,
 			allocator,
 		)
@@ -800,10 +858,16 @@ completion_append_common_statement_templates :: proc(
 completion_statement_template_item :: proc(
 	template: Completion_Statement_Template,
 	replace_range: Range,
+	indent: string,
 	snippets_supported: bool,
 	allocator: mem.Allocator,
 ) -> Completion_Item {
-	insert_text := strings.clone(template.snippet if snippets_supported else template.plain, allocator)
+	insert_text := completion_statement_template_insert_text(
+		template,
+		indent,
+		snippets_supported,
+		allocator,
+	)
 	return Completion_Item {
 		label = template.label,
 		kind = COMPLETION_SNIPPET,
@@ -812,6 +876,26 @@ completion_statement_template_item :: proc(
 		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
 		text_edit = Text_Edit{range = replace_range, new_text = insert_text},
 	}
+}
+
+completion_statement_template_insert_text :: proc(
+	template: Completion_Statement_Template,
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> string {
+	text := template.snippet if snippets_supported else template.plain
+	if indent == "" || !strings.contains(text, "\n") {
+		return strings.clone(text, allocator)
+	}
+	out := strings.builder_make(allocator)
+	for i in 0 ..< len(text) {
+		strings.write_byte(&out, text[i])
+		if text[i] == '\n' {
+			strings.write_string(&out, indent)
+		}
+	}
+	return strings.to_string(out)
 }
 
 completion_keyword_prefix_matches :: proc(prefix, keyword: string) -> bool {

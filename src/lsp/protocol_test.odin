@@ -1095,6 +1095,100 @@ lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t
 }
 
 @(test)
+lsp_completion_begin_end_statement_templates_expand_from_keyword_prefixes :: proc(t: ^testing.T) {
+	cases := [?]Completion_Template_Prefix_Test_Case {
+		{
+			prefix = "ty",
+			label = "TYPES: BEGIN OF ... END OF",
+			insert_text = "TYPES: BEGIN OF ${1:ty_line},\n           ${2:field} TYPE ${3:string},\n         END OF ${1:ty_line}.$0",
+		},
+		{
+			prefix = "da",
+			label = "DATA: BEGIN OF ... END OF",
+			insert_text = "DATA: BEGIN OF ${1:ls_row},\n          ${2:field} TYPE ${3:string},\n        END OF ${1:ls_row}.$0",
+		},
+		{
+			prefix = "da",
+			label = "DATA: BEGIN OF COMMON PART ... END OF COMMON PART",
+			insert_text = "DATA: BEGIN OF COMMON PART ${1:common_part}.\n  DATA: END OF COMMON PART.$0",
+		},
+		{
+			prefix = "const",
+			label = "CONSTANTS: BEGIN OF ... END OF",
+			insert_text = "CONSTANTS: BEGIN OF ${1:c_values},\n               ${2:name} TYPE ${3:string} VALUE ${4:''},\n             END OF ${1:c_values}.$0",
+		},
+		{
+			prefix = "sta",
+			label = "STATICS: BEGIN OF ... END OF",
+			insert_text = "STATICS: BEGIN OF ${1:s_state},\n             ${2:field} TYPE ${3:string},\n           END OF ${1:s_state}.$0",
+		},
+		{
+			prefix = "class-da",
+			label = "CLASS-DATA: BEGIN OF ... END OF",
+			insert_text = "CLASS-DATA: BEGIN OF ${1:gs_row},\n                ${2:field} TYPE ${3:string},\n              END OF ${1:gs_row}.$0",
+		},
+		{
+			prefix = "se",
+			label = "SELECTION-SCREEN BEGIN OF SCREEN ... END OF SCREEN",
+			insert_text = "SELECTION-SCREEN BEGIN OF SCREEN ${1:1000} TITLE ${2:sy-title}.\n    $0\n  SELECTION-SCREEN END OF SCREEN ${1:1000}.",
+		},
+		{
+			prefix = "se",
+			label = "SELECTION-SCREEN BEGIN OF BLOCK ... END OF BLOCK",
+			insert_text = "SELECTION-SCREEN BEGIN OF BLOCK ${1:b1} WITH FRAME TITLE ${2:text-001}.\n    $0\n  SELECTION-SCREEN END OF BLOCK ${1:b1}.",
+		},
+		{
+			prefix = "se",
+			label = "SELECTION-SCREEN BEGIN OF LINE ... END OF LINE",
+			insert_text = "SELECTION-SCREEN BEGIN OF LINE.\n    $0\n  SELECTION-SCREEN END OF LINE.",
+		},
+	}
+
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_begin_end_template_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		source := strings.concatenate({"REPORT zmain.\n  ", test_case.prefix}, context.temp_allocator)
+		state := lsp_test_state_with_open_document(uri, source)
+		defer lsp_test_state_destroy(&state)
+
+		offset := len(source)
+		params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		item, item_ok := lsp_test_find_completion_item(items, test_case.label)
+		testing.expect(t, item_ok)
+		if !item_ok {
+			continue
+		}
+
+		testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+		testing.expect_value(
+			t,
+			item.sort_text,
+			completion_sort_text("2", test_case.label, context.temp_allocator),
+		)
+		testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		testing.expect_value(t, item.insert_text, test_case.insert_text)
+		edit, edit_ok := item.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			testing.expect_value(t, edit.new_text, item.insert_text)
+			testing.expect_value(t, edit.range.start.line, 1)
+			testing.expect_value(t, edit.range.start.character, 2)
+			testing.expect_value(t, edit.range.end.line, 1)
+			testing.expect_value(t, edit.range.end.character, 2 + len(test_case.prefix))
+		}
+	}
+}
+
+@(test)
 lsp_completion_delete_update_statement_templates_expand_from_keyword_prefixes :: proc(
 	t: ^testing.T,
 ) {
@@ -1313,6 +1407,38 @@ lsp_completion_common_statement_template_falls_back_to_plain_text_without_snippe
 
 	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
 	testing.expect_value(t, item.insert_text, "APPEND VALUE #( ) TO itab.")
+}
+
+@(test)
+lsp_completion_begin_end_statement_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_begin_end_template_plain.abap"
+	source := "REPORT zmain.\n  ty"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "TYPES: BEGIN OF ... END OF")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		"TYPES: BEGIN OF ty_line,\n           field TYPE string,\n         END OF ty_line.",
+	)
 }
 
 @(test)
@@ -1972,6 +2098,27 @@ lsp_completion_common_statement_templates_sort_after_matching_symbols :: proc(t:
 			symbol_sort = "1:update_candidate",
 			template_sort = "2:update ... set ... where",
 		},
+		{
+			source = "DATA types_candidate TYPE i.\nty",
+			symbol_label = "types_candidate",
+			template_label = "TYPES: BEGIN OF ... END OF",
+			symbol_sort = "1:types_candidate",
+			template_sort = "2:types: begin of ... end of",
+		},
+		{
+			source = "DATA data_candidate TYPE i.\nda",
+			symbol_label = "data_candidate",
+			template_label = "DATA: BEGIN OF ... END OF",
+			symbol_sort = "1:data_candidate",
+			template_sort = "2:data: begin of ... end of",
+		},
+		{
+			source = "DATA selection_candidate TYPE i.\nse",
+			symbol_label = "selection_candidate",
+			template_label = "SELECTION-SCREEN BEGIN OF BLOCK ... END OF BLOCK",
+			symbol_sort = "1:selection_candidate",
+			template_sort = "2:selection-screen begin of block ... end of block",
+		},
 	}
 
 	for test_case, i in cases {
@@ -2191,6 +2338,33 @@ WRITE me`
 	_, item_ok := lsp_test_find_completion_item(items, "MESSAGE ... TYPE")
 
 	testing.expect(t, !item_ok)
+}
+
+@(test)
+lsp_completion_begin_end_statement_templates_do_not_match_expression_prefixes :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_begin_end_template_expression.abap"
+	source := `DATA data_value TYPE i.
+WRITE da`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, data_ok := lsp_test_find_completion_item(items, "DATA: BEGIN OF ... END OF")
+	_, common_part_ok := lsp_test_find_completion_item(
+		items,
+		"DATA: BEGIN OF COMMON PART ... END OF COMMON PART",
+	)
+
+	testing.expect(t, !data_ok)
+	testing.expect(t, !common_part_ok)
 }
 
 @(test)
