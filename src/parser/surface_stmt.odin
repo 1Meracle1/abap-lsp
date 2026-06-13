@@ -3116,8 +3116,12 @@ parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Sort_Stmt, start.range, p.allocator)
 	stmt.fields = make([dynamic]ast.Sort_Field_Clause, 0, 2, p.allocator)
 	stmt.stable = allow_keyword(p, "STABLE")
-	stmt.target = data_expr(p, body_start, []string{"BY", "AS", "ASCENDING", "DESCENDING"})
+	stmt.target = data_expr(p, body_start, []string{"STABLE", "BY", "AS", "ASCENDING", "DESCENDING"})
 	for !data_stmt_done(p, body_start) {
+		if allow_keyword(p, "STABLE") {
+			stmt.stable = true
+			continue
+		}
 		if allow_keyword(p, "AS") {
 			stmt.as_text = allow_keyword(p, "TEXT")
 			continue

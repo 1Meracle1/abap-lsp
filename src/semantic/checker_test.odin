@@ -2212,6 +2212,47 @@ APPEND lv_text TO lt_missing.`
 }
 
 @(test)
+root_semantic_stmt_checker_diagnoses_invalid_sort_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_not_table TYPE string.
+CONSTANTS gc_text TYPE string VALUE ''.
+SORT lv_not_table BY field.
+SORT gc_text BY field.
+SORT itab BY field DESCENDING.
+SORT itab BY field.
+SORT itab STABLE BY field.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_sort_invalid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Sort_Operand), 2)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 3)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "field"), 0)
+
+	seen_not_table := false
+	seen_not_writable := false
+	seen_unresolved := 0
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Invalid_Sort_Operand && text == "lv_not_table" {
+			seen_not_table = true
+			testing.expect_value(t, diagnostic.message, "SORT target is not an internal table")
+		} else if diagnostic.kind == .Invalid_Sort_Operand && text == "gc_text" {
+			seen_not_writable = true
+			testing.expect_value(t, diagnostic.message, "SORT target is not writable")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "itab" {
+			seen_unresolved += 1
+			testing.expect_value(t, diagnostic.message, "unresolved variable itab")
+		}
+	}
+	testing.expect(t, seen_not_table)
+	testing.expect(t, seen_not_writable)
+	testing.expect_value(t, seen_unresolved, 3)
+}
+
+@(test)
 root_semantic_stmt_checker_resolves_concatenate_lines_of_operands :: proc(t: ^testing.T) {
 	source := `CLASS cl_abap_char_utilities DEFINITION.
   PUBLIC SECTION.
@@ -3352,6 +3393,36 @@ DELETE ADJACENT DUPLICATES FROM lt_rows COMPARING gone.`
 		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
 	}
 	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "lv_id"), 0)
+}
+
+@(test)
+root_semantic_sort_by_fields_validate_row_components :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE string,
+       END OF ty_row.
+DATA itab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+
+SORT itab BY field DESCENDING.
+SORT itab BY field.
+SORT itab STABLE BY field.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://sort_by_fields.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 3)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "field"), 0)
+	itab := checker_test_lookup(t, &project, file.root_scope, .Value, "itab", .Variable)
+	testing.expect(t, itab != nil && .Used in itab.flags)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unknown_Field {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "field")
+		testing.expect_value(t, diagnostic.message, "unknown internal table field field")
+	}
 }
 
 @(test)

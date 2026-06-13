@@ -212,6 +212,21 @@ sort_by_keeps_component_names :: proc(t: ^testing.T) {
 }
 
 @(test)
+sort_stable_after_target_keeps_clause :: proc(t: ^testing.T) {
+	source := `SORT itab STABLE BY field.`
+	parsed := parse(source, "sort_stable.abap", context.allocator)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Sort_Stmt)
+	target := stmt.target.derived_expr.(^ast.Ident_Expr)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect(t, stmt.stable)
+	testing.expect_value(t, target.name, "itab")
+	testing.expect_value(t, len(stmt.fields), 1)
+	testing.expect_value(t, stmt.fields[0].name.text, "field")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 sort_by_keeps_nested_component_exprs_and_modifiers :: proc(t: ^testing.T) {
 	source := `SORT rs_component-view_metadata BY definition-component_name ASCENDING definition-view_name ASCENDING.`
 	parsed := parse(source, "sort_nested_components.abap", context.allocator)

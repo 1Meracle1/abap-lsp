@@ -27,6 +27,7 @@ Checker_Diagnostic_Kind :: enum {
 	Invalid_Open_Sql_Into_Target,
 	Invalid_Loop_Source,
 	Invalid_Append_Operand,
+	Invalid_Sort_Operand,
 	Invalid_Concatenate_Operand,
 	Invalid_Split_Operand,
 	Unresolved_Include,

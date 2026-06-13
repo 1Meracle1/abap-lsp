@@ -3883,10 +3883,10 @@ emit_modify_stmt :: proc(p: ^Printer, stmt: ^Modify_Stmt) {
 
 emit_sort_stmt :: proc(p: ^Printer, stmt: ^Sort_Stmt) {
 	emit(p, "SORT ")
-	if stmt.stable {
-		emit(p, "STABLE ")
-	}
 	emit_node(p, stmt.target)
+	if stmt.stable {
+		emit(p, " STABLE")
+	}
 	if stmt.as_text {
 		emit(p, " AS TEXT")
 	}

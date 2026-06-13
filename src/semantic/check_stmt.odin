@@ -374,15 +374,7 @@ checker_check_stmt :: proc(
 	case ^ast.Modify_Stmt:
 		checker_check_modify_stmt(ctx, n)
 	case ^ast.Sort_Stmt:
-		target := checker_check_expr(ctx, n.target, .Value, true)
-		row_type := checker_type_row(ctx, target.type)
-		row_structure := checker_type_structure(row_type)
-		for field in n.fields {
-			if _, ok := checker_check_table_component_expr(ctx, field.expr, row_type, row_structure, false); ok {
-				continue
-			}
-			checker_check_expr(ctx, field.expr)
-		}
+		checker_check_sort_stmt(ctx, n)
 	case ^ast.Update_Stmt:
 		checker_check_update_stmt(ctx, n)
 	case ^ast.Delete_Stmt:
@@ -848,6 +840,51 @@ checker_check_append_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, targ
 			"APPEND target is not an internal table",
 		)
 	}
+}
+
+checker_check_sort_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Sort_Stmt) {
+	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	checker_check_sort_target(ctx, stmt.target, target)
+	row_type := checker_type_row(ctx, target.type)
+	row_structure := checker_type_structure(row_type)
+	for field in stmt.fields {
+		checker_check_sort_field(ctx, field, row_type, row_structure)
+	}
+}
+
+checker_check_sort_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Sort_Operand,
+			checker_expr_range(expr),
+			"SORT target is not writable",
+		)
+		return
+	}
+	if !checker_type_is_table_like(ctx, target.type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Sort_Operand,
+			checker_expr_range(expr),
+			"SORT target is not an internal table",
+		)
+	}
+}
+
+checker_check_sort_field :: proc(
+	ctx: ^Checker_Context,
+	field: ast.Sort_Field_Clause,
+	row_type: ^Type,
+	row_structure: ^Structure,
+) {
+	if _, ok := checker_check_table_component_expr(ctx, field.expr, row_type, row_structure, false); ok {
+		return
+	}
+	checker_check_expr(ctx, field.expr)
 }
 
 checker_check_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_Stmt) {
