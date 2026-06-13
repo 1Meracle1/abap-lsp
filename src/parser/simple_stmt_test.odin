@@ -769,6 +769,56 @@ set_field lv_a lv_b.`
 }
 
 @(test)
+describe_statements_keep_subjects_and_result_targets :: proc(t: ^testing.T) {
+	source := `DESCRIBE TABLE itab LINES lv_lines.
+DESCRIBE FIELD lv_value LENGTH lv_length IN CHARACTER MODE.
+DESCRIBE FIELD lv_value TYPE lv_type.
+DESCRIBE TABLE itab LINES DATA(lv_inline).`
+	parsed := parse(source, "describe_targets.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 4)
+
+	table_lines := parsed.root.stmts[0].derived_stmt.(^ast.Describe_Stmt)
+	testing.expect_value(t, len(table_lines.entries), 1)
+	table_lines_entry := table_lines.entries[0]
+	table_lines_source := table_lines_entry.source.derived_expr.(^ast.Ident_Expr)
+	table_lines_target := table_lines_entry.target.derived_expr.(^ast.Ident_Expr)
+	testing.expect(t, table_lines_entry.table)
+	testing.expect(t, !table_lines_entry.field)
+	testing.expect_value(t, table_lines_entry.target_kind, ast.Describe_Target_Kind.Lines)
+	testing.expect_value(t, table_lines_source.name, "itab")
+	testing.expect_value(t, table_lines_target.name, "lv_lines")
+
+	field_length := parsed.root.stmts[1].derived_stmt.(^ast.Describe_Stmt)
+	field_length_entry := field_length.entries[0]
+	field_length_source := field_length_entry.source.derived_expr.(^ast.Ident_Expr)
+	field_length_target := field_length_entry.target.derived_expr.(^ast.Ident_Expr)
+	testing.expect(t, !field_length_entry.table)
+	testing.expect(t, field_length_entry.field)
+	testing.expect_value(t, field_length_entry.target_kind, ast.Describe_Target_Kind.Length)
+	testing.expect_value(t, field_length_source.name, "lv_value")
+	testing.expect_value(t, field_length_target.name, "lv_length")
+
+	field_type := parsed.root.stmts[2].derived_stmt.(^ast.Describe_Stmt)
+	field_type_entry := field_type.entries[0]
+	field_type_source := field_type_entry.source.derived_expr.(^ast.Ident_Expr)
+	field_type_target := field_type_entry.target.derived_expr.(^ast.Ident_Expr)
+	testing.expect(t, !field_type_entry.table)
+	testing.expect(t, field_type_entry.field)
+	testing.expect_value(t, field_type_entry.target_kind, ast.Describe_Target_Kind.Type)
+	testing.expect_value(t, field_type_source.name, "lv_value")
+	testing.expect_value(t, field_type_target.name, "lv_type")
+
+	inline_lines := parsed.root.stmts[3].derived_stmt.(^ast.Describe_Stmt)
+	inline_lines_entry := inline_lines.entries[0]
+	inline_target := inline_lines_entry.target.derived_expr.(^ast.Data_Inline_Name_Expr)
+	testing.expect(t, inline_lines_entry.table)
+	testing.expect_value(t, inline_lines_entry.target_kind, ast.Describe_Target_Kind.Lines)
+	testing.expect_value(t, inline_target.name.text, "lv_inline")
+}
+
+@(test)
 macro_statements_keep_detailed_body_and_call_args :: proc(t: ^testing.T) {
 	source := `DEFINE set_field.
   &1 = &2.

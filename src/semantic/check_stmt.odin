@@ -228,10 +228,7 @@ checker_check_stmt :: proc(
 		checker_check_expr(ctx, n.condition)
 	case ^ast.Flow_Stmt, ^ast.Transaction_Stmt, ^ast.Macro_Def_Stmt, ^ast.Exec_Sql_Stmt, ^ast.Invalid_Stmt:
 	case ^ast.Describe_Stmt:
-		for entry in n.entries {
-			checker_check_expr(ctx, entry.source)
-			checker_check_expr(ctx, entry.target, .Value, true)
-		}
+		checker_check_describe_stmt(ctx, n)
 	case ^ast.Runtime_Stmt:
 		checker_check_runtime_stmt(ctx, n)
 	case ^ast.Set_Handler_Stmt:
@@ -396,6 +393,33 @@ checker_check_stmt :: proc(
 		checker_check_expr(ctx, n.line, .Value, true)
 		checker_check_expr(ctx, n.word, .Value, true)
 		checker_check_expr(ctx, n.offset, .Value, true)
+	}
+}
+
+checker_check_describe_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Describe_Stmt) {
+	for entry in stmt.entries {
+		source := checker_check_expr(ctx, entry.source)
+		checker_check_unresolved_variable_operand(ctx, entry.source, source)
+
+		target_ctx := ctx^
+		target_ctx.type_hint = checker_describe_target_type_hint(ctx, entry.target_kind)
+		target_ctx.type_hint_expr = entry.target
+		target := checker_check_expr(&target_ctx, entry.target, .Value, true)
+		checker_check_unresolved_variable_operand(ctx, entry.target, target)
+	}
+}
+
+checker_describe_target_type_hint :: proc(
+	ctx: ^Checker_Context,
+	kind: ast.Describe_Target_Kind,
+) -> ^Type {
+	#partial switch kind {
+	case .Lines, .Length:
+		return checker_builtin_type_from_name(ctx.checker, "i")
+	case .Type:
+		return checker_builtin_type_from_name(ctx.checker, "c")
+	case:
+		return nil
 	}
 }
 

@@ -2146,6 +2146,80 @@ lr_i = lr_data.`
 }
 
 @(test)
+root_semantic_stmt_checker_resolves_describe_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_value TYPE string.
+DATA lv_lines TYPE i.
+DATA lv_length TYPE i.
+DATA lv_type TYPE c.
+DATA itab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DESCRIBE TABLE itab LINES lv_lines.
+DESCRIBE FIELD lv_value LENGTH lv_length IN CHARACTER MODE.
+DESCRIBE FIELD lv_value TYPE lv_type.
+DESCRIBE TABLE itab LINES DATA(lv_inline).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_describe.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	itab := checker_test_lookup(t, &project, file.root_scope, .Value, "itab", .Variable)
+	lv_lines := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_lines", .Variable)
+	lv_length := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_length", .Variable)
+	lv_type := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_type", .Variable)
+	lv_value := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_value", .Variable)
+	lv_inline := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_inline", .Variable)
+	testing.expect(t, itab != nil && .Used in itab.flags)
+	testing.expect(t, lv_lines != nil && .Used in lv_lines.flags)
+	testing.expect(t, lv_length != nil && .Used in lv_length.flags)
+	testing.expect(t, lv_type != nil && .Used in lv_type.flags)
+	testing.expect(t, lv_value != nil && .Used in lv_value.flags)
+	testing.expect(t, lv_inline != nil && lv_inline.type != nil)
+	if lv_inline != nil && lv_inline.type != nil {
+		testing.expect_value(t, checker_test_type_name(&project, lv_inline.type), "i")
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_describe_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_value TYPE string.
+DESCRIBE TABLE itab LINES lv_lines.
+DESCRIBE FIELD lv_value LENGTH lv_length IN CHARACTER MODE.
+DESCRIBE FIELD lv_value TYPE lv_type.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_describe_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 4)
+	seen_itab := false
+	seen_lines := false
+	seen_length := false
+	seen_type := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Reference {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		testing.expect_value(t, diagnostic.message, checker_unresolved_variable_message(text))
+		if text == "itab" {
+			seen_itab = true
+		} else if text == "lv_lines" {
+			seen_lines = true
+		} else if text == "lv_length" {
+			seen_length = true
+		} else if text == "lv_type" {
+			seen_type = true
+		}
+	}
+	testing.expect(t, seen_itab)
+	testing.expect(t, seen_lines)
+	testing.expect(t, seen_length)
+	testing.expect(t, seen_type)
+}
+
+@(test)
 root_semantic_stmt_checker_resolves_append_operands :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_row,
          text TYPE string,

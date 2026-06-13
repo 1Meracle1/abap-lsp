@@ -1604,11 +1604,20 @@ Transaction_Stmt :: struct {
 	wait:       bool,
 }
 
-// ABAP syntax: one `DESCRIBE TABLE itab LINES target` entry.
+Describe_Target_Kind :: enum {
+	None,
+	Lines,
+	Length,
+	Type,
+}
+
+// ABAP syntax: one `DESCRIBE TABLE itab LINES target` or `DESCRIBE FIELD value TYPE target` entry.
 Describe_Entry_Clause :: struct {
-	source: ^Expr,
-	target: ^Expr,
-	table:  bool,
+	source:      ^Expr,
+	target:      ^Expr,
+	target_kind: Describe_Target_Kind,
+	table:       bool,
+	field:       bool,
 }
 
 // ABAP syntax: `DESCRIBE ... .`

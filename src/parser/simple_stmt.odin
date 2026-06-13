@@ -868,7 +868,13 @@ parse_transaction_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_describe_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "DESCRIBE")
 	body_start := p.index
-	table_lead := allow_keyword(p, "TABLE")
+	table_lead := false
+	field_lead := false
+	if allow_keyword(p, "TABLE") {
+		table_lead = true
+	} else if allow_keyword(p, "FIELD") {
+		field_lead = true
+	}
 	stmt := ast.new(ast.Describe_Stmt, start.range, p.allocator)
 	stmt.entries = make([dynamic]ast.Describe_Entry_Clause, 0, 2, p.allocator)
 	allow_token(p, .Colon)
@@ -876,10 +882,28 @@ parse_describe_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		if allow_token(p, .Comma) {
 			continue
 		}
-		entry := ast.Describe_Entry_Clause{table = table_lead || allow_keyword(p, "TABLE")}
-		entry.source = simple_expr(p, body_start, []string{"LINES", "TYPE", "LENGTH", "DECIMALS", "COMPONENTS", "KIND"})
+		entry := ast.Describe_Entry_Clause{table = table_lead, field = field_lead}
+		if !entry.table && !entry.field {
+			if allow_keyword(p, "TABLE") {
+				entry.table = true
+			} else if allow_keyword(p, "FIELD") {
+				entry.field = true
+			}
+		}
+		entry.source = simple_expr(
+			p,
+			body_start,
+			[]string{"LINES", "TYPE", "LENGTH", "DECIMALS", "COMPONENTS", "KIND"},
+		)
 		if allow_keyword(p, "LINES") {
+			entry.target_kind = .Lines
 			entry.target = simple_expr(p, body_start, []string{})
+		} else if allow_keyword(p, "LENGTH") {
+			entry.target_kind = .Length
+			entry.target = simple_expr(p, body_start, []string{"IN", "TYPE", "DECIMALS", "COMPONENTS", "KIND"})
+		} else if allow_keyword(p, "TYPE") {
+			entry.target_kind = .Type
+			entry.target = simple_expr(p, body_start, []string{"LENGTH", "DECIMALS", "COMPONENTS", "KIND"})
 		}
 		if entry.source != nil || entry.target != nil {
 			append(&stmt.entries, entry)

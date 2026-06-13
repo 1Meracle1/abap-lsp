@@ -2368,14 +2368,32 @@ emit_describe_stmt :: proc(p: ^Printer, stmt: ^Describe_Stmt) {
 		}
 		if entry.table {
 			emit(p, "TABLE ")
+		} else if entry.field {
+			emit(p, "FIELD ")
 		}
 		emit_node(p, entry.source)
 		if entry.target != nil {
-			emit(p, " LINES ")
+			emit(p, " ")
+			emit(p, describe_target_kind_text(entry.target_kind))
+			emit(p, " ")
 			emit_node(p, entry.target)
 		}
 	}
 	emit(p, ".")
+}
+
+describe_target_kind_text :: proc(kind: Describe_Target_Kind) -> string {
+	switch kind {
+	case .Lines:
+		return "LINES"
+	case .Length:
+		return "LENGTH"
+	case .Type:
+		return "TYPE"
+	case .None:
+		return "LINES"
+	}
+	return "LINES"
 }
 
 emit_runtime_stmt :: proc(p: ^Printer, stmt: ^Runtime_Stmt) {

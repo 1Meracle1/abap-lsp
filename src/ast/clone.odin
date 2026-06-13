@@ -1889,9 +1889,11 @@ clone_describe_entries :: proc(list: [dynamic]Describe_Entry_Clause, allocator: 
 	res := make([dynamic]Describe_Entry_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Describe_Entry_Clause {
-			source = clone(clause.source, allocator),
-			target = clone(clause.target, allocator),
-			table  = clause.table,
+			source      = clone(clause.source, allocator),
+			target      = clone(clause.target, allocator),
+			target_kind = clause.target_kind,
+			table       = clause.table,
+			field       = clause.field,
 		})
 	}
 	return res
