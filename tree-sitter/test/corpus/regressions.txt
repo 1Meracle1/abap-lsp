@@ -1568,3 +1568,24 @@ IMPORT name = value FROM MEMORY ID 'id'.
     (keyword)
     (keyword)
     (string)))
+
+==================
+Describe field character mode additions highlight as keywords
+==================
+
+DESCRIBE FIELD lv_value LENGTH lv_length IN CHARACTER MODE.
+
+---
+
+(source_file
+  (describe_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword)))

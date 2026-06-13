@@ -598,6 +598,7 @@ module.exports = grammar({
         $.event_block,
         $.macro_definition,
         $.call_statement,
+        $.describe_statement,
         $.delete_statement,
         $.update_statement,
         $.sort_statement,
@@ -1209,6 +1210,31 @@ module.exports = grammar({
       ),
 
     _call_parameter_value: ($) => $._sql_tail_token,
+
+    describe_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "DESCRIBE"),
+          keyword($, "FIELD"),
+          field("field", $._describe_field_operand),
+          keyword($, "LENGTH"),
+          field("length", $._describe_field_operand),
+          keyword($, "IN"),
+          keyword($, "CHARACTER"),
+          keyword($, "MODE"),
+          ".",
+        ),
+      ),
+
+    _describe_field_operand: ($) =>
+      choice(
+        $.static_type_path,
+        $.field_symbol_path,
+        $.field_path,
+        $.dynamic_name,
+        $.qualified_name,
+      ),
 
     select_statement: ($) =>
       prec(
