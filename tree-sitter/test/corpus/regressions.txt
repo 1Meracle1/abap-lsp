@@ -1589,3 +1589,168 @@ DESCRIBE FIELD lv_value LENGTH lv_length IN CHARACTER MODE.
     (keyword)
     (keyword)
     (keyword)))
+
+==================
+Reduce and filter constructor additions highlight as keywords
+==================
+
+REDUCE i( INIT result = 0 FOR row IN itab NEXT result = result + row-amount ).
+REDUCE i( INIT result = 0 FOR index = 1 THEN index + 1 UNTIL index > limit NEXT result = result + index ).
+FILTER #( itab EXCEPT WHERE field = lv_value ).
+FILTER #( itab USING KEY key_name WHERE field = lv_value ).
+DATA(lt_tbl) = FILTER #( itab WHERE field = lv_value ).
+DATA(lv_res1) = REDUCE string( INIT text = `Count up:`
+                               FOR n = 1 UNTIL n > 10
+                               NEXT text = text && | { n }| ).
+
+---
+
+(source_file
+  (unknown_statement
+    (constructor_expression
+      (keyword)
+      (qualified_name
+        (identifier))
+      (argument_list
+        (keyword)
+        (named_argument
+          (identifier)
+          (equals)
+          (number))
+        (keyword)
+        (binary_expression
+          (qualified_name
+            (identifier))
+          (keyword)
+          (qualified_name
+            (identifier)))
+        (keyword)
+        (named_argument
+          (identifier)
+          (equals)
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (field_path))))))
+  (unknown_statement
+    (constructor_expression
+      (keyword)
+      (qualified_name
+        (identifier))
+      (argument_list
+        (keyword)
+        (named_argument
+          (identifier)
+          (equals)
+          (number))
+        (keyword)
+        (named_argument
+          (identifier)
+          (equals)
+          (number))
+        (keyword)
+        (keyword)
+        (unary_expression
+          (number))
+        (keyword)
+        (keyword)
+        (operator)
+        (qualified_name
+          (identifier))
+        (keyword)
+        (named_argument
+          (identifier)
+          (equals)
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (qualified_name
+              (identifier)))))))
+  (unknown_statement
+    (constructor_expression
+      (keyword)
+      (argument_list
+        (qualified_name
+          (identifier))
+        (keyword)
+        (keyword)
+        (named_argument
+          (identifier)
+          (equals)
+          (qualified_name
+            (identifier))))))
+  (unknown_statement
+    (constructor_expression
+      (keyword)
+      (argument_list
+        (qualified_name
+          (identifier))
+        (keyword)
+        (keyword)
+        (qualified_name
+          (identifier))
+        (keyword)
+        (named_argument
+          (identifier)
+          (equals)
+          (qualified_name
+            (identifier))))))
+  (data_declaration
+    (keyword)
+    (binary_expression
+      (parenthesized_expression
+        (qualified_name
+          (identifier)))
+      (constructor_expression
+        (keyword)
+        (argument_list
+          (qualified_name
+            (identifier))
+          (keyword)
+          (named_argument
+            (identifier)
+            (equals)
+            (qualified_name
+              (identifier)))))))
+  (data_declaration
+    (keyword)
+    (binary_expression
+      (parenthesized_expression
+        (qualified_name
+          (identifier)))
+      (constructor_expression
+        (keyword)
+        (qualified_name
+          (identifier))
+        (argument_list
+          (keyword)
+          (named_argument
+            (identifier)
+            (equals)
+            (string))
+          (keyword)
+          (named_argument
+            (identifier)
+            (equals)
+            (number))
+          (keyword)
+          (binary_expression
+            (qualified_name
+              (identifier))
+            (number))
+          (keyword)
+          (named_argument
+            (identifier)
+            (equals)
+            (binary_expression
+              (qualified_name
+                (identifier))
+              (string_template
+                (template_start)
+                (template_text)
+                (template_interpolation
+                  (template_interpolation_start)
+                  (qualified_name
+                    (identifier))
+                  (template_interpolation_end))
+                (template_end)))))))))
