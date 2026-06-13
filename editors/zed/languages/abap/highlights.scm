@@ -22,6 +22,21 @@
 (dynamic_name) @variable
 (sql_wildcard_selector) @variable
 (identifier) @variable
+((sort_statement
+  (keyword)
+  .
+  (_)
+  .
+  (qualified_name (identifier) @keyword))
+  (#match? @keyword "(?i)^STABLE$")
+  (#set! priority 110))
+((sort_statement
+  (keyword) @keyword
+  .
+  (keyword) @variable)
+  (#match? @keyword "(?i)^BY$")
+  (#match? @variable "(?i)^FIELD$")
+  (#set! priority 110))
 ((_
   (keyword) @_type_keyword
   .
