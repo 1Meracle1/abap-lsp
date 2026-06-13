@@ -997,6 +997,16 @@ lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t
 			insert_text = "INSERT ${1:wa} INTO TABLE ${2:itab}.$0",
 		},
 		{
+			prefix = "del",
+			label = "DELETE ... INDEX",
+			insert_text = "DELETE ${1:itab} INDEX ${2:lv_index}.$0",
+		},
+		{
+			prefix = "up",
+			label = "UPDATE ... SET ... WHERE",
+			insert_text = "UPDATE ${1:dbtab} SET ${2:field} = @${3:lv_value} WHERE ${4:key_field} = @${5:lv_key}.$0",
+		},
+		{
 			prefix = "fi",
 			label = "FIELD-SYMBOLS ... TYPE",
 			insert_text = "FIELD-SYMBOLS <${1:fs}> TYPE ${2:any}.$0",
@@ -1080,6 +1090,102 @@ lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t
 				testing.expect(t, strings.contains(string(payload), `"textEdit"`))
 				testing.expect(t, strings.contains(string(payload), `"newText"`))
 			}
+		}
+	}
+}
+
+@(test)
+lsp_completion_delete_update_statement_templates_expand_from_keyword_prefixes :: proc(
+	t: ^testing.T,
+) {
+	cases := [?]Completion_Template_Prefix_Test_Case {
+		{
+			prefix = "de",
+			label = "DELETE ... INDEX",
+			insert_text = "DELETE ${1:itab} INDEX ${2:lv_index}.$0",
+		},
+		{
+			prefix = "de",
+			label = "DELETE ... WHERE",
+			insert_text = "DELETE ${1:itab} WHERE ${2:field} = ${3:lv_value}.$0",
+		},
+		{
+			prefix = "de",
+			label = "DELETE TABLE ... WITH TABLE KEY",
+			insert_text = "DELETE TABLE ${1:itab} WITH TABLE KEY ${2:field} = ${3:lv_value}.$0",
+		},
+		{
+			prefix = "de",
+			label = "DELETE ADJACENT DUPLICATES ... COMPARING",
+			insert_text = "DELETE ADJACENT DUPLICATES FROM ${1:itab} COMPARING ${2:field}.$0",
+		},
+		{
+			prefix = "de",
+			label = "DELETE FROM ... WHERE",
+			insert_text = "DELETE FROM ${1:dbtab} WHERE ${2:field} = @${3:lv_value}.$0",
+		},
+		{
+			prefix = "de",
+			label = "DELETE ... FROM TABLE",
+			insert_text = "DELETE ${1:dbtab} FROM TABLE ${2:itab}.$0",
+		},
+		{
+			prefix = "u",
+			label = "UPDATE ... SET ... WHERE",
+			insert_text = "UPDATE ${1:dbtab} SET ${2:field} = @${3:lv_value} WHERE ${4:key_field} = @${5:lv_key}.$0",
+		},
+		{
+			prefix = "u",
+			label = "UPDATE ... FROM",
+			insert_text = "UPDATE ${1:dbtab} FROM ${2:wa}.$0",
+		},
+		{
+			prefix = "u",
+			label = "UPDATE ... FROM TABLE",
+			insert_text = "UPDATE ${1:dbtab} FROM TABLE ${2:itab}.$0",
+		},
+	}
+
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_delete_update_template_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		source := strings.concatenate({"REPORT zmain.\nFORM run.\n  ", test_case.prefix}, context.temp_allocator)
+		state := lsp_test_state_with_open_document(uri, source)
+		defer lsp_test_state_destroy(&state)
+
+		offset := len(source)
+		params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		item, item_ok := lsp_test_find_completion_item(items, test_case.label)
+		testing.expect(t, item_ok)
+		if !item_ok {
+			continue
+		}
+
+		testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+		testing.expect_value(
+			t,
+			item.sort_text,
+			completion_sort_text("2", test_case.label, context.temp_allocator),
+		)
+		testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		testing.expect_value(t, item.insert_text, test_case.insert_text)
+		edit, edit_ok := item.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			testing.expect_value(t, edit.new_text, item.insert_text)
+			testing.expect_value(t, edit.range.start.line, 2)
+			testing.expect_value(t, edit.range.start.character, 2)
+			testing.expect_value(t, edit.range.end.line, 2)
+			testing.expect_value(t, edit.range.end.character, 2 + len(test_case.prefix))
 		}
 	}
 }
@@ -1844,32 +1950,59 @@ lsp_completion_case_and_expression_templates_sort_after_matching_symbols :: proc
 
 @(test)
 lsp_completion_common_statement_templates_sort_after_matching_symbols :: proc(t: ^testing.T) {
-	uri := "file:///D:/repo/completion_common_template_priority.abap"
-	source := `DATA message_candidate TYPE i.
-me`
-	state := lsp_test_state_with_open_document(uri, source)
-	defer lsp_test_state_destroy(&state)
-
-	offset := len(source)
-	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
-	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
-	testing.expect(t, snapshot_ok)
-	if !snapshot_ok {
-		return
+	cases := [?]Completion_Template_Priority_Test_Case {
+		{
+			source = "DATA message_candidate TYPE i.\nme",
+			symbol_label = "message_candidate",
+			template_label = "MESSAGE ... TYPE",
+			symbol_sort = "1:message_candidate",
+			template_sort = "2:message ... type",
+		},
+		{
+			source = "DATA delete_candidate TYPE i.\ndel",
+			symbol_label = "delete_candidate",
+			template_label = "DELETE ... INDEX",
+			symbol_sort = "1:delete_candidate",
+			template_sort = "2:delete ... index",
+		},
+		{
+			source = "DATA update_candidate TYPE i.\nup",
+			symbol_label = "update_candidate",
+			template_label = "UPDATE ... SET ... WHERE",
+			symbol_sort = "1:update_candidate",
+			template_sort = "2:update ... set ... where",
+		},
 	}
 
-	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
-	symbol_index := lsp_test_completion_item_index(items, "message_candidate")
-	template_index := lsp_test_completion_item_index(items, "MESSAGE ... TYPE")
-	testing.expect(t, symbol_index >= 0)
-	testing.expect(t, template_index >= 0)
-	if symbol_index < 0 || template_index < 0 {
-		return
-	}
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_common_template_priority_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		state := lsp_test_state_with_open_document(uri, test_case.source)
+		defer lsp_test_state_destroy(&state)
 
-	testing.expect(t, symbol_index < template_index)
-	testing.expect_value(t, items[symbol_index].sort_text, "1:message_candidate")
-	testing.expect_value(t, items[template_index].sort_text, "2:message ... type")
+		offset := len(test_case.source)
+		params := lsp_test_rename_position_params(uri, offset_to_position(test_case.source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		symbol_index := lsp_test_completion_item_index(items, test_case.symbol_label)
+		template_index := lsp_test_completion_item_index(items, test_case.template_label)
+		testing.expect(t, symbol_index >= 0)
+		testing.expect(t, template_index >= 0)
+		if symbol_index < 0 || template_index < 0 {
+			continue
+		}
+
+		testing.expect(t, symbol_index < template_index)
+		testing.expect_value(t, items[symbol_index].sort_text, test_case.symbol_sort)
+		testing.expect_value(t, items[template_index].sort_text, test_case.template_sort)
+	}
 }
 
 @(test)
