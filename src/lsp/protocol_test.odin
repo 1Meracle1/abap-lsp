@@ -881,37 +881,37 @@ lsp_completion_expression_templates_expand_from_keyword_prefixes :: proc(t: ^tes
 		{
 			prefix = "re",
 			label = "REDUCE ... FOR ... IN",
-			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:row} IN ${5:itab} NEXT ${2} = ${2} + ${4}-${6:amount} )$0",
+			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:row} IN ${5:itab} NEXT ${2:result} = ${2:result} + ${4:row}-${6:amount} )$0",
 		},
 		{
 			prefix = "re",
 			label = "REDUCE ... FOR ... THEN ... UNTIL",
-			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:index} = ${5:1} THEN ${4} + ${6:1} UNTIL ${4} > ${7:limit} NEXT ${2} = ${2} + ${4} )$0",
+			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:index} = ${5:1} THEN ${4:index} + ${6:1} UNTIL ${4:index} > ${7:limit} NEXT ${2:result} = ${2:result} + ${4:index} )$0",
 		},
 		{
 			prefix = "re",
 			label = "REDUCE ... FOR ... THEN ... WHILE",
-			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:index} = ${5:1} THEN ${4} + ${6:1} WHILE ${4} <= ${7:limit} NEXT ${2} = ${2} + ${4} )$0",
+			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:index} = ${5:1} THEN ${4:index} + ${6:1} WHILE ${4:index} <= ${7:limit} NEXT ${2:result} = ${2:result} + ${4:index} )$0",
 		},
 		{
 			prefix = "fo",
 			label = "FOR ... IN",
-			insert_text = "FOR ${1:row} IN ${2:itab} ( ${1} )$0",
+			insert_text = "FOR ${1:row} IN ${2:itab} ( ${1:row} )$0",
 		},
 		{
 			prefix = "fo",
 			label = "FOR ... IN ... WHERE",
-			insert_text = "FOR ${1:row} IN ${2:itab} WHERE ( ${3:field} = ${4:lv_value} ) ( ${1} )$0",
+			insert_text = "FOR ${1:row} IN ${2:itab} WHERE ( ${3:field} = ${4:lv_value} ) ( ${1:row} )$0",
 		},
 		{
 			prefix = "fo",
 			label = "FOR ... THEN ... UNTIL",
-			insert_text = "FOR ${1:index} = ${2:1} THEN ${1} + ${3:1} UNTIL ${1} > ${4:limit} ( ${1} )$0",
+			insert_text = "FOR ${1:index} = ${2:1} THEN ${1} + ${3:1} UNTIL ${1:index} > ${4:limit} ( ${1:index} )$0",
 		},
 		{
 			prefix = "fo",
 			label = "FOR ... THEN ... WHILE",
-			insert_text = "FOR ${1:index} = ${2:1} THEN ${1} + ${3:1} WHILE ${1} <= ${4:limit} ( ${1} )$0",
+			insert_text = "FOR ${1:index} = ${2:1} THEN ${1:index} + ${3:1} WHILE ${1:index} <= ${4:limit} ( ${1:index} )$0",
 		},
 	}
 

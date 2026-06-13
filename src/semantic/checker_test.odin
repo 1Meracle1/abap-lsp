@@ -86,6 +86,20 @@ checker_test_diagnostic_count :: proc(checker: ^Checker, kind: Checker_Diagnosti
 	return count
 }
 
+checker_test_diagnostic_message_count :: proc(
+	checker: ^Checker,
+	kind: Checker_Diagnostic_Kind,
+	message: string,
+) -> int {
+	count := 0
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == kind && diagnostic.message == message {
+			count += 1
+		}
+	}
+	return count
+}
+
 checker_test_unresolved_candidate_count :: proc(
 	checker: ^Checker,
 	project: ^Project,
@@ -2954,6 +2968,156 @@ WRITE lv_count TO lv_target.`
 	lv_target := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_target", .Variable)
 	testing.expect(t, lv_count != nil && .Used in lv_count.flags)
 	testing.expect(t, lv_target != nil && .Used in lv_target.flags)
+}
+
+@(test)
+root_semantic_checker_accepts_case_filter_reduce_and_constructor_for_forms :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE i,
+         text TYPE string,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_filtered TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lv_id TYPE i.
+DATA lv_sum TYPE i.
+
+CASE lv_id.
+  WHEN 1.
+  WHEN OTHERS.
+ENDCASE.
+
+lt_filtered = FILTER #( lt_rows WHERE id = lv_id ).
+lv_sum = REDUCE i( INIT total = 0 FOR row IN lt_rows WHERE ( id = lv_id ) NEXT total = total + row-id ).
+lv_sum = REDUCE i( INIT total = 0 FOR idx = 1 THEN idx + 1 UNTIL idx > 3 NEXT total = total + idx ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://constructor_forms_valid.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lt_rows := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_rows", .Variable)
+	lt_filtered := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_filtered", .Variable)
+	lv_id := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_id", .Variable)
+	lv_sum := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_sum", .Variable)
+	testing.expect(t, lt_rows != nil && .Used in lt_rows.flags)
+	testing.expect(t, lt_filtered != nil && .Used in lt_filtered.flags)
+	testing.expect(t, lv_id != nil && .Used in lv_id.flags)
+	testing.expect(t, lv_sum != nil && .Used in lv_sum.flags)
+}
+
+@(test)
+root_semantic_checker_diagnoses_case_filter_reduce_and_constructor_for_forms :: proc(t: ^testing.T) {
+	source := `DATA lv_scalar TYPE i.
+DATA lv_result TYPE i.
+
+CASE lv_scalar.
+  WHEN OTHERS.
+  WHEN 1.
+ENDCASE.
+
+lv_result = FILTER i( lv_scalar ).
+lv_result = REDUCE i( FOR x IN lv_scalar NEXT total = total + x ).
+lv_result = REDUCE i( INIT total = 0 NEXT total = total + 1 ).
+lv_result = VALUE i( FOR x IN lv_scalar ( x ) ).
+lv_result = VALUE i( FOR x = 1 UNTIL x > 3 ( x ) ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://constructor_forms_invalid.abap")
+
+	testing.expect(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form) >= 10)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"WHEN OTHERS must be the last CASE branch",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"FILTER result type is not an internal table",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"FILTER source is not an internal table",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"FILTER requires a WHERE clause",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"FOR IN source is not an internal table",
+		),
+		2,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"REDUCE requires an INIT clause",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"REDUCE NEXT assignment must target an INIT variable",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"REDUCE NEXT requires a preceding FOR clause",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"REDUCE requires a FOR clause",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"FOR THEN requires a next value",
+		),
+		1,
+	)
 }
 
 @(test)

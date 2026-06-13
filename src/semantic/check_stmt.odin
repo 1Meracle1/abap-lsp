@@ -313,12 +313,7 @@ checker_check_stmt :: proc(
 			checker_check_stmt_list(ctx, n.else_clause.body)
 		}
 	case ^ast.Case_Stmt:
-		checker_check_expr(ctx, n.expr)
-		for clause in n.whens {
-			checker_check_expr_list(ctx, clause.operands[:])
-			checker_check_stmt_list(ctx, clause.body)
-		}
-		checker_check_stmt_list(ctx, n.recovery)
+		checker_check_case_stmt(ctx, n)
 	case ^ast.While_Stmt:
 		checker_check_expr(ctx, n.condition)
 		checker_check_stmt_list(ctx, n.body)
@@ -557,6 +552,52 @@ checker_check_split_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, targe
 			"SPLIT INTO target is not writable",
 		)
 	}
+}
+
+checker_check_case_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Case_Stmt) {
+	checker_check_expr(ctx, stmt.expr)
+	if len(stmt.whens) == 0 {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			stmt.range,
+			"CASE requires at least one WHEN branch",
+		)
+	}
+	seen_others := false
+	for clause in stmt.whens {
+		if seen_others {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				clause.range,
+				"WHEN OTHERS must be the last CASE branch",
+			)
+		}
+		if clause.is_others {
+			seen_others = true
+			if len(clause.operands) > 0 {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					clause.range,
+					"WHEN OTHERS cannot have operands",
+				)
+			}
+		} else {
+			if len(clause.operands) == 0 {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					clause.range,
+					"WHEN requires at least one operand",
+				)
+			}
+			checker_check_expr_list(ctx, clause.operands[:])
+		}
+		checker_check_stmt_list(ctx, clause.body)
+	}
+	checker_check_stmt_list(ctx, stmt.recovery)
 }
 
 checker_check_unresolved_variable_operand :: proc(

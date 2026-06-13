@@ -13,6 +13,13 @@ Operand :: struct {
 	entity: ^Entity,
 }
 
+Checker_Reduce_Validation_State :: struct {
+	init_seen:  bool,
+	for_seen:   bool,
+	next_seen:  bool,
+	init_names: [dynamic]string_interner.String,
+}
+
 checker_check_expr :: proc(
 	ctx: ^Checker_Context,
 	expr: ^ast.Expr,
@@ -129,11 +136,7 @@ checker_check_expr :: proc(
 		}
 		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Constructor_Expr:
-		typ := checker_constructor_result_type(ctx, n)
-		for arg in n.args {
-			checker_check_expr(ctx, arg)
-		}
-		return checker_record_operand(ctx, node, .Value, typ, lhs = lhs)
+		return checker_check_constructor_expr(ctx, node, n, lhs)
 	case ^ast.Is_Predicate_Expr:
 		checker_check_expr(ctx, n.subject)
 		return checker_record_operand(ctx, node, .Value, checker_builtin_type_from_name(ctx.checker, "abap_bool"), lhs = lhs)
@@ -687,6 +690,403 @@ checker_check_raw_operand_ref :: proc(
 	return base
 }
 
+checker_check_constructor_expr :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Constructor_Expr,
+	lhs: bool,
+) -> Operand {
+	typ := checker_constructor_result_type(ctx, expr)
+	#partial switch expr.kind {
+	case .Filter:
+		checker_check_filter_constructor_expr(ctx, expr, typ)
+	case .Reduce:
+		checker_check_reduce_constructor_expr(ctx, expr)
+	case:
+		for arg in expr.args {
+			checker_check_expr(ctx, arg)
+		}
+	}
+	return checker_record_operand(ctx, node, .Value, typ, lhs = lhs)
+}
+
+checker_check_filter_constructor_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Constructor_Expr,
+	result_type: ^Type,
+) {
+	if !checker_type_is_unknown(result_type) && !checker_type_is_table_like(ctx, result_type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.type_ref.range if expr.type_ref != nil else expr.range,
+			"FILTER result type is not an internal table",
+		)
+	}
+
+	sources := make([dynamic]^ast.Expr, 0, 2, context.temp_allocator)
+	where_arg: ^ast.Expr
+	where_clause: ^ast.Constructor_Where_Clause_Expr
+	seen_where := false
+	for arg in expr.args {
+		if where_node, ok := arg.derived_expr.(^ast.Constructor_Where_Clause_Expr); ok {
+			if where_clause != nil {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"FILTER allows only one WHERE clause",
+				)
+				checker_check_expr(ctx, arg)
+				continue
+			}
+			where_arg = arg
+			where_clause = where_node
+			seen_where = true
+			continue
+		}
+		if seen_where {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				arg.range,
+				"FILTER source clauses must precede WHERE",
+			)
+		}
+		append(&sources, arg)
+	}
+
+	if len(sources) == 0 {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FILTER requires a source table",
+		)
+	}
+	if where_clause == nil {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FILTER requires a WHERE clause",
+		)
+	}
+
+	row_type := project_type_unknown(ctx.project)
+	row_structure: ^Structure
+	for source, i in sources {
+		operand := checker_check_expr(ctx, source)
+		if i > 1 {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				source.range,
+				"FILTER allows only a source table and optional IN table before WHERE",
+			)
+		}
+		if checker_check_unresolved_variable_operand(ctx, source, operand) || checker_type_is_unknown(operand.type) {
+			continue
+		}
+		if !checker_type_is_table_like(ctx, operand.type) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				source.range,
+				"FILTER source is not an internal table",
+			)
+			continue
+		}
+		if i == 0 {
+			row_type = checker_type_row(ctx, operand.type)
+			row_structure = checker_type_structure(row_type)
+		}
+	}
+
+	if where_clause != nil {
+		checker_check_internal_table_where_expr(ctx, where_clause.condition, row_type, row_structure)
+		checker_record_operand(ctx, &where_arg.expr_base, .No_Value, project_type_unknown(ctx.project))
+	}
+}
+
+checker_check_reduce_constructor_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Constructor_Expr,
+) {
+	checker_open_scope(ctx, .Constructor_For, expr.range)
+	defer checker_close_scope(ctx)
+
+	state := Checker_Reduce_Validation_State {
+		init_names = make([dynamic]string_interner.String, 0, 4, context.temp_allocator),
+	}
+	checker_check_reduce_sequence(ctx, expr.args[:], &state)
+	if !state.init_seen {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"REDUCE requires an INIT clause",
+		)
+	}
+	if !state.for_seen {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"REDUCE requires a FOR clause",
+		)
+	}
+	if !state.next_seen {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"REDUCE requires a NEXT clause",
+		)
+	}
+}
+
+checker_check_reduce_sequence :: proc(
+	ctx: ^Checker_Context,
+	args: []^ast.Expr,
+	state: ^Checker_Reduce_Validation_State,
+) {
+	for arg in args {
+		#partial switch n in arg.derived_expr {
+		case ^ast.Let_Expr:
+			if state.init_seen || state.for_seen || state.next_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"REDUCE LET must precede INIT, FOR, and NEXT",
+				)
+			}
+			checker_check_reduce_let_expr(ctx, &arg.expr_base, n, state)
+		case ^ast.Constructor_Init_Clause_Expr:
+			if state.init_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"REDUCE allows only one INIT clause",
+				)
+			}
+			if state.for_seen || state.next_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"REDUCE INIT must precede FOR and NEXT",
+				)
+			}
+			checker_check_reduce_init_clause_expr(ctx, &arg.expr_base, n, state)
+			state.init_seen = true
+		case ^ast.Constructor_For_Clause_Expr:
+			if !state.init_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"REDUCE FOR requires a preceding INIT clause",
+				)
+			}
+			if state.next_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"REDUCE FOR must precede NEXT",
+				)
+			}
+			state.for_seen = true
+			checker_check_constructor_for_clause_expr(ctx, &arg.expr_base, n, false, state)
+		case ^ast.Constructor_Next_Clause_Expr:
+			if !state.init_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"REDUCE NEXT requires a preceding INIT clause",
+				)
+			}
+			if !state.for_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"REDUCE NEXT requires a preceding FOR clause",
+				)
+			}
+			if state.next_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"REDUCE allows only one NEXT clause",
+				)
+			}
+			state.next_seen = true
+			checker_check_reduce_next_clause_expr(ctx, &arg.expr_base, n, state)
+		case:
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				arg.range,
+				"REDUCE allows only LET, INIT, FOR, and NEXT clauses",
+			)
+			checker_check_expr(ctx, arg)
+		}
+	}
+}
+
+checker_check_reduce_let_expr :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Let_Expr,
+	state: ^Checker_Reduce_Validation_State,
+) -> Operand {
+	checker_open_scope(ctx, .Constructor_For, expr.range)
+	defer checker_close_scope(ctx)
+
+	for binding in expr.bindings {
+		checker_check_expr(ctx, binding)
+	}
+	checker_check_reduce_sequence(ctx, expr.body[:], state)
+	return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project))
+}
+
+checker_check_reduce_init_clause_expr :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Constructor_Init_Clause_Expr,
+	state: ^Checker_Reduce_Validation_State,
+) -> Operand {
+	if len(expr.assignments) == 0 {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"REDUCE INIT requires at least one assignment",
+		)
+	}
+	for assignment in expr.assignments {
+		named, ok := assignment.derived_expr.(^ast.Constructor_Named_Assignment_Expr)
+		if !ok {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				assignment.range,
+				"REDUCE INIT accepts only named assignments",
+			)
+			checker_check_expr(ctx, assignment)
+			continue
+		}
+		value := checker_check_expr(ctx, named.value)
+		name := checker_intern_name(ctx.project, named.name.text)
+		if !string_interner.is_valid(name) {
+			checker_record_operand(ctx, &assignment.expr_base, .No_Value, value.type)
+			continue
+		}
+		if checker_reduce_state_has_init_name(state, name) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				named.name.range,
+				"REDUCE INIT assignment name is duplicated",
+			)
+		} else {
+			append(&state.init_names, name)
+			checker_collect_inferred_expr_decl(
+				ctx,
+				named.name.text,
+				.Variable,
+				named.name.range,
+				&assignment.expr_base,
+				value.type,
+			)
+		}
+		checker_record_operand(ctx, &assignment.expr_base, .No_Value, value.type)
+	}
+	return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project))
+}
+
+checker_check_reduce_next_clause_expr :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Constructor_Next_Clause_Expr,
+	state: ^Checker_Reduce_Validation_State,
+) -> Operand {
+	if len(expr.assignments) == 0 {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"REDUCE NEXT requires at least one assignment",
+		)
+	}
+	assigned := make([dynamic]string_interner.String, 0, len(expr.assignments), context.temp_allocator)
+	for assignment in expr.assignments {
+		named, ok := assignment.derived_expr.(^ast.Constructor_Named_Assignment_Expr)
+		if !ok {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				assignment.range,
+				"REDUCE NEXT accepts only named assignments",
+			)
+			checker_check_expr(ctx, assignment)
+			continue
+		}
+		name := checker_intern_name(ctx.project, named.name.text)
+		if string_interner.is_valid(name) && checker_reduce_name_list_contains(assigned[:], name) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				named.name.range,
+				"REDUCE NEXT assignment name is duplicated",
+			)
+		} else if string_interner.is_valid(name) {
+			append(&assigned, name)
+		}
+		target_type := project_type_unknown(ctx.project)
+		if !string_interner.is_valid(name) || !checker_reduce_state_has_init_name(state, name) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				named.name.range,
+				"REDUCE NEXT assignment must target an INIT variable",
+			)
+		} else if _, entity, found := checker_lookup_declaration(ctx, .Value, name); found {
+			checker_add_entity_use_precise(ctx, &assignment.expr_base, entity, named.name.range)
+			target_type = entity.type if entity.type != nil else project_type_unknown(ctx.project)
+		}
+		value_ctx := ctx^
+		value_ctx.type_hint = target_type
+		value_ctx.type_hint_expr = named.value
+		value := checker_check_expr(&value_ctx, named.value)
+		checker_check_assignment_compatibility(ctx, value.type, target_type, checker_expr_range(named.value))
+		checker_record_operand(ctx, &assignment.expr_base, .No_Value, value.type)
+	}
+	return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project))
+}
+
+checker_reduce_state_has_init_name :: proc(
+	state: ^Checker_Reduce_Validation_State,
+	name: string_interner.String,
+) -> bool {
+	return checker_reduce_name_list_contains(state.init_names[:], name)
+}
+
+checker_reduce_name_list_contains :: proc(names: []string_interner.String, name: string_interner.String) -> bool {
+	for existing in names {
+		if existing == name {
+			return true
+		}
+	}
+	return false
+}
+
 checker_check_let_expr :: proc(
 	ctx: ^Checker_Context,
 	node: ^ast.Node,
@@ -712,28 +1112,147 @@ checker_check_constructor_for_clause_expr :: proc(
 	node: ^ast.Node,
 	expr: ^ast.Constructor_For_Clause_Expr,
 	lhs: bool,
+	reduce_state: ^Checker_Reduce_Validation_State = nil,
 ) -> Operand {
 	checker_open_scope(ctx, .Constructor_For, expr.range)
 	defer checker_close_scope(ctx)
 
-	source := checker_check_expr(ctx, expr.source)
-	row_type := checker_type_row(ctx, source.type)
+	result_type := project_type_unknown(ctx.project)
+	switch expr.kind {
+	case .For_In:
+		result_type = checker_check_constructor_for_in_clause(ctx, node, expr)
+	case .For_Then_Until,
+	     .For_Then_While:
+		result_type = checker_check_constructor_for_then_clause(ctx, node, expr)
+	}
+	if reduce_state != nil {
+		checker_check_reduce_sequence(ctx, expr.body[:], reduce_state)
+	} else {
+		if len(expr.body) == 0 {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				expr.range,
+				"FOR clause requires a body expression",
+			)
+		}
+		for body in expr.body {
+			operand := checker_check_expr(ctx, body)
+			result_type = operand.type
+		}
+	}
+	return checker_record_operand(ctx, node, .No_Value, result_type, lhs = lhs)
+}
+
+checker_check_constructor_for_in_clause :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Constructor_For_Clause_Expr,
+) -> ^Type {
+	if expr.init != nil || expr.then_expr != nil || expr.condition != nil {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FOR IN cannot have THEN, UNTIL, or WHILE operands",
+		)
+	}
+	row_type := project_type_unknown(ctx.project)
+	row_structure: ^Structure
+	if expr.source == nil && expr.group_source.text == "" {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FOR IN requires a source table",
+		)
+	}
+	if expr.source != nil {
+		source := checker_check_expr(ctx, expr.source)
+		if !checker_check_unresolved_variable_operand(ctx, expr.source, source) && !checker_type_is_unknown(source.type) {
+			if checker_type_is_table_like(ctx, source.type) {
+				row_type = checker_type_row(ctx, source.type)
+				row_structure = checker_type_structure(row_type)
+			} else {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					expr.source.range,
+					"FOR IN source is not an internal table",
+				)
+			}
+		}
+	}
+	if expr.group_source.text != "" {
+		group := checker_check_ident_expr(ctx, node, expr.group_source.text, .Value, false, expr.group_source.range)
+		row_type = checker_type_row(ctx, group.type)
+		row_structure = checker_type_structure(row_type)
+	}
 	if expr.variable.text != "" {
 		checker_collect_inferred_expr_decl(ctx, expr.variable.text, .Variable, expr.variable.range, node, row_type)
 	}
-	if expr.group_source.text != "" {
-		checker_collect_inferred_expr_decl(ctx, expr.group_source.text, .Variable, expr.group_source.range, node, row_type)
+	if expr.where_clause != nil {
+		if where_node, ok := expr.where_clause.derived_expr.(^ast.Constructor_Where_Clause_Expr); ok {
+			checker_check_internal_table_where_expr(ctx, where_node.condition, row_type, row_structure)
+			checker_record_operand(ctx, &expr.where_clause.expr_base, .No_Value, project_type_unknown(ctx.project))
+		} else {
+			checker_check_expr(ctx, expr.where_clause)
+		}
 	}
-	checker_check_expr(ctx, expr.init)
-	checker_check_expr(ctx, expr.then_expr)
-	checker_check_expr(ctx, expr.condition)
-	checker_check_expr(ctx, expr.where_clause)
-	result_type := project_type_unknown(ctx.project)
-	for body in expr.body {
-		operand := checker_check_expr(ctx, body)
-		result_type = operand.type
+	return row_type
+}
+
+checker_check_constructor_for_then_clause :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Constructor_For_Clause_Expr,
+) -> ^Type {
+	if expr.source != nil || expr.group_source.text != "" || expr.where_clause != nil {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FOR THEN cannot have IN, GROUP, or WHERE operands",
+		)
 	}
-	return checker_record_operand(ctx, node, .No_Value, result_type, lhs = lhs)
+	if expr.init == nil {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FOR THEN requires an initial value",
+		)
+	}
+	init := checker_check_expr(ctx, expr.init)
+	iter_type := init.type
+	if expr.variable.text != "" {
+		checker_collect_inferred_expr_decl(ctx, expr.variable.text, .Variable, expr.variable.range, node, iter_type)
+	}
+	if expr.then_expr == nil {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FOR THEN requires a next value",
+		)
+	} else {
+		then_ctx := ctx^
+		then_ctx.type_hint = iter_type
+		then_ctx.type_hint_expr = expr.then_expr
+		next := checker_check_expr(&then_ctx, expr.then_expr)
+		checker_check_assignment_compatibility(ctx, next.type, iter_type, checker_expr_range(expr.then_expr))
+	}
+	if expr.condition == nil {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FOR THEN requires an UNTIL or WHILE condition",
+		)
+	} else {
+		checker_check_expr(ctx, expr.condition)
+	}
+	return iter_type
 }
 
 checker_collect_inferred_expr_decl :: proc(

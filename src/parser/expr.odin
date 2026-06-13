@@ -976,6 +976,9 @@ parse_filter_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) 
 			append_if_expr(out, parse_constructor_value_expr(p))
 		} else if allow_keyword(p, "IN") {
 			append_if_expr(out, parse_constructor_value_expr(p))
+		} else if allow_keyword(p, "USING") {
+			allow_keyword(p, "KEY")
+			_ = expect_token(p, .Ident)
 		} else if at_keyword(p, "WHERE") {
 			append_if_expr(out, parse_constructor_where_clause_expr(p))
 		} else {

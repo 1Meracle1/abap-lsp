@@ -385,6 +385,22 @@ reduce_constructor_builds_init_for_and_next_clauses :: proc(t: ^testing.T) {
 }
 
 @(test)
+filter_constructor_accepts_using_key_before_where :: proc(t: ^testing.T) {
+	source := `DATA(lt_filtered) = FILTER #( lt_rows USING KEY primary_key WHERE id = lv_id ).`
+	parsed := parse(source, "filter_using_key.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Inline_Decl)
+	constructor := decl.expr.derived_expr.(^ast.Constructor_Expr)
+	testing.expect_value(t, constructor.kind, ast.Constructor_Kind.Filter)
+	testing.expect_value(t, len(constructor.args), 2)
+	_, source_ok := constructor.args[0].derived_expr.(^ast.Ident_Expr)
+	_, where_ok := constructor.args[1].derived_expr.(^ast.Constructor_Where_Clause_Expr)
+	testing.expect(t, source_ok)
+	testing.expect(t, where_ok)
+}
+
+@(test)
 cond_constructor_builds_let_when_and_else_clauses :: proc(t: ^testing.T) {
 	source := `DATA(lv_text) = COND string( LET t = '120000' IN WHEN sy-timlo < t THEN |AM| ELSE |PM| ).`
 	parsed := parse(source, "cond.abap", context.allocator)
