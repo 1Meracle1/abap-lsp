@@ -1063,6 +1063,49 @@ ENDFORM.`
 }
 
 @(test)
+root_semantic_reports_mismatched_begin_and_end_structure_names :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_line,
+         field TYPE string,
+       END OF ty_lin.
+
+CONSTANTS: BEGIN OF c_values,
+            name TYPE string VALUE '',
+          END OF c_value.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://structure_end_names.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Mismatched_Structure_End), 2)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Mismatched_Structure_End,
+			"END OF ty_lin does not match BEGIN OF ty_line",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Mismatched_Structure_End,
+			"END OF c_value does not match BEGIN OF c_values",
+		),
+		1,
+	)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Mismatched_Structure_End {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		testing.expect(t, text == "ty_lin" || text == "c_value")
+	}
+}
+
+@(test)
 root_semantic_scope_lookup_prefers_local_then_imported_then_parent :: proc(t: ^testing.T) {
 	project := project_make()
 	defer project_destroy(&project)

@@ -31,6 +31,7 @@ Checker_Diagnostic_Kind :: enum {
 	Invalid_Concatenate_Operand,
 	Invalid_Split_Operand,
 	Invalid_Syntax_Form,
+	Mismatched_Structure_End,
 	Unresolved_Include,
 	Unresolved_Include_If_Found,
 	Include_Cycle,

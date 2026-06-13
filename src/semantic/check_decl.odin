@@ -735,9 +735,30 @@ checker_record_structure_end_name_use :: proc(
 		return
 	}
 	if checker_intern_name(ctx.project, name.text) != entity.name {
+		checker_add_diagnostic(
+			ctx,
+			.Mismatched_Structure_End,
+			name.range,
+			checker_structure_end_name_mismatch_message(ctx, name.text, entity.name),
+			entity,
+			entity.decl_info,
+		)
 		return
 	}
 	checker_add_entity_use_at_range(ctx, nil, entity, name.range)
+}
+
+checker_structure_end_name_mismatch_message :: proc(
+	ctx: ^Checker_Context,
+	end_name: string,
+	begin_name: string_interner.String,
+) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "END OF ")
+	strings.write_string(&builder, end_name)
+	strings.write_string(&builder, " does not match BEGIN OF ")
+	strings.write_string(&builder, string_interner.load(ctx.project.interner, begin_name))
+	return strings.to_string(builder)
 }
 
 checker_attach_structure_to_entity :: proc(
