@@ -52,6 +52,7 @@ completion_items_for_snapshot :: proc(
 	indent := completion_line_indent(snapshot.source, offset, context.temp_allocator)
 	template_replace_range := completion_template_replace_range(snapshot.source, offset)
 	if_template_count := completion_if_template_count(snapshot.source, offset, template_prefix)
+	case_template_count := completion_case_template_count(snapshot.source, offset, template_prefix)
 	class_template_count := completion_class_template_count(snapshot.source, offset, template_prefix)
 	try_template_count := completion_try_template_count(snapshot.source, offset, template_prefix)
 	loop_template_count := completion_loop_template_count(snapshot.source, offset, template_prefix)
@@ -68,15 +69,22 @@ completion_items_for_snapshot :: proc(
 		offset,
 		template_prefix,
 	)
+	expression_template_count := completion_expression_template_count(
+		snapshot.source,
+		offset,
+		template_prefix,
+	)
 	common_statement_template_count := completion_common_statement_template_count(
 		snapshot.source,
 		offset,
 		template_prefix,
 	)
-	template_count := if_template_count + class_template_count + loop_template_count +
-	                  select_template_count + get_time_stamp_template_count +
-	                  try_template_count + commit_template_count + continue_template_count +
-	                  read_table_template_count + common_statement_template_count
+	template_count := if_template_count + case_template_count + class_template_count +
+	                  loop_template_count + select_template_count +
+	                  get_time_stamp_template_count + try_template_count +
+	                  commit_template_count + continue_template_count +
+	                  read_table_template_count + expression_template_count +
+	                  common_statement_template_count
 	out := make([]Completion_Item, len(items) + template_count, allocator)
 	for item, i in items {
 		out[i] = completion_item_from_semantic_item(
@@ -96,6 +104,15 @@ completion_items_for_snapshot :: proc(
 			allocator,
 		)
 		template_index += if_template_count
+	}
+	if case_template_count > 0 {
+		out[template_index] = completion_case_template_item(
+			indent,
+			template_replace_range,
+			snippets_supported,
+			allocator,
+		)
+		template_index += case_template_count
 	}
 	if class_template_count > 0 {
 		completion_append_class_templates(
@@ -159,6 +176,16 @@ completion_items_for_snapshot :: proc(
 		)
 		template_index += get_time_stamp_template_count
 	}
+	if expression_template_count > 0 {
+		completion_append_expression_templates(
+			out[template_index:template_index + expression_template_count],
+			template_prefix,
+			template_replace_range,
+			snippets_supported,
+			allocator,
+		)
+		template_index += expression_template_count
+	}
 	if common_statement_template_count > 0 {
 		completion_append_common_statement_templates(
 			out[template_index:template_index + common_statement_template_count],
@@ -167,7 +194,9 @@ completion_items_for_snapshot :: proc(
 			snippets_supported,
 			allocator,
 		)
+		template_index += common_statement_template_count
 	}
+	assert(template_index == len(out))
 	return out
 }
 
@@ -223,6 +252,14 @@ completion_if_template_count :: proc(source: string, offset: int, prefix: string
 		return 0
 	}
 	return IF_TEMPLATE_COUNT
+}
+
+completion_case_template_count :: proc(source: string, offset: int, prefix: string) -> int {
+	if !completion_keyword_prefix_matches(prefix, "CASE") ||
+	   !completion_template_at_statement_start(source, offset) {
+		return 0
+	}
+	return 1
 }
 
 CLASS_TEMPLATE_COUNT :: 6
@@ -344,6 +381,69 @@ Completion_Statement_Template :: struct {
 	label:   string,
 	snippet: string,
 	plain:   string,
+}
+
+EXPRESSION_TEMPLATES :: [?]Completion_Statement_Template {
+	{
+		keyword = "FILTER",
+		label = "FILTER #( ... WHERE ... )",
+		snippet = "FILTER #( ${1:itab} WHERE ${2:field} = ${3:lv_value} )$0",
+		plain = "FILTER #( itab WHERE field = lv_value )",
+	},
+	{
+		keyword = "FILTER",
+		label = "FILTER #( ... USING KEY ... WHERE ... )",
+		snippet = "FILTER #( ${1:itab} USING KEY ${2:key_name} WHERE ${3:field} = ${4:lv_value} )$0",
+		plain = "FILTER #( itab USING KEY key_name WHERE field = lv_value )",
+	},
+	{
+		keyword = "FILTER",
+		label = "FILTER #( ... EXCEPT WHERE ... )",
+		snippet = "FILTER #( ${1:itab} EXCEPT WHERE ${2:field} = ${3:lv_value} )$0",
+		plain = "FILTER #( itab EXCEPT WHERE field = lv_value )",
+	},
+	{
+		keyword = "REDUCE",
+		label = "REDUCE ... FOR ... IN",
+		snippet = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:row} IN ${5:itab} NEXT ${2:result} = ${2:result} + ${4:row}-${6:amount} )$0",
+		plain = "REDUCE i( INIT result = 0 FOR row IN itab NEXT result = result + row-amount )",
+	},
+	{
+		keyword = "REDUCE",
+		label = "REDUCE ... FOR ... THEN ... UNTIL",
+		snippet = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:index} = ${5:1} THEN ${4:index} + ${6:1} UNTIL ${4:index} > ${7:limit} NEXT ${2:result} = ${2:result} + ${4:index} )$0",
+		plain = "REDUCE i( INIT result = 0 FOR index = 1 THEN index + 1 UNTIL index > limit NEXT result = result + index )",
+	},
+	{
+		keyword = "REDUCE",
+		label = "REDUCE ... FOR ... THEN ... WHILE",
+		snippet = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:index} = ${5:1} THEN ${4:index} + ${6:1} WHILE ${4:index} <= ${7:limit} NEXT ${2:result} = ${2:result} + ${4:index} )$0",
+		plain = "REDUCE i( INIT result = 0 FOR index = 1 THEN index + 1 WHILE index <= limit NEXT result = result + index )",
+	},
+	{
+		keyword = "FOR",
+		label = "FOR ... IN",
+		snippet = "FOR ${1:row} IN ${2:itab} ( ${1:row} )$0",
+		plain = "FOR row IN itab ( row )",
+	},
+	{
+		keyword = "FOR",
+		label = "FOR ... IN ... WHERE",
+		snippet = "FOR ${1:row} IN ${2:itab} WHERE ( ${3:field} = ${4:lv_value} ) ( ${1:row} )$0",
+		plain = "FOR row IN itab WHERE ( field = lv_value ) ( row )",
+	},
+	{
+		keyword = "FOR",
+		label = "FOR ... THEN ... UNTIL",
+		snippet = "FOR ${1:index} = ${2:1} THEN ${1} + ${3:1} UNTIL ${1:index} > ${4:limit} ( ${1:index} )$0",
+		plain = "FOR index = 1 THEN index + 1 UNTIL index > limit ( index )",
+	},
+	{
+		keyword = "FOR",
+		label = "FOR ... THEN ... WHILE",
+		snippet = "FOR ${1:index} = ${2:1} THEN ${1:index} + ${3:1} WHILE ${1:index} <= ${4:limit} ( ${1:index} )$0",
+		plain = "FOR index = 1 THEN index + 1 WHILE index <= limit ( index )",
+	},
 }
 
 COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
@@ -565,6 +665,43 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 	},
 }
 
+completion_expression_template_count :: proc(source: string, offset: int, prefix: string) -> int {
+	if !completion_template_at_expression_start(source, offset) {
+		return 0
+	}
+	count := 0
+	for template in EXPRESSION_TEMPLATES {
+		if completion_keyword_prefix_matches(prefix, template.keyword) {
+			count += 1
+		}
+	}
+	return count
+}
+
+completion_append_expression_templates :: proc(
+	out: []Completion_Item,
+	prefix: string,
+	replace_range: Range,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) {
+	index := 0
+	for template in EXPRESSION_TEMPLATES {
+		if !completion_keyword_prefix_matches(prefix, template.keyword) {
+			continue
+		}
+		assert(index < len(out))
+		out[index] = completion_statement_template_item(
+			template,
+			replace_range,
+			snippets_supported,
+			allocator,
+		)
+		index += 1
+	}
+	assert(index == len(out))
+}
+
 completion_common_statement_template_count :: proc(
 	source: string,
 	offset: int,
@@ -648,6 +785,66 @@ completion_template_at_statement_start :: proc(source: string, offset: int) -> b
 	}
 	prev := source[i - 1]
 	return prev == '\n' || prev == '.'
+}
+
+completion_template_at_expression_start :: proc(source: string, offset: int) -> bool {
+	prefix_start := completion_template_prefix_start(source, offset)
+	if prefix_start == 0 {
+		return true
+	}
+	switch source[prefix_start - 1] {
+	case ' ', '\t', '\r', '\n', '.', '(', '[', '{', ',', '=', '+', '*', '/', '<':
+		return true
+	}
+	return false
+}
+
+completion_case_template_item :: proc(
+	indent: string,
+	replace_range: Range,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	label := "CASE ... WHEN ... WHEN OTHERS"
+	insert_text := completion_case_template_insert_text(indent, snippets_supported, allocator)
+	return Completion_Item {
+		label = label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", label, allocator),
+		insert_text = insert_text,
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+		text_edit = Text_Edit{range = replace_range, new_text = insert_text},
+	}
+}
+
+completion_case_template_insert_text :: proc(
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(
+		&out,
+		"CASE ${1:lv_value}." if snippets_supported else "CASE lv_value.",
+	)
+	completion_template_write_newline_indent(
+		&out,
+		indent,
+		1,
+		"WHEN ${2:value_1}." if snippets_supported else "WHEN value_1.",
+	)
+	completion_template_write_newline_indent(&out, indent, 2, "${3}" if snippets_supported else "")
+	completion_template_write_newline_indent(
+		&out,
+		indent,
+		1,
+		"WHEN ${4:value_2}." if snippets_supported else "WHEN value_2.",
+	)
+	completion_template_write_newline_indent(&out, indent, 2, "${5}" if snippets_supported else "")
+	completion_template_write_newline_indent(&out, indent, 1, "WHEN OTHERS.")
+	completion_template_write_newline_indent(&out, indent, 2, "$0" if snippets_supported else "")
+	completion_template_write_newline_indent(&out, indent, 0, "ENDCASE.")
+	return strings.to_string(out)
 }
 
 completion_append_if_templates :: proc(

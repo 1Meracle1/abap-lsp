@@ -17,6 +17,14 @@ Completion_Template_Prefix_Test_Case :: struct {
 	insert_text: string,
 }
 
+Completion_Template_Priority_Test_Case :: struct {
+	source:         string,
+	symbol_label:   string,
+	template_label: string,
+	symbol_sort:    string,
+	template_sort:  string,
+}
+
 @(test)
 file_uri_to_path_decodes_windows_paths :: proc(t: ^testing.T) {
 	path, ok := file_uri_to_path("file:///D:/dev/rust/abap%20lsp/demo.abap", context.allocator)
@@ -812,6 +820,150 @@ lsp_completion_read_table_templates_expand_from_read_prefix :: proc(t: ^testing.
 }
 
 @(test)
+lsp_completion_case_template_expands_from_case_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_case_template.abap"
+	source := "REPORT zmain.\nFORM run.\n  ca"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "CASE ... WHEN ... WHEN OTHERS")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+	testing.expect_value(t, item.sort_text, "2:case ... when ... when others")
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		"CASE ${1:lv_value}.\n    WHEN ${2:value_1}.\n      ${3}\n    WHEN ${4:value_2}.\n      ${5}\n    WHEN OTHERS.\n      $0\n  ENDCASE.",
+	)
+	edit, edit_ok := item.text_edit.?
+	testing.expect(t, edit_ok)
+	if edit_ok {
+		testing.expect_value(t, edit.new_text, item.insert_text)
+		testing.expect_value(t, edit.range.start.line, 2)
+		testing.expect_value(t, edit.range.start.character, 2)
+		testing.expect_value(t, edit.range.end.line, 2)
+		testing.expect_value(t, edit.range.end.character, 4)
+	}
+}
+
+@(test)
+lsp_completion_expression_templates_expand_from_keyword_prefixes :: proc(t: ^testing.T) {
+	cases := [?]Completion_Template_Prefix_Test_Case {
+		{
+			prefix = "fi",
+			label = "FILTER #( ... WHERE ... )",
+			insert_text = "FILTER #( ${1:itab} WHERE ${2:field} = ${3:lv_value} )$0",
+		},
+		{
+			prefix = "fi",
+			label = "FILTER #( ... USING KEY ... WHERE ... )",
+			insert_text = "FILTER #( ${1:itab} USING KEY ${2:key_name} WHERE ${3:field} = ${4:lv_value} )$0",
+		},
+		{
+			prefix = "fi",
+			label = "FILTER #( ... EXCEPT WHERE ... )",
+			insert_text = "FILTER #( ${1:itab} EXCEPT WHERE ${2:field} = ${3:lv_value} )$0",
+		},
+		{
+			prefix = "re",
+			label = "REDUCE ... FOR ... IN",
+			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:row} IN ${5:itab} NEXT ${2} = ${2} + ${4}-${6:amount} )$0",
+		},
+		{
+			prefix = "re",
+			label = "REDUCE ... FOR ... THEN ... UNTIL",
+			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:index} = ${5:1} THEN ${4} + ${6:1} UNTIL ${4} > ${7:limit} NEXT ${2} = ${2} + ${4} )$0",
+		},
+		{
+			prefix = "re",
+			label = "REDUCE ... FOR ... THEN ... WHILE",
+			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:index} = ${5:1} THEN ${4} + ${6:1} WHILE ${4} <= ${7:limit} NEXT ${2} = ${2} + ${4} )$0",
+		},
+		{
+			prefix = "fo",
+			label = "FOR ... IN",
+			insert_text = "FOR ${1:row} IN ${2:itab} ( ${1} )$0",
+		},
+		{
+			prefix = "fo",
+			label = "FOR ... IN ... WHERE",
+			insert_text = "FOR ${1:row} IN ${2:itab} WHERE ( ${3:field} = ${4:lv_value} ) ( ${1} )$0",
+		},
+		{
+			prefix = "fo",
+			label = "FOR ... THEN ... UNTIL",
+			insert_text = "FOR ${1:index} = ${2:1} THEN ${1} + ${3:1} UNTIL ${1} > ${4:limit} ( ${1} )$0",
+		},
+		{
+			prefix = "fo",
+			label = "FOR ... THEN ... WHILE",
+			insert_text = "FOR ${1:index} = ${2:1} THEN ${1} + ${3:1} WHILE ${1} <= ${4:limit} ( ${1} )$0",
+		},
+	}
+
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_expression_template_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		source := strings.concatenate({"DATA dummy TYPE i.\nWRITE ", test_case.prefix}, context.temp_allocator)
+		state := lsp_test_state_with_open_document(uri, source)
+		defer lsp_test_state_destroy(&state)
+
+		offset := len(source)
+		params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		item, item_ok := lsp_test_find_completion_item(items, test_case.label)
+		testing.expect(t, item_ok)
+		if !item_ok {
+			continue
+		}
+
+		testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+		testing.expect_value(
+			t,
+			item.sort_text,
+			completion_sort_text("2", test_case.label, context.temp_allocator),
+		)
+		testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		testing.expect_value(t, item.insert_text, test_case.insert_text)
+		edit, edit_ok := item.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			testing.expect_value(t, edit.new_text, item.insert_text)
+			testing.expect_value(t, edit.range.start.line, 1)
+			testing.expect_value(t, edit.range.start.character, len("WRITE "))
+			testing.expect_value(t, edit.range.end.line, 1)
+			testing.expect_value(
+				t,
+				edit.range.end.character,
+				len("WRITE ") + len(test_case.prefix),
+			)
+		}
+	}
+}
+
+@(test)
 lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t: ^testing.T) {
 	cases := [?]Completion_Template_Prefix_Test_Case {
 		{
@@ -1055,6 +1207,70 @@ lsp_completion_common_statement_template_falls_back_to_plain_text_without_snippe
 
 	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
 	testing.expect_value(t, item.insert_text, "APPEND VALUE #( ) TO itab.")
+}
+
+@(test)
+lsp_completion_case_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_case_template_plain.abap"
+	source := "REPORT zmain.\nca"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "CASE ... WHEN ... WHEN OTHERS")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		"CASE lv_value.\n  WHEN value_1.\n    \n  WHEN value_2.\n    \n  WHEN OTHERS.\n    \nENDCASE.",
+	)
+}
+
+@(test)
+lsp_completion_expression_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_expression_template_plain.abap"
+	source := "DATA dummy TYPE i.\nWRITE fo"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "FOR ... THEN ... WHILE")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		"FOR index = 1 THEN index + 1 WHILE index <= limit ( index )",
+	)
 }
 
 @(test)
@@ -1563,6 +1779,70 @@ co`
 }
 
 @(test)
+lsp_completion_case_and_expression_templates_sort_after_matching_symbols :: proc(t: ^testing.T) {
+	cases := [?]Completion_Template_Priority_Test_Case {
+		{
+			source = "DATA case_candidate TYPE i.\nca",
+			symbol_label = "case_candidate",
+			template_label = "CASE ... WHEN ... WHEN OTHERS",
+			symbol_sort = "1:case_candidate",
+			template_sort = "2:case ... when ... when others",
+		},
+		{
+			source = "DATA filter_candidate TYPE i.\nWRITE fi",
+			symbol_label = "filter_candidate",
+			template_label = "FILTER #( ... WHERE ... )",
+			symbol_sort = "1:filter_candidate",
+			template_sort = "2:filter #( ... where ... )",
+		},
+		{
+			source = "DATA reduce_candidate TYPE i.\nWRITE re",
+			symbol_label = "reduce_candidate",
+			template_label = "REDUCE ... FOR ... IN",
+			symbol_sort = "1:reduce_candidate",
+			template_sort = "2:reduce ... for ... in",
+		},
+		{
+			source = "DATA for_candidate TYPE i.\nWRITE fo",
+			symbol_label = "for_candidate",
+			template_label = "FOR ... IN",
+			symbol_sort = "1:for_candidate",
+			template_sort = "2:for ... in",
+		},
+	}
+
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_new_template_priority_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		state := lsp_test_state_with_open_document(uri, test_case.source)
+		defer lsp_test_state_destroy(&state)
+
+		offset := len(test_case.source)
+		params := lsp_test_rename_position_params(uri, offset_to_position(test_case.source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		symbol_index := lsp_test_completion_item_index(items, test_case.symbol_label)
+		template_index := lsp_test_completion_item_index(items, test_case.template_label)
+		testing.expect(t, symbol_index >= 0)
+		testing.expect(t, template_index >= 0)
+		if symbol_index < 0 || template_index < 0 {
+			continue
+		}
+
+		testing.expect(t, symbol_index < template_index)
+		testing.expect_value(t, items[symbol_index].sort_text, test_case.symbol_sort)
+		testing.expect_value(t, items[template_index].sort_text, test_case.template_sort)
+	}
+}
+
+@(test)
 lsp_completion_common_statement_templates_sort_after_matching_symbols :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_common_template_priority.abap"
 	source := `DATA message_candidate TYPE i.
@@ -1737,6 +2017,28 @@ WRITE re`
 }
 
 @(test)
+lsp_completion_case_template_does_not_match_expression_prefixes :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_case_template_expression.abap"
+	source := `DATA case_value TYPE i.
+WRITE ca`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, item_ok := lsp_test_find_completion_item(items, "CASE ... WHEN ... WHEN OTHERS")
+
+	testing.expect(t, !item_ok)
+}
+
+@(test)
 lsp_completion_common_statement_templates_do_not_match_expression_prefixes :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_common_template_expression.abap"
 	source := `DATA message_value TYPE i.
@@ -1756,6 +2058,49 @@ WRITE me`
 	_, item_ok := lsp_test_find_completion_item(items, "MESSAGE ... TYPE")
 
 	testing.expect(t, !item_ok)
+}
+
+@(test)
+lsp_completion_expression_templates_do_not_match_selector_prefixes :: proc(t: ^testing.T) {
+	cases := [?]Completion_Template_Prefix_Test_Case {
+		{
+			prefix = "fi",
+			label = "FILTER #( ... WHERE ... )",
+			insert_text = "",
+		},
+		{
+			prefix = "re",
+			label = "REDUCE ... FOR ... IN",
+			insert_text = "",
+		},
+		{
+			prefix = "fo",
+			label = "FOR ... IN",
+			insert_text = "",
+		},
+	}
+
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_expression_selector_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		source := strings.concatenate({"DATA dummy TYPE i.\ndummy->", test_case.prefix}, context.temp_allocator)
+		state := lsp_test_state_with_open_document(uri, source)
+		defer lsp_test_state_destroy(&state)
+
+		offset := len(source)
+		params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		_, item_ok := lsp_test_find_completion_item(items, test_case.label)
+		testing.expect(t, !item_ok)
+	}
 }
 
 @(test)
