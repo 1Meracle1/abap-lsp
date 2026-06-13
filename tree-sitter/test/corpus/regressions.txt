@@ -477,7 +477,7 @@ CALL FUNCTION 'JOB_OPEN'
   EXCEPTIONS
     OTHERS = 4.
 SUBMIT zprog VIA JOB lv_jobname NUMBER lv_jobcount AND RETURN.
-COMMIT WORK.
+COMMIT WORK AND WAIT.
 CONVERT TIME STAMP ls_srt-created_at TIME ZONE sy-zonlo INTO DATE lv_created_date TIME lv_created_time.
 MESSAGE lv_msg TYPE 'I' DISPLAY LIKE 'E'.
 CALL METHOD cl_soap_payload_util=>get_message_properties.
@@ -511,6 +511,8 @@ ENDLOOP.
     (keyword)
     (keyword))
   (simple_statement
+    (keyword)
+    (keyword)
     (keyword)
     (keyword))
   (simple_statement

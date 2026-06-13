@@ -4988,6 +4988,22 @@
                     },
                     "named": true,
                     "value": "keyword"
+                  },
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
+                          "value": "[wW][aA][iI][tT]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "keyword"
                   }
                 ]
               }
@@ -18710,6 +18726,22 @@
               },
               "named": true,
               "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[wW][aA][iI][tT]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
             }
           ]
         },
@@ -25552,6 +25584,22 @@
               },
               "named": true,
               "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[wW][aA][iI][tT]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
             }
           ]
         },
@@ -27157,6 +27205,22 @@
                   "content": {
                     "type": "PATTERN",
                     "value": "[vV][aA][lL][uU][eE]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[wW][aA][iI][tT]"
                   }
                 }
               },
@@ -34745,6 +34809,22 @@
                   "content": {
                     "type": "PATTERN",
                     "value": "[vV][aA][lL][uU][eE]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[wW][aA][iI][tT]"
                   }
                 }
               },
