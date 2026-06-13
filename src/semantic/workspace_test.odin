@@ -892,6 +892,14 @@ ENDCLASS.`,
 		testing.expect(t, provider_ok)
 		if provider_ok {
 			testing.expect_value(t, binding.generation, u64(2))
+			record, record_ok := external_semantic_index_project_record(
+				&analysis.external_index,
+				binding.project_id,
+			)
+			testing.expect(t, record_ok)
+			if record_ok {
+				testing.expect(t, record.owns_lists)
+			}
 		}
 		testing.expect_value(t, len(analysis.external_index.projects), 2)
 		testing.expect_value(t, workspace_test_reverse_total_count(interner, analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_old_dep"), 0)

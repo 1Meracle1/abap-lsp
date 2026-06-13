@@ -6,6 +6,7 @@ import workspace "src:workspace"
 
 import json "core:encoding/json"
 import "core:mem"
+import "core:mem/virtual"
 import "core:os"
 import "core:strings"
 
@@ -70,7 +71,7 @@ handle_notification :: proc(
 					}
 				}
 				for doc_uri in to_delete {
-					delete_key(&state.documents, doc_uri)
+					close_document_uri(state, doc_uri)
 				}
 				changed = true
 			case FILE_CHANGE_CHANGED, FILE_CHANGE_CREATED:
@@ -153,7 +154,7 @@ handle_notification :: proc(
 				}
 			}
 			for doc_uri in to_delete {
-				delete_key(&state.documents, doc_uri)
+				close_document_uri(state, doc_uri)
 			}
 			changed = true
 		}
@@ -194,7 +195,7 @@ handle_notification :: proc(
 				}
 			}
 			for doc_uri in to_delete {
-				delete_key(&state.documents, doc_uri)
+				close_document_uri(state, doc_uri)
 			}
 			for doc_uri, &doc in state.documents {
 				if !lsp_uri_matches_or_under(doc_uri, new_uri) {
@@ -311,15 +312,7 @@ update_document_from_open :: proc(state: ^Server_State, params: json.Value) -> b
 	uri := object_string(text_document, "uri") or_return
 	text := object_string(text_document, "text") or_return
 	version := object_integer(text_document, "version") or_return
-	uri = normalize_lsp_uri(uri, state.allocator)
-	ensure_workspace_for_document(state, uri)
-	state.documents[uri] = Document {
-		uri     = uri,
-		text    = strings.clone(text, state.allocator),
-		version = version,
-		dirty   = true,
-	}
-	return true
+	return upsert_document_text(state, uri, text, version)
 }
 
 update_document_from_change :: proc(state: ^Server_State, params: json.Value) -> bool {
@@ -330,15 +323,7 @@ update_document_from_change :: proc(state: ^Server_State, params: json.Value) ->
 	version := object_integer(text_document, "version") or_return
 	last_change := changes[len(changes) - 1].(json.Object) or_return
 	text := object_string(last_change, "text") or_return
-	uri = normalize_lsp_uri(uri, state.allocator)
-	ensure_workspace_for_document(state, uri)
-	state.documents[uri] = Document {
-		uri     = uri,
-		text    = strings.clone(text, state.allocator),
-		version = version,
-		dirty   = true,
-	}
-	return true
+	return upsert_document_text(state, uri, text, version)
 }
 
 close_document :: proc(state: ^Server_State, params: json.Value) -> bool {
@@ -346,13 +331,14 @@ close_document :: proc(state: ^Server_State, params: json.Value) -> bool {
 	text_document := object_object(object, "textDocument") or_return
 	uri := object_string(text_document, "uri") or_return
 	uri = normalize_lsp_uri(uri, context.temp_allocator)
-	delete_key(&state.documents, uri)
+	close_document_uri(state, uri)
 	queue_disk_refresh_or_remove(state, uri)
 	return true
 }
 
 server_reanalyze :: proc(state: ^Server_State) {
-	clear(&state.parse_diagnostics)
+	clear_parse_diagnostics(state)
+	retired_parse_arenas := make([dynamic]^virtual.Arena, 0, 2, context.temp_allocator)
 	for _, doc in state.documents {
 		ensure_workspace_for_document(state, doc.uri)
 	}
@@ -361,27 +347,31 @@ server_reanalyze :: proc(state: ^Server_State) {
 			[dynamic]semantic.Workspace_File_Input,
 			0,
 			len(state.documents),
-			state.allocator,
+			context.temp_allocator,
 		)
 		removed_paths := make([dynamic]string, 0, 4, context.temp_allocator)
 		if !slot.has_analysis {
 			append_workspace_disk_inputs(state, &slot.root, &inputs)
 		}
-		for _, workspace_doc in state.documents {
+		for _, &workspace_doc in state.documents {
 			doc_workspace_index, doc_workspace_ok := workspace_index_for_uri(state, workspace_doc.uri)
 			if !doc_workspace_ok || doc_workspace_index != workspace_index {
 				continue
 			}
-			parsed := parser.parse(workspace_doc.text, workspace_doc.uri, state.allocator)
-			append_parse_diagnostics(state, workspace_doc.uri, parsed.errors)
+			if workspace_doc.dirty || !workspace_doc.has_parse {
+				if retired := document_reparse(&workspace_doc, state.allocator); retired != nil {
+					append(&retired_parse_arenas, retired)
+				}
+			}
+			append_parse_diagnostics(state, workspace_doc.uri, workspace_doc.parse_errors)
 			if slot.has_analysis && !workspace_doc.dirty {
 				continue
 			}
 			append(
 				&inputs,
 				semantic.Workspace_File_Input {
-					path = strings.clone(workspace_doc.uri, state.allocator),
-					root = parsed.root,
+					path = strings.clone(workspace_doc.uri, context.temp_allocator),
+					root = workspace_doc.parse_root,
 					kind = .Unknown,
 				},
 			)
@@ -428,12 +418,93 @@ server_reanalyze :: proc(state: ^Server_State) {
 	for _, &doc in state.documents {
 		doc.dirty = false
 	}
+	for arena in retired_parse_arenas {
+		document_parse_arena_destroy(arena, state.allocator)
+	}
 	if state.pending_removed_uris.allocator.procedure != nil {
 		clear(&state.pending_removed_uris)
 	}
 	if state.pending_disk_refresh_uris.allocator.procedure != nil {
 		clear(&state.pending_disk_refresh_uris)
 	}
+}
+
+upsert_document_text :: proc(
+	state: ^Server_State,
+	raw_uri: string,
+	text: string,
+	version: int,
+) -> bool {
+	uri := normalize_lsp_uri(raw_uri, context.temp_allocator)
+	ensure_workspace_for_document(state, uri)
+	if doc, ok := state.documents[uri]; ok {
+		if doc.owns_text && doc.text != "" {
+			delete(doc.text, state.allocator)
+		}
+		doc.text = strings.clone(text, state.allocator)
+		doc.owns_text = true
+		doc.version = version
+		doc.dirty = true
+		state.documents[doc.uri] = doc
+		return true
+	}
+	owned_uri := strings.clone(uri, state.allocator)
+	state.documents[owned_uri] = Document {
+		uri       = owned_uri,
+		text      = strings.clone(text, state.allocator),
+		owns_uri  = true,
+		owns_text = true,
+		version   = version,
+		dirty     = true,
+	}
+	return true
+}
+
+close_document_uri :: proc(state: ^Server_State, uri: string) -> bool {
+	doc, ok := state.documents[uri]
+	if !ok {
+		return false
+	}
+	delete_key(&state.documents, uri)
+	document_destroy(&doc, state.allocator)
+	return true
+}
+
+document_reparse :: proc(doc: ^Document, allocator: mem.Allocator) -> ^virtual.Arena {
+	assert(doc != nil && doc.uri != "")
+	retired := doc.parse_arena
+	arena := new(virtual.Arena, allocator)
+	assert(arena != nil)
+	arena_err := virtual.arena_init_growing(arena)
+	assert(arena_err == .None)
+	parsed := parser.parse(doc.text, doc.uri, virtual.arena_allocator(arena))
+	doc.parse_arena = arena
+	doc.parse_root = parsed.root
+	doc.parse_errors = parsed.errors
+	doc.has_parse = true
+	return retired
+}
+
+document_destroy :: proc(doc: ^Document, allocator: mem.Allocator) {
+	if doc == nil {
+		return
+	}
+	document_parse_arena_destroy(doc.parse_arena, allocator)
+	if doc.owns_text && doc.text != "" {
+		delete(doc.text, allocator)
+	}
+	if doc.owns_uri && doc.uri != "" {
+		delete(doc.uri, allocator)
+	}
+	doc^ = {}
+}
+
+document_parse_arena_destroy :: proc(arena: ^virtual.Arena, allocator: mem.Allocator) {
+	if arena == nil {
+		return
+	}
+	virtual.arena_destroy(arena)
+	free(arena, allocator)
 }
 
 queue_pending_uri :: proc(list: ^[dynamic]string, uri: string, allocator: mem.Allocator) {
@@ -510,11 +581,11 @@ append_disk_input_for_path :: proc(
 	path: string,
 	out: ^[dynamic]semantic.Workspace_File_Input,
 ) {
-	source, source_ok := workspace.read_text_file(path, state.allocator)
+	source, source_ok := workspace.read_text_file(path, context.temp_allocator)
 	if !source_ok {
 		return
 	}
-	uri, uri_ok := file_uri_from_path(path, state.allocator)
+	uri, uri_ok := file_uri_from_path(path, context.temp_allocator)
 	if !uri_ok {
 		return
 	}

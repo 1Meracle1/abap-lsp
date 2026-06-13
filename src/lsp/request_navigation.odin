@@ -77,8 +77,8 @@ implementation_location_for_params :: proc(
 }
 
 handle_references :: proc(ctx: ^Request_Context, params: json.Value) {
-	locations := reference_locations_for_params(ctx.state, params, ctx.state.allocator)
-	send_success(ctx.output, ctx.id, locations[:], ctx.state.allocator)
+	locations := reference_locations_for_params(ctx.state, params, context.temp_allocator)
+	send_success(ctx.output, ctx.id, locations[:], context.temp_allocator)
 }
 
 reference_locations_for_params :: proc(
@@ -526,13 +526,13 @@ handle_read_dependency_document :: proc(ctx: ^Request_Context, params: json.Valu
 	if source, source_ok := read_dependency_document_source(
 		ctx.state,
 		uri,
-		ctx.state.allocator,
+		context.temp_allocator,
 	); source_ok {
 		send_success(
 			ctx.output,
 			ctx.id,
 			Read_Dependency_Document_Result{source_text = source},
-			ctx.state.allocator,
+			context.temp_allocator,
 		)
 		return
 	}
@@ -548,7 +548,7 @@ read_dependency_document_uri_from_params :: proc(params: json.Value) -> (string,
 	if !uri_ok || strings.trim_space(uri) == "" {
 		return "", false
 	}
-	return normalize_lsp_uri(uri, context.allocator), true
+	return normalize_lsp_uri(uri, context.temp_allocator), true
 }
 
 read_dependency_document_source :: proc(

@@ -1,5 +1,6 @@
 package abap_frontend_lsp
 
+import "src:ast"
 import execution "src:execution"
 import "src:parser"
 import workspace "src:workspace"
@@ -7,15 +8,22 @@ import workspace "src:workspace"
 import json "core:encoding/json"
 import "core:fmt"
 import "core:mem"
+import "core:mem/virtual"
 import net "core:net"
 import "core:os"
 import "core:strings"
 
 Document :: struct {
-	uri:     string,
-	text:    string,
-	version: int,
-	dirty:   bool,
+	uri:          string,
+	text:         string,
+	owns_uri:     bool,
+	owns_text:    bool,
+	version:      int,
+	dirty:        bool,
+	parse_arena:  ^virtual.Arena,
+	parse_root:   ^ast.File,
+	parse_errors: []parser.Parse_Error,
+	has_parse:    bool,
 }
 
 Parse_Diagnostic_Bucket :: struct {
@@ -30,18 +38,18 @@ Server_Workspace :: struct {
 }
 
 Server_State :: struct {
-	allocator:            mem.Allocator,
-	options:              workspace.Options,
-	pool:                 execution.Pool,
-	documents:            map[string]Document,
-	parse_diagnostics:    [dynamic]Parse_Diagnostic_Bucket,
-	workspaces:           [dynamic]Server_Workspace,
-	pending_removed_uris: [dynamic]string,
-	pending_disk_refresh_uris: [dynamic]string,
-	completion_snippets_supported: bool,
+	allocator:                        mem.Allocator,
+	options:                          workspace.Options,
+	pool:                             execution.Pool,
+	documents:                        map[string]Document,
+	parse_diagnostics:                [dynamic]Parse_Diagnostic_Bucket,
+	workspaces:                       [dynamic]Server_Workspace,
+	pending_removed_uris:             [dynamic]string,
+	pending_disk_refresh_uris:        [dynamic]string,
+	completion_snippets_supported:    bool,
 	materialize_dependency_documents: bool,
-	initialized:          bool,
-	shutdown_requested:   bool,
+	initialized:                      bool,
+	shutdown_requested:               bool,
 }
 
 Request_Context :: struct {
@@ -56,7 +64,9 @@ serve_stdio :: proc(allocator: mem.Allocator) -> int {
 	defer server_destroy(&state)
 
 	for {
-		frame := read_frame(os.stdin, allocator)
+		temp := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
+		defer virtual.arena_temp_end(temp)
+		frame := read_frame(os.stdin, context.temp_allocator)
 		switch frame.status {
 		case .Closed:
 			return 0
@@ -75,13 +85,13 @@ serve_stdio :: proc(allocator: mem.Allocator) -> int {
 
 server_init :: proc(state: ^Server_State, allocator: mem.Allocator) {
 	state^ = Server_State {
-		allocator         = allocator,
-		options           = server_default_workspace_options(),
-		documents         = make(map[string]Document, 16, allocator),
-		parse_diagnostics = make([dynamic]Parse_Diagnostic_Bucket, 0, 16, allocator),
-		workspaces        = make([dynamic]Server_Workspace, 0, 4, allocator),
-		pending_removed_uris = make([dynamic]string, 0, 8, allocator),
-		pending_disk_refresh_uris = make([dynamic]string, 0, 8, allocator),
+		allocator                     = allocator,
+		options                       = server_default_workspace_options(),
+		documents                     = make(map[string]Document, 16, allocator),
+		parse_diagnostics             = make([dynamic]Parse_Diagnostic_Bucket, 0, 16, allocator),
+		workspaces                    = make([dynamic]Server_Workspace, 0, 4, allocator),
+		pending_removed_uris          = make([dynamic]string, 0, 8, allocator),
+		pending_disk_refresh_uris     = make([dynamic]string, 0, 8, allocator),
 		completion_snippets_supported = true,
 	}
 	execution.pool_init(
@@ -112,19 +122,36 @@ server_destroy :: proc(state: ^Server_State) {
 		workspace.workspace_destroy(&slot.root, state.allocator)
 	}
 	delete(state.workspaces)
+	for _, &doc in state.documents {
+		document_destroy(&doc, state.allocator)
+	}
+	delete(state.documents)
+	clear_parse_diagnostics(state)
+	if state.parse_diagnostics.allocator.procedure != nil {
+		delete(state.parse_diagnostics)
+	}
 	if state.pending_removed_uris.allocator.procedure != nil {
 		delete(state.pending_removed_uris)
 	}
 	if state.pending_disk_refresh_uris.allocator.procedure != nil {
 		delete(state.pending_disk_refresh_uris)
 	}
+	if state.options.dependency_store_path != "" {
+		delete(state.options.dependency_store_path, state.allocator)
+	}
 	execution.pool_destroy(&state.pool)
 }
 
 server_handle_payload :: proc(state: ^Server_State, payload: []byte, output: ^os.File) -> bool {
-	message := parse_rpc_message(payload, state.allocator)
+	message := parse_rpc_message(payload, context.temp_allocator)
 	if !message.ok {
-		send_error(output, json.Null(nil), RPC_INVALID_REQUEST, message.error, state.allocator)
+		send_error(
+			output,
+			json.Null(nil),
+			RPC_INVALID_REQUEST,
+			message.error,
+			context.temp_allocator,
+		)
 		return false
 	}
 	if message.method == METHOD_EXIT {
@@ -182,7 +209,8 @@ handle_request :: proc(ctx: ^Request_Context, method: string, params: json.Value
 }
 
 send_success :: proc(output: ^os.File, id: json.Value, result: any, allocator: mem.Allocator) {
-	if payload, ok := rpc_success_payload(id, result, allocator); ok {
+	payload_allocator := server_payload_allocator(allocator)
+	if payload, ok := rpc_success_payload(id, result, payload_allocator); ok {
 		_ = write_frame(output, payload)
 	}
 }
@@ -194,7 +222,8 @@ send_error :: proc(
 	message: string,
 	allocator: mem.Allocator,
 ) {
-	if payload, ok := rpc_error_payload(id, code, message, allocator); ok {
+	payload_allocator := server_payload_allocator(allocator)
+	if payload, ok := rpc_error_payload(id, code, message, payload_allocator); ok {
 		_ = write_frame(output, payload)
 	}
 }
@@ -205,9 +234,17 @@ send_notification :: proc(
 	params: any,
 	allocator: mem.Allocator,
 ) {
-	if payload, ok := notification_payload(method, params, allocator); ok {
+	payload_allocator := server_payload_allocator(allocator)
+	if payload, ok := notification_payload(method, params, payload_allocator); ok {
 		_ = write_frame(output, payload)
 	}
+}
+
+server_payload_allocator :: proc(allocator: mem.Allocator) -> mem.Allocator {
+	if context.temp_allocator.procedure != nil {
+		return context.temp_allocator
+	}
+	return allocator
 }
 
 file_uri_to_path :: proc(uri: string, allocator: mem.Allocator) -> (string, bool) {

@@ -204,11 +204,42 @@ project_discovery_resolve_includes :: proc(discovery: ^Project_Discovery) {
 
 project_discovery_detect_include_cycles :: proc(discovery: ^Project_Discovery) {
 	visiting := make(map[int]bool, len(discovery.facts), discovery.allocator)
+	defer delete(visiting)
 	visited := make(map[int]bool, len(discovery.facts), discovery.allocator)
+	defer delete(visited)
 	stack := make([dynamic]int, 0, len(discovery.facts), discovery.allocator)
+	defer delete(stack)
 	for _, index in discovery.facts {
 		project_discovery_visit_include_cycles(discovery, index, &visiting, &visited, &stack)
 	}
+}
+
+project_discovery_destroy :: proc(discovery: ^Project_Discovery) {
+	if discovery == nil {
+		return
+	}
+	for &facts in discovery.facts {
+		if facts.path != "" {
+			delete(facts.path, discovery.allocator)
+		}
+		if facts.provided_names.allocator.procedure != nil {
+			delete(facts.provided_names)
+		}
+		if facts.include_edges.allocator.procedure != nil {
+			delete(facts.include_edges)
+		}
+		if facts.type_pool_imports.allocator.procedure != nil {
+			delete(facts.type_pool_imports)
+		}
+	}
+	if discovery.facts.allocator.procedure != nil {
+		delete(discovery.facts)
+	}
+	if discovery.plans.allocator.procedure != nil {
+		delete(discovery.plans)
+	}
+	checker_diagnostic_list_destroy(&discovery.diagnostics, discovery.allocator)
+	discovery^ = {}
 }
 
 project_discovery_visit_include_cycles :: proc(

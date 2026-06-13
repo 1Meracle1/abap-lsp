@@ -119,5 +119,6 @@ is_abap_path :: proc(path: string, allocator: mem.Allocator) -> bool {
 }
 
 should_skip_workspace_dir :: proc(name: string) -> bool {
-	return name == "target" || name == ".git" || (len(name) > 0 && name[0] == '.')
+	return name == "target" || name == "node_modules" || name == ".git" ||
+	       (len(name) > 0 && name[0] == '.')
 }

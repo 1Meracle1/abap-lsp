@@ -11,8 +11,8 @@ handle_folding_ranges :: proc(ctx: ^Request_Context, params: json.Value) {
 		return
 	}
 	if doc, ok := ctx.state.documents[uri]; ok {
-		ranges := folding_ranges_for_source(doc.text, ctx.state.allocator)
-		send_success(ctx.output, ctx.id, ranges, ctx.state.allocator)
+		ranges := folding_ranges_for_source(doc.text, context.temp_allocator)
+		send_success(ctx.output, ctx.id, ranges, context.temp_allocator)
 		return
 	}
 	send_success(ctx.output, ctx.id, []Folding_Range{}, ctx.state.allocator)

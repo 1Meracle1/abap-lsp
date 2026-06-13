@@ -111,6 +111,7 @@ Semantic_Project_Record :: struct {
 	root_key:                Semantic_Object_Key,
 	project:                 ^Project,
 	checker:                 ^Checker,
+	owns_lists:              bool,
 	provides:                [dynamic]Semantic_Object_Key,
 	provider_bindings:       [dynamic]Semantic_Provider_Binding,
 	resolved_dependencies:   [dynamic]Semantic_Dependency_Edge,
@@ -205,16 +206,34 @@ external_semantics_destroy :: proc(external: ^External_Semantics) {
 	if external == nil {
 		return
 	}
+	external_semantic_index_destroy(&external.index)
+	for &source in external.source_files {
+		if source.path != "" {
+			delete(source.path, external.allocator)
+		}
+		if source.provided_names.allocator.procedure != nil {
+			delete(source.provided_names)
+		}
+	}
+	if external.source_files.allocator.procedure != nil {
+		delete(external.source_files)
+	}
 	for project in external.interface_projects {
 		if project != nil {
 			project_destroy(project)
 			free(project, external.allocator)
 		}
 	}
+	if external.interface_projects.allocator.procedure != nil {
+		delete(external.interface_projects)
+	}
 	for checker in external.interface_checkers {
 		if checker != nil {
 			free(checker, external.allocator)
 		}
+	}
+	if external.interface_checkers.allocator.procedure != nil {
+		delete(external.interface_checkers)
 	}
 	if external.compat_project != nil {
 		project_destroy(external.compat_project)
@@ -284,6 +303,60 @@ external_semantic_index_make :: proc(
 	}
 }
 
+external_semantic_index_destroy :: proc(index: ^External_Semantic_Index) {
+	if index == nil {
+		return
+	}
+	for &record in index.projects {
+		semantic_project_record_destroy(&record)
+	}
+	if index.projects.allocator.procedure != nil {
+		delete(index.projects)
+	}
+	if index.providers != nil {
+		delete(index.providers)
+	}
+	for _, contributions in index.provider_contributions {
+		if contributions.allocator.procedure != nil {
+			delete(contributions)
+		}
+	}
+	if index.provider_contributions != nil {
+		delete(index.provider_contributions)
+	}
+	if index.project_by_root_key != nil {
+		delete(index.project_by_root_key)
+	}
+	for _, projects in index.dependents_by_object {
+		if projects.allocator.procedure != nil {
+			delete(projects)
+		}
+	}
+	if index.dependents_by_object != nil {
+		delete(index.dependents_by_object)
+	}
+	for _, projects in index.unresolved_waiters_by_object {
+		if projects.allocator.procedure != nil {
+			delete(projects)
+		}
+	}
+	if index.unresolved_waiters_by_object != nil {
+		delete(index.unresolved_waiters_by_object)
+	}
+	if index.lookup != nil {
+		delete(index.lookup)
+	}
+	for _, contributions in index.lookup_contributions {
+		if contributions.allocator.procedure != nil {
+			delete(contributions)
+		}
+	}
+	if index.lookup_contributions != nil {
+		delete(index.lookup_contributions)
+	}
+	index^ = {}
+}
+
 external_semantic_index_import_providers :: proc(
 	index: ^External_Semantic_Index,
 	source: ^External_Semantic_Index,
@@ -341,7 +414,8 @@ external_semantic_index_import_external_project_records :: proc(
 		if _, exists := external_semantic_index_project_record(index, record.id); exists {
 			continue
 		}
-		stored := external_semantic_index_add_project_record(index, record)
+		imported := semantic_project_record_clone_lists(record, index.allocator)
+		stored := external_semantic_index_add_project_record(index, imported)
 		for edge in stored.resolved_dependencies {
 			external_semantic_index_add_dependency(index, stored.id, edge)
 		}
@@ -349,6 +423,55 @@ external_semantic_index_import_external_project_records :: proc(
 			external_semantic_index_add_dependency(index, stored.id, edge)
 		}
 	}
+}
+
+semantic_project_record_clone_lists :: proc(
+	record: Semantic_Project_Record,
+	allocator: mem.Allocator,
+) -> Semantic_Project_Record {
+	cloned := record
+	cloned.owns_lists = true
+	cloned.provides = make([dynamic]Semantic_Object_Key, 0, len(record.provides), allocator)
+	for value in record.provides {
+		append(&cloned.provides, value)
+	}
+	cloned.provider_bindings = make(
+		[dynamic]Semantic_Provider_Binding,
+		0,
+		len(record.provider_bindings),
+		allocator,
+	)
+	for value in record.provider_bindings {
+		append(&cloned.provider_bindings, value)
+	}
+	cloned.resolved_dependencies = make(
+		[dynamic]Semantic_Dependency_Edge,
+		0,
+		len(record.resolved_dependencies),
+		allocator,
+	)
+	for value in record.resolved_dependencies {
+		append(&cloned.resolved_dependencies, value)
+	}
+	cloned.unresolved_dependencies = make(
+		[dynamic]Semantic_Dependency_Edge,
+		0,
+		len(record.unresolved_dependencies),
+		allocator,
+	)
+	for value in record.unresolved_dependencies {
+		append(&cloned.unresolved_dependencies, value)
+	}
+	cloned.unresolved = make(
+		[dynamic]Checker_Unresolved_Candidate,
+		0,
+		len(record.unresolved),
+		allocator,
+	)
+	for value in record.unresolved {
+		append(&cloned.unresolved, value)
+	}
+	return cloned
 }
 
 semantic_project_record_make :: proc(
@@ -368,6 +491,7 @@ semantic_project_record_make :: proc(
 		root_key = root_key,
 		project = project,
 		checker = checker,
+		owns_lists = true,
 		provides = make([dynamic]Semantic_Object_Key, 0, 4, index.allocator),
 		provider_bindings = make([dynamic]Semantic_Provider_Binding, 0, 4, index.allocator),
 		resolved_dependencies = make([dynamic]Semantic_Dependency_Edge, 0, 8, index.allocator),
@@ -375,6 +499,30 @@ semantic_project_record_make :: proc(
 		unresolved = make([dynamic]Checker_Unresolved_Candidate, 0, 8, index.allocator),
 		generation = generation,
 	}
+}
+
+semantic_project_record_destroy :: proc(record: ^Semantic_Project_Record) {
+	if record == nil {
+		return
+	}
+	if record.owns_lists {
+		if record.provides.allocator.procedure != nil {
+			delete(record.provides)
+		}
+		if record.provider_bindings.allocator.procedure != nil {
+			delete(record.provider_bindings)
+		}
+		if record.resolved_dependencies.allocator.procedure != nil {
+			delete(record.resolved_dependencies)
+		}
+		if record.unresolved_dependencies.allocator.procedure != nil {
+			delete(record.unresolved_dependencies)
+		}
+		if record.unresolved.allocator.procedure != nil {
+			delete(record.unresolved)
+		}
+	}
+	record^ = {}
 }
 
 external_semantic_index_add_project_record :: proc(
@@ -716,6 +864,7 @@ external_semantic_index_remove_project_record :: proc(
 	if removed {
 		resize(&index.projects, write)
 		external_semantic_index_remove_project_record_contributions(index, &removed_record)
+		semantic_project_record_destroy(&removed_record)
 	}
 	return removed
 }
@@ -1089,6 +1238,9 @@ external_semantics_upsert_source_input :: proc(
 			continue
 		}
 		source.root = input.root
+		if source.provided_names.allocator.procedure != nil {
+			delete(source.provided_names)
+		}
 		source.provided_names = external_source_input_intern_names(external, input.provided_names)
 		return &source
 	}

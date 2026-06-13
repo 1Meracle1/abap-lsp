@@ -44,7 +44,7 @@ handle_initialize :: proc(ctx: ^Request_Context, params: json.Value) {
 		}
 	}
 	state.initialized = true
-	send_success(ctx.output, ctx.id, initialize_result(state.allocator), state.allocator)
+	send_success(ctx.output, ctx.id, initialize_result(context.temp_allocator), context.temp_allocator)
 }
 
 initialize_completion_snippet_support :: proc(params: json.Object) -> (bool, bool) {

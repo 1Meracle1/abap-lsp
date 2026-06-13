@@ -275,7 +275,13 @@ lsp_reanalysis_preserves_workspace_analysis_session :: proc(t: ^testing.T) {
 			workspace.workspace_destroy(&slot.root, state.allocator)
 		}
 		delete(state.workspaces)
-		delete(state.parse_diagnostics)
+		clear_parse_diagnostics(&state)
+		if state.parse_diagnostics.allocator.procedure != nil {
+			delete(state.parse_diagnostics)
+		}
+		for _, &doc in state.documents {
+			document_destroy(&doc, state.allocator)
+		}
 		delete(state.documents)
 	}
 	append(&state.workspaces, Server_Workspace{root = workspace.Workspace{root_path = `D:\repo`}})
@@ -2597,7 +2603,13 @@ watched_folder_delete_removes_analysis_inputs_under_folder :: proc(t: ^testing.T
 		}
 		delete(state.pending_removed_uris)
 		delete(state.workspaces)
-		delete(state.parse_diagnostics)
+		clear_parse_diagnostics(&state)
+		if state.parse_diagnostics.allocator.procedure != nil {
+			delete(state.parse_diagnostics)
+		}
+		for _, &doc in state.documents {
+			document_destroy(&doc, state.allocator)
+		}
 		delete(state.documents)
 	}
 	append(&state.workspaces, Server_Workspace{root = workspace.Workspace{root_path = `D:\repo`}})
@@ -2657,7 +2669,13 @@ file_operation_folder_rename_removes_old_analysis_inputs :: proc(t: ^testing.T) 
 		}
 		delete(state.pending_removed_uris)
 		delete(state.workspaces)
-		delete(state.parse_diagnostics)
+		clear_parse_diagnostics(&state)
+		if state.parse_diagnostics.allocator.procedure != nil {
+			delete(state.parse_diagnostics)
+		}
+		for _, &doc in state.documents {
+			document_destroy(&doc, state.allocator)
+		}
 		delete(state.documents)
 	}
 	append(&state.workspaces, Server_Workspace{root = workspace.Workspace{root_path = `D:\repo`}})
@@ -3497,7 +3515,13 @@ lsp_test_state_destroy :: proc(state: ^Server_State) {
 	if state.pending_removed_uris.allocator.procedure != nil {
 		delete(state.pending_removed_uris)
 	}
-	delete(state.parse_diagnostics)
+	clear_parse_diagnostics(state)
+	if state.parse_diagnostics.allocator.procedure != nil {
+		delete(state.parse_diagnostics)
+	}
+	for _, &doc in state.documents {
+		document_destroy(&doc, state.allocator)
+	}
 	delete(state.documents)
 }
 

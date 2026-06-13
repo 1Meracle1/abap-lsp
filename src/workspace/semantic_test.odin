@@ -16,15 +16,11 @@ zcl_remote=>get_instance( )->second( ).`
 	parsed := parser.parse(source, "mem://zmain.report.abap", context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
 	files := [?]semantic.Workspace_File_Input {
-		{
-			path = "mem://zmain.report.abap",
-			root = parsed.root,
-			kind = .Unknown,
-		},
+		{path = "mem://zmain.report.abap", root = parsed.root, kind = .Unknown},
 	}
 	opened := Workspace {
 		root_path = "mem://",
-		flags = Option_Flags{.Enable_Dependency_Diagnostics},
+		flags     = Option_Flags{.Enable_Dependency_Diagnostics},
 	}
 	pool: execution.Pool
 	execution.pool_init(
@@ -71,15 +67,11 @@ unknown_value = 1.`
 	parsed := parser.parse(source, "mem://zmain.report.abap", context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
 	files := [?]semantic.Workspace_File_Input {
-		{
-			path = "mem://zmain.report.abap",
-			root = parsed.root,
-			kind = .Unknown,
-		},
+		{path = "mem://zmain.report.abap", root = parsed.root, kind = .Unknown},
 	}
 	opened := Workspace {
 		root_path = "mem://",
-		flags = Option_Flags{.Enable_Dependency_Diagnostics},
+		flags     = Option_Flags{.Enable_Dependency_Diagnostics},
 	}
 	pool: execution.Pool
 	execution.pool_init(
@@ -135,7 +127,8 @@ CLASS zcl_repo IMPLEMENTATION.
   METHOD run.
   ENDMETHOD.
 ENDCLASS.`,
-		) == nil,
+		) ==
+		nil,
 	)
 
 	opened, workspace_ok, _ := open_standalone(root, Options{}, context.allocator)
@@ -172,7 +165,11 @@ ENDCLASS.`,
 		return
 	}
 	testing.expect_value(t, len(result.session.editable_files), 2)
-	testing.expect_value(t, workspace_test_unresolved_count(analysis, .Global_Symbol, "zcl_repo"), 0)
+	testing.expect_value(
+		t,
+		workspace_test_unresolved_count(analysis, .Global_Symbol, "zcl_repo"),
+		0,
+	)
 	testing.expect_value(t, workspace_test_unresolved_count(analysis, .Class, "zcl_repo"), 0)
 }
 

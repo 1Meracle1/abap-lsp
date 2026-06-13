@@ -18,13 +18,13 @@ handle_completion :: proc(ctx: ^Request_Context, params: json.Value) {
 		snapshot,
 		offset,
 		ctx.state.completion_snippets_supported,
-		ctx.state.allocator,
+		context.temp_allocator,
 	)
 	send_success(
 		ctx.output,
 		ctx.id,
 		Completion_List{is_incomplete = false, items = out},
-		ctx.state.allocator,
+		context.temp_allocator,
 	)
 }
 

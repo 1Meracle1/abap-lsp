@@ -113,7 +113,9 @@ semantic_workspace_analyze :: proc(
 	)
 	semantic_workspace_add_local_root_providers(provider_context, &analysis.discovery)
 	for diagnostic in analysis.discovery.diagnostics {
-		append(&analysis.workspace_diags, diagnostic)
+		copied := diagnostic
+		copied.message = strings.clone(diagnostic.message, allocator) if diagnostic.message != "" else ""
+		append(&analysis.workspace_diags, copied)
 	}
 	for plan in analysis.discovery.plans {
 		semantic_workspace_build_project(&analysis, plan, provider_context)
@@ -251,6 +253,7 @@ semantic_workspace_analysis_destroy :: proc(analysis: ^Workspace_Analysis) {
 	if analysis == nil {
 		return
 	}
+	project_discovery_destroy(&analysis.discovery)
 	for result in analysis.project_results {
 		if result.project != nil {
 			project_destroy(result.project)
@@ -259,6 +262,37 @@ semantic_workspace_analysis_destroy :: proc(analysis: ^Workspace_Analysis) {
 		if result.checker != nil {
 			free(result.checker, analysis.allocator)
 		}
+		if result.root_path != "" {
+			delete(result.root_path, analysis.allocator)
+		}
+		if result.files.allocator.procedure != nil {
+			delete(result.files)
+		}
+	}
+	if analysis.projects.allocator.procedure != nil {
+		delete(analysis.projects)
+	}
+	if analysis.project_results.allocator.procedure != nil {
+		delete(analysis.project_results)
+	}
+	external_semantic_index_destroy(&analysis.external_index)
+	for &usage in analysis.file_projects {
+		if usage.path != "" {
+			delete(usage.path, analysis.allocator)
+		}
+		if usage.projects.allocator.procedure != nil {
+			delete(usage.projects)
+		}
+	}
+	if analysis.file_projects.allocator.procedure != nil {
+		delete(analysis.file_projects)
+	}
+	if analysis.unresolved.allocator.procedure != nil {
+		delete(analysis.unresolved)
+	}
+	checker_diagnostic_list_destroy(&analysis.workspace_diags, analysis.allocator)
+	if analysis.external_requests.allocator.procedure != nil {
+		delete(analysis.external_requests)
 	}
 	if analysis.owns_external_context && analysis.external_context != nil {
 		external_semantics_destroy(analysis.external_context)
@@ -268,6 +302,22 @@ semantic_workspace_analysis_destroy :: proc(analysis: ^Workspace_Analysis) {
 		string_interner.destroy(analysis.interner)
 	}
 	analysis^ = {}
+}
+
+checker_diagnostic_list_destroy :: proc(
+	diagnostics: ^[dynamic]Checker_Diagnostic,
+	allocator: mem.Allocator,
+) {
+	if diagnostics == nil || diagnostics.allocator.procedure == nil {
+		return
+	}
+	for &diagnostic in diagnostics^ {
+		if diagnostic.message != "" {
+			delete(diagnostic.message, allocator)
+		}
+	}
+	delete(diagnostics^)
+	diagnostics^ = nil
 }
 
 semantic_workspace_projects_for_file :: proc(

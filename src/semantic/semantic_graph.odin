@@ -487,9 +487,13 @@ semantic_graph_session_reanalyze_external_input :: proc(
 	record := external_semantics_reanalyze_interface_input(&session.external, input)
 	semantic_graph_object_key_list_add(&result.rebuilt_external_projects, key)
 	if session.has_analysis && record != nil {
+		imported := semantic_project_record_clone_lists(
+			record^,
+			session.analysis.external_index.allocator,
+		)
 		_ = external_semantic_index_replace_project_record(
 			&session.analysis.external_index,
-			record^,
+			imported,
 		)
 	}
 }

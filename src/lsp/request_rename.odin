@@ -23,25 +23,25 @@ Rename_Plan :: struct {
 }
 
 handle_prepare_rename :: proc(ctx: ^Request_Context, params: json.Value) {
-	response, ok := prepare_rename_for_params(ctx.state, params, ctx.state.allocator)
+	response, ok := prepare_rename_for_params(ctx.state, params, context.temp_allocator)
 	if !ok {
-		send_success(ctx.output, ctx.id, json.Null(nil), ctx.state.allocator)
+		send_success(ctx.output, ctx.id, json.Null(nil), context.temp_allocator)
 		return
 	}
-	send_success(ctx.output, ctx.id, response, ctx.state.allocator)
+	send_success(ctx.output, ctx.id, response, context.temp_allocator)
 }
 
 handle_rename :: proc(ctx: ^Request_Context, params: json.Value) {
-	edit, ok, error := rename_for_params(ctx.state, params, ctx.state.allocator)
+	edit, ok, error := rename_for_params(ctx.state, params, context.temp_allocator)
 	if error != "" {
-		send_error(ctx.output, ctx.id, RPC_INVALID_PARAMS, error, ctx.state.allocator)
+		send_error(ctx.output, ctx.id, RPC_INVALID_PARAMS, error, context.temp_allocator)
 		return
 	}
 	if !ok {
-		send_success(ctx.output, ctx.id, json.Null(nil), ctx.state.allocator)
+		send_success(ctx.output, ctx.id, json.Null(nil), context.temp_allocator)
 		return
 	}
-	send_success(ctx.output, ctx.id, edit, ctx.state.allocator)
+	send_success(ctx.output, ctx.id, edit, context.temp_allocator)
 }
 
 prepare_rename_for_params :: proc(

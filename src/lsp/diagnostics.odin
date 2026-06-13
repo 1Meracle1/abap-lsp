@@ -9,6 +9,9 @@ import "core:os"
 import "core:strings"
 
 append_parse_diagnostics :: proc(state: ^Server_State, uri: string, errors: []parser.Parse_Error) {
+	if len(errors) == 0 {
+		return
+	}
 	bucket := Parse_Diagnostic_Bucket {
 		uri    = strings.clone(uri, state.allocator),
 		errors = make([dynamic]parser.Parse_Error, 0, len(errors), state.allocator),
@@ -19,9 +22,21 @@ append_parse_diagnostics :: proc(state: ^Server_State, uri: string, errors: []pa
 	append(&state.parse_diagnostics, bucket)
 }
 
+clear_parse_diagnostics :: proc(state: ^Server_State) {
+	for &bucket in state.parse_diagnostics {
+		if bucket.uri != "" {
+			delete(bucket.uri, state.allocator)
+		}
+		if bucket.errors.allocator.procedure != nil {
+			delete(bucket.errors)
+		}
+	}
+	clear(&state.parse_diagnostics)
+}
+
 publish_all_diagnostics :: proc(state: ^Server_State, output: ^os.File) {
 	for uri, _ in state.documents {
-		diagnostics := diagnostics_for_uri(state, uri, state.allocator)
+		diagnostics := diagnostics_for_uri(state, uri, context.temp_allocator)
 		params := Publish_Diagnostics_Params {
 			uri         = uri,
 			diagnostics = diagnostics,

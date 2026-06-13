@@ -53,8 +53,8 @@ handle_semantic_tokens :: proc(ctx: ^Request_Context, params: json.Value) {
 		send_success(ctx.output, ctx.id, Semantic_Tokens{}, ctx.state.allocator)
 		return
 	}
-	tokens := semantic_tokens_for_snapshot(snapshot, ctx.state.allocator)
-	send_success(ctx.output, ctx.id, Semantic_Tokens{data = tokens}, ctx.state.allocator)
+	tokens := semantic_tokens_for_snapshot(snapshot, context.temp_allocator)
+	send_success(ctx.output, ctx.id, Semantic_Tokens{data = tokens}, context.temp_allocator)
 }
 
 semantic_tokens_for_snapshot :: proc(
