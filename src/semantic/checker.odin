@@ -107,6 +107,7 @@ Checker_Context :: struct {
 	decl:              ^Decl_Info,
 	type_hint:         ^Type,
 	type_hint_expr:    ^ast.Node,
+	diagnose_unresolved_value_refs: bool,
 	cursor_shapes:     [dynamic]Checker_Cursor_Query,
 	current_decl:      ^Decl_Info,
 	current_routine:   ^Entity,

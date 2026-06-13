@@ -336,6 +336,25 @@ checker_check_ident_name :: proc(
 			checker_use_range(node, use_range),
 			node,
 		)
+		if namespace == .Value && ctx.diagnose_unresolved_value_refs {
+			checker_add_diagnostic(
+				ctx,
+				.Unresolved_Reference,
+				checker_use_range(node, use_range),
+				checker_unresolved_variable_message(name),
+			)
+		}
+		return nil, false
+	}
+	if namespace == .Value &&
+	   ctx.diagnose_unresolved_value_refs &&
+	   !entity_kind_occupies(entity.kind, .Value) {
+		checker_add_diagnostic(
+			ctx,
+			.Unresolved_Reference,
+			checker_use_range(node, use_range),
+			checker_unresolved_variable_message(name),
+		)
 		return nil, false
 	}
 	checker_add_entity_use_precise(ctx, node, entity, use_range)
@@ -982,7 +1001,7 @@ checker_check_reduce_init_clause_expr :: proc(
 			checker_check_expr(ctx, assignment)
 			continue
 		}
-		value := checker_check_expr(ctx, named.value)
+		value := checker_check_expr_with_unresolved_value_diagnostics(ctx, named.value)
 		name := checker_intern_name(ctx.project, named.name.text)
 		if !string_interner.is_valid(name) {
 			checker_record_operand(ctx, &assignment.expr_base, .No_Value, value.type)
@@ -1064,6 +1083,7 @@ checker_check_reduce_next_clause_expr :: proc(
 		value_ctx := ctx^
 		value_ctx.type_hint = target_type
 		value_ctx.type_hint_expr = named.value
+		value_ctx.diagnose_unresolved_value_refs = true
 		value := checker_check_expr(&value_ctx, named.value)
 		checker_check_assignment_compatibility(ctx, value.type, target_type, checker_expr_range(named.value))
 		checker_record_operand(ctx, &assignment.expr_base, .No_Value, value.type)
@@ -1232,6 +1252,7 @@ checker_check_constructor_for_then_clause :: proc(
 		then_ctx := ctx^
 		then_ctx.type_hint = iter_type
 		then_ctx.type_hint_expr = expr.then_expr
+		then_ctx.diagnose_unresolved_value_refs = true
 		next := checker_check_expr(&then_ctx, expr.then_expr)
 		checker_check_assignment_compatibility(ctx, next.type, iter_type, checker_expr_range(expr.then_expr))
 	}
@@ -1243,9 +1264,20 @@ checker_check_constructor_for_then_clause :: proc(
 			"FOR THEN requires an UNTIL or WHILE condition",
 		)
 	} else {
-		checker_check_expr(ctx, expr.condition)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, expr.condition)
 	}
 	return iter_type
+}
+
+checker_check_expr_with_unresolved_value_diagnostics :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	namespace: Namespace = .Value,
+	lhs := false,
+) -> Operand {
+	diagnostic_ctx := ctx^
+	diagnostic_ctx.diagnose_unresolved_value_refs = true
+	return checker_check_expr(&diagnostic_ctx, expr, namespace, lhs)
 }
 
 checker_collect_inferred_expr_decl :: proc(

@@ -3112,6 +3112,34 @@ lv_result = VALUE i( FOR x IN lv_scalar ( x ) ).`
 }
 
 @(test)
+root_semantic_checker_reports_unresolved_reduce_for_then_operands :: proc(t: ^testing.T) {
+	source := `DATA(lv_val) = REDUCE i( INIT result = 0 FOR i1 = 1 THEN i + 1 UNTIL i > limit NEXT result = result + i ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://reduce_for_then_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 4)
+	seen_i := 0
+	seen_limit := 0
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Reference {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		testing.expect_value(t, diagnostic.message, checker_unresolved_variable_message(text))
+		if text == "i" {
+			seen_i += 1
+		} else if text == "limit" {
+			seen_limit += 1
+		}
+	}
+	testing.expect_value(t, seen_i, 3)
+	testing.expect_value(t, seen_limit, 1)
+}
+
+@(test)
 root_semantic_stmt_checker_resolves_data_cluster_memory_operands :: proc(t: ^testing.T) {
 	source := `DATA lv_export TYPE string.
 DATA lv_import TYPE string.
