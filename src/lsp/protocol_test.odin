@@ -357,6 +357,177 @@ lsp_reanalysis_suspends_dependency_fetches_for_unsaved_document :: proc(t: ^test
 }
 
 @(test)
+lsp_did_change_applies_incremental_text_ranges :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/change.abap"
+	source := "REPORT zmain.\nDATA lv_value TYPE i."
+	state := lsp_test_empty_state()
+	defer lsp_test_state_destroy(&state)
+
+	testing.expect(t, update_document_from_open(&state, lsp_test_did_open_params(uri, source)))
+
+	start := strings.index(source, "value")
+	testing.expect(t, start >= 0)
+	if start < 0 {
+		return
+	}
+	edit_range := range_from_offsets(source, start, start + len("value"))
+	testing.expect(t, update_document_from_change(
+		&state,
+		lsp_test_did_incremental_change_params(uri, edit_range, "other", 2),
+	))
+
+	doc, doc_ok := state.documents[uri]
+	testing.expect(t, doc_ok)
+	if !doc_ok {
+		return
+	}
+	testing.expect_value(t, doc.text, "REPORT zmain.\nDATA lv_other TYPE i.")
+	testing.expect(t, doc.has_unsaved_changes)
+}
+
+@(test)
+lsp_completion_after_incremental_selector_change_returns_inline_new_members :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_inline_new_selector_incremental.abap"
+	before := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_param TYPE string
+        iv_param1 TYPE i OPTIONAL.
+
+    METHODS method_name
+      IMPORTING
+        !iv_value TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+  METHOD method_name.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA(lo_inst) = NEW lcl_class( 'iv_param11111' ).
+DATA lo_inst1 TYPE REF TO lcl_class.
+lo_inst1 = NEW #( iv_param = 'hello' ).
+
+lo_inst->method_name( 'hello' ).
+`
+	typed := "lo_inst->"
+	source := strings.concatenate({before, typed}, context.allocator)
+	state := lsp_test_state_with_open_document(uri, before)
+	defer lsp_test_state_destroy(&state)
+
+	insert_range := range_from_offsets(before, len(before), len(before))
+	testing.expect(t, update_document_from_change(
+		&state,
+		lsp_test_did_incremental_change_params(uri, insert_range, typed, 2),
+	))
+	server_reanalyze(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "method_name")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+	_, constructor_ok := lsp_test_find_completion_item(items, "constructor")
+	testing.expect(t, !constructor_ok)
+
+	filter_text, filter_text_ok := item.filter_text.?
+	testing.expect(t, filter_text_ok)
+	if filter_text_ok {
+		testing.expect_value(t, filter_text, "lo_inst->method_name")
+	}
+	edit, edit_ok := item.text_edit.?
+	testing.expect(t, edit_ok)
+	if edit_ok {
+		expected_range := range_from_offsets(source, len(before), len(source))
+		testing.expect_value(t, edit.range.start.line, expected_range.start.line)
+		testing.expect_value(t, edit.range.start.character, expected_range.start.character)
+		testing.expect_value(t, edit.range.end.line, expected_range.end.line)
+		testing.expect_value(t, edit.range.end.character, expected_range.end.character)
+	}
+}
+
+@(test)
+lsp_completion_after_pending_instance_arrow_inserts_arrow_selector :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_pending_instance_arrow.abap"
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_param TYPE string
+        iv_param1 TYPE i OPTIONAL.
+
+    METHODS method_name
+      IMPORTING
+        !iv_value TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+  METHOD method_name.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA(lo_inst) = NEW lcl_class( 'iv_param11111' ).
+lo_inst-`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "method_name")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+	_, constructor_ok := lsp_test_find_completion_item(items, "constructor")
+	testing.expect(t, !constructor_ok)
+
+	filter_text, filter_text_ok := item.filter_text.?
+	testing.expect(t, filter_text_ok)
+	if filter_text_ok {
+		testing.expect_value(t, filter_text, "lo_inst->method_name")
+	}
+	edit, edit_ok := item.text_edit.?
+	testing.expect(t, edit_ok)
+	if edit_ok {
+		replace_start := offset - len("lo_inst-")
+		replace_start_position := offset_to_position(source, replace_start)
+		replace_end_position := offset_to_position(source, offset)
+		testing.expect_value(t, edit.range.start.line, replace_start_position.line)
+		testing.expect_value(t, edit.range.start.character, replace_start_position.character)
+		testing.expect_value(t, edit.range.end.line, replace_end_position.line)
+		testing.expect_value(t, edit.range.end.character, replace_end_position.character)
+		testing.expect_value(
+			t,
+			edit.new_text,
+			`lo_inst->method_name(
+  iv_value = $1
+)$0`,
+		)
+	}
+}
+
+@(test)
 lsp_completion_selector_method_uses_full_call_snippet :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_method_snippet.abap"
 	source := `CLASS lcl_repo DEFINITION.
@@ -4388,6 +4559,36 @@ lsp_test_did_change_params :: proc(uri, source: string, version: int) -> json.Ob
 	changes := make(json.Array, 0, 1, context.allocator)
 	change := make(json.Object, 1, context.allocator)
 	change["text"] = json.String(source)
+	append(&changes, change)
+	params["contentChanges"] = changes
+	return params
+}
+
+lsp_test_did_incremental_change_params :: proc(
+	uri: string,
+	range: Range,
+	text: string,
+	version: int,
+) -> json.Object {
+	params := make(json.Object, 2, context.allocator)
+	text_document := make(json.Object, 2, context.allocator)
+	text_document["uri"] = json.String(uri)
+	text_document["version"] = json.Integer(version)
+	params["textDocument"] = text_document
+
+	changes := make(json.Array, 0, 1, context.allocator)
+	change := make(json.Object, 2, context.allocator)
+	range_object := make(json.Object, 2, context.allocator)
+	start := make(json.Object, 2, context.allocator)
+	start["line"] = json.Integer(range.start.line)
+	start["character"] = json.Integer(range.start.character)
+	range_object["start"] = start
+	end := make(json.Object, 2, context.allocator)
+	end["line"] = json.Integer(range.end.line)
+	end["character"] = json.Integer(range.end.character)
+	range_object["end"] = end
+	change["range"] = range_object
+	change["text"] = json.String(text)
 	append(&changes, change)
 	params["contentChanges"] = changes
 	return params

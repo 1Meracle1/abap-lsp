@@ -273,13 +273,31 @@ completion_item_from_semantic_item :: proc(
 	}
 	if item.source == .Selector_Member {
 		new_text := out.insert_text
-		if selector_filter_prefix != "" {
-			out.filter_text = strings.concatenate({selector_filter_prefix, item.name}, allocator)
-			new_text = strings.concatenate({selector_filter_prefix, out.insert_text}, allocator)
+		insert_prefix := completion_selector_insert_prefix(selector_filter_prefix, item, allocator)
+		if insert_prefix != "" {
+			out.filter_text = strings.concatenate({insert_prefix, item.name}, allocator)
+			new_text = strings.concatenate({insert_prefix, out.insert_text}, allocator)
 		}
 		out.text_edit = Text_Edit{range = selector_replace_range, new_text = new_text}
 	}
 	return out
+}
+
+completion_selector_insert_prefix :: proc(
+	prefix: string,
+	item: semantic.Semantic_Completion_Item,
+	allocator: mem.Allocator,
+) -> string {
+	if prefix == "" {
+		return ""
+	}
+	if item.source == .Selector_Member &&
+	   item.selector_op == .Arrow &&
+	   strings.has_suffix(prefix, "-") &&
+	   !strings.has_suffix(prefix, "->") {
+		return strings.concatenate({prefix, ">"}, allocator)
+	}
+	return prefix
 }
 
 completion_semantic_item_uses_method_call_snippet :: proc(

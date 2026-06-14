@@ -15,6 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    tomllib = None
+
 
 @dataclass(frozen=True)
 class CompletionCase:
@@ -27,6 +32,8 @@ class CompletionCase:
     expected_filter_text: str | None = None
     expected_text_edit_new_text: str | None = None
     require_text_edit_from_marker: str | None = None
+    initial_source: str | None = None
+    expected_absent_labels: tuple[str, ...] = ()
 
 
 COMPLETION_CASES: dict[str, CompletionCase] = {
@@ -86,6 +93,103 @@ ENDCLASS.""",
     )$0""",
         require_text_edit_from_marker="me->",
     ),
+    "inline-new-selector-incremental": CompletionCase(
+        name="inline-new-selector-incremental",
+        file_name="completion_inline_new_selector_incremental.abap",
+        description="incremental lo_inst-> edit returns method_name",
+        source="""CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_param TYPE string
+        iv_param1 TYPE i OPTIONAL.
+
+    METHODS method_name
+      IMPORTING
+        !iv_value TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+  METHOD method_name.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA(lo_inst) = NEW lcl_class( 'iv_param11111' ).
+DATA lo_inst1 TYPE REF TO lcl_class.
+lo_inst1 = NEW #( iv_param = 'hello' ).
+
+lo_inst->method_name( 'hello' ).
+lo_inst->""",
+        marker="lo_inst->",
+        expected_label="method_name",
+        expected_filter_text="lo_inst->method_name",
+        expected_text_edit_new_text="""lo_inst->method_name(
+  iv_value = $1
+)$0""",
+        require_text_edit_from_marker="lo_inst->",
+        expected_absent_labels=("constructor",),
+        initial_source="""CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_param TYPE string
+        iv_param1 TYPE i OPTIONAL.
+
+    METHODS method_name
+      IMPORTING
+        !iv_value TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+  METHOD method_name.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA(lo_inst) = NEW lcl_class( 'iv_param11111' ).
+DATA lo_inst1 TYPE REF TO lcl_class.
+lo_inst1 = NEW #( iv_param = 'hello' ).
+
+lo_inst->method_name( 'hello' ).
+""",
+    ),
+    "inline-new-pending-arrow": CompletionCase(
+        name="inline-new-pending-arrow",
+        file_name="completion_inline_new_pending_arrow.abap",
+        description="lo_inst- trigger returns method_name and inserts ->",
+        source="""CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_param TYPE string
+        iv_param1 TYPE i OPTIONAL.
+
+    METHODS method_name
+      IMPORTING
+        !iv_value TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+  METHOD method_name.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA(lo_inst) = NEW lcl_class( 'iv_param11111' ).
+lo_inst-""",
+        marker="lo_inst-",
+        expected_label="method_name",
+        expected_filter_text="lo_inst->method_name",
+        expected_text_edit_new_text="""lo_inst->method_name(
+  iv_value = $1
+)$0""",
+        require_text_edit_from_marker="lo_inst-",
+        expected_absent_labels=("constructor",),
+    ),
 }
 
 
@@ -128,14 +232,22 @@ def build_debug_binary(repo_root: Path) -> None:
 
 
 def source_position_after_marker(source: str, marker: str) -> dict[str, int]:
-    offset = source.rindex(marker) + len(marker)
+    offset = source_offset_after_marker(source, marker)
     line = source[:offset].count("\n")
     line_start = source.rfind("\n", 0, offset) + 1
     return {"line": line, "character": offset - line_start}
 
 
+def source_offset_after_marker(source: str, marker: str) -> int:
+    return source.rindex(marker) + len(marker)
+
+
 def source_position_at_marker(source: str, marker: str) -> dict[str, int]:
     offset = source.rindex(marker)
+    return source_position_at_offset(source, offset)
+
+
+def source_position_at_offset(source: str, offset: int) -> dict[str, int]:
     line = source[:offset].count("\n")
     line_start = source.rfind("\n", 0, offset) + 1
     return {"line": line, "character": offset - line_start}
@@ -262,6 +374,118 @@ def expected_item_errors(case: CompletionCase, item: dict[str, Any] | None) -> l
     return errors
 
 
+def absent_item_errors(case: CompletionCase, items: list[dict[str, Any]]) -> list[str]:
+    labels = {item.get("label") for item in items}
+    return [
+        f"unexpected completion label {label!r}"
+        for label in case.expected_absent_labels
+        if label in labels
+    ]
+
+
+def zed_completion_query_characters(repo_root: Path) -> set[str]:
+    config_path = repo_root / "editors" / "zed" / "languages" / "abap" / "config.toml"
+    if not config_path.exists():
+        return set()
+
+    if tomllib is not None:
+        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        values = data.get("completion_query_characters", [])
+    else:
+        values = []
+        for line in config_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.split("#", 1)[0].strip()
+            if stripped.startswith("["):
+                break
+            if stripped.startswith("completion_query_characters"):
+                _, raw_values = stripped.split("=", 1)
+                values = json.loads(raw_values)
+                break
+
+    return {value for value in values if isinstance(value, str) and len(value) == 1}
+
+
+def zed_char_kind(char: str, completion_query_characters: set[str]) -> str:
+    if char.isalnum() or char == "_" or char in completion_query_characters:
+        return "word"
+    if char.isspace():
+        return "whitespace"
+    return "punctuation"
+
+
+def zed_completion_query(
+    source: str,
+    offset: int,
+    completion_query_characters: set[str],
+) -> str | None:
+    order = {"whitespace": 0, "punctuation": 1, "word": 2}
+    neighboring_kinds: list[str] = []
+    if offset > 0:
+        neighboring_kinds.append(
+            zed_char_kind(source[offset - 1], completion_query_characters)
+        )
+    if offset < len(source):
+        neighboring_kinds.append(zed_char_kind(source[offset], completion_query_characters))
+    if not neighboring_kinds:
+        return None
+
+    word_kind = max(neighboring_kinds, key=lambda kind: order[kind])
+    start = offset
+    while (
+        start > 0
+        and source[start - 1] != "\n"
+        and zed_char_kind(source[start - 1], completion_query_characters) == word_kind
+    ):
+        start -= 1
+
+    end = offset
+    while (
+        end < len(source)
+        and source[end] != "\n"
+        and zed_char_kind(source[end], completion_query_characters) == word_kind
+    ):
+        end += 1
+
+    if offset > start and word_kind == "word":
+        return source[start:offset]
+    return None
+
+
+def zed_effective_filter_text(item: dict[str, Any]) -> str:
+    label = str(item.get("label", ""))
+    detail = item.get("detail")
+    label_details = item.get("labelDetails")
+    description = (
+        label_details.get("description")
+        if isinstance(label_details, dict)
+        else None
+    )
+    if isinstance(detail, str) and detail != label:
+        text = f"{label} {detail}"
+    elif isinstance(description, str) and description != label:
+        text = f"{label} {description}"
+    else:
+        text = label
+
+    filter_text = item.get("filterText")
+    if isinstance(filter_text, str):
+        start = text.find(filter_text)
+        if start >= 0:
+            return text[start : start + len(filter_text)]
+    return text[: len(label)]
+
+
+def zed_fuzzy_subsequence_matches(query: str, candidate: str) -> bool:
+    candidate_index = 0
+    candidate_lower = candidate.lower()
+    for query_char in query.lower():
+        found = candidate_lower.find(query_char, candidate_index)
+        if found < 0:
+            return False
+        candidate_index = found + 1
+    return True
+
+
 def run_probe(
     server: Path,
     timeout: float,
@@ -272,6 +496,7 @@ def run_probe(
         uri = (root / case.file_name).as_uri()
         root_uri = root.as_uri()
         position = source_position_after_marker(case.source, case.marker)
+        open_source = case.initial_source if case.initial_source is not None else case.source
 
         proc = subprocess.Popen(
             [str(server), "--disable-adt-dependency-fetch"],
@@ -322,7 +547,7 @@ def run_probe(
                             "uri": uri,
                             "languageId": "abap",
                             "version": 1,
-                            "text": case.source,
+                            "text": open_source,
                         }
                     },
                 },
@@ -333,6 +558,40 @@ def run_probe(
                 timeout,
                 seen,
             )
+
+            if case.initial_source is not None:
+                if not case.source.startswith(case.initial_source):
+                    raise ValueError(f"{case.name}: source must extend initial_source")
+                edit_text = case.source[len(case.initial_source) :]
+                edit_position = source_position_at_offset(
+                    case.initial_source,
+                    len(case.initial_source),
+                )
+                send_message(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didChange",
+                        "params": {
+                            "textDocument": {"uri": uri, "version": 2},
+                            "contentChanges": [
+                                {
+                                    "range": {
+                                        "start": edit_position,
+                                        "end": edit_position,
+                                    },
+                                    "text": edit_text,
+                                }
+                            ],
+                        },
+                    },
+                )
+                recv_until(
+                    frames,
+                    lambda message: message.get("method") == "textDocument/publishDiagnostics",
+                    timeout,
+                    seen,
+                )
 
             send_message(
                 proc,
@@ -366,11 +625,31 @@ def run_probe(
         return completion, seen, list(stderr_lines.queue)
 
 
-def run_case(server: Path, timeout: float, case: CompletionCase) -> dict[str, Any]:
+def run_case(
+    server: Path,
+    timeout: float,
+    case: CompletionCase,
+    zed_query_characters: set[str],
+) -> dict[str, Any]:
     completion, seen, stderr_lines = run_probe(server, timeout, case)
     items = completion_items(completion)
     expected = next((item for item in items if item.get("label") == case.expected_label), None)
     errors = expected_item_errors(case, expected)
+    errors.extend(absent_item_errors(case, items))
+    zed_query: str | None = None
+    zed_filter_text: str | None = None
+    zed_visible: bool | None = None
+    if expected is not None:
+        offset = source_offset_after_marker(case.source, case.marker)
+        zed_query = zed_completion_query(case.source, offset, zed_query_characters)
+        zed_filter_text = zed_effective_filter_text(expected)
+        zed_visible = zed_fuzzy_subsequence_matches(zed_query or "", zed_filter_text)
+        if not zed_visible:
+            errors.append(
+                "expected item would be hidden by Zed filtering: "
+                f"query {zed_query!r} does not match effective filter text "
+                f"{zed_filter_text!r}"
+            )
     diagnostics = [
         message.get("params", {}).get("diagnostics", [])
         for message in seen
@@ -385,6 +664,10 @@ def run_case(server: Path, timeout: float, case: CompletionCase) -> dict[str, An
         "item_count": len(items),
         "labels": [item.get("label") for item in items],
         "expected_item": expected,
+        "zed_query_characters": sorted(zed_query_characters),
+        "zed_query": zed_query,
+        "zed_filter_text": zed_filter_text,
+        "zed_visible": zed_visible,
         "errors": errors,
         "diagnostics": diagnostics[-1] if diagnostics else [],
         "stderr": stderr_lines,
@@ -410,10 +693,11 @@ def main() -> int:
         if args.case == "all"
         else [COMPLETION_CASES[args.case]]
     )
+    zed_query_characters = zed_completion_query_characters(repo_root)
     case_results: list[dict[str, Any]] = []
     for case in cases:
         try:
-            case_results.append(run_case(server, args.timeout, case))
+            case_results.append(run_case(server, args.timeout, case, zed_query_characters))
         except Exception as exc:
             print(f"completion e2e probe failed for {case.name}: {exc}", file=sys.stderr)
             return 1

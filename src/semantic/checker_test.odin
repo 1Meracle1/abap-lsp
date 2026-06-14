@@ -5041,12 +5041,15 @@ CLASS lcl_repo DEFINITION.
     CONSTANTS c_public TYPE string VALUE 'x'.
     CLASS-DATA gv_public TYPE string.
     DATA mv_instance TYPE string.
+    CLASS-METHODS class_constructor.
     CLASS-METHODS get_instance.
     METHODS scan.
   PRIVATE SECTION.
     CLASS-DATA gv_private TYPE string.
 ENDCLASS.
 CLASS lcl_repo IMPLEMENTATION.
+  METHOD class_constructor.
+  ENDMETHOD.
   METHOD get_instance.
   ENDMETHOD.
   METHOD scan.
@@ -5091,6 +5094,7 @@ lcl_repo=>get_instance( ).`
 			c_public_found = true
 		}
 		if name == "scan" ||
+		   name == "class_constructor" ||
 		   name == "mv_instance" ||
 		   name == "gv_private" ||
 		   name == "lv_local" ||
@@ -5171,5 +5175,70 @@ lcl_repo=>get_instance( )->scan( ).`
 	}
 	testing.expect(t, scan_found)
 	testing.expect(t, mv_public_found)
+	testing.expect(t, !unrelated_found)
+}
+
+@(test)
+root_semantic_query_completion_after_pending_instance_arrow_returns_accessible_instance_members :: proc(
+	t: ^testing.T,
+) {
+	source := `REPORT zmain.
+CLASS lcl_repo DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor IMPORTING iv_value TYPE string.
+    METHODS scan.
+ENDCLASS.
+CLASS lcl_repo IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+  METHOD scan.
+  ENDMETHOD.
+ENDCLASS.
+DATA(lo_repo) = NEW lcl_repo( 'value' ).
+lo_repo-`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	parsed := parser.parse(source, "mem://query_pending_instance_arrow_completion.abap", context.allocator)
+	checker := checker_make(&project)
+	file := checker_add_file(&checker, parsed.path, parsed.root)
+	checker_check_file(&checker, file)
+
+	query := semantic_query(&project, &checker, file)
+	offset := checker_test_find_text(source, "lo_repo-") + len("lo_repo-")
+	testing.expect(t, offset >= len("lo_repo-"))
+
+	items := semantic_completion_items_at_offset(
+		semantic_query_completion(query),
+		offset,
+		"",
+		context.allocator,
+		source,
+	)
+
+	scan_found := false
+	constructor_found := false
+	unrelated_found := false
+	for item in items {
+		name := item.name
+		if name == "scan" &&
+		   item.namespace == .Routine &&
+		   item.source == .Selector_Member &&
+		   item.selector_op == .Arrow {
+			scan_found = true
+		}
+		if name == "constructor" &&
+		   item.namespace == .Routine &&
+		   item.source == .Selector_Member &&
+		   item.selector_op == .Arrow {
+			constructor_found = true
+		}
+		if name == "lcl_repo" || name == "strlen" || name == "lo_repo" {
+			unrelated_found = true
+		}
+	}
+	testing.expect(t, scan_found)
+	testing.expect(t, !constructor_found)
 	testing.expect(t, !unrelated_found)
 }

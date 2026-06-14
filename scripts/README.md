@@ -31,4 +31,7 @@ python .\scripts\verify_lsp_completion_e2e.py --case me-selector --skip-build
 ```
 
 This verifies the language-server protocol response used by editors such as
-Zed. It does not automate the Zed UI popup itself.
+Zed. It also checks the repository Zed ABAP language config against Zed's
+generic completion filtering behavior so selector completions returned by the
+server are not hidden by client-side query filtering. It does not automate the
+Zed UI popup itself.

@@ -326,9 +326,83 @@ update_document_from_change :: proc(state: ^Server_State, params: json.Value) ->
 	changes := object_array(object, "contentChanges") or_return
 	uri := object_string(text_document, "uri") or_return
 	version := object_integer(text_document, "version") or_return
-	last_change := changes[len(changes) - 1].(json.Object) or_return
-	text := object_string(last_change, "text") or_return
+	text, text_ok := document_text_after_changes(state, uri, changes, context.temp_allocator)
+	if !text_ok {
+		return false
+	}
 	return upsert_document_text(state, uri, text, version, true)
+}
+
+document_text_after_changes :: proc(
+	state: ^Server_State,
+	raw_uri: string,
+	changes: json.Array,
+	allocator: mem.Allocator,
+) -> (
+	string,
+	bool,
+) {
+	if len(changes) == 0 {
+		return "", false
+	}
+	current: string
+	has_current := false
+	uri := normalize_lsp_uri(raw_uri, context.temp_allocator)
+	if doc, doc_ok := state.documents[uri]; doc_ok {
+		current = doc.text
+		has_current = true
+	}
+	for change_value in changes {
+		change, change_ok := change_value.(json.Object)
+		if !change_ok {
+			return "", false
+		}
+		text, text_ok := object_string(change, "text")
+		if !text_ok {
+			return "", false
+		}
+		if change_range, has_range := document_content_change_range(change); has_range {
+			if !has_current {
+				return "", false
+			}
+			start := position_to_offset(current, change_range.start)
+			end := position_to_offset(current, change_range.end)
+			if end < start {
+				return "", false
+			}
+			current = strings.concatenate({current[:start], text, current[end:]}, allocator)
+			continue
+		}
+		current = text
+		has_current = true
+	}
+	return current, has_current
+}
+
+document_content_change_range :: proc(change: json.Object) -> (Range, bool) {
+	range_object, range_ok := object_object(change, "range")
+	if !range_ok {
+		return {}, false
+	}
+	start, start_ok := document_content_change_position(range_object, "start")
+	end, end_ok := document_content_change_position(range_object, "end")
+	if !start_ok || !end_ok {
+		return {}, false
+	}
+	return Range{start = start, end = end}, true
+}
+
+document_content_change_position :: proc(object: json.Object, key: string) -> (Position, bool) {
+	position, position_ok := object_object(object, key)
+	if !position_ok {
+		return {}, false
+	}
+	line, line_ok := object_integer(position, "line")
+	character, character_ok := object_integer(position, "character")
+	if !line_ok || !character_ok {
+		return {}, false
+	}
+	return Position{line = line, character = character}, true
 }
 
 update_document_from_save :: proc(state: ^Server_State, params: json.Value) -> bool {

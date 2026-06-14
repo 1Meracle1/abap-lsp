@@ -5,7 +5,10 @@ line_comments = ["\" "]
 tab_size = 2
 hard_tabs = false
 word_characters = ["_"]
-completion_query_characters = ["-", "_", "~", ">", "="]
+# Selector punctuation is advertised by the language server as trigger characters.
+# Do not treat it as query text, or Zed filters selector member completions by
+# receiver text such as `lo_inst->`.
+completion_query_characters = []
 
 brackets = [
   { start = "(", end = ")", close = true, newline = false },
@@ -17,7 +20,7 @@ brackets = [
 ]
 
 [overrides.string]
-completion_query_characters = ["-", "_", "~", ">", "="]
+completion_query_characters = []
 
 [overrides.field_symbol]
 word_characters = ["_", "<", ">"]

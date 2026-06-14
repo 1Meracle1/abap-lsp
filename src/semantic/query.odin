@@ -66,11 +66,12 @@ Semantic_Completion_Item_Source :: enum {
 }
 
 Semantic_Completion_Item :: struct {
-	name:      string,
-	namespace: Namespace,
-	entity:    ^Entity,
-	source:    Semantic_Completion_Item_Source,
-	range:     Range,
+	name:        string,
+	namespace:   Namespace,
+	entity:      ^Entity,
+	source:      Semantic_Completion_Item_Source,
+	selector_op: ast.Selector_Op,
+	range:       Range,
 }
 
 Semantic_Completion_Item_Key :: struct {
@@ -592,7 +593,15 @@ semantic_completion_append_selector_entities :: proc(
 	}
 	if selector.op == .Dash {
 		structure := semantic_completion_resolve_structure(q, scope, selector)
-		semantic_completion_append_structure_fields(q.project, structure, prefix, seen, out)
+		if structure != nil {
+			semantic_completion_append_structure_fields(q.project, structure, prefix, seen, out)
+			return
+		}
+		owner := semantic_completion_resolve_instance_owner(q, scope, selector)
+		if owner == nil || (owner.kind != .Class && owner.kind != .Interface) {
+			return
+		}
+		semantic_completion_append_object_members(q, owner, scope, prefix, seen, out, .Arrow)
 		return
 	}
 }
@@ -762,7 +771,7 @@ semantic_completion_append_object_members :: proc(
 		if !semantic_completion_object_member_accessible(member, access_scope, op) {
 			continue
 		}
-		semantic_completion_append_entity(q.project, member, .Selector_Member, prefix, seen, out)
+		semantic_completion_append_entity(q.project, member, .Selector_Member, prefix, seen, out, op)
 	}
 	for interface_name in payload.implemented_interfaces {
 		if interface_name == "" {
@@ -810,7 +819,7 @@ semantic_completion_append_structure_fields :: proc(
 		return
 	}
 	for field in structure.fields {
-		semantic_completion_append_entity(project, field, .Selector_Member, prefix, seen, out)
+		semantic_completion_append_entity(project, field, .Selector_Member, prefix, seen, out, .Dash)
 	}
 }
 
@@ -820,6 +829,9 @@ semantic_completion_object_member_accessible :: proc(
 	op: ast.Selector_Op,
 ) -> bool {
 	if member == nil {
+		return false
+	}
+	if semantic_completion_constructor_method(member) {
 		return false
 	}
 	if op == .Fat_Arrow && !semantic_completion_static_member(member) {
@@ -832,6 +844,14 @@ semantic_completion_object_member_accessible :: proc(
 		return true
 	}
 	return access_scope != nil && checker_member_visible_from_scope(access_scope, member)
+}
+
+semantic_completion_constructor_method :: proc(member: ^Entity) -> bool {
+	if member == nil || member.kind != .Method {
+		return false
+	}
+	return strings.equal_fold(member.name, "constructor") ||
+	       strings.equal_fold(member.name, "class_constructor")
 }
 
 semantic_completion_static_member :: proc(member: ^Entity) -> bool {
@@ -1068,6 +1088,7 @@ semantic_completion_append_entity :: proc(
 	prefix: string,
 	seen: ^map[Semantic_Completion_Item_Key]bool,
 	out: ^[dynamic]Semantic_Completion_Item,
+	selector_op: ast.Selector_Op = .Dash,
 ) {
 	if entity == nil || entity.name == "" {
 		return
@@ -1099,6 +1120,7 @@ semantic_completion_append_entity :: proc(
 				namespace = namespace,
 				entity = entity,
 				source = source,
+				selector_op = selector_op,
 				range = entity.name_range,
 			},
 		)
