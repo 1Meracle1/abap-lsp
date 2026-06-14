@@ -67,11 +67,6 @@ Checker_Expr_Record :: struct {
 	info: Checker_Expr_Info,
 }
 
-Checker_Dependency :: struct {
-	decl:   ^Decl_Info,
-	entity: ^Entity,
-}
-
 Object_Member_Lookup_Key :: struct {
 	owner:     ^Entity,
 	namespace: Namespace,
@@ -101,7 +96,6 @@ Checker_Info :: struct {
 	definitions:                            [dynamic]^Entity,
 	entity_queue:                           [dynamic]^Entity,
 	checked_entities:                       [dynamic]^Entity,
-	dependencies:                           [dynamic]Checker_Dependency,
 	uses:                                   [dynamic]Checker_Entity_Use,
 	expr_infos:                             [dynamic]Checker_Expr_Record,
 	diagnostics:                            [dynamic]Checker_Diagnostic,
@@ -187,7 +181,6 @@ checker_info_make :: proc(
 		definitions = make([dynamic]^Entity, 0, 16, project.allocator),
 		entity_queue = make([dynamic]^Entity, 0, 16, project.allocator),
 		checked_entities = make([dynamic]^Entity, 0, 16, project.allocator),
-		dependencies = make([dynamic]Checker_Dependency, 0, 16, project.allocator),
 		uses = make([dynamic]Checker_Entity_Use, 0, 32, project.allocator),
 		expr_infos = make([dynamic]Checker_Expr_Record, 0, 32, project.allocator),
 		diagnostics = make([dynamic]Checker_Diagnostic, 0, 8, project.allocator),
@@ -916,7 +909,6 @@ checker_add_entity_use_at_range :: proc(
 	range: Range,
 ) {
 	entity.flags += {.Used}
-	checker_add_dependency(ctx, entity)
 	append(
 		&ctx.info.uses,
 		Checker_Entity_Use {
@@ -928,18 +920,6 @@ checker_add_entity_use_at_range :: proc(
 			range = range,
 		},
 	)
-}
-
-checker_add_dependency :: proc(ctx: ^Checker_Context, entity: ^Entity) {
-	if ctx.decl == nil {
-		return
-	}
-	for dep in ctx.info.dependencies {
-		if dep.decl == ctx.decl && dep.entity == entity {
-			return
-		}
-	}
-	append(&ctx.info.dependencies, Checker_Dependency{decl = ctx.decl, entity = entity})
 }
 
 checker_check_file :: proc(checker: ^Checker, file: ^Project_File) {

@@ -814,7 +814,6 @@ checker_collect_structure_field :: proc(
 	value_clause: ^ast.Value_Clause = nil,
 	occurs: ^ast.Expr = nil,
 ) -> ^Entity {
-	assert(structure != nil && scope != nil && owner != nil)
 	if name == "" {
 		return nil
 	}
@@ -829,7 +828,7 @@ checker_collect_structure_field :: proc(
 		payload.owner_structure = structure
 		payload.decl_unit = ctx.file
 		payload.decl_range = range
-		payload.field_index = i32(len(structure.fields))
+		payload.field_index = len(structure.fields)
 		payload.value_clause = value_clause
 		payload.type_clause_form = checker_type_form_with_occurs(type_clause.form, occurs) if type_clause != nil else ast.Data_Type_Form.Type
 		payload.has_type_clause_form = type_clause != nil
@@ -855,7 +854,6 @@ checker_collect_structure_include :: proc(
 	renaming_suffix: ast.Token_Text = {},
 	value_clause: ^ast.Value_Clause = nil,
 ) -> ^Entity {
-	assert(structure != nil && scope != nil && owner != nil)
 	assert(kind == .Include_Type || kind == .Include_Structure)
 	name := as_name.text
 	name_range := as_name.range if name != "" else Range{}
@@ -879,7 +877,7 @@ checker_collect_structure_include :: proc(
 	payload.owner_structure = structure
 	payload.decl_unit = ctx.file
 	payload.decl_range = name_range
-	payload.field_index = i32(len(structure.fields))
+	payload.field_index = len(structure.fields)
 	payload.value_clause = value_clause
 	payload.type_ref = checker_type_ref_data_from_expr(
 		ctx,
@@ -1039,7 +1037,7 @@ checker_collect_select_options_decl :: proc(
 	}
 }
 
-checker_collect_range_component :: proc(
+checker_collect_range_component :: #force_inline proc(
 	ctx: ^Checker_Context,
 	structure: ^Structure,
 	scope: ^Scope,

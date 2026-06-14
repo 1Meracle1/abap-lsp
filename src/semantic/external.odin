@@ -1380,7 +1380,7 @@ external_semantics_add_structure_summary :: proc(
 		field_payload, field_ok := field_entity.payload.(^Entity_Field_Payload)
 		assert(field_ok && field_payload != nil)
 		field_payload.owner_structure = structure
-		field_payload.field_index = i32(index)
+		field_payload.field_index = index
 		field_payload.type_clause_form = .Type
 		field_payload.has_type_clause_form = true
 		append(&structure.fields, field_entity)

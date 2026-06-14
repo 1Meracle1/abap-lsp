@@ -274,7 +274,7 @@ Entity_Field_Payload :: struct {
 	owner_structure:         ^Structure,
 	decl_unit:               ^Project_File,
 	decl_range:              Range,
-	field_index:             i32,
+	field_index:             int,
 	type_ref:                Field_Type_Ref_Data,
 	value_clause:            ^ast.Value_Clause,
 	type_clause_form:        ast.Data_Type_Form,

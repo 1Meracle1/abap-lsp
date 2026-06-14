@@ -714,7 +714,7 @@ checker_sql_add_structure_field :: proc(
 	payload.owner_structure = structure
 	payload.decl_unit = ctx.file
 	payload.decl_range = field.range
-	payload.field_index = i32(len(structure.fields))
+	payload.field_index = len(structure.fields)
 	payload.flags += {.Has_Decl_Range}
 	append(&structure.fields, entity)
 	_ = scope_insert_declaration(structure.scope, entity)

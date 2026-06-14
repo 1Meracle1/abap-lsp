@@ -829,7 +829,7 @@ checker_register_builtin_structure_field :: proc(
 	payload, payload_ok := entity.payload.(^Entity_Field_Payload)
 	assert(payload_ok && payload != nil)
 	payload.owner_structure = structure
-	payload.field_index = i32(len(structure.fields))
+	payload.field_index = len(structure.fields)
 	payload.type_clause_form = .Type
 	payload.has_type_clause_form = spec.type_name != ""
 	if spec.type_name != "" {

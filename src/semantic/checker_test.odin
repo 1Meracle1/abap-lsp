@@ -950,7 +950,6 @@ root_semantic_checker_registers_checks_and_records_entity_uses :: proc(t: ^testi
 	checker_add_entity_use(&ctx, nil, entity)
 	checker_add_entity_use(&ctx, nil, entity)
 	testing.expect(t, .Used in entity.flags)
-	testing.expect_value(t, len(checker.info.dependencies), 1)
 	testing.expect_value(t, len(checker.info.uses), 2)
 }
 

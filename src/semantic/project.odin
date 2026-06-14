@@ -57,9 +57,6 @@ project_destroy :: proc(project: ^Project) {
 }
 
 project_intern_lower_ascii :: proc(project: ^Project, name: string) -> string {
-	if name == "" {
-		return ""
-	}
 	lower := utils.to_lower_ascii(name, context.temp_allocator)
 	return lower
 	// interned := string_interner.insert(project.name_interner, lower)
@@ -89,7 +86,7 @@ project_add_file :: proc(
 	return file
 }
 
-project_file_has_syntax_errors :: proc(file: ^Project_File) -> bool {
+project_file_has_syntax_errors :: #force_inline proc "contextless" (file: ^Project_File) -> bool {
 	return file != nil && (file.has_syntax_errors || len(file.syntax_diagnostics) > 0)
 }
 
@@ -101,8 +98,7 @@ project_new_entity :: proc(project: ^Project, kind: Entity_Kind = .Invalid) -> ^
 			value.flags += {.Builtin}
 		}
 	}
-	entity, err := xar.push_back_elem_and_get_ptr(&project.entities, value)
-	assert(err == .None && entity != nil)
+	entity, _ := xar.push_back_elem_and_get_ptr(&project.entities, value)
 	return entity
 }
 
@@ -134,7 +130,7 @@ project_new_type :: proc(project: ^Project, kind: Type_Kind = .Unknown) -> ^Type
 @(private)
 project_unknown_type: Type = Type{kind = .Unknown}
 
-project_type_unknown :: #force_inline proc(_: ^Project = nil) -> ^Type {
+project_type_unknown :: #force_inline proc "contextless" (_: ^Project = nil) -> ^Type {
 	return &project_unknown_type
 }
 

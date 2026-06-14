@@ -807,7 +807,7 @@ checker_expand_structure_include :: proc(ctx: ^Checker_Context, include_entity: 
 	owner.fields = next_fields
 	for field, index in owner.fields {
 		if field_payload, field_ok := field.payload.(^Entity_Field_Payload); field_ok && field_payload != nil {
-			field_payload.field_index = i32(index)
+			field_payload.field_index = index
 		}
 	}
 }
