@@ -1391,9 +1391,6 @@ checker_collect_oop_aliases :: proc(
 	owner: ^Entity,
 	visibility: Visibility,
 ) {
-	if owner == nil {
-		return
-	}
 	if len(stmt.aliases) > 0 {
 		for alias in stmt.aliases {
 			checker_collect_oop_alias(ctx, alias.name, alias.target, stmt.range, &stmt.node.stmt_base, owner, visibility)

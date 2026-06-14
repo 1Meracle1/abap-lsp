@@ -4722,6 +4722,70 @@ ENDCLASS.`
 }
 
 @(test)
+lsp_code_action_adds_missing_interface_method_implementation_from_alias :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/code_action_missing_interface_method_impl.abap"
+	source := `INTERFACE lif_interface.
+  METHODS method_name.
+ENDINTERFACE.
+
+CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_interface.
+    ALIASES short_name FOR lif_interface~method_name.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	diagnostics := diagnostics_for_uri(&state, uri, context.allocator)
+	alias_diagnostic := Diagnostic{}
+	alias_diagnostic_found := false
+	for diagnostic in diagnostics {
+		if diagnostic.code != "Missing_Method_Implementation" ||
+		   !strings.contains(diagnostic.message, "lif_interface~method_name") {
+			continue
+		}
+		start := position_to_offset(source, diagnostic.range.start)
+		end := position_to_offset(source, diagnostic.range.end)
+		if source[start:end] == "short_name" {
+			alias_diagnostic = diagnostic
+			alias_diagnostic_found = true
+			break
+		}
+	}
+	testing.expect(t, alias_diagnostic_found)
+	if !alias_diagnostic_found {
+		return
+	}
+
+	params := lsp_test_code_action_params(uri, alias_diagnostic.range)
+	actions := code_actions_for_params(&state, params, context.allocator)
+
+	testing.expect_value(t, len(actions), 1)
+	if len(actions) != 1 {
+		return
+	}
+	testing.expect_value(t, actions[0].kind, "quickfix")
+	testing.expect(t, strings.contains(actions[0].title, "lif_interface~method_name"))
+	edits, edits_ok := actions[0].edit.changes[uri]
+	testing.expect(t, edits_ok)
+	if !edits_ok {
+		return
+	}
+	testing.expect_value(t, len(edits), 1)
+	applied := lsp_test_apply_text_edits(t, source, edits, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(
+			applied,
+			"  METHOD lif_interface~method_name.\n  ENDMETHOD.\nENDCLASS.",
+		),
+	)
+}
+
+@(test)
 lsp_references_include_method_declaration_implementation_and_call :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/references_method.abap"
 	source := `CLASS lcl_demo DEFINITION.

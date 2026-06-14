@@ -251,6 +251,7 @@ checker_check_method_implementation_consistency :: proc(ctx: ^Checker_Context) {
 			)
 		}
 	}
+	checker_check_interface_method_implementation_consistency(ctx)
 }
 
 checker_method_participates_in_class_implementation_check :: proc(entity: ^Entity) -> bool {
@@ -296,16 +297,7 @@ checker_method_implementation_satisfies_interface_contract :: proc(
 	if !qualified {
 		return false
 	}
-	owner_payload, owner_ok := entity.owner.payload.(^Entity_Object_Payload)
-	assert(owner_ok && owner_payload != nil)
-	implements_qualifier := false
-	for interface_name in owner_payload.implemented_interfaces {
-		if interface_name == qualifier {
-			implements_qualifier = true
-			break
-		}
-	}
-	if !implements_qualifier {
+	if !checker_type_exposes_interface(ctx, entity.owner, qualifier) {
 		return false
 	}
 	iface, iface_ok := checker_lookup_object_type_from_scope(
@@ -319,6 +311,296 @@ checker_method_implementation_satisfies_interface_contract :: proc(
 	}
 	member, member_ok := checker_lookup_object_member(iface, .Routine, member_name)
 	return member_ok && member != nil && member.kind == .Method
+}
+
+checker_check_interface_method_implementation_consistency :: proc(ctx: ^Checker_Context) {
+	for entity in ctx.info.definitions {
+		if entity == nil || entity.kind != .Class || entity.node == nil || entity.source_file == nil {
+			continue
+		}
+		payload, payload_ok := entity.payload.(^Entity_Object_Payload)
+		assert(payload_ok && payload != nil)
+		if payload.definition_scope == nil {
+			continue
+		}
+		class_decl, class_ok := entity.node.derived.(^ast.Class_Decl)
+		if !class_ok || .Implementation in class_decl.flags || .Bodyless in class_decl.flags {
+			continue
+		}
+		for stmt in class_decl.body {
+			if stmt == nil {
+				continue
+			}
+			oop, oop_ok := stmt.derived_stmt.(^ast.Oop_Simple_Stmt)
+			if !oop_ok {
+				continue
+			}
+			#partial switch oop.kind {
+			case .Interfaces:
+				checker_check_interfaces_stmt_missing_method_implementations(ctx, entity, oop)
+			case .Aliases:
+				checker_check_aliases_stmt_missing_method_implementations(ctx, entity, oop)
+			}
+		}
+	}
+}
+
+checker_check_interfaces_stmt_missing_method_implementations :: proc(
+	ctx: ^Checker_Context,
+	class_entity: ^Entity,
+	stmt: ^ast.Oop_Simple_Stmt,
+) {
+	for member in stmt.members {
+		if member.name.text == "" {
+			continue
+		}
+		interface_name := project_intern_lower_ascii(ctx.project, member.name.text)
+		iface, iface_ok := checker_lookup_object_type_from_scope(
+			ctx,
+			class_entity.scope,
+			interface_name,
+			.Interface,
+		)
+		if !iface_ok || iface == nil || iface.kind != .Interface {
+			continue
+		}
+		checker_check_interface_missing_method_implementations(
+			ctx,
+			class_entity,
+			iface,
+			member.name.range,
+			0,
+		)
+	}
+}
+
+checker_check_aliases_stmt_missing_method_implementations :: proc(
+	ctx: ^Checker_Context,
+	class_entity: ^Entity,
+	stmt: ^ast.Oop_Simple_Stmt,
+) {
+	if len(stmt.aliases) > 0 {
+		for alias in stmt.aliases {
+			checker_check_alias_missing_method_implementation(
+				ctx,
+				class_entity,
+				alias.name,
+				alias.target_interface_name,
+				alias.target_member_name,
+			)
+		}
+		return
+	}
+	for member in stmt.members {
+		for sig in member.signatures {
+			if sig.kind != .For || len(sig.values) == 0 {
+				continue
+			}
+			target_ref := checker_type_ref_data_from_expr(ctx, sig.values[0], .Type)
+			target_interface_name := ast.Token_Text {
+				text  = target_ref.base_name,
+				range = target_ref.base_range,
+			}
+			target_member_name := ast.Token_Text{}
+			if len(target_ref.field_path) > 0 {
+				target_member_name.text = target_ref.field_path[0]
+				if len(target_ref.field_ranges) > 0 {
+					target_member_name.range = target_ref.field_ranges[0]
+				}
+			}
+			checker_check_alias_missing_method_implementation(
+				ctx,
+				class_entity,
+				member.name,
+				target_interface_name,
+				target_member_name,
+			)
+			break
+		}
+	}
+}
+
+checker_check_alias_missing_method_implementation :: proc(
+	ctx: ^Checker_Context,
+	class_entity: ^Entity,
+	alias_name: ast.Token_Text,
+	target_interface_name: ast.Token_Text,
+	target_member_name: ast.Token_Text,
+) {
+	if alias_name.text == "" || target_interface_name.text == "" || target_member_name.text == "" {
+		return
+	}
+	interface_name := project_intern_lower_ascii(ctx.project, target_interface_name.text)
+	iface, iface_ok := checker_lookup_object_type_from_scope(
+		ctx,
+		class_entity.scope,
+		interface_name,
+		.Interface,
+	)
+	if !iface_ok || iface == nil || iface.kind != .Interface {
+		return
+	}
+	if !checker_type_exposes_interface(ctx, class_entity, iface.name) {
+		return
+	}
+	member_name := project_intern_lower_ascii(ctx.project, target_member_name.text)
+	target_member, member_ok := checker_lookup_object_member(iface, .Routine, member_name)
+	if !member_ok || target_member == nil || target_member.kind != .Method {
+		return
+	}
+	checker_add_missing_interface_method_implementation_diagnostic(
+		ctx,
+		class_entity,
+		iface.name,
+		target_member.name,
+		alias_name.range,
+	)
+}
+
+checker_check_interface_missing_method_implementations :: proc(
+	ctx: ^Checker_Context,
+	class_entity: ^Entity,
+	iface: ^Entity,
+	range: Range,
+	depth: int,
+) {
+	if depth > 32 || iface == nil || iface.kind != .Interface {
+		return
+	}
+	payload, payload_ok := iface.payload.(^Entity_Object_Payload)
+	assert(payload_ok && payload != nil)
+	if payload.definition_scope != nil {
+		for member in payload.definition_scope.declarations {
+			if member == nil || member.kind != .Method {
+				continue
+			}
+			checker_add_missing_interface_method_implementation_diagnostic(
+				ctx,
+				class_entity,
+				iface.name,
+				member.name,
+				range,
+			)
+		}
+	}
+	for implemented_name in payload.implemented_interfaces {
+		if implemented_name == "" {
+			continue
+		}
+		implemented, implemented_ok := checker_lookup_object_type_from_scope(
+			ctx,
+			iface.scope,
+			implemented_name,
+			.Interface,
+		)
+		if !implemented_ok || implemented == nil || implemented.kind != .Interface {
+			continue
+		}
+		checker_check_interface_missing_method_implementations(
+			ctx,
+			class_entity,
+			implemented,
+			range,
+			depth + 1,
+		)
+	}
+}
+
+checker_add_missing_interface_method_implementation_diagnostic :: proc(
+	ctx: ^Checker_Context,
+	class_entity: ^Entity,
+	interface_name: string,
+	method_name: string,
+	range: Range,
+) {
+	if class_entity == nil || interface_name == "" || method_name == "" {
+		return
+	}
+	implementation_name := checker_interface_method_implementation_name(
+		ctx,
+		interface_name,
+		method_name,
+	)
+	if checker_class_has_method_implementation(ctx, class_entity, implementation_name) {
+		return
+	}
+	method := checker_missing_interface_method_candidate(ctx, class_entity, implementation_name)
+	checker_add_method_consistency_diagnostic(
+		ctx,
+		.Missing_Method_Implementation,
+		class_entity.source_file,
+		range,
+		checker_method_missing_implementation_message(implementation_name),
+		method,
+		method.decl_info,
+	)
+}
+
+checker_interface_method_implementation_name :: proc(
+	ctx: ^Checker_Context,
+	interface_name: string,
+	method_name: string,
+) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, interface_name)
+	strings.write_byte(&builder, '~')
+	strings.write_string(&builder, method_name)
+	return project_intern_lower_ascii(ctx.project, strings.to_string(builder))
+}
+
+checker_class_has_method_implementation :: proc(
+	ctx: ^Checker_Context,
+	class_entity: ^Entity,
+	implementation_name: string,
+	depth := 0,
+) -> bool {
+	if depth > 32 || class_entity == nil || class_entity.kind != .Class || implementation_name == "" {
+		return false
+	}
+	payload, payload_ok := class_entity.payload.(^Entity_Object_Payload)
+	assert(payload_ok && payload != nil)
+	if payload.definition_scope != nil {
+		if method, method_ok := scope_lookup_declaration(
+			payload.definition_scope,
+			.Routine,
+			implementation_name,
+		); method_ok && method.kind == .Method {
+			if .Abstract in method.flags {
+				return true
+			}
+			method_payload, method_payload_ok := method.payload.(^Entity_Routine_Payload)
+			assert(method_payload_ok && method_payload != nil)
+			return method_payload.has_implementation
+		}
+	}
+	if payload.superclass_name == "" {
+		return false
+	}
+	super, super_ok := checker_lookup_object_type_from_scope(
+		ctx,
+		class_entity.scope,
+		payload.superclass_name,
+		.Class,
+	)
+	if !super_ok || super == nil || super.kind != .Class {
+		return false
+	}
+	return checker_class_has_method_implementation(ctx, super, implementation_name, depth + 1)
+}
+
+checker_missing_interface_method_candidate :: proc(
+	ctx: ^Checker_Context,
+	class_entity: ^Entity,
+	implementation_name: string,
+) -> ^Entity {
+	method := project_new_entity(ctx.project, .Method)
+	method.name = implementation_name
+	method.owner = class_entity
+	method.scope = class_entity.scope
+	method.source_file = class_entity.source_file
+	method.node = class_entity.node
+	method.member_kind = .Method
+	return method
 }
 
 checker_add_method_consistency_diagnostic :: proc(

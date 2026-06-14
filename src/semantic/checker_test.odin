@@ -1382,6 +1382,118 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_reports_missing_interface_method_implementations_on_interfaces_and_aliases :: proc(
+	t: ^testing.T,
+) {
+	source := `INTERFACE lif_interface.
+  METHODS method_name
+    IMPORTING
+      iv_value TYPE string.
+ENDINTERFACE.
+
+CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_interface.
+    ALIASES short_name FOR lif_interface~method_name.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(
+		t,
+		&project,
+		source,
+		"mem://missing_interface_method_impl.abap",
+	)
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Method_Implementation), 2)
+
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_class", .Class)
+	interfaces_diagnostic_found := false
+	aliases_diagnostic_found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Missing_Method_Implementation {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		testing.expect_value(
+			t,
+			diagnostic.message,
+			"missing implementation for method 'lif_interface~method_name'",
+		)
+		testing.expect(t, diagnostic.entity != nil && diagnostic.entity.kind == .Method)
+		if diagnostic.entity != nil {
+			testing.expect_value(t, diagnostic.entity.name, "lif_interface~method_name")
+			testing.expect(t, diagnostic.entity.owner == class)
+		}
+		if text == "lif_interface" {
+			interfaces_diagnostic_found = true
+		}
+		if text == "short_name" {
+			aliases_diagnostic_found = true
+		}
+	}
+	testing.expect(t, interfaces_diagnostic_found)
+	testing.expect(t, aliases_diagnostic_found)
+}
+
+@(test)
+root_semantic_accepts_implemented_interface_method_aliases :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_interface.
+  METHODS method_name.
+ENDINTERFACE.
+
+CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_interface.
+    ALIASES short_name FOR lif_interface~method_name.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD lif_interface~method_name.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(
+		t,
+		&project,
+		source,
+		"mem://implemented_interface_method_alias.abap",
+	)
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Method_Implementation), 0)
+}
+
+@(test)
+root_semantic_rejects_freestanding_oop_aliases :: proc(t: ^testing.T) {
+	source := `ALIASES short_name FOR lif_interface~method_name.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://freestanding_alias.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Context), 1)
+	diagnostic_found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Invalid_Context {
+			text := source[diagnostic.range.start:diagnostic.range.end]
+			diagnostic_found = text == "short_name" &&
+			                   diagnostic.message == "ALIASES statement must be declared in a class or interface"
+			break
+		}
+	}
+	testing.expect(t, diagnostic_found)
+}
+
+@(test)
 root_semantic_collects_normal_amdp_and_kernel_method_implementations :: proc(t: ^testing.T) {
 	source := `CLASS lcl_demo DEFINITION.
   PUBLIC SECTION.
