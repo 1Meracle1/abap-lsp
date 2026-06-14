@@ -57,6 +57,7 @@ completion_items_for_snapshot :: proc(
 		offset,
 	)
 	indent := completion_line_indent(snapshot.source, offset, context.temp_allocator)
+	template_indent := completion_template_base_indent(indent, snippets_supported)
 	member_prefix_start := completion_prefix_start(snapshot.source, offset)
 	selector_filter_prefix_start := completion_selector_filter_prefix_start(snapshot.source, offset)
 	selector_filter_prefix := completion_selector_filter_prefix(
@@ -145,7 +146,7 @@ completion_items_for_snapshot :: proc(
 	if if_template_count > 0 {
 		completion_append_if_templates(
 			out[template_index:template_index + if_template_count],
-			indent,
+			template_indent,
 			snippets_supported,
 			allocator,
 		)
@@ -153,7 +154,7 @@ completion_items_for_snapshot :: proc(
 	}
 	if case_template_count > 0 {
 		out[template_index] = completion_case_template_item(
-			indent,
+			template_indent,
 			template_replace_range,
 			snippets_supported,
 			allocator,
@@ -163,20 +164,24 @@ completion_items_for_snapshot :: proc(
 	if class_template_count > 0 {
 		completion_append_class_templates(
 			out[template_index:template_index + class_template_count],
-			indent,
+			template_indent,
 			snippets_supported,
 			allocator,
 		)
 		template_index += class_template_count
 	}
 	if try_template_count > 0 {
-		out[template_index] = completion_try_template_item(indent, snippets_supported, allocator)
+		out[template_index] = completion_try_template_item(
+			template_indent,
+			snippets_supported,
+			allocator,
+		)
 		template_index += try_template_count
 	}
 	if loop_template_count > 0 {
 		completion_append_loop_templates(
 			out[template_index:template_index + loop_template_count],
-			indent,
+			template_indent,
 			snippets_supported,
 			allocator,
 		)
@@ -185,7 +190,7 @@ completion_items_for_snapshot :: proc(
 	if select_template_count > 0 {
 		completion_append_select_templates(
 			out[template_index:template_index + select_template_count],
-			indent,
+			template_indent,
 			snippets_supported,
 			allocator,
 		)
@@ -231,9 +236,11 @@ completion_items_for_snapshot :: proc(
 	if common_statement_template_count > 0 {
 		completion_append_common_statement_templates(
 			out[template_index:template_index + common_statement_template_count],
+			snapshot.source,
+			offset,
 			template_prefix,
 			template_replace_range,
-			indent,
+			template_indent,
 			snippets_supported,
 			allocator,
 		)
@@ -266,7 +273,7 @@ completion_item_from_semantic_item :: proc(
 			project,
 			item.entity,
 			item.name,
-			indent,
+			"",
 			allocator,
 		)
 		out.insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET
@@ -495,10 +502,11 @@ completion_get_time_stamp_field_template_count :: proc(
 }
 
 Completion_Statement_Template :: struct {
-	keyword: string,
-	label:   string,
-	snippet: string,
-	plain:   string,
+	keyword:            string,
+	label:              string,
+	snippet:            string,
+	plain:              string,
+	types_chain_clause: bool,
 }
 
 EXPRESSION_TEMPLATES :: [?]Completion_Statement_Template {
@@ -582,6 +590,13 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		label = "TYPES: BEGIN OF ... END OF",
 		snippet = "TYPES: BEGIN OF ${1:ty_line},\n         ${2:field} TYPE ${3:string},\n       END OF ${1:ty_line}.$0",
 		plain = "TYPES: BEGIN OF ty_line,\n         field TYPE string,\n       END OF ty_line.",
+	},
+	{
+		keyword = "BEGIN",
+		label = "BEGIN OF ... END OF",
+		snippet = "BEGIN OF ${1:ty_line},\n  ${2:field} TYPE ${3:string},\nEND OF ${1:ty_line}$0",
+		plain = "BEGIN OF ty_line,\n  field TYPE string,\nEND OF ty_line",
+		types_chain_clause = true,
 	},
 	{
 		keyword = "DATA",
@@ -1162,12 +1177,9 @@ completion_common_statement_template_count :: proc(
 	offset: int,
 	prefix: string,
 ) -> int {
-	if !completion_template_at_statement_start(source, offset) {
-		return 0
-	}
 	count := 0
 	for template in COMMON_STATEMENT_TEMPLATES {
-		if completion_keyword_prefix_matches(prefix, template.keyword) {
+		if completion_common_statement_template_matches(source, offset, prefix, template) {
 			count += 1
 		}
 	}
@@ -1176,6 +1188,8 @@ completion_common_statement_template_count :: proc(
 
 completion_append_common_statement_templates :: proc(
 	out: []Completion_Item,
+	source: string,
+	offset: int,
 	prefix: string,
 	replace_range: Range,
 	indent: string,
@@ -1184,7 +1198,7 @@ completion_append_common_statement_templates :: proc(
 ) {
 	index := 0
 	for template in COMMON_STATEMENT_TEMPLATES {
-		if !completion_keyword_prefix_matches(prefix, template.keyword) {
+		if !completion_common_statement_template_matches(source, offset, prefix, template) {
 			continue
 		}
 		assert(index < len(out))
@@ -1198,6 +1212,21 @@ completion_append_common_statement_templates :: proc(
 		index += 1
 	}
 	assert(index == len(out))
+}
+
+completion_common_statement_template_matches :: proc(
+	source: string,
+	offset: int,
+	prefix: string,
+	template: Completion_Statement_Template,
+) -> bool {
+	if !completion_keyword_prefix_matches(prefix, template.keyword) {
+		return false
+	}
+	if template.types_chain_clause {
+		return completion_template_in_types_chain_clause(source, offset)
+	}
+	return completion_template_at_statement_start(source, offset)
 }
 
 completion_statement_template_item :: proc(
@@ -1230,7 +1259,7 @@ completion_statement_template_insert_text :: proc(
 	allocator: mem.Allocator,
 ) -> string {
 	text := template.snippet if snippets_supported else template.plain
-	if indent == "" || !strings.contains(text, "\n") {
+	if snippets_supported || indent == "" || !strings.contains(text, "\n") {
 		return strings.clone(text, allocator)
 	}
 	out := strings.builder_make(allocator)
@@ -1252,6 +1281,13 @@ completion_keyword_prefix_matches :: proc(prefix, keyword: string) -> bool {
 	return strings.has_prefix(keyword_lower, lower)
 }
 
+completion_template_base_indent :: proc "contextless" (
+	indent: string,
+	snippets_supported: bool,
+) -> string {
+	return "" if snippets_supported else indent
+}
+
 completion_template_at_statement_start :: proc(source: string, offset: int) -> bool {
 	prefix_start := completion_template_prefix_start(source, offset)
 	i := prefix_start
@@ -1268,6 +1304,58 @@ completion_template_at_statement_start :: proc(source: string, offset: int) -> b
 	}
 	prev := source[i - 1]
 	return prev == '\n' || prev == '.'
+}
+
+completion_template_in_types_chain_clause :: proc(source: string, offset: int) -> bool {
+	prefix_start := completion_template_prefix_start(source, offset)
+	i := completion_template_skip_space_backward(source, prefix_start)
+	if i == 0 || source[i - 1] != ',' {
+		return false
+	}
+
+	colon := completion_template_chain_colon_before(source, i - 1)
+	if colon < 0 {
+		return false
+	}
+
+	keyword_end := completion_template_skip_space_backward(source, colon)
+	keyword_start := keyword_end
+	for keyword_start > 0 && completion_template_prefix_char(source[keyword_start - 1]) {
+		keyword_start -= 1
+	}
+	if keyword_start == keyword_end {
+		return false
+	}
+
+	keyword := utils.to_lower_ascii(source[keyword_start:keyword_end], context.temp_allocator)
+	return keyword == "types"
+}
+
+completion_template_skip_space_backward :: proc(source: string, offset: int) -> int {
+	i := clamp(offset, 0, len(source))
+	for i > 0 {
+		switch source[i - 1] {
+		case ' ', '\t', '\r', '\n':
+			i -= 1
+			continue
+		}
+		break
+	}
+	return i
+}
+
+completion_template_chain_colon_before :: proc(source: string, offset: int) -> int {
+	i := clamp(offset, 0, len(source))
+	for i > 0 {
+		i -= 1
+		switch source[i] {
+		case ':':
+			return i
+		case '.':
+			return -1
+		}
+	}
+	return -1
 }
 
 completion_template_at_expression_start :: proc(source: string, offset: int) -> bool {
@@ -1305,25 +1393,26 @@ completion_case_template_insert_text :: proc(
 	snippets_supported: bool,
 	allocator: mem.Allocator,
 ) -> string {
+	base_indent := completion_template_base_indent(indent, snippets_supported)
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "CASE ${1:lv_value}." if snippets_supported else "CASE lv_value.")
 	completion_template_write_newline_indent(
 		&out,
-		indent,
+		base_indent,
 		1,
 		"WHEN ${2:value_1}." if snippets_supported else "WHEN value_1.",
 	)
-	completion_template_write_newline_indent(&out, indent, 2, "${3}" if snippets_supported else "")
+	completion_template_write_newline_indent(&out, base_indent, 2, "${3}" if snippets_supported else "")
 	completion_template_write_newline_indent(
 		&out,
-		indent,
+		base_indent,
 		1,
 		"WHEN ${4:value_2}." if snippets_supported else "WHEN value_2.",
 	)
-	completion_template_write_newline_indent(&out, indent, 2, "${5}" if snippets_supported else "")
-	completion_template_write_newline_indent(&out, indent, 1, "WHEN OTHERS.")
-	completion_template_write_newline_indent(&out, indent, 2, "$0" if snippets_supported else "")
-	completion_template_write_newline_indent(&out, indent, 0, "ENDCASE.")
+	completion_template_write_newline_indent(&out, base_indent, 2, "${5}" if snippets_supported else "")
+	completion_template_write_newline_indent(&out, base_indent, 1, "WHEN OTHERS.")
+	completion_template_write_newline_indent(&out, base_indent, 2, "$0" if snippets_supported else "")
+	completion_template_write_newline_indent(&out, base_indent, 0, "ENDCASE.")
 	return strings.to_string(out)
 }
 
@@ -1398,16 +1487,17 @@ completion_if_template_insert_text :: proc(
 	snippets_supported: bool,
 	allocator: mem.Allocator,
 ) -> string {
+	base_indent := completion_template_base_indent(indent, snippets_supported)
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, completion_if_template_header(variant, snippets_supported))
 	strings.write_byte(&out, '\n')
-	strings.write_string(&out, indent)
+	strings.write_string(&out, base_indent)
 	strings.write_string(&out, "  ")
 	if snippets_supported {
 		strings.write_string(&out, "$0")
 	}
 	strings.write_byte(&out, '\n')
-	strings.write_string(&out, indent)
+	strings.write_string(&out, base_indent)
 	strings.write_string(&out, "ENDIF.")
 	return strings.to_string(out)
 }
@@ -1511,13 +1601,14 @@ completion_class_template_insert_text :: proc(
 	snippets_supported: bool,
 	allocator: mem.Allocator,
 ) -> string {
+	base_indent := completion_template_base_indent(indent, snippets_supported)
 	out := strings.builder_make(allocator)
 	switch variant {
 	case .Basic:
 		class_name := "${1:lcl_class}" if snippets_supported else "lcl_class"
 		completion_write_class_definition_header(&out, class_name, "DEFINITION.")
-		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
-		completion_write_class_implementation(&out, class_name, indent)
+		completion_write_class_public_section(&out, base_indent, "$0" if snippets_supported else "")
+		completion_write_class_implementation(&out, class_name, base_indent)
 	case .Public_Final_Create_Public:
 		class_name := "${1:zcl_class}" if snippets_supported else "zcl_class"
 		completion_write_class_definition_header(
@@ -1525,8 +1616,8 @@ completion_class_template_insert_text :: proc(
 			class_name,
 			"DEFINITION PUBLIC FINAL CREATE PUBLIC.",
 		)
-		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
-		completion_write_class_implementation(&out, class_name, indent)
+		completion_write_class_public_section(&out, base_indent, "$0" if snippets_supported else "")
+		completion_write_class_implementation(&out, class_name, base_indent)
 	case .Inheriting_From:
 		class_name := "${1:lcl_child}" if snippets_supported else "lcl_child"
 		superclass_name := "${2:lcl_parent}" if snippets_supported else "lcl_parent"
@@ -1538,8 +1629,8 @@ completion_class_template_insert_text :: proc(
 				context.temp_allocator,
 			),
 		)
-		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
-		completion_write_class_implementation(&out, class_name, indent)
+		completion_write_class_public_section(&out, base_indent, "$0" if snippets_supported else "")
+		completion_write_class_implementation(&out, class_name, base_indent)
 	case .Final_Create_Public:
 		class_name := "${1:lcl_class}" if snippets_supported else "lcl_class"
 		completion_write_class_definition_header(
@@ -1547,13 +1638,13 @@ completion_class_template_insert_text :: proc(
 			class_name,
 			"DEFINITION FINAL CREATE PUBLIC.",
 		)
-		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
-		completion_write_class_implementation(&out, class_name, indent)
+		completion_write_class_public_section(&out, base_indent, "$0" if snippets_supported else "")
+		completion_write_class_implementation(&out, class_name, base_indent)
 	case .Abstract:
 		class_name := "${1:lcl_class}" if snippets_supported else "lcl_class"
 		completion_write_class_definition_header(&out, class_name, "DEFINITION ABSTRACT.")
-		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
-		completion_write_class_implementation(&out, class_name, indent)
+		completion_write_class_public_section(&out, base_indent, "$0" if snippets_supported else "")
+		completion_write_class_implementation(&out, class_name, base_indent)
 	case .For_Testing:
 		class_name := "${1:ltc_class}" if snippets_supported else "ltc_class"
 		method_name := "${2:test_method}" if snippets_supported else "test_method"
@@ -1562,21 +1653,21 @@ completion_class_template_insert_text :: proc(
 			class_name,
 			"DEFINITION FINAL FOR TESTING RISK LEVEL HARMLESS DURATION SHORT.",
 		)
-		completion_template_write_newline_indent(&out, indent, 1, "PRIVATE SECTION.")
+		completion_template_write_newline_indent(&out, base_indent, 1, "PRIVATE SECTION.")
 		completion_template_write_newline_indent(
 			&out,
-			indent,
+			base_indent,
 			2,
 			strings.concatenate(
 				{"METHODS ", method_name, " FOR TESTING."},
 				context.temp_allocator,
 			),
 		)
-		completion_template_write_newline_indent(&out, indent, 0, "ENDCLASS.")
-		completion_template_write_newline_indent(&out, indent, 0, "")
+		completion_template_write_newline_indent(&out, base_indent, 0, "ENDCLASS.")
+		completion_template_write_newline_indent(&out, base_indent, 0, "")
 		completion_template_write_newline_indent(
 			&out,
-			indent,
+			base_indent,
 			0,
 			strings.concatenate(
 				{"CLASS ", class_name, " IMPLEMENTATION."},
@@ -1585,18 +1676,18 @@ completion_class_template_insert_text :: proc(
 		)
 		completion_template_write_newline_indent(
 			&out,
-			indent,
+			base_indent,
 			1,
 			strings.concatenate({"METHOD ", method_name, "."}, context.temp_allocator),
 		)
 		completion_template_write_newline_indent(
 			&out,
-			indent,
+			base_indent,
 			2,
 			"$0" if snippets_supported else "",
 		)
-		completion_template_write_newline_indent(&out, indent, 1, "ENDMETHOD.")
-		completion_template_write_newline_indent(&out, indent, 0, "ENDCLASS.")
+		completion_template_write_newline_indent(&out, base_indent, 1, "ENDMETHOD.")
+		completion_template_write_newline_indent(&out, base_indent, 0, "ENDCLASS.")
 	}
 	return strings.to_string(out)
 }

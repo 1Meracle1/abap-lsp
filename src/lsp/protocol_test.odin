@@ -570,13 +570,13 @@ START-OF-SELECTION.
 		t,
 		item.insert_text,
 		`execute(
-    EXPORTING
-      iv_input = $1
-    IMPORTING
-      ev_result = $2
-    CHANGING
-      cv_state = $3
-  )$0`,
+  EXPORTING
+    iv_input = $1
+  IMPORTING
+    ev_result = $2
+  CHANGING
+    cv_state = $3
+)$0`,
 	)
 }
 
@@ -630,8 +630,8 @@ ENDCLASS.`
 		t,
 		item.insert_text,
 		`method_name(
-      iv_input = $1
-    )$0`,
+  iv_input = $1
+)$0`,
 	)
 	filter_text, filter_text_ok := item.filter_text.?
 	testing.expect(t, filter_text_ok)
@@ -652,8 +652,8 @@ ENDCLASS.`
 			t,
 			edit.new_text,
 			`me->method_name(
-      iv_input = $1
-    )$0`,
+  iv_input = $1
+)$0`,
 		)
 	}
 }
@@ -711,8 +711,8 @@ ENDCLASS.`
 			t,
 			edit.new_text,
 			`me->method_name(
-      iv_input = $1
-    )$0`,
+  iv_input = $1
+)$0`,
 		)
 	}
 }
@@ -758,9 +758,9 @@ START-OF-SELECTION.
 		t,
 		item.insert_text,
 		`execute(
-    iv_input = $1
-    iv_other = $2
-  )$0`,
+  iv_input = $1
+  iv_other = $2
+)$0`,
 	)
 	testing.expect(t, !strings.contains(item.insert_text, "EXPORTING"))
 }
@@ -846,9 +846,9 @@ ENDCLASS.`
 		t,
 		item.insert_text,
 		`method_name(
-      iv_input = $1
-      iv_other = $2
-    )$0`,
+  iv_input = $1
+  iv_other = $2
+)$0`,
 	)
 	testing.expect(t, !strings.contains(item.insert_text, "EXPORTING"))
 }
@@ -1097,14 +1097,14 @@ lsp_completion_if_template_expands_from_if_prefix :: proc(t: ^testing.T) {
 		return
 	}
 
-	testing.expect_value(t, generic.insert_text, "IF ${1:condition}.\n    $0\n  ENDIF.")
-	testing.expect_value(t, subrc_zero.insert_text, "IF sy-subrc = 0.\n    $0\n  ENDIF.")
-	testing.expect_value(t, subrc_not_zero.insert_text, "IF sy-subrc <> 0.\n    $0\n  ENDIF.")
-	testing.expect_value(t, is_initial.insert_text, "IF ${1:lv_value} IS INITIAL.\n    $0\n  ENDIF.")
+	testing.expect_value(t, generic.insert_text, "IF ${1:condition}.\n  $0\nENDIF.")
+	testing.expect_value(t, subrc_zero.insert_text, "IF sy-subrc = 0.\n  $0\nENDIF.")
+	testing.expect_value(t, subrc_not_zero.insert_text, "IF sy-subrc <> 0.\n  $0\nENDIF.")
+	testing.expect_value(t, is_initial.insert_text, "IF ${1:lv_value} IS INITIAL.\n  $0\nENDIF.")
 	testing.expect_value(
 		t,
 		is_not_initial.insert_text,
-		"IF ${1:lv_value} IS NOT INITIAL.\n    $0\n  ENDIF.",
+		"IF ${1:lv_value} IS NOT INITIAL.\n  $0\nENDIF.",
 	)
 }
 
@@ -1218,14 +1218,14 @@ lsp_completion_loop_templates_expand_from_loop_prefix :: proc(t: ^testing.T) {
 	testing.expect_value(
 		t,
 		assigning.insert_text,
-		"LOOP AT ${1:itab} ASSIGNING FIELD-SYMBOL(<${2:row}>).\n    $0\n  ENDLOOP.",
+		"LOOP AT ${1:itab} ASSIGNING FIELD-SYMBOL(<${2:row}>).\n  $0\nENDLOOP.",
 	)
 	testing.expect_value(t, into.kind, COMPLETION_SNIPPET)
 	testing.expect_value(t, into.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
 	testing.expect_value(
 		t,
 		into.insert_text,
-		"LOOP AT ${1:itab} INTO DATA(${2:row}).\n    $0\n  ENDLOOP.",
+		"LOOP AT ${1:itab} INTO DATA(${2:row}).\n  $0\nENDLOOP.",
 	)
 }
 
@@ -1276,9 +1276,9 @@ lsp_completion_select_templates_expand_from_select_prefix :: proc(t: ^testing.T)
 		t,
 		basic.insert_text,
 		`SELECT ${1:fields}
-    FROM ${2:table}
-    INTO TABLE @DATA(${3:lt_rows})
-    WHERE ${4:field} = @${5:lv_value}.$0`,
+  FROM ${2:table}
+  INTO TABLE @DATA(${3:lt_rows})
+  WHERE ${4:field} = @${5:lv_value}.$0`,
 	)
 	testing.expect(t, strings.contains(cursor.insert_text, "OPEN CURSOR WITH HOLD @${1:lv_cursor} FOR"))
 	testing.expect(t, strings.contains(cursor.insert_text, "FETCH NEXT CURSOR @${1:lv_cursor}"))
@@ -1313,7 +1313,7 @@ lsp_completion_try_template_expands_from_try_prefix :: proc(t: ^testing.T) {
 	testing.expect_value(
 		t,
 		item.insert_text,
-		"TRY.\n    ${1}\n  CATCH ${2:cx_root} INTO DATA(${3:lx_error}).\n    $0\n  ENDTRY.",
+		"TRY.\n  ${1}\nCATCH ${2:cx_root} INTO DATA(${3:lx_error}).\n  $0\nENDTRY.",
 	)
 }
 
@@ -1455,7 +1455,7 @@ lsp_completion_case_template_expands_from_case_prefix :: proc(t: ^testing.T) {
 	testing.expect_value(
 		t,
 		item.insert_text,
-		"CASE ${1:lv_value}.\n    WHEN ${2:value_1}.\n      ${3}\n    WHEN ${4:value_2}.\n      ${5}\n    WHEN OTHERS.\n      $0\n  ENDCASE.",
+		"CASE ${1:lv_value}.\n  WHEN ${2:value_1}.\n    ${3}\n  WHEN ${4:value_2}.\n    ${5}\n  WHEN OTHERS.\n    $0\nENDCASE.",
 	)
 	edit, edit_ok := item.text_edit.?
 	testing.expect(t, edit_ok)
@@ -1782,7 +1782,7 @@ lsp_completion_method_definition_templates_expand_from_keyword_prefixes :: proc(
 		testing.expect_value(
 			t,
 			full_method.insert_text,
-			"METHODS ${1:method_name}\n      IMPORTING\n        !${2:iv_value} TYPE ${3:string}\n      RETURNING\n        VALUE(${4:rv_result}) TYPE ${5:string}\n      RAISING\n        ${6:cx_static_check}.$0",
+			"METHODS ${1:method_name}\n  IMPORTING\n    !${2:iv_value} TYPE ${3:string}\n  RETURNING\n    VALUE(${4:rv_result}) TYPE ${5:string}\n  RAISING\n    ${6:cx_static_check}.$0",
 		)
 		edit, edit_ok := full_method.text_edit.?
 		testing.expect(t, edit_ok)
@@ -1798,7 +1798,7 @@ lsp_completion_method_definition_templates_expand_from_keyword_prefixes :: proc(
 		testing.expect_value(
 			t,
 			event_method.insert_text,
-			"METHODS ${1:on_event}\n      FOR EVENT ${2:event_name} OF ${3:lcl_source}\n      IMPORTING\n        !${4:sender}.$0",
+			"METHODS ${1:on_event}\n  FOR EVENT ${2:event_name} OF ${3:lcl_source}\n  IMPORTING\n    !${4:sender}.$0",
 		)
 	}
 	if basic_method_ok {
@@ -1874,7 +1874,7 @@ lsp_completion_method_definition_templates_expand_from_keyword_prefixes :: proc(
 		testing.expect_value(
 			t,
 			class_full.insert_text,
-			"CLASS-METHODS ${1:method_name}\n      IMPORTING\n        !${2:iv_value} TYPE ${3:string}\n      EXPORTING\n        !${4:ev_value} TYPE ${5:string}\n      CHANGING\n        !${6:cv_value} TYPE ${7:string}.$0",
+			"CLASS-METHODS ${1:method_name}\n  IMPORTING\n    !${2:iv_value} TYPE ${3:string}\n  EXPORTING\n    !${4:ev_value} TYPE ${5:string}\n  CHANGING\n    !${6:cv_value} TYPE ${7:string}.$0",
 		)
 		edit, edit_ok := class_full.text_edit.?
 		testing.expect(t, edit_ok)
@@ -1894,47 +1894,47 @@ lsp_completion_begin_end_statement_templates_expand_from_keyword_prefixes :: pro
 		{
 			prefix = "ty",
 			label = "TYPES: BEGIN OF ... END OF",
-			insert_text = "TYPES: BEGIN OF ${1:ty_line},\n           ${2:field} TYPE ${3:string},\n         END OF ${1:ty_line}.$0",
+			insert_text = "TYPES: BEGIN OF ${1:ty_line},\n         ${2:field} TYPE ${3:string},\n       END OF ${1:ty_line}.$0",
 		},
 		{
 			prefix = "da",
 			label = "DATA: BEGIN OF ... END OF",
-			insert_text = "DATA: BEGIN OF ${1:ls_row},\n          ${2:field} TYPE ${3:string},\n        END OF ${1:ls_row}.$0",
+			insert_text = "DATA: BEGIN OF ${1:ls_row},\n        ${2:field} TYPE ${3:string},\n      END OF ${1:ls_row}.$0",
 		},
 		{
 			prefix = "da",
 			label = "DATA: BEGIN OF COMMON PART ... END OF COMMON PART",
-			insert_text = "DATA: BEGIN OF COMMON PART ${1:common_part}.\n  DATA: END OF COMMON PART.$0",
+			insert_text = "DATA: BEGIN OF COMMON PART ${1:common_part}.\nDATA: END OF COMMON PART.$0",
 		},
 		{
 			prefix = "const",
 			label = "CONSTANTS: BEGIN OF ... END OF",
-			insert_text = "CONSTANTS: BEGIN OF ${1:c_values},\n               ${2:name} TYPE ${3:string} VALUE ${4:''},\n             END OF ${1:c_values}.$0",
+			insert_text = "CONSTANTS: BEGIN OF ${1:c_values},\n             ${2:name} TYPE ${3:string} VALUE ${4:''},\n           END OF ${1:c_values}.$0",
 		},
 		{
 			prefix = "sta",
 			label = "STATICS: BEGIN OF ... END OF",
-			insert_text = "STATICS: BEGIN OF ${1:s_state},\n             ${2:field} TYPE ${3:string},\n           END OF ${1:s_state}.$0",
+			insert_text = "STATICS: BEGIN OF ${1:s_state},\n           ${2:field} TYPE ${3:string},\n         END OF ${1:s_state}.$0",
 		},
 		{
 			prefix = "class-da",
 			label = "CLASS-DATA: BEGIN OF ... END OF",
-			insert_text = "CLASS-DATA: BEGIN OF ${1:gs_row},\n                ${2:field} TYPE ${3:string},\n              END OF ${1:gs_row}.$0",
+			insert_text = "CLASS-DATA: BEGIN OF ${1:gs_row},\n              ${2:field} TYPE ${3:string},\n            END OF ${1:gs_row}.$0",
 		},
 		{
 			prefix = "se",
 			label = "SELECTION-SCREEN BEGIN OF SCREEN ... END OF SCREEN",
-			insert_text = "SELECTION-SCREEN BEGIN OF SCREEN ${1:1000} TITLE ${2:sy-title}.\n    $0\n  SELECTION-SCREEN END OF SCREEN ${1:1000}.",
+			insert_text = "SELECTION-SCREEN BEGIN OF SCREEN ${1:1000} TITLE ${2:sy-title}.\n  $0\nSELECTION-SCREEN END OF SCREEN ${1:1000}.",
 		},
 		{
 			prefix = "se",
 			label = "SELECTION-SCREEN BEGIN OF BLOCK ... END OF BLOCK",
-			insert_text = "SELECTION-SCREEN BEGIN OF BLOCK ${1:b1} WITH FRAME TITLE ${2:text-001}.\n    $0\n  SELECTION-SCREEN END OF BLOCK ${1:b1}.",
+			insert_text = "SELECTION-SCREEN BEGIN OF BLOCK ${1:b1} WITH FRAME TITLE ${2:text-001}.\n  $0\nSELECTION-SCREEN END OF BLOCK ${1:b1}.",
 		},
 		{
 			prefix = "se",
 			label = "SELECTION-SCREEN BEGIN OF LINE ... END OF LINE",
-			insert_text = "SELECTION-SCREEN BEGIN OF LINE.\n    $0\n  SELECTION-SCREEN END OF LINE.",
+			insert_text = "SELECTION-SCREEN BEGIN OF LINE.\n  $0\nSELECTION-SCREEN END OF LINE.",
 		},
 	}
 
@@ -1979,6 +1979,55 @@ lsp_completion_begin_end_statement_templates_expand_from_keyword_prefixes :: pro
 			testing.expect_value(t, edit.range.end.line, 1)
 			testing.expect_value(t, edit.range.end.character, 2 + len(test_case.prefix))
 		}
+	}
+}
+
+@(test)
+lsp_completion_types_chained_begin_end_template_expands_from_begin_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_types_chained_begin_end_template.abap"
+	source := `TYPES: BEGIN OF ty_line,
+         field TYPE string,
+       END OF ty_line,
+
+       BEG.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "BEG.") + len("BEG")
+	testing.expect(t, offset >= len("BEG"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "BEGIN OF ... END OF")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+	testing.expect_value(t, item.sort_text, "2:begin of ... end of")
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		"BEGIN OF ${1:ty_line},\n  ${2:field} TYPE ${3:string},\nEND OF ${1:ty_line}$0",
+	)
+	edit, edit_ok := item.text_edit.?
+	testing.expect(t, edit_ok)
+	if edit_ok {
+		testing.expect_value(t, edit.new_text, item.insert_text)
+		testing.expect_value(t, edit.range.start.line, 4)
+		testing.expect_value(t, edit.range.start.character, 7)
+		testing.expect_value(t, edit.range.end.line, 4)
+		testing.expect_value(t, edit.range.end.character, 10)
+
+		applied := lsp_test_apply_text_edits(t, source, []Text_Edit{edit}, context.allocator)
+		testing.expect(t, strings.has_suffix(applied, "END OF ${1:ty_line}$0."))
 	}
 }
 
