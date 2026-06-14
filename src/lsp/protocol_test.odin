@@ -1265,6 +1265,192 @@ lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t
 }
 
 @(test)
+lsp_completion_method_definition_templates_expand_from_keyword_prefixes :: proc(t: ^testing.T) {
+	method_uri := "file:///D:/repo/completion_methods_template.abap"
+	method_source := "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    meth\nENDCLASS."
+	method_state := lsp_test_state_with_open_document(method_uri, method_source)
+	defer lsp_test_state_destroy(&method_state)
+
+	method_offset := strings.index(method_source, "meth") + len("meth")
+	testing.expect(t, method_offset >= len("meth"))
+	method_params := lsp_test_rename_position_params(
+		method_uri,
+		offset_to_position(method_source, method_offset),
+		"",
+	)
+	method_snapshot, method_completion_offset, method_snapshot_ok := snapshot_for_position(
+		&method_state,
+		method_params,
+	)
+	testing.expect(t, method_snapshot_ok)
+	if !method_snapshot_ok {
+		return
+	}
+
+	method_items := completion_items_for_snapshot(
+		method_snapshot,
+		method_completion_offset,
+		true,
+		context.allocator,
+	)
+	method_labels := [?]string {
+		"METHODS ...",
+		"METHODS ... IMPORTING",
+		"METHODS ... EXPORTING",
+		"METHODS ... CHANGING",
+		"METHODS ... RECEIVING",
+		"METHODS ... RETURNING",
+		"METHODS ... IMPORTING RETURNING",
+		"METHODS ... IMPORTING EXPORTING",
+		"METHODS ... IMPORTING CHANGING",
+		"METHODS ... IMPORTING EXPORTING CHANGING",
+		"METHODS ... RAISING",
+		"METHODS ... IMPORTING RAISING",
+		"METHODS ... IMPORTING RETURNING RAISING",
+		"METHODS ... EXCEPTIONS",
+		"METHODS ... FOR EVENT",
+		"METHODS ... FOR TESTING",
+		"METHODS ... REDEFINITION",
+		"METHODS ... ABSTRACT",
+		"METHODS ... FINAL",
+	}
+	for label in method_labels {
+		item, item_ok := lsp_test_find_completion_item(method_items, label)
+		testing.expect(t, item_ok)
+		if item_ok {
+			testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+			testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+			testing.expect_value(
+				t,
+				item.sort_text,
+				completion_sort_text("2", label, context.temp_allocator),
+			)
+		}
+	}
+
+	full_method, full_method_ok := lsp_test_find_completion_item(
+		method_items,
+		"METHODS ... IMPORTING RETURNING RAISING",
+	)
+	event_method, event_method_ok := lsp_test_find_completion_item(
+		method_items,
+		"METHODS ... FOR EVENT",
+	)
+	basic_method, basic_method_ok := lsp_test_find_completion_item(method_items, "METHODS ...")
+	testing.expect(t, full_method_ok)
+	testing.expect(t, event_method_ok)
+	testing.expect(t, basic_method_ok)
+	if full_method_ok {
+		testing.expect_value(
+			t,
+			full_method.insert_text,
+			"METHODS ${1:method_name}\n      IMPORTING\n        !${2:iv_value} TYPE ${3:string}\n      RETURNING\n        VALUE(${4:rv_result}) TYPE ${5:string}\n      RAISING\n        ${6:cx_static_check}.$0",
+		)
+		edit, edit_ok := full_method.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			testing.expect_value(t, edit.new_text, full_method.insert_text)
+			testing.expect_value(t, edit.range.start.line, 2)
+			testing.expect_value(t, edit.range.start.character, 4)
+			testing.expect_value(t, edit.range.end.line, 2)
+			testing.expect_value(t, edit.range.end.character, 8)
+		}
+	}
+	if event_method_ok {
+		testing.expect_value(
+			t,
+			event_method.insert_text,
+			"METHODS ${1:on_event}\n      FOR EVENT ${2:event_name} OF ${3:lcl_source}\n      IMPORTING\n        !${4:sender}.$0",
+		)
+	}
+	if basic_method_ok {
+		testing.expect_value(t, basic_method.insert_text, "METHODS ${1:method_name}.$0")
+	}
+
+	class_uri := "file:///D:/repo/completion_class_methods_template.abap"
+	class_source := "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    class-m\nENDCLASS."
+	class_state := lsp_test_state_with_open_document(class_uri, class_source)
+	defer lsp_test_state_destroy(&class_state)
+
+	class_offset := strings.index(class_source, "class-m") + len("class-m")
+	testing.expect(t, class_offset >= len("class-m"))
+	class_params := lsp_test_rename_position_params(
+		class_uri,
+		offset_to_position(class_source, class_offset),
+		"",
+	)
+	class_snapshot, class_completion_offset, class_snapshot_ok := snapshot_for_position(
+		&class_state,
+		class_params,
+	)
+	testing.expect(t, class_snapshot_ok)
+	if !class_snapshot_ok {
+		return
+	}
+
+	class_items := completion_items_for_snapshot(
+		class_snapshot,
+		class_completion_offset,
+		true,
+		context.allocator,
+	)
+	class_labels := [?]string {
+		"CLASS-METHODS ...",
+		"CLASS-METHODS ... IMPORTING",
+		"CLASS-METHODS ... EXPORTING",
+		"CLASS-METHODS ... CHANGING",
+		"CLASS-METHODS ... RECEIVING",
+		"CLASS-METHODS ... RETURNING",
+		"CLASS-METHODS ... IMPORTING RETURNING",
+		"CLASS-METHODS ... IMPORTING EXPORTING",
+		"CLASS-METHODS ... IMPORTING CHANGING",
+		"CLASS-METHODS ... IMPORTING EXPORTING CHANGING",
+		"CLASS-METHODS ... RAISING",
+		"CLASS-METHODS ... IMPORTING RAISING",
+		"CLASS-METHODS ... IMPORTING RETURNING RAISING",
+		"CLASS-METHODS ... EXCEPTIONS",
+		"CLASS-METHODS ... FOR EVENT",
+		"CLASS-METHODS ... ABSTRACT",
+		"CLASS-METHODS ... FINAL",
+	}
+	for label in class_labels {
+		item, item_ok := lsp_test_find_completion_item(class_items, label)
+		testing.expect(t, item_ok)
+		if item_ok {
+			testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+			testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		}
+	}
+	_, class_testing_ok := lsp_test_find_completion_item(
+		class_items,
+		"CLASS-METHODS ... FOR TESTING",
+	)
+	testing.expect(t, !class_testing_ok)
+
+	class_full, class_full_ok := lsp_test_find_completion_item(
+		class_items,
+		"CLASS-METHODS ... IMPORTING EXPORTING CHANGING",
+	)
+	testing.expect(t, class_full_ok)
+	if class_full_ok {
+		testing.expect_value(
+			t,
+			class_full.insert_text,
+			"CLASS-METHODS ${1:method_name}\n      IMPORTING\n        !${2:iv_value} TYPE ${3:string}\n      EXPORTING\n        !${4:ev_value} TYPE ${5:string}\n      CHANGING\n        !${6:cv_value} TYPE ${7:string}.$0",
+		)
+		edit, edit_ok := class_full.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			testing.expect_value(t, edit.new_text, class_full.insert_text)
+			testing.expect_value(t, edit.range.start.line, 2)
+			testing.expect_value(t, edit.range.start.character, 4)
+			testing.expect_value(t, edit.range.end.line, 2)
+			testing.expect_value(t, edit.range.end.character, 11)
+		}
+	}
+}
+
+@(test)
 lsp_completion_begin_end_statement_templates_expand_from_keyword_prefixes :: proc(t: ^testing.T) {
 	cases := [?]Completion_Template_Prefix_Test_Case {
 		{
@@ -1577,6 +1763,42 @@ lsp_completion_common_statement_template_falls_back_to_plain_text_without_snippe
 
 	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
 	testing.expect_value(t, item.insert_text, "APPEND VALUE #( ) TO itab.")
+}
+
+@(test)
+lsp_completion_method_definition_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_method_template_plain.abap"
+	source := "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    class-m\nENDCLASS."
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "class-m") + len("class-m")
+	testing.expect(t, offset >= len("class-m"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(
+		items,
+		"CLASS-METHODS ... IMPORTING RETURNING RAISING",
+	)
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		"CLASS-METHODS method_name\n      IMPORTING\n        !iv_value TYPE string\n      RETURNING\n        VALUE(rv_result) TYPE string\n      RAISING\n        cx_static_check.",
+	)
 }
 
 @(test)
@@ -2289,6 +2511,20 @@ lsp_completion_common_statement_templates_sort_after_matching_symbols :: proc(t:
 			symbol_sort = "1:selection_candidate",
 			template_sort = "2:selection-screen begin of block ... end of block",
 		},
+		{
+			source = "DATA methods_candidate TYPE i.\nmeth",
+			symbol_label = "methods_candidate",
+			template_label = "METHODS ...",
+			symbol_sort = "1:methods_candidate",
+			template_sort = "2:methods ...",
+		},
+		{
+			source = "DATA class_methods_candidate TYPE i.\nclass",
+			symbol_label = "class_methods_candidate",
+			template_label = "CLASS-METHODS ...",
+			symbol_sort = "1:class_methods_candidate",
+			template_sort = "2:class-methods ...",
+		},
 	}
 
 	for test_case, i in cases {
@@ -2506,8 +2742,10 @@ WRITE me`
 
 	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
 	_, item_ok := lsp_test_find_completion_item(items, "MESSAGE ... TYPE")
+	_, methods_ok := lsp_test_find_completion_item(items, "METHODS ...")
 
 	testing.expect(t, !item_ok)
+	testing.expect(t, !methods_ok)
 }
 
 @(test)
