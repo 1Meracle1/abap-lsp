@@ -32,6 +32,8 @@ Checker_Diagnostic_Kind :: enum {
 	Invalid_Split_Operand,
 	Invalid_Syntax_Form,
 	Mismatched_Structure_End,
+	Missing_Method_Implementation,
+	Missing_Method_Definition,
 	Unresolved_Include,
 	Unresolved_Include_If_Found,
 	Include_Cycle,
@@ -922,7 +924,11 @@ checker_add_entity_use_at_range :: proc(
 	)
 }
 
-checker_check_file :: proc(checker: ^Checker, file: ^Project_File) {
+checker_check_file :: proc(
+	checker: ^Checker,
+	file: ^Project_File,
+	check_method_implementations := true,
+) {
 	checker_register_file(checker, file)
 	checker_add_file_syntax_diagnostics(checker, file)
 	ctx := checker_context_make(checker, file)
@@ -930,6 +936,9 @@ checker_check_file :: proc(checker: ^Checker, file: ^Project_File) {
 	checker_check_queued_entities(&ctx)
 	if file.root != nil {
 		checker_check_stmt_list(&ctx, file.root.stmts, collect_declarations = false)
+	}
+	if check_method_implementations && !project_file_has_syntax_errors(file) {
+		checker_check_method_implementation_consistency(&ctx)
 	}
 }
 

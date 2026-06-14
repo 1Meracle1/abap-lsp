@@ -2,6 +2,8 @@ package abap_frontend_semantic2
 
 import "src:ast"
 
+import "core:strings"
+
 checker_check_object_semantics :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 	assert(entity != nil && (entity.kind == .Class || entity.kind == .Interface))
 	payload, ok := entity.payload.(^Entity_Object_Payload)
@@ -43,6 +45,155 @@ checker_check_object_semantics :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 			checker_add_unresolved_oop_type_candidate(ctx, entity, interface_name, .Interface)
 		}
 	}
+}
+
+checker_check_method_implementation_consistency :: proc(ctx: ^Checker_Context) {
+	assert(ctx != nil && ctx.info != nil)
+	for entity in ctx.info.definitions {
+		if !checker_method_participates_in_class_implementation_check(entity) {
+			continue
+		}
+		payload, ok := entity.payload.(^Entity_Routine_Payload)
+		assert(ok && payload != nil)
+
+		has_definition := checker_method_has_explicit_definition(entity, payload)
+		if has_definition {
+			if !payload.has_implementation {
+				checker_add_method_consistency_diagnostic(
+					ctx,
+					.Missing_Method_Implementation,
+					entity.source_file,
+					entity.name_range,
+					checker_method_missing_implementation_message(entity.name),
+					entity,
+					entity.decl_info,
+				)
+			}
+			continue
+		}
+
+		if payload.has_implementation &&
+		   !checker_method_implementation_satisfies_interface_contract(ctx, entity) {
+			file := payload.implementation_unit if payload.implementation_unit != nil else entity.source_file
+			range := payload.implementation_name_range
+			if range.start >= range.end {
+				range = entity.name_range
+			}
+			checker_add_method_consistency_diagnostic(
+				ctx,
+				.Missing_Method_Definition,
+				file,
+				range,
+				checker_method_missing_definition_message(entity.name),
+				entity,
+				entity.decl_info,
+			)
+		}
+	}
+}
+
+checker_method_participates_in_class_implementation_check :: proc(entity: ^Entity) -> bool {
+	if entity == nil || entity.kind != .Method || entity.owner == nil || entity.owner.kind != .Class {
+		return false
+	}
+	if entity.source_file == nil || .Abstract in entity.flags {
+		return false
+	}
+	payload, ok := entity.payload.(^Entity_Routine_Payload)
+	return ok && payload != nil
+}
+
+checker_method_has_explicit_definition :: proc(
+	entity: ^Entity,
+	payload: ^Entity_Routine_Payload,
+) -> bool {
+	assert(entity != nil && payload != nil)
+	if payload.signature_scope != nil &&
+	   checker_decl_info_is_oop_method_definition(payload.signature_scope.decl_info) {
+		return true
+	}
+	return checker_decl_info_is_oop_method_definition(entity.decl_info)
+}
+
+checker_decl_info_is_oop_method_definition :: proc(info: ^Decl_Info) -> bool {
+	if info == nil || info.decl_node == nil {
+		return false
+	}
+	oop, ok := info.decl_node.derived.(^ast.Oop_Simple_Stmt)
+	return ok && (oop.kind == .Methods || oop.kind == .Class_Methods)
+}
+
+checker_method_implementation_satisfies_interface_contract :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+) -> bool {
+	assert(ctx != nil)
+	if entity == nil || entity.owner == nil {
+		return false
+	}
+	qualifier, member_name, qualified := checker_qualified_member_parts(ctx, entity.name)
+	if !qualified {
+		return false
+	}
+	owner_payload, owner_ok := entity.owner.payload.(^Entity_Object_Payload)
+	assert(owner_ok && owner_payload != nil)
+	implements_qualifier := false
+	for interface_name in owner_payload.implemented_interfaces {
+		if interface_name == qualifier {
+			implements_qualifier = true
+			break
+		}
+	}
+	if !implements_qualifier {
+		return false
+	}
+	iface, iface_ok := checker_lookup_object_type_from_scope(
+		ctx,
+		entity.owner.scope,
+		qualifier,
+		.Interface,
+	)
+	if !iface_ok || iface == nil {
+		return false
+	}
+	member, member_ok := checker_lookup_object_member(iface, .Routine, member_name)
+	return member_ok && member != nil && member.kind == .Method
+}
+
+checker_add_method_consistency_diagnostic :: proc(
+	ctx: ^Checker_Context,
+	kind: Checker_Diagnostic_Kind,
+	file: ^Project_File,
+	range: Range,
+	message: string,
+	entity: ^Entity,
+	decl: ^Decl_Info,
+) {
+	if file == nil || range.start >= range.end {
+		return
+	}
+	if checker_diagnostic_present(ctx.info.diagnostics[:], kind, range, file, message) {
+		return
+	}
+	local := ctx^
+	local.file = file
+	checker_add_diagnostic(&local, kind, range, message, entity, decl)
+}
+
+checker_method_missing_implementation_message :: proc(name: string) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "missing implementation for method '")
+	strings.write_string(&builder, name)
+	strings.write_byte(&builder, '\'')
+	return strings.to_string(builder)
+}
+
+checker_method_missing_definition_message :: proc(name: string) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "missing definition for method implementation '")
+	strings.write_string(&builder, name)
+	strings.write_byte(&builder, '\'')
+	return strings.to_string(builder)
 }
 
 checker_check_object_body_oop_load_stmts :: proc(

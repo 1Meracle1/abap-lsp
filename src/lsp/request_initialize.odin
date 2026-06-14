@@ -99,6 +99,7 @@ initialize_result :: proc(allocator: mem.Allocator) -> Initialize_Result {
 			implementation_provider = true,
 			references_provider = true,
 			rename_provider = Rename_Options{prepare_provider = true},
+			code_action_provider = true,
 			completion_provider = Completion_Options{trigger_characters = trigger_characters},
 			semantic_tokens_provider = Semantic_Tokens_Options {
 				legend = Semantic_Tokens_Legend {
@@ -157,6 +158,7 @@ Server_Capabilities :: struct {
 	implementation_provider:  bool `json:"implementationProvider"`,
 	references_provider:      bool `json:"referencesProvider"`,
 	rename_provider:          Rename_Options `json:"renameProvider"`,
+	code_action_provider:     bool `json:"codeActionProvider"`,
 	completion_provider:      Completion_Options `json:"completionProvider"`,
 	semantic_tokens_provider: Semantic_Tokens_Options `json:"semanticTokensProvider"`,
 	folding_range_provider:   bool `json:"foldingRangeProvider"`,

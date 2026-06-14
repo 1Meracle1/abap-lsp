@@ -3216,6 +3216,63 @@ ENDCLASS.`
 }
 
 @(test)
+lsp_code_action_adds_missing_method_implementation_to_existing_block :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/code_action_missing_method_impl.abap"
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS do_something.
+    METHODS method_name.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD do_something.
+  ENDMETHOD.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	diagnostics := diagnostics_for_uri(&state, uri, context.allocator)
+	method_diagnostic := Diagnostic{}
+	method_diagnostic_found := false
+	for diagnostic in diagnostics {
+		if diagnostic.code == "Missing_Method_Implementation" &&
+		   strings.contains(diagnostic.message, "method_name") {
+			method_diagnostic = diagnostic
+			method_diagnostic_found = true
+			break
+		}
+	}
+	testing.expect(t, method_diagnostic_found)
+	if !method_diagnostic_found {
+		return
+	}
+
+	params := lsp_test_code_action_params(uri, method_diagnostic.range)
+	actions := code_actions_for_params(&state, params, context.allocator)
+
+	testing.expect_value(t, len(actions), 1)
+	if len(actions) != 1 {
+		return
+	}
+	testing.expect_value(t, actions[0].kind, "quickfix")
+	testing.expect(t, strings.contains(actions[0].title, "method_name"))
+	edits, edits_ok := actions[0].edit.changes[uri]
+	testing.expect(t, edits_ok)
+	if !edits_ok {
+		return
+	}
+	testing.expect_value(t, len(edits), 1)
+	applied := lsp_test_apply_text_edits(t, source, edits, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(
+			applied,
+			"  METHOD method_name.\n  ENDMETHOD.\nENDCLASS.",
+		),
+	)
+}
+
+@(test)
 lsp_references_include_method_declaration_implementation_and_call :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/references_method.abap"
 	source := `CLASS lcl_demo DEFINITION.
@@ -3972,6 +4029,31 @@ lsp_test_rename_position_params :: proc(
 	if new_name != "" {
 		params["newName"] = json.String(new_name)
 	}
+	return params
+}
+
+lsp_test_code_action_params :: proc(uri: string, range: Range) -> json.Object {
+	params := make(json.Object, 3, context.allocator)
+	text_document := make(json.Object, 1, context.allocator)
+	text_document["uri"] = json.String(uri)
+	params["textDocument"] = text_document
+
+	range_object := make(json.Object, 2, context.allocator)
+	start := make(json.Object, 2, context.allocator)
+	start["line"] = json.Integer(range.start.line)
+	start["character"] = json.Integer(range.start.character)
+	range_object["start"] = start
+	end := make(json.Object, 2, context.allocator)
+	end["line"] = json.Integer(range.end.line)
+	end["character"] = json.Integer(range.end.character)
+	range_object["end"] = end
+	params["range"] = range_object
+
+	context_object := make(json.Object, 1, context.allocator)
+	only := make(json.Array, 0, 1, context.allocator)
+	append(&only, json.String("quickfix"))
+	context_object["only"] = only
+	params["context"] = context_object
 	return params
 }
 

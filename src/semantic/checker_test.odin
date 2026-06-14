@@ -2054,6 +2054,89 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_reports_method_implementation_consistency :: proc(t: ^testing.T) {
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS do_something
+      IMPORTING
+        iv_param TYPE string
+      RETURNING
+        VALUE(rv_res) TYPE string.
+
+    METHODS method_name
+      IMPORTING
+        !iv_value TYPE string
+      RETURNING
+        VALUE(rv_result) TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD do_something1.
+    rv_res = iv_param.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://method_impl_consistency.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Method_Implementation), 2)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Method_Definition), 1)
+
+	missing_do_something := false
+	missing_method_name := false
+	missing_definition := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Missing_Method_Implementation && text == "do_something" {
+			missing_do_something = true
+			testing.expect_value(t, diagnostic.message, "missing implementation for method 'do_something'")
+		}
+		if diagnostic.kind == .Missing_Method_Implementation && text == "method_name" {
+			missing_method_name = true
+		}
+		if diagnostic.kind == .Missing_Method_Definition && text == "do_something1" {
+			missing_definition = true
+			testing.expect_value(t, diagnostic.message, "missing definition for method implementation 'do_something1'")
+		}
+	}
+	testing.expect(t, missing_do_something)
+	testing.expect(t, missing_method_name)
+	testing.expect(t, missing_definition)
+}
+
+@(test)
+root_semantic_method_implementation_consistency_accepts_abstract_and_interface_methods :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_demo.
+  METHODS run.
+ENDINTERFACE.
+
+CLASS lcl_abstract DEFINITION ABSTRACT.
+  PUBLIC SECTION.
+    METHODS optional ABSTRACT.
+ENDCLASS.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_demo.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD lif_demo~run.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://method_impl_consistency_valid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Method_Implementation), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Method_Definition), 0)
+}
+
+@(test)
 root_semantic_expr_checker_resolves_structure_selectors_and_table_keys :: proc(t: ^testing.T) {
 	source := `FORM run.
   TYPES: BEGIN OF ty_status,

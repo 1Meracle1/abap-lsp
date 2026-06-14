@@ -27,6 +27,7 @@ METHOD_IMPLEMENTATION :: "textDocument/implementation"
 METHOD_REFERENCES :: "textDocument/references"
 METHOD_PREPARE_RENAME :: "textDocument/prepareRename"
 METHOD_RENAME :: "textDocument/rename"
+METHOD_CODE_ACTION :: "textDocument/codeAction"
 METHOD_SEMANTIC_TOKENS_FULL :: "textDocument/semanticTokens/full"
 METHOD_FOLDING_RANGE :: "textDocument/foldingRange"
 METHOD_PUBLISH_DIAGNOSTICS :: "textDocument/publishDiagnostics"
@@ -129,6 +130,13 @@ Text_Edit :: struct {
 
 Workspace_Edit :: struct {
 	changes: map[string][]Text_Edit `json:"changes"`,
+}
+
+Code_Action :: struct {
+	title:        string `json:"title"`,
+	kind:         string `json:"kind"`,
+	edit:         Workspace_Edit `json:"edit"`,
+	is_preferred: bool `json:"isPreferred"`,
 }
 
 Prepare_Rename_Response :: struct {

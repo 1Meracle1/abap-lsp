@@ -1141,7 +1141,7 @@ external_semantics_analyze_interface_input :: proc(
 		input.syntax_diagnostics[:],
 		input.has_syntax_errors,
 	)
-	checker_check_file(checker, file)
+	checker_check_file(checker, file, check_method_implementations = false)
 	has_syntax_errors := project_file_has_syntax_errors(file)
 
 	record := semantic_project_record_make(

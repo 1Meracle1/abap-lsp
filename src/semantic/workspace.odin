@@ -399,6 +399,9 @@ semantic_workspace_build_project :: proc(
 	checker_check_queued_entities(&ctx)
 	workspace_check_expanded_file_stmts(&state, &ctx, plan.root_index)
 	project_has_syntax_errors := workspace_project_result_has_syntax_errors(project_result)
+	if !project_has_syntax_errors {
+		checker_check_method_implementation_consistency(&ctx)
+	}
 
 	append(&analysis.projects, project)
 	for file in project_result.files {

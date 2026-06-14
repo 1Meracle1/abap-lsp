@@ -204,6 +204,8 @@ handle_request :: proc(ctx: ^Request_Context, method: string, params: json.Value
 		handle_prepare_rename(ctx, params)
 	case METHOD_RENAME:
 		handle_rename(ctx, params)
+	case METHOD_CODE_ACTION:
+		handle_code_action(ctx, params)
 	case METHOD_SEMANTIC_TOKENS_FULL:
 		handle_semantic_tokens(ctx, params)
 	case METHOD_FOLDING_RANGE:
