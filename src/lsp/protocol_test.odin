@@ -633,6 +633,136 @@ START-OF-SELECTION.
 }
 
 @(test)
+lsp_completion_method_body_unqualified_method_uses_full_call_snippet :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_method_body_call_snippet.abap"
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS do_something.
+    METHODS method_name
+      IMPORTING
+        iv_input TYPE string
+        iv_other TYPE i.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD do_something.
+    meth
+  ENDMETHOD.
+  METHOD method_name.
+  ENDMETHOD.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "\n    meth") + len("\n    meth")
+	testing.expect(t, offset >= len("\n    meth"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "method_name")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		`method_name(
+      iv_input = $1
+      iv_other = $2
+    )$0`,
+	)
+	testing.expect(t, !strings.contains(item.insert_text, "EXPORTING"))
+}
+
+@(test)
+lsp_completion_method_body_unqualified_method_without_parameters_inserts_empty_call :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_method_body_empty_call.abap"
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS do_something.
+    METHODS no_parameters.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD do_something.
+    no_
+  ENDMETHOD.
+  METHOD no_parameters.
+  ENDMETHOD.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "\n    no_") + len("\n    no_")
+	testing.expect(t, offset >= len("\n    no_"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "no_parameters")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(t, item.insert_text, "no_parameters( )$0")
+}
+
+@(test)
+lsp_completion_method_implementation_header_keeps_unqualified_method_name_plain :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_method_header_plain.abap"
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS method_name IMPORTING iv_input TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD meth.
+  ENDMETHOD.
+  METHOD method_name.
+  ENDMETHOD.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "\n  METHOD meth.") + len("\n  METHOD meth")
+	testing.expect(t, offset >= len("\n  METHOD meth"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "method_name")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(t, item.insert_text, "method_name")
+}
+
+@(test)
 lsp_completion_in_incomplete_method_implementation_reads_signature_scope :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_method_body_signature.abap"
 	source := `CLASS lcl_class DEFINITION.

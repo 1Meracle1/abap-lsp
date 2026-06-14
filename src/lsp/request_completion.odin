@@ -1,5 +1,6 @@
 package abap_frontend_lsp
 
+import "src:ast"
 import "src:semantic"
 import "src:utils"
 
@@ -48,6 +49,12 @@ completion_items_for_snapshot :: proc(
 		prefix,
 		context.temp_allocator,
 		snapshot.source,
+	)
+	scope := semantic.semantic_query_scope_at_offset(snapshot.file, offset, snapshot.checker)
+	method_body_call_completion := completion_in_method_implementation_body(
+		scope,
+		snapshot.file,
+		offset,
 	)
 	indent := completion_line_indent(snapshot.source, offset, context.temp_allocator)
 	member_prefix_start := completion_prefix_start(snapshot.source, offset)
@@ -130,6 +137,7 @@ completion_items_for_snapshot :: proc(
 			selector_filter_prefix,
 			indent,
 			snippets_supported,
+			method_body_call_completion,
 			allocator,
 		)
 	}
@@ -242,6 +250,7 @@ completion_item_from_semantic_item :: proc(
 	selector_filter_prefix: string,
 	indent: string,
 	snippets_supported: bool,
+	method_body_call_completion: bool,
 	allocator: mem.Allocator,
 ) -> Completion_Item {
 	out := Completion_Item {
@@ -252,9 +261,7 @@ completion_item_from_semantic_item :: proc(
 		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
 	}
 	if snippets_supported &&
-	   item.source == .Selector_Member &&
-	   item.entity != nil &&
-	   item.entity.kind == .Method {
+	   completion_semantic_item_uses_method_call_snippet(item, method_body_call_completion) {
 		out.insert_text = completion_method_call_snippet(
 			project,
 			item.entity,
@@ -273,6 +280,55 @@ completion_item_from_semantic_item :: proc(
 		out.text_edit = Text_Edit{range = selector_replace_range, new_text = new_text}
 	}
 	return out
+}
+
+completion_semantic_item_uses_method_call_snippet :: proc(
+	item: semantic.Semantic_Completion_Item,
+	method_body_call_completion: bool,
+) -> bool {
+	if item.entity == nil || item.entity.kind != .Method {
+		return false
+	}
+	if item.source == .Selector_Member {
+		return true
+	}
+	if !method_body_call_completion || item.source != .Lexical_Scope {
+		return false
+	}
+	owner := item.entity.owner
+	return owner != nil && (owner.kind == .Class || owner.kind == .Interface)
+}
+
+completion_in_method_implementation_body :: proc(
+	scope: ^semantic.Scope,
+	file: ^semantic.Project_File,
+	offset: int,
+) -> bool {
+	if scope == nil || file == nil {
+		return false
+	}
+	for current := scope; current != nil; current = current.parent {
+		if current.kind != .Method || current.owner == nil || current.owner.kind != .Method {
+			continue
+		}
+		payload, ok := current.owner.payload.(^semantic.Entity_Routine_Payload)
+		if !ok ||
+		   payload == nil ||
+		   payload.implementation_unit != file ||
+		   !completion_range_contains_offset(payload.implementation_range, offset) {
+			continue
+		}
+		if current.owner.decl_info == nil || current.owner.decl_info.decl_node == nil {
+			return false
+		}
+		method, method_ok := current.owner.decl_info.decl_node.derived.(^ast.Method_Decl)
+		return method_ok && offset >= method.header_range.end
+	}
+	return false
+}
+
+completion_range_contains_offset :: proc "contextless" (range: semantic.Range, offset: int) -> bool {
+	return range.start <= offset && offset < range.end
 }
 
 completion_sort_text :: proc(priority, label: string, allocator: mem.Allocator) -> string {
