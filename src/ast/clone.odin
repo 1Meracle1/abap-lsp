@@ -1707,6 +1707,7 @@ clone_select_query :: proc(clause: Select_Query_Clause, allocator: mem.Allocator
 		where_cond      = clone(clause.where_cond, allocator),
 		dynamic_where   = clause.dynamic_where,
 		for_all_entries = clone(clause.for_all_entries, allocator),
+		group_by        = clone_select_group_by(clause.group_by, allocator),
 		package_size    = clone(clause.package_size, allocator),
 		up_to_rows      = clone(clause.up_to_rows, allocator),
 		set_ops         = clone_select_set_ops(clause.set_ops, allocator),
@@ -1751,6 +1752,14 @@ clone_select_projections :: proc(list: [dynamic]Select_Projection_Clause, alloca
 	res := make([dynamic]Select_Projection_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Select_Projection_Clause{value = clone(clause.value, allocator), alias = clone_token_text(clause.alias, allocator), is_dynamic = clause.is_dynamic, range = clause.range})
+	}
+	return res
+}
+
+clone_select_group_by :: proc(list: [dynamic]Select_Group_By_Expr, allocator: mem.Allocator) -> [dynamic]Select_Group_By_Expr {
+	res := make([dynamic]Select_Group_By_Expr, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Select_Group_By_Expr{value = clone(clause.value, allocator), is_dynamic = clause.is_dynamic, range = clause.range})
 	}
 	return res
 }

@@ -45,6 +45,7 @@ Checker_Cursor_Query :: struct {
 	shape:  Sql_Query_Shape,
 }
 
+OPEN_SQL_REQUIRED_GROUP_BY_MESSAGE :: "Open SQL SELECT with aggregate expressions must use GROUP BY for unaggregated fields"
 OPEN_SQL_INTERNAL_TABLE_WHERE_HOST_MESSAGE :: "Open SQL WHERE can reference an internal table row field only with FOR ALL ENTRIES IN the same table"
 
 checker_sql_unknown_query_shape :: proc(ctx: ^Checker_Context) -> Sql_Query_Shape {
@@ -101,6 +102,7 @@ checker_check_sql_select_query :: proc(ctx: ^Checker_Context, query: ast.Select_
 	}
 
 	fields := checker_sql_check_projection_list(ctx, &sql, query)
+	checker_check_sql_group_by(ctx, &sql, query)
 	shape := checker_sql_query_shape(ctx, fields[:], query.result)
 	checker_check_sql_select_result(ctx, query.result, shape)
 	for_all_entries := checker_check_sql_for_all_entries(ctx, query.for_all_entries)
@@ -318,6 +320,145 @@ checker_sql_check_projection_list :: proc(
 		checker_sql_append_projection(ctx, sql, &fields, projection, {}, checker_expr_range(projection), false)
 	}
 	return fields
+}
+
+checker_check_sql_group_by :: proc(
+	ctx: ^Checker_Context,
+	sql: ^Sql_Source_Scope,
+	query: ast.Select_Query_Clause,
+) {
+	for group_expr in query.group_by {
+		if group_expr.value == nil {
+			continue
+		}
+		if group_expr.is_dynamic {
+			checker_check_sql_dynamic_expr(ctx, group_expr.value)
+		} else {
+			checker_check_sql_expr(ctx, sql, group_expr.value, false)
+		}
+	}
+	if len(query.group_by) > 0 {
+		return
+	}
+	if field_range, ok := checker_sql_required_group_by_field(query); ok {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Open_Sql_Group_By,
+			field_range,
+			OPEN_SQL_REQUIRED_GROUP_BY_MESSAGE,
+		)
+	}
+}
+
+checker_sql_required_group_by_field :: proc(query: ast.Select_Query_Clause) -> (Range, bool) {
+	has_aggregate := false
+	field_range := Range{}
+	field_ok := false
+
+	if len(query.projection_clauses) > 0 {
+		for projection in query.projection_clauses {
+			if projection.is_dynamic {
+				continue
+			}
+			if checker_sql_expr_has_aggregate(projection.value) {
+				has_aggregate = true
+			}
+			if !field_ok {
+				field_range, field_ok = checker_sql_unaggregated_field_range(projection.value)
+			}
+		}
+	} else {
+		for projection in query.projections {
+			if checker_sql_expr_has_aggregate(projection) {
+				has_aggregate = true
+			}
+			if !field_ok {
+				field_range, field_ok = checker_sql_unaggregated_field_range(projection)
+			}
+		}
+	}
+
+	return field_range, has_aggregate && field_ok
+}
+
+checker_sql_expr_has_aggregate :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	has_aggregate := false
+	visitor := ast.Visitor {
+		visit = checker_sql_aggregate_visit,
+		data  = rawptr(&has_aggregate),
+	}
+	ast.walk(&visitor, expr)
+	return has_aggregate
+}
+
+checker_sql_aggregate_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil {
+		return v
+	}
+	has_aggregate := (^bool)(v.data)
+	if has_aggregate^ {
+		return nil
+	}
+	call, ok := node.derived.(^ast.Sql_Call_Expr)
+	if ok && call.kind == .Aggregate {
+		has_aggregate^ = true
+		return nil
+	}
+	return v
+}
+
+Sql_Unaggregated_Field_Search :: struct {
+	range: Range,
+	found: bool,
+}
+
+checker_sql_unaggregated_field_range :: proc(expr: ^ast.Expr) -> (Range, bool) {
+	if expr == nil {
+		return {}, false
+	}
+	search := Sql_Unaggregated_Field_Search{}
+	visitor := ast.Visitor {
+		visit = checker_sql_unaggregated_field_visit,
+		data  = rawptr(&search),
+	}
+	ast.walk(&visitor, expr)
+	return search.range, search.found
+}
+
+checker_sql_unaggregated_field_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil {
+		return v
+	}
+	search := (^Sql_Unaggregated_Field_Search)(v.data)
+	if search.found {
+		return nil
+	}
+	#partial switch n in node.derived {
+	case ^ast.Sql_Column_Expr:
+		search.range = n.name.range if n.name.range.end > n.name.range.start else node.range
+		search.found = true
+		return nil
+	case ^ast.Sql_Star_Expr:
+		search.range = n.star_range if n.star_range.end > n.star_range.start else node.range
+		search.found = true
+		return nil
+	case ^ast.Sql_Call_Expr:
+		if n.kind == .Aggregate {
+			return nil
+		}
+	case ^ast.Host_Expr:
+		return nil
+	case ^ast.Selector_Expr:
+		if n.op == .Tilde {
+			search.range = node.range
+			search.found = true
+			return nil
+		}
+	}
+	return v
 }
 
 checker_sql_append_projection :: proc(

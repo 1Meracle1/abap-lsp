@@ -784,6 +784,9 @@ walk_select_query :: proc(v: ^Visitor, clause: Select_Query_Clause) {
 	walk_select_result(v, clause.result)
 	walk(v, clause.where_cond)
 	walk(v, clause.for_all_entries)
+	for group_expr in clause.group_by {
+		walk(v, group_expr.value)
+	}
 	walk(v, clause.package_size)
 	walk(v, clause.up_to_rows)
 	for set_op in clause.set_ops {

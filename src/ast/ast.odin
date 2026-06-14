@@ -2471,6 +2471,13 @@ Select_Projection_Clause :: struct {
 	range:      tokenizer.Range,
 }
 
+// ABAP syntax: one `GROUP BY` expression in an Open SQL SELECT.
+Select_Group_By_Expr :: struct {
+	value:      ^Expr,
+	is_dynamic: bool,
+	range:      tokenizer.Range,
+}
+
 Select_Join_Kind :: enum {
 	Inner,
 	Left_Outer,
@@ -2523,6 +2530,7 @@ Select_Query_Clause :: struct {
 	where_cond:             ^Expr,
 	dynamic_where:          bool,
 	for_all_entries:        ^Expr,
+	group_by:               [dynamic]Select_Group_By_Expr,
 	package_size:           ^Expr,
 	up_to_rows:             ^Expr,
 	set_ops:                [dynamic]Select_Set_Clause,

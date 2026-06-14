@@ -808,6 +808,7 @@ parse_select_query_clause :: proc(
 	query := ast.Select_Query_Clause{}
 	query.projections = make([dynamic]^ast.Expr, 0, 4, p.allocator)
 	query.projection_clauses = make([dynamic]ast.Select_Projection_Clause, 0, 4, p.allocator)
+	query.group_by = make([dynamic]ast.Select_Group_By_Expr, 0, 2, p.allocator)
 	query.set_ops = make([dynamic]ast.Select_Set_Clause, 0, 1, p.allocator)
 	query.order_by_fields = make([dynamic]ast.Token_Text, 0, 2, p.allocator)
 	if !allow_keyword(p, "SELECT") {
@@ -1108,10 +1109,7 @@ parse_select_query_clause :: proc(
 				)
 				continue
 			}
-			if !allow_keyword(p, "BY") {
-				error_current(p, "syntax error: expected keyword")
-			}
-			query.group_by_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
+			parse_select_group_by_clause(p, &query, start, body_start, stop_at_rparen)
 			state.group_by = true
 			continue
 		}
@@ -1380,6 +1378,9 @@ validate_select_query_host_escapes :: proc(p: ^Parser, query: ^ast.Select_Query_
 	for projection in query.projection_clauses {
 		select_error_implicit_hosts_in_expr(p, projection.value)
 	}
+	for group_expr in query.group_by {
+		select_error_implicit_hosts_in_expr(p, group_expr.value)
+	}
 	if query.source_clause != nil {
 		select_error_implicit_hosts_in_expr(p, query.source_clause.source)
 		for join in query.source_clause.joins {
@@ -1399,6 +1400,11 @@ validate_select_query_host_escapes :: proc(p: ^Parser, query: ^ast.Select_Query_
 select_query_has_explicit_host :: proc(query: ^ast.Select_Query_Clause) -> bool {
 	for projection in query.projection_clauses {
 		if sql_expr_has_explicit_host(projection.value) {
+			return true
+		}
+	}
+	for group_expr in query.group_by {
+		if sql_expr_has_explicit_host(group_expr.value) {
 			return true
 		}
 	}
@@ -1578,6 +1584,64 @@ parse_select_fields_clause :: proc(
 		}
 		ensure_forward_progress(p, start)
 	}
+}
+
+parse_select_group_by_clause :: proc(
+	p: ^Parser,
+	query: ^ast.Select_Query_Clause,
+	start: Token,
+	body_start: int,
+	stop_at_rparen: bool,
+) {
+	if !allow_keyword(p, "BY") {
+		error_current(p, "syntax error: expected keyword")
+		query.group_by_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
+		return
+	}
+	for !select_query_done(p, body_start, stop_at_rparen) && !select_clause_starts(p) {
+		if allow_token(p, .Comma) {
+			continue
+		}
+		expr_start := p.index
+		value, is_dynamic := select_sql_projection_expr(
+			p,
+			body_start,
+			[]string {
+				"INTO",
+				"APPENDING",
+				"WHERE",
+				"FOR",
+				"GROUP",
+				"FIELDS",
+				"HAVING",
+				"ORDER",
+				"UP",
+				"PACKAGE",
+				"OFFSET",
+				"BYPASSING",
+				"CONNECTION",
+				"CLIENT",
+				"UNION",
+				"INTERSECT",
+				"EXCEPT",
+				"SELECT",
+			},
+		)
+		if value != nil {
+			append(
+				&query.group_by,
+				ast.Select_Group_By_Expr {
+					value = value,
+					is_dynamic = is_dynamic,
+					range = value.range,
+				},
+			)
+		} else {
+			bump_token(p)
+		}
+		ensure_forward_progress(p, expr_start)
+	}
+	query.group_by_clause = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 }
 
 select_clause_expr_range :: proc(p: ^Parser, start: Token, expr: ^ast.Expr) -> tokenizer.Range {

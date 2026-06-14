@@ -3607,6 +3607,10 @@ emit_select_query :: proc(p: ^Printer, query: Select_Query_Clause) {
 		emit(p, " WHERE ")
 		emit_node(p, query.where_cond)
 	}
+	if len(query.group_by) > 0 {
+		emit(p, " GROUP BY ")
+		emit_select_group_by(p, query.group_by)
+	}
 	if query.order_by_primary_key || len(query.order_by_fields) > 0 {
 		emit(p, " ORDER BY ")
 		if query.order_by_primary_key {
@@ -3640,6 +3644,15 @@ emit_select_query :: proc(p: ^Printer, query: Select_Query_Clause) {
 		}
 		emit_space(p)
 		emit_select_query(p, set_op.query)
+	}
+}
+
+emit_select_group_by :: proc(p: ^Printer, clauses: [dynamic]Select_Group_By_Expr) {
+	for clause, i in clauses {
+		if i > 0 {
+			emit(p, ", ")
+		}
+		emit_node(p, clause.value)
 	}
 }
 

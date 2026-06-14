@@ -4462,6 +4462,79 @@ lv_total = ls_event_summary-total_events.`
 }
 
 @(test)
+root_semantic_sql_checker_requires_group_by_for_aggregate_with_plain_field :: proc(
+	t: ^testing.T,
+) {
+	source := `TYPES: BEGIN OF ztrn_evt,
+         trnid TYPE string,
+         evtid TYPE string,
+       END OF ztrn_evt.
+TYPES: BEGIN OF zevt,
+         evtid TYPE string,
+         creation_time TYPE t,
+         bizstep TYPE string,
+       END OF zevt.
+DATA lr_trnid TYPE RANGE OF string.
+
+SELECT q~trnid, MAX( w~creation_time ) AS creation_time, COUNT( * ) AS count
+  FROM ztrn_evt AS q
+  JOIN zevt AS w ON w~evtid = q~evtid AND w~bizstep = '013'
+  INTO TABLE @DATA(lt_trn_evt)
+  WHERE trnid IN @lr_trnid
+  ORDER BY creation_time DESCENDING.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://sql_missing_group_by.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Open_Sql_Group_By), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Open_Sql_Group_By {
+			continue
+		}
+		found = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "trnid")
+		testing.expect_value(t, diagnostic.message, OPEN_SQL_REQUIRED_GROUP_BY_MESSAGE)
+	}
+	testing.expect(t, found)
+}
+
+@(test)
+root_semantic_sql_checker_accepts_group_by_for_aggregate_with_plain_field :: proc(
+	t: ^testing.T,
+) {
+	source := `TYPES: BEGIN OF ztrn_evt,
+         trnid TYPE string,
+         evtid TYPE string,
+       END OF ztrn_evt.
+TYPES: BEGIN OF zevt,
+         evtid TYPE string,
+         creation_time TYPE t,
+         bizstep TYPE string,
+       END OF zevt.
+DATA lr_trnid TYPE RANGE OF string.
+
+SELECT q~trnid, MAX( w~creation_time ) AS creation_time, COUNT( * ) AS count
+  FROM ztrn_evt AS q
+  JOIN zevt AS w ON w~evtid = q~evtid AND w~bizstep = '013'
+  INTO TABLE @DATA(lt_trn_evt)
+  WHERE trnid IN @lr_trnid
+  GROUP BY q~trnid
+  ORDER BY creation_time DESCENDING.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://sql_group_by_present.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Open_Sql_Group_By), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+}
+
+@(test)
 root_semantic_sql_checker_combines_join_star_inline_rows :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF zhead,
          id TYPE i,
