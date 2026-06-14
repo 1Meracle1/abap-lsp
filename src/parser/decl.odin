@@ -183,10 +183,14 @@ parse_types_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				}
 				continue
 			}
+			if types_clause_recovery_head_starts(p, p.index) {
+				error_current(p, "syntax error: expected ',' between TYPES clauses")
+				continue
+			}
 			break
 		}
 	}
-	period := expect_token(p, .Period)
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after TYPES declaration")
 	assign_decl_depths(&stmt.types)
 	stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
 	return stmt
@@ -664,7 +668,7 @@ parse_types_clause :: proc(p: ^Parser) -> (ast.Types_Clause, bool) {
 			return ast.Types_Clause{}, false
 		}
 	}
-	for !decl_clause_end(p, name_index) {
+	for !types_clause_end(p, name_index) {
 		if parse_group_or_include_addition(p, &clause.occurs, &clause.as_name, &clause.renaming_suffix) {
 			continue
 		}
@@ -1169,6 +1173,13 @@ parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 				continue
 			}
 			if p.index > start && type_ref_stop_keyword(p) && !type_ref_selector_field(p) {
+				break
+			}
+			if p.index > start &&
+			   .Has_Newline_Before in tok.flags &&
+			   !type_ref_selector_field(p) &&
+			   (statement_lead_starts(p, p.index) ||
+			    types_clause_recovery_head_starts(p, p.index)) {
 				break
 			}
 			if p.index > start && at_keyword(p, "END") &&
@@ -1770,6 +1781,31 @@ type_ref_stop_keyword :: proc(p: ^Parser) -> bool {
 decl_clause_boundary :: proc(p: ^Parser) -> bool {
 	tok := current_token(p)
 	return tok.kind == .Comma || tok.kind == .Period || tok.kind == .Eof
+}
+
+types_clause_end :: proc(p: ^Parser, clause_start: int) -> bool {
+	tok := current_token(p)
+	return(
+		decl_clause_end(p, clause_start) ||
+		(p.index > clause_start &&
+				.Has_Newline_Before in tok.flags &&
+				types_clause_recovery_head_starts(p, p.index)) \
+	)
+}
+
+types_clause_recovery_head_starts :: proc(p: ^Parser, index: int) -> bool {
+	if index >= len(p.tokens) || known_stmt_lead_at(p, index) {
+		return false
+	}
+	if at_keyword_index(p, index, "BEGIN") || at_keyword_index(p, index, "END") {
+		return at_keyword_index(p, index + 1, "OF") ||
+		       decl_keyword_name_tail_starts(p, index + 1)
+	}
+	tok := p.tokens[index]
+	if tok.kind != .Ident && tok.kind != .Number && tok.kind != .Star {
+		return false
+	}
+	return decl_keyword_name_tail_starts(p, index + 1)
 }
 
 decl_clause_end :: proc(p: ^Parser, clause_start: int) -> bool {

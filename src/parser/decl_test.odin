@@ -418,6 +418,36 @@ TYPES:
 }
 
 @(test)
+types_recovery_keeps_later_clause_and_following_statement :: proc(t: ^testing.T) {
+	source := `TYPES:
+  tr_docnum TYPE RANGE OF string,
+  BEGIN OF ty_line,
+    field TYPE string,
+  END OF ty_line
+  ty_something TYPE string
+DATA lt_delivery_header TYPE STANDARD TABLE OF ty_line.`
+	parsed := parse(source, "types_recovery.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected ',' between TYPES clauses")
+	expect_error_contains(t, parsed, "expected '.' after TYPES declaration")
+	testing.expect_value(t, len(parsed.root.stmts), 2)
+
+	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	data := single_data_branch(parsed.root.stmts[1])
+
+	testing.expect_value(t, len(types.types), 5)
+	testing.expect_value(t, types.types[0].name.text, "tr_docnum")
+	testing.expect_value(t, types.types[0].type_clause.form, ast.Data_Type_Form.Range_Of)
+	testing.expect_value(t, types.types[1].kind, ast.Decl_Clause_Kind.Begin_Group)
+	testing.expect_value(t, types.types[2].name.text, "field")
+	testing.expect_value(t, types.types[3].kind, ast.Decl_Clause_Kind.End_Group)
+	testing.expect_value(t, types.types[4].name.text, "ty_something")
+	testing.expect_value(t, types.types[4].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name.text, "string")
+	testing.expect_value(t, data.name.text, "lt_delivery_header")
+	testing.expect_value(t, data.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name.text, "ty_line")
+}
+
+@(test)
 data_common_part_delimiters_mark_ast_fact :: proc(t: ^testing.T) {
 	source := `DATA: BEGIN OF COMMON PART fm06lcbe.
 DATA: END OF COMMON PART.
