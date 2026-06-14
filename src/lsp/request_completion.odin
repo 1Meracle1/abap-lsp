@@ -502,11 +502,12 @@ completion_get_time_stamp_field_template_count :: proc(
 }
 
 Completion_Statement_Template :: struct {
-	keyword:            string,
-	label:              string,
-	snippet:            string,
-	plain:              string,
-	types_chain_clause: bool,
+	keyword:                 string,
+	label:                   string,
+	snippet:                 string,
+	plain:                   string,
+	types_chain_clause:      bool,
+	type_addition_clause:    bool,
 }
 
 EXPRESSION_TEMPLATES :: [?]Completion_Statement_Template {
@@ -717,6 +718,111 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		snippet = "BEGIN OF ${1:ty_line},\n  ${2:field} TYPE ${3:string},\nEND OF ${1:ty_line}$0",
 		plain = "BEGIN OF ty_line,\n  field TYPE string,\nEND OF ty_line",
 		types_chain_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE ...",
+		snippet = "TYPE ${1:string}$0",
+		plain = "TYPE string",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE c LENGTH",
+		snippet = "TYPE c LENGTH ${1:10}$0",
+		plain = "TYPE c LENGTH 10",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE p LENGTH DECIMALS",
+		snippet = "TYPE p LENGTH ${1:8} DECIMALS ${2:2}$0",
+		plain = "TYPE p LENGTH 8 DECIMALS 2",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE REF TO ...",
+		snippet = "TYPE REF TO ${1:object}$0",
+		plain = "TYPE REF TO object",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE LINE OF ...",
+		snippet = "TYPE LINE OF ${1:itab}$0",
+		plain = "TYPE LINE OF itab",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE TABLE OF ...",
+		snippet = "TYPE TABLE OF ${1:string}$0",
+		plain = "TYPE TABLE OF string",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE ANY TABLE",
+		snippet = "TYPE ANY TABLE$0",
+		plain = "TYPE ANY TABLE",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE INDEX TABLE",
+		snippet = "TYPE INDEX TABLE$0",
+		plain = "TYPE INDEX TABLE",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE STANDARD TABLE",
+		snippet = "TYPE STANDARD TABLE$0",
+		plain = "TYPE STANDARD TABLE",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE STANDARD TABLE OF ... WITH EMPTY KEY",
+		snippet = "TYPE STANDARD TABLE OF ${1:string} WITH EMPTY KEY$0",
+		plain = "TYPE STANDARD TABLE OF string WITH EMPTY KEY",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE STANDARD TABLE OF ... WITH DEFAULT KEY",
+		snippet = "TYPE STANDARD TABLE OF ${1:string} WITH DEFAULT KEY$0",
+		plain = "TYPE STANDARD TABLE OF string WITH DEFAULT KEY",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE SORTED TABLE OF ... WITH UNIQUE KEY",
+		snippet = "TYPE SORTED TABLE OF ${1:string} WITH UNIQUE KEY ${2:table_line}$0",
+		plain = "TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE SORTED TABLE OF ... WITH NON-UNIQUE KEY",
+		snippet = "TYPE SORTED TABLE OF ${1:string} WITH NON-UNIQUE KEY ${2:table_line}$0",
+		plain = "TYPE SORTED TABLE OF string WITH NON-UNIQUE KEY table_line",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE HASHED TABLE OF ... WITH UNIQUE KEY",
+		snippet = "TYPE HASHED TABLE OF ${1:string} WITH UNIQUE KEY ${2:table_line}$0",
+		plain = "TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line",
+		type_addition_clause = true,
+	},
+	{
+		keyword = "TYPE",
+		label = "TYPE RANGE OF ...",
+		snippet = "TYPE RANGE OF ${1:sy-datum}$0",
+		plain = "TYPE RANGE OF sy-datum",
+		type_addition_clause = true,
 	},
 	{
 		keyword = "DATA",
@@ -1400,6 +1506,9 @@ completion_common_statement_template_matches :: proc(
 	if template.types_chain_clause {
 		return completion_template_in_types_chain_clause(source, offset)
 	}
+	if template.type_addition_clause {
+		return completion_template_in_type_addition_clause(source, offset)
+	}
 	return completion_template_at_statement_start(source, offset)
 }
 
@@ -1505,17 +1614,269 @@ completion_template_in_types_chain_clause :: proc(source: string, offset: int) -
 	return keyword == "types"
 }
 
+completion_template_in_type_addition_clause :: proc(source: string, offset: int) -> bool {
+	prefix_start := completion_template_prefix_start(source, offset)
+	i := completion_template_skip_space_backward(source, prefix_start)
+	if i == 0 {
+		return false
+	}
+
+	switch source[i - 1] {
+	case ':', ',', '.':
+		return false
+	}
+
+	keyword_start, keyword_end, keyword_ok := completion_template_statement_keyword_before(
+		source,
+		prefix_start,
+	)
+	if !keyword_ok || keyword_end >= i {
+		return false
+	}
+	keyword := utils.to_lower_ascii(source[keyword_start:keyword_end], context.temp_allocator)
+	if !completion_template_type_addition_after_decl_name(source, prefix_start) {
+		return false
+	}
+	if completion_template_type_addition_decl_statement_keyword(keyword) {
+		return completion_template_type_addition_decl_statement_context(
+			source,
+			keyword_end,
+			prefix_start,
+		)
+	}
+	if completion_template_type_addition_signature_keyword(keyword) {
+		return completion_template_has_word_between(
+			source,
+			keyword_end,
+			prefix_start,
+			"importing",
+		) ||
+		       completion_template_has_word_between(source, keyword_end, prefix_start, "exporting") ||
+		       completion_template_has_word_between(source, keyword_end, prefix_start, "changing") ||
+		       completion_template_has_word_between(source, keyword_end, prefix_start, "returning") ||
+		       completion_template_has_word_between(source, keyword_end, prefix_start, "receiving")
+	}
+	if keyword == "form" {
+		return completion_template_has_word_between(source, keyword_end, prefix_start, "using") ||
+		       completion_template_has_word_between(source, keyword_end, prefix_start, "changing") ||
+		       completion_template_has_word_between(source, keyword_end, prefix_start, "tables")
+	}
+	if keyword == "function" {
+		return completion_template_has_word_between(
+			source,
+			keyword_end,
+			prefix_start,
+			"importing",
+		) ||
+		       completion_template_has_word_between(source, keyword_end, prefix_start, "exporting") ||
+		       completion_template_has_word_between(source, keyword_end, prefix_start, "changing") ||
+		       completion_template_has_word_between(source, keyword_end, prefix_start, "tables")
+	}
+	return false
+}
+
+completion_template_type_addition_decl_statement_keyword :: proc "contextless" (
+	keyword: string,
+) -> bool {
+	return keyword == "types" ||
+	       keyword == "data" ||
+	       keyword == "class-data" ||
+	       keyword == "constants" ||
+	       keyword == "statics" ||
+	       keyword == "field-symbols" ||
+	       keyword == "parameters" ||
+	       keyword == "parameter"
+}
+
+completion_template_type_addition_signature_keyword :: proc "contextless" (
+	keyword: string,
+) -> bool {
+	return keyword == "methods" ||
+	       keyword == "class-methods" ||
+	       keyword == "events" ||
+	       keyword == "class-events"
+}
+
+completion_template_type_addition_decl_statement_context :: proc(
+	source: string,
+	keyword_end: int,
+	prefix_start: int,
+) -> bool {
+	clause_start := completion_template_decl_clause_start(source, keyword_end, prefix_start)
+	return !completion_template_has_word_between(source, clause_start, prefix_start, "type") &&
+	       !completion_template_has_word_between(source, clause_start, prefix_start, "like") &&
+	       !completion_template_has_word_between(source, clause_start, prefix_start, "structure")
+}
+
+completion_template_decl_clause_start :: proc(source: string, start, offset: int) -> int {
+	out := clamp(start, 0, len(source))
+	end := clamp(offset, out, len(source))
+	for i := out; i < end; i += 1 {
+		switch source[i] {
+		case ':', ',':
+			out = i + 1
+		}
+	}
+	return out
+}
+
+completion_template_type_addition_after_decl_name :: proc(source: string, offset: int) -> bool {
+	i := completion_template_skip_space_backward(source, offset)
+	if i == 0 {
+		return false
+	}
+	ch := source[i - 1]
+	if ch == ')' {
+		return completion_template_wrapped_decl_name_before(source, i)
+	}
+	if ch == '>' {
+		return completion_template_field_symbol_name_before(source, i)
+	}
+	if !completion_template_decl_name_char(ch) {
+		return false
+	}
+	start := i
+	for start > 0 && completion_template_decl_name_char(source[start - 1]) {
+		start -= 1
+	}
+	word := utils.to_lower_ascii(source[start:i], context.temp_allocator)
+	return !completion_template_type_addition_forbidden_previous_word(word)
+}
+
+completion_template_wrapped_decl_name_before :: proc(source: string, offset: int) -> bool {
+	i := clamp(offset, 0, len(source))
+	depth := 0
+	open := -1
+	for i > 0 {
+		i -= 1
+		switch source[i] {
+		case ')':
+			depth += 1
+		case '(':
+			depth -= 1
+			if depth == 0 {
+				open = i
+				break
+			}
+		}
+	}
+	if open < 0 || open + 1 >= offset - 1 {
+		return false
+	}
+	wrapper_end := completion_template_skip_space_backward(source, open)
+	wrapper_start := wrapper_end
+	for wrapper_start > 0 && completion_template_prefix_char(source[wrapper_start - 1]) {
+		wrapper_start -= 1
+	}
+	if wrapper_start == wrapper_end {
+		return false
+	}
+	wrapper := utils.to_lower_ascii(source[wrapper_start:wrapper_end], context.temp_allocator)
+	return wrapper == "value" || wrapper == "reference"
+}
+
+completion_template_field_symbol_name_before :: proc(source: string, offset: int) -> bool {
+	i := clamp(offset, 0, len(source))
+	for i > 0 {
+		i -= 1
+		switch source[i] {
+		case '<':
+			return i + 1 < offset - 1
+		case ' ', '\t', '\r', '\n', ',', '.', ':':
+			return false
+		}
+	}
+	return false
+}
+
+completion_template_type_addition_forbidden_previous_word :: proc "contextless" (
+	word: string,
+) -> bool {
+	return word == "type" ||
+	       word == "like" ||
+	       word == "structure" ||
+	       word == "importing" ||
+	       word == "exporting" ||
+	       word == "changing" ||
+	       word == "returning" ||
+	       word == "receiving" ||
+	       word == "using" ||
+	       word == "tables" ||
+	       word == "exceptions" ||
+	       word == "raising" ||
+	       word == "for" ||
+	       word == "event" ||
+	       word == "of" ||
+	       word == "default" ||
+	       word == "optional" ||
+	       word == "preferred" ||
+	       word == "parameter" ||
+	       word == "as" ||
+	       word == "with" ||
+	       word == "key"
+}
+
+completion_template_has_word_between :: proc(
+	source: string,
+	start, offset: int,
+	word: string,
+) -> bool {
+	i := clamp(start, 0, len(source))
+	end := clamp(offset, i, len(source))
+	for i < end {
+		if !completion_template_decl_name_char(source[i]) {
+			i += 1
+			continue
+		}
+		word_start := i
+		for i < end && completion_template_decl_name_char(source[i]) {
+			i += 1
+		}
+		candidate := utils.to_lower_ascii(source[word_start:i], context.temp_allocator)
+		if candidate == word {
+			return true
+		}
+	}
+	return false
+}
+
+completion_template_decl_name_char :: proc "contextless" (ch: u8) -> bool {
+	return completion_template_prefix_char(ch) || ch == '!'
+}
+
+completion_template_statement_keyword_before :: proc(
+	source: string,
+	offset: int,
+) -> (int, int, bool) {
+	start := clamp(offset, 0, len(source))
+	for start > 0 && source[start - 1] != '.' {
+		start -= 1
+	}
+	for start < len(source) && completion_template_space_char(source[start]) {
+		start += 1
+	}
+
+	end := start
+	for end < len(source) && completion_template_prefix_char(source[end]) {
+		end += 1
+	}
+	return start, end, start < end
+}
+
 completion_template_skip_space_backward :: proc(source: string, offset: int) -> int {
 	i := clamp(offset, 0, len(source))
 	for i > 0 {
-		switch source[i - 1] {
-		case ' ', '\t', '\r', '\n':
+		if completion_template_space_char(source[i - 1]) {
 			i -= 1
 			continue
 		}
 		break
 	}
 	return i
+}
+
+completion_template_space_char :: proc "contextless" (ch: u8) -> bool {
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
 }
 
 completion_template_chain_colon_before :: proc(source: string, offset: int) -> int {

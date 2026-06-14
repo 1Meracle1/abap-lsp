@@ -18,6 +18,12 @@ Completion_Template_Prefix_Test_Case :: struct {
 	insert_text: string,
 }
 
+Completion_Template_Source_Test_Case :: struct {
+	source:      string,
+	label:       string,
+	insert_text: string,
+}
+
 Completion_Template_Priority_Test_Case :: struct {
 	source:         string,
 	symbol_label:   string,
@@ -2177,6 +2183,359 @@ lsp_completion_types_chained_begin_end_template_expands_from_begin_prefix :: pro
 }
 
 @(test)
+lsp_completion_type_addition_templates_expand_in_types_clause :: proc(t: ^testing.T) {
+	cases := [?]Completion_Template_Prefix_Test_Case {
+		{
+			prefix = "type",
+			label = "TYPE ...",
+			insert_text = "TYPE ${1:string}$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE c LENGTH",
+			insert_text = "TYPE c LENGTH ${1:10}$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE p LENGTH DECIMALS",
+			insert_text = "TYPE p LENGTH ${1:8} DECIMALS ${2:2}$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE REF TO ...",
+			insert_text = "TYPE REF TO ${1:object}$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE LINE OF ...",
+			insert_text = "TYPE LINE OF ${1:itab}$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE TABLE OF ...",
+			insert_text = "TYPE TABLE OF ${1:string}$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE ANY TABLE",
+			insert_text = "TYPE ANY TABLE$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE INDEX TABLE",
+			insert_text = "TYPE INDEX TABLE$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE STANDARD TABLE",
+			insert_text = "TYPE STANDARD TABLE$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE STANDARD TABLE OF ... WITH EMPTY KEY",
+			insert_text = "TYPE STANDARD TABLE OF ${1:string} WITH EMPTY KEY$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE STANDARD TABLE OF ... WITH DEFAULT KEY",
+			insert_text = "TYPE STANDARD TABLE OF ${1:string} WITH DEFAULT KEY$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE SORTED TABLE OF ... WITH UNIQUE KEY",
+			insert_text = "TYPE SORTED TABLE OF ${1:string} WITH UNIQUE KEY ${2:table_line}$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE SORTED TABLE OF ... WITH NON-UNIQUE KEY",
+			insert_text = "TYPE SORTED TABLE OF ${1:string} WITH NON-UNIQUE KEY ${2:table_line}$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE HASHED TABLE OF ... WITH UNIQUE KEY",
+			insert_text = "TYPE HASHED TABLE OF ${1:string} WITH UNIQUE KEY ${2:table_line}$0",
+		},
+		{
+			prefix = "type",
+			label = "TYPE RANGE OF ...",
+			insert_text = "TYPE RANGE OF ${1:sy-datum}$0",
+		},
+	}
+
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_type_addition_template_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		source_prefix := "TYPES: ty_value "
+		source := strings.concatenate({source_prefix, test_case.prefix, "."}, context.temp_allocator)
+		state := lsp_test_state_with_open_document(uri, source)
+		defer lsp_test_state_destroy(&state)
+
+		offset := len(source_prefix) + len(test_case.prefix)
+		params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		item, item_ok := lsp_test_find_completion_item(items, test_case.label)
+		testing.expect(t, item_ok)
+		if !item_ok {
+			continue
+		}
+
+		testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+		testing.expect_value(
+			t,
+			item.sort_text,
+			completion_sort_text("2", test_case.label, context.temp_allocator),
+		)
+		testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		testing.expect_value(t, item.insert_text, test_case.insert_text)
+		edit, edit_ok := item.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			testing.expect_value(t, edit.new_text, item.insert_text)
+			testing.expect_value(t, edit.range.start.line, 0)
+			testing.expect_value(t, edit.range.start.character, len(source_prefix))
+			testing.expect_value(t, edit.range.end.line, 0)
+			testing.expect_value(
+				t,
+				edit.range.end.character,
+				len(source_prefix) + len(test_case.prefix),
+			)
+
+			applied := lsp_test_apply_text_edits(t, source, []Text_Edit{edit}, context.allocator)
+			testing.expect(
+				t,
+				strings.has_suffix(
+					applied,
+					strings.concatenate({test_case.insert_text, "."}, context.temp_allocator),
+				),
+			)
+		}
+	}
+}
+
+@(test)
+lsp_completion_type_addition_templates_expand_in_later_types_clause :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_later_type_addition_template.abap"
+	source := `TYPES: ty_first TYPE string,
+       ty_second typ.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "typ.") + len("typ")
+	testing.expect(t, offset >= len("typ"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "TYPE TABLE OF ...")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text, "TYPE TABLE OF ${1:string}$0")
+	edit, edit_ok := item.text_edit.?
+	testing.expect(t, edit_ok)
+	if edit_ok {
+		testing.expect_value(t, edit.new_text, item.insert_text)
+		testing.expect_value(t, edit.range.start.line, 1)
+		testing.expect_value(t, edit.range.start.character, len("       ty_second "))
+		testing.expect_value(t, edit.range.end.line, 1)
+		testing.expect_value(t, edit.range.end.character, len("       ty_second typ"))
+	}
+}
+
+@(test)
+lsp_completion_type_addition_templates_require_types_clause_name :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_type_addition_without_clause_name.abap"
+	source := "TYPES: type"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, item_ok := lsp_test_find_completion_item(items, "TYPE REF TO ...")
+	testing.expect(t, !item_ok)
+}
+
+@(test)
+lsp_completion_type_addition_templates_expand_in_declaration_and_parameter_clauses :: proc(
+	t: ^testing.T,
+) {
+	cases := [?]Completion_Template_Source_Test_Case {
+		{
+			source = "DATA lv_value type.",
+			label = "TYPE REF TO ...",
+			insert_text = "TYPE REF TO ${1:object}$0",
+		},
+		{
+			source = "DATA: lv_first TYPE string,\n      lv_second type.",
+			label = "TYPE TABLE OF ...",
+			insert_text = "TYPE TABLE OF ${1:string}$0",
+		},
+		{
+			source = "CLASS-DATA gv_value type.",
+			label = "TYPE STANDARD TABLE OF ... WITH EMPTY KEY",
+			insert_text = "TYPE STANDARD TABLE OF ${1:string} WITH EMPTY KEY$0",
+		},
+		{
+			source = "CONSTANTS gc_value type.",
+			label = "TYPE c LENGTH",
+			insert_text = "TYPE c LENGTH ${1:10}$0",
+		},
+		{
+			source = "STATICS sv_value type.",
+			label = "TYPE p LENGTH DECIMALS",
+			insert_text = "TYPE p LENGTH ${1:8} DECIMALS ${2:2}$0",
+		},
+		{
+			source = "FIELD-SYMBOLS <fs_value> type.",
+			label = "TYPE ANY TABLE",
+			insert_text = "TYPE ANY TABLE$0",
+		},
+		{
+			source = "PARAMETERS p_value type.",
+			label = "TYPE RANGE OF ...",
+			insert_text = "TYPE RANGE OF ${1:sy-datum}$0",
+		},
+		{
+			source = `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_value type.
+ENDCLASS.`,
+			label = "TYPE REF TO ...",
+			insert_text = "TYPE REF TO ${1:object}$0",
+		},
+		{
+			source = `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS get RETURNING VALUE(rv_value) type.
+ENDCLASS.`,
+			label = "TYPE STANDARD TABLE OF ... WITH DEFAULT KEY",
+			insert_text = "TYPE STANDARD TABLE OF ${1:string} WITH DEFAULT KEY$0",
+		},
+		{
+			source = `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run CHANGING REFERENCE(cv_value) type.
+ENDCLASS.`,
+			label = "TYPE LINE OF ...",
+			insert_text = "TYPE LINE OF ${1:itab}$0",
+		},
+		{
+			source = "FORM run USING iv_value type.\nENDFORM.",
+			label = "TYPE SORTED TABLE OF ... WITH UNIQUE KEY",
+			insert_text = "TYPE SORTED TABLE OF ${1:string} WITH UNIQUE KEY ${2:table_line}$0",
+		},
+		{
+			source = "FUNCTION z_demo\n  IMPORTING VALUE(iv_value) type\nENDFUNCTION.",
+			label = "TYPE HASHED TABLE OF ... WITH UNIQUE KEY",
+			insert_text = "TYPE HASHED TABLE OF ${1:string} WITH UNIQUE KEY ${2:table_line}$0",
+		},
+	}
+
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_type_addition_context_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		state := lsp_test_state_with_open_document(uri, test_case.source)
+		defer lsp_test_state_destroy(&state)
+
+		prefix_start := strings.index(test_case.source, "type")
+		testing.expect(t, prefix_start >= 0)
+		if prefix_start < 0 {
+			continue
+		}
+		offset := prefix_start + len("type")
+		params := lsp_test_rename_position_params(
+			uri,
+			offset_to_position(test_case.source, offset),
+			"",
+		)
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		item, item_ok := lsp_test_find_completion_item(items, test_case.label)
+		testing.expect(t, item_ok)
+		if !item_ok {
+			continue
+		}
+		testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+		testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		testing.expect_value(t, item.insert_text, test_case.insert_text)
+		edit, edit_ok := item.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			expected := strings.concatenate(
+				{
+					test_case.source[:prefix_start],
+					test_case.insert_text,
+					test_case.source[offset:],
+				},
+				context.temp_allocator,
+			)
+			applied := lsp_test_apply_text_edits(
+				t,
+				test_case.source,
+				[]Text_Edit{edit},
+				context.allocator,
+			)
+			testing.expect_value(t, applied, expected)
+		}
+	}
+}
+
+@(test)
+lsp_completion_type_addition_templates_do_not_repeat_typed_declaration_clause :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_type_addition_repeated_decl.abap"
+	source := "DATA lv_value TYPE string type."
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	prefix_start := strings.last_index(source, "type")
+	testing.expect(t, prefix_start >= 0)
+	if prefix_start < 0 {
+		return
+	}
+	offset := prefix_start + len("type")
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, item_ok := lsp_test_find_completion_item(items, "TYPE REF TO ...")
+	testing.expect(t, !item_ok)
+}
+
+@(test)
 lsp_completion_delete_update_statement_templates_expand_from_keyword_prefixes :: proc(
 	t: ^testing.T,
 ) {
@@ -2463,6 +2822,35 @@ lsp_completion_begin_end_statement_template_falls_back_to_plain_text_without_sni
 		item.insert_text,
 		"TYPES: BEGIN OF ty_line,\n           field TYPE string,\n         END OF ty_line.",
 	)
+}
+
+@(test)
+lsp_completion_type_addition_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_type_addition_template_plain.abap"
+	source := "TYPES: ty_ref type."
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "type.") + len("type")
+	testing.expect(t, offset >= len("type"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "TYPE REF TO ...")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(t, item.insert_text, "TYPE REF TO object")
 }
 
 @(test)
@@ -3421,6 +3809,7 @@ lsp_completion_common_statement_templates_do_not_match_expression_prefixes :: pr
 		{prefix = "find", label = "FIND ... IN"},
 		{prefix = "type", label = "TYPE-POOLS ..."},
 		{prefix = "type", label = "TYPES ... TYPE"},
+		{prefix = "type", label = "TYPE REF TO ..."},
 	}
 
 	for test_case, i in cases {
