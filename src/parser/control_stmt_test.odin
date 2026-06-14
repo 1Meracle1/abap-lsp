@@ -967,7 +967,7 @@ ENDCLASS.`
 	expect_no_error_contains(t, parsed, "unexpected ENDCLASS without matching CLASS")
 	testing.expect_value(t, counts.class_decl, 1)
 	testing.expect_value(t, counts.method_decl, 1)
-	testing.expect(t, counts.invalid_stmt >= 1)
+	testing.expect_value(t, counts.if_stmt, 1)
 }
 
 @(test)

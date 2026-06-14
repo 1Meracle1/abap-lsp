@@ -1317,6 +1317,39 @@ ENDIF.`
 }
 
 @(test)
+incomplete_nested_if_condition_keeps_enclosing_if_body :: proc(t: ^testing.T) {
+	source := `DATA lt_table TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+READ TABLE lt_table INDEX 1 INTO DATA(ls_row).
+IF sy-subrc = 0.
+  DATA(lv_some_value) = 10.
+  IF lv_
+ENDIF.`
+	parsed := parse(source, "incomplete_nested_if.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.root.stmts), 3)
+	if len(parsed.root.stmts) != 3 {
+		return
+	}
+	outer, outer_ok := parsed.root.stmts[2].derived_stmt.(^ast.If_Stmt)
+	testing.expect(t, outer_ok)
+	if !outer_ok {
+		return
+	}
+	testing.expect_value(t, len(outer.body), 2)
+	if len(outer.body) == 2 {
+		_, data_ok := outer.body[0].derived_stmt.(^ast.Data_Inline_Decl)
+		_, inner_ok := outer.body[1].derived_stmt.(^ast.If_Stmt)
+		testing.expect(t, data_ok)
+		testing.expect(t, inner_ok)
+	}
+	testing.expect_value(t, counts.if_stmt, 2)
+	expect_error_contains(t, parsed, "expected '.' after IF condition")
+	expect_error_contains(t, parsed, "expected ENDIF")
+	expect_no_error_contains(t, parsed, "unexpected ENDIF without matching IF")
+}
+
+@(test)
 statement_list_stop_keywords_are_not_consumed :: proc(t: ^testing.T) {
 	p := test_parser(`DATA lv.
 ENDIF.`)

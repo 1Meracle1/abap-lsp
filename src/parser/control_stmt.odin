@@ -539,14 +539,26 @@ parse_if_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	end := expect_keyword_message(p, "ENDIF", "syntax error: expected ENDIF")
 	if !token_is_keyword(p, end, "ENDIF") {
-		return nil
+		stmt.range = parser_partial_block_range(p, start.range.start, condition.range.end)
+		return stmt
 	}
 	period = expect_token_message(p, .Period, "syntax error: expected '.' after ENDIF")
 	if period.kind != .Period {
-		return nil
+		stmt.range = parser_partial_block_range(p, start.range.start, end.range.end)
+		return stmt
 	}
 	stmt.range = tokenizer.text_range(start.range.start, period.range.end)
 	return stmt
+}
+
+parser_partial_block_range :: proc(p: ^Parser, start, fallback_end: int) -> tokenizer.Range {
+	end := fallback_end
+	if p.previous_index >= 0 {
+		if previous_end := previous_token(p).range.end; previous_end > end {
+			end = previous_end
+		}
+	}
+	return tokenizer.text_range(start, end)
 }
 
 parse_elseif_clause :: proc(p: ^Parser) -> ^ast.Elseif_Clause {

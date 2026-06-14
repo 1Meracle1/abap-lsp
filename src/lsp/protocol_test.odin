@@ -1213,6 +1213,39 @@ lsp_completion_if_template_expands_from_if_prefix :: proc(t: ^testing.T) {
 }
 
 @(test)
+lsp_completion_inside_incomplete_nested_if_condition_keeps_enclosing_declarations :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_incomplete_nested_if.abap"
+	source := `DATA lt_table TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+READ TABLE lt_table INDEX 1 INTO DATA(ls_row).
+IF sy-subrc = 0.
+  DATA(lv_some_value) = 10.
+  IF lv_
+ENDIF.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "IF lv_")
+	testing.expect(t, offset >= 0)
+	if offset < 0 {
+		return
+	}
+	offset += len("IF lv_")
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, local_ok := lsp_test_find_completion_item(items, "lv_some_value")
+
+	testing.expect(t, local_ok)
+}
+
+@(test)
 lsp_completion_class_templates_expand_from_class_prefix :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_class_template.abap"
 	source := "cla"
