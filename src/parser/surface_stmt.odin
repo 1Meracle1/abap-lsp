@@ -757,6 +757,7 @@ OPEN_SQL_HOST_ESCAPE_MESSAGE :: "syntax error: when escaped, all host variables 
 OPEN_SQL_INLINE_DATA_TARGET_MESSAGE :: "syntax error: Open SQL inline DATA target requires @"
 OPEN_SQL_RESULT_TARGET_MESSAGE :: "syntax error: invalid SELECT result target"
 OPEN_SQL_MISSING_ENDSELECT_MESSAGE :: "syntax error: SELECT without SINGLE or INTO TABLE requires ENDSELECT"
+OPEN_SQL_FOR_ALL_ENTRIES_GROUP_BY_MESSAGE :: "syntax error: GROUP BY cannot be used with FOR ALL ENTRIES"
 
 SELECT_RESULT_TARGET_STOP_KEYWORDS :: []string {
 	"PACKAGE",
@@ -1002,10 +1003,19 @@ parse_select_query_clause :: proc(
 		if allow_keyword(p, "FOR") {
 			start := previous_token(p)
 			if allow_keyword(p, "ALL") && allow_keyword(p, "ENTRIES") && allow_keyword(p, "IN") {
+				if state.group_by {
+					select_reject_clause(
+						p,
+						start,
+						OPEN_SQL_FOR_ALL_ENTRIES_GROUP_BY_MESSAGE,
+						body_start,
+						stop_at_rparen,
+					)
+					continue
+				}
 				if !state.from ||
 				   state.for_all_entries ||
 				   state.has_where ||
-				   state.group_by ||
 				   state.having ||
 				   state.order_by {
 					select_reject_clause(
@@ -1074,6 +1084,16 @@ parse_select_query_clause :: proc(
 		}
 		if allow_keyword(p, "GROUP") {
 			start := previous_token(p)
+			if state.for_all_entries {
+				select_reject_clause(
+					p,
+					start,
+					OPEN_SQL_FOR_ALL_ENTRIES_GROUP_BY_MESSAGE,
+					body_start,
+					stop_at_rparen,
+				)
+				continue
+			}
 			if !state.from || state.group_by || state.having || state.order_by {
 				select_reject_clause(
 					p,

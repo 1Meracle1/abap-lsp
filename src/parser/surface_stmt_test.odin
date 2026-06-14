@@ -1486,3 +1486,26 @@ SELECT * FROM mara UNION.`
 	testing.expect_value(t, len(missing_set_select.query.set_ops), 0)
 	testing.expect_value(t, missing_set_select.query.set_operator_clause.end, 0)
 }
+
+@(test)
+open_sql_for_all_entries_rejects_group_by :: proc(t: ^testing.T) {
+	source := `SELECT matnr FROM mara FOR ALL ENTRIES IN @lt_keys GROUP BY matnr INTO TABLE @lt_rows.
+SELECT matnr FROM mara GROUP BY matnr FOR ALL ENTRIES IN @lt_keys INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_fae_group_by.abap", context.allocator)
+
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, OPEN_SQL_FOR_ALL_ENTRIES_GROUP_BY_MESSAGE),
+		2,
+	)
+	entries_before_group := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	group_before_entries := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, entries_before_group.query.for_all_entries != nil)
+	testing.expect_value(t, entries_before_group.query.group_by_clause.end, 0)
+	testing.expect(t, group_before_entries.query.for_all_entries == nil)
+	testing.expect_value(
+		t,
+		source[group_before_entries.query.group_by_clause.start:group_before_entries.query.group_by_clause.end],
+		"GROUP BY matnr",
+	)
+}
