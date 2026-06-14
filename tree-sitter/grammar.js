@@ -892,7 +892,7 @@ module.exports = grammar({
       prec.left(
         PREC.CALL,
         seq(
-          field("constructor", keywordChoice($, ["VALUE", "CONV", "COND", "SWITCH", "REDUCE", "FILTER", "CAST"])),
+          field("constructor", keywordChoice($, ["VALUE", "NEW", "CONV", "COND", "SWITCH", "REDUCE", "FILTER", "CAST"])),
           choice(
             seq(field("type", choice("#", $.qualified_name, $.component_name)), field("arguments", $.argument_list)),
             field("arguments", $.argument_list),

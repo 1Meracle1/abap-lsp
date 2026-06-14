@@ -186,6 +186,28 @@ APPEND VALUE #(
       (identifier))))
 
 ==================
+Inline NEW constructor highlights as keyword
+==================
+
+DATA(lo_inst) = NEW lcl_class( 'iv_param11111' ).
+
+---
+
+(source_file
+  (data_declaration
+    (keyword)
+    (binary_expression
+      (parenthesized_expression
+        (qualified_name
+          (identifier)))
+      (constructor_expression
+        (keyword)
+        (qualified_name
+          (identifier))
+        (argument_list
+          (string))))))
+
+==================
 ABAP additions highlight as keywords
 ==================
 
