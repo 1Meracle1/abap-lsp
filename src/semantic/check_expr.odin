@@ -244,12 +244,7 @@ checker_check_host_expr :: proc(
 	operand := checker_check_expr(ctx, expr.value, namespace, lhs)
 	if checker_type_is_unknown(operand.type) && operand.entity == nil {
 		if name, range, ok := checker_simple_unresolved_variable_expr(expr.value); ok {
-			checker_add_diagnostic(
-				ctx,
-				.Unresolved_Reference,
-				range,
-				checker_unresolved_variable_message(name),
-			)
+			checker_add_unresolved_variable_diagnostic(ctx, name, range)
 		}
 	}
 	return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity, lhs = lhs)
@@ -283,6 +278,31 @@ checker_unresolved_variable_message :: proc(name: string) -> string {
 	strings.write_string(&builder, "unresolved variable ")
 	strings.write_string(&builder, name)
 	return strings.to_string(builder)
+}
+
+checker_add_unresolved_variable_diagnostic :: proc(ctx: ^Checker_Context, name: string, range: Range) {
+	message := checker_unresolved_variable_message(name)
+	if checker_diagnostic_present(ctx.info.diagnostics[:], .Unresolved_Reference, range, ctx.file, message) {
+		return
+	}
+	checker_add_diagnostic(ctx, .Unresolved_Reference, range, message)
+}
+
+checker_check_unresolved_named_operand :: proc(
+	ctx: ^Checker_Context,
+	name: string,
+	range: Range,
+	operand: Operand,
+) -> bool {
+	if !checker_type_is_unknown(operand.type) || operand.entity != nil || name == "" {
+		return false
+	}
+	checker_add_unresolved_variable_diagnostic(ctx, name, range)
+	return true
+}
+
+checker_should_diagnose_unresolved_value_operand :: proc(ctx: ^Checker_Context) -> bool {
+	return ctx.diagnose_unresolved_value_refs || ctx.current_routine != nil
 }
 
 checker_check_ident_expr :: proc(
@@ -336,24 +356,14 @@ checker_check_ident_name :: proc(
 			node,
 		)
 		if namespace == .Value && ctx.diagnose_unresolved_value_refs {
-			checker_add_diagnostic(
-				ctx,
-				.Unresolved_Reference,
-				checker_use_range(node, use_range),
-				checker_unresolved_variable_message(name),
-			)
+			checker_add_unresolved_variable_diagnostic(ctx, name, checker_use_range(node, use_range))
 		}
 		return nil, false
 	}
 	if namespace == .Value &&
 	   ctx.diagnose_unresolved_value_refs &&
 	   !entity_kind_occupies(entity.kind, .Value) {
-		checker_add_diagnostic(
-			ctx,
-			.Unresolved_Reference,
-			checker_use_range(node, use_range),
-			checker_unresolved_variable_message(name),
-		)
+		checker_add_unresolved_variable_diagnostic(ctx, name, checker_use_range(node, use_range))
 		return nil, false
 	}
 	checker_add_entity_use_precise(ctx, node, entity, use_range)
@@ -450,6 +460,9 @@ checker_check_selector_expr :: proc(
 ) -> Operand {
 	base_namespace := Namespace.Type if expr.op == .Fat_Arrow || expr.op == .Tilde else Namespace.Value
 	base := checker_check_expr(ctx, expr.base, base_namespace)
+	if base_namespace == .Value && checker_should_diagnose_unresolved_value_operand(ctx) {
+		checker_check_unresolved_variable_operand(ctx, expr.base, base)
+	}
 	member_namespace := checker_selector_member_namespace(expr.op, namespace)
 	name, member_node, name_ok := checker_expr_simple_name(expr.field)
 	if !name_ok {
@@ -701,6 +714,9 @@ checker_check_raw_operand_ref :: proc(
 		lhs && len(ref.path) == 0 && !ref.dynamic_path,
 		ref.name.range,
 	)
+	if namespace == .Value && len(ref.path) > 0 && checker_should_diagnose_unresolved_value_operand(ctx) {
+		checker_check_unresolved_named_operand(ctx, ref.name.text, ref.name.range, base)
+	}
 	for segment in ref.path {
 		member_namespace := checker_selector_member_namespace(segment.selector, namespace)
 		member := checker_lookup_selector_member(
@@ -734,6 +750,8 @@ checker_check_constructor_expr :: proc(
 	#partial switch expr.kind {
 	case .New:
 		checker_check_new_constructor_expr(ctx, expr, typ)
+	case .Value:
+		checker_check_value_constructor_expr(ctx, expr, typ)
 	case .Cond:
 		typ = checker_check_cond_constructor_expr(ctx, expr, typ)
 	case .Filter:
@@ -746,6 +764,167 @@ checker_check_constructor_expr :: proc(
 		}
 	}
 	return checker_record_operand(ctx, node, .Value, typ, lhs = lhs)
+}
+
+checker_check_value_constructor_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Constructor_Expr,
+	typ: ^Type,
+) {
+	if checker_type_is_table_like(ctx, typ) {
+		row_type := checker_type_row(ctx, typ)
+		for arg in expr.args {
+			checker_check_value_constructor_table_arg(ctx, arg, typ, row_type)
+		}
+		return
+	}
+
+	if structure := checker_type_structure(typ); structure != nil {
+		for arg in expr.args {
+			checker_check_value_constructor_structure_arg(ctx, arg, typ, structure)
+		}
+		return
+	}
+
+	for arg in expr.args {
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, arg)
+	}
+}
+
+checker_check_value_constructor_table_arg :: proc(
+	ctx: ^Checker_Context,
+	arg: ^ast.Expr,
+	table_type: ^Type,
+	row_type: ^Type,
+) {
+	if arg == nil {
+		return
+	}
+	#partial switch n in arg.derived_expr {
+	case ^ast.Call_Arg_List_Expr:
+		checker_check_value_constructor_row_arg_list(ctx, &arg.expr_base, n, row_type)
+	case ^ast.Constructor_Base_Clause_Expr:
+		value := checker_check_value_constructor_typed_value(ctx, n.value, table_type)
+		checker_check_assignment_compatibility(ctx, value.type, table_type, checker_expr_range(n.value))
+		checker_record_operand(ctx, &arg.expr_base, .No_Value, value.type)
+	case ^ast.Constructor_Lines_Of_Clause_Expr:
+		source := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.source)
+		checker_check_assignment_compatibility(ctx, source.type, table_type, checker_expr_range(n.source))
+		checker_check_expr(ctx, n.from)
+		checker_check_expr(ctx, n.to)
+		checker_record_operand(ctx, &arg.expr_base, .Value, table_type)
+	case ^ast.Constructor_For_Clause_Expr:
+		checker_check_constructor_for_clause_expr(ctx, &arg.expr_base, n, false)
+	case ^ast.Let_Expr:
+		checker_check_expr(ctx, arg)
+	case:
+		value := checker_check_value_constructor_typed_value(ctx, arg, row_type)
+		checker_check_assignment_compatibility(ctx, value.type, row_type, checker_expr_range(arg))
+	}
+}
+
+checker_check_value_constructor_row_arg_list :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	arg_list: ^ast.Call_Arg_List_Expr,
+	row_type: ^Type,
+) {
+	if structure := checker_type_structure(row_type); structure != nil {
+		for arg in arg_list.args {
+			checker_check_value_constructor_structure_arg(ctx, arg, row_type, structure)
+		}
+	} else {
+		for arg in arg_list.args {
+			value := checker_check_value_constructor_typed_value(ctx, arg, row_type)
+			checker_check_assignment_compatibility(ctx, value.type, row_type, checker_expr_range(arg))
+		}
+	}
+	checker_record_operand(ctx, node, .Value, row_type)
+}
+
+checker_check_value_constructor_structure_arg :: proc(
+	ctx: ^Checker_Context,
+	arg: ^ast.Expr,
+	struct_type: ^Type,
+	structure: ^Structure,
+) {
+	if arg == nil {
+		return
+	}
+	#partial switch n in arg.derived_expr {
+	case ^ast.Constructor_Named_Assignment_Expr:
+		checker_check_value_constructor_named_assignment(ctx, &arg.expr_base, n, structure)
+	case ^ast.Call_Arg_List_Expr:
+		for child in n.args {
+			checker_check_value_constructor_structure_arg(ctx, child, struct_type, structure)
+		}
+		checker_record_operand(ctx, &arg.expr_base, .Value, struct_type)
+	case ^ast.Constructor_Base_Clause_Expr:
+		value := checker_check_value_constructor_typed_value(ctx, n.value, struct_type)
+		checker_check_assignment_compatibility(ctx, value.type, struct_type, checker_expr_range(n.value))
+		checker_record_operand(ctx, &arg.expr_base, .No_Value, value.type)
+	case:
+		value := checker_check_value_constructor_typed_value(ctx, arg, struct_type)
+		checker_check_assignment_compatibility(ctx, value.type, struct_type, checker_expr_range(arg))
+	}
+}
+
+checker_check_value_constructor_named_assignment :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Constructor_Named_Assignment_Expr,
+	structure: ^Structure,
+) {
+	name, simple_name := checker_constructor_assignment_simple_name(expr.name.text)
+	field_type := project_type_unknown(ctx.project)
+	field: ^Entity
+	if simple_name {
+		interned := project_intern_lower_ascii(ctx.project, name)
+		if interned != "" {
+			if found, ok := checker_lookup_structure_field(structure, interned); ok {
+				field = found
+				field_type = found.type if found.type != nil else project_type_unknown(ctx.project)
+				checker_add_entity_use_at_range(ctx, node, found, expr.name.range)
+			} else {
+				checker_add_diagnostic(
+					ctx,
+					.Unknown_Field,
+					expr.name.range,
+					checker_table_component_message(ctx, "unknown structure field ", interned),
+				)
+			}
+		}
+	}
+	value := checker_check_value_constructor_typed_value(ctx, expr.value, field_type)
+	if field != nil {
+		checker_check_assignment_compatibility(ctx, value.type, field_type, checker_expr_range(expr.value))
+	}
+	checker_record_operand(ctx, node, .No_Value, value.type)
+}
+
+checker_constructor_assignment_simple_name :: proc(name: string) -> (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	for i in 0 ..< len(name) {
+		switch name[i] {
+		case '-', '>', '~', '[', ']':
+			return "", false
+		}
+	}
+	return name, true
+}
+
+checker_check_value_constructor_typed_value :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	type_hint: ^Type,
+) -> Operand {
+	local := ctx^
+	local.type_hint = type_hint
+	local.type_hint_expr = expr
+	local.diagnose_unresolved_value_refs = true
+	return checker_check_expr(&local, expr)
 }
 
 Checker_Cond_Validation_State :: struct {

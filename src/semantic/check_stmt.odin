@@ -853,8 +853,7 @@ checker_check_unresolved_variable_operand :: proc(
 		return false
 	}
 	if name, range, unresolved := checker_simple_unresolved_variable_expr(expr); unresolved {
-		checker_add_diagnostic(ctx, .Unresolved_Reference, range, checker_unresolved_variable_message(name))
-		return true
+		return checker_check_unresolved_named_operand(ctx, name, range, operand)
 	}
 	return false
 }
@@ -877,10 +876,18 @@ checker_check_assignment_stmt :: proc(
 	downcast := false,
 ) {
 	lhs := checker_check_expr(ctx, lhs_expr, .Value, true)
+	diagnose_unresolved := checker_should_diagnose_unresolved_value_operand(ctx)
+	if diagnose_unresolved {
+		checker_check_unresolved_variable_operand(ctx, lhs_expr, lhs)
+	}
 	rhs_ctx := ctx^
 	rhs_ctx.type_hint = lhs.type
 	rhs_ctx.type_hint_expr = lhs_expr
+	rhs_ctx.diagnose_unresolved_value_refs = diagnose_unresolved
 	rhs := checker_check_expr(&rhs_ctx, rhs_expr)
+	if diagnose_unresolved {
+		checker_check_unresolved_variable_operand(ctx, rhs_expr, rhs)
+	}
 	checker_check_assignment_compatibility(ctx, rhs.type, lhs.type, checker_expr_range(rhs_expr), downcast)
 }
 
@@ -1115,12 +1122,16 @@ checker_check_append_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Append_Stmt)
 	checker_check_append_target(ctx, stmt.target, target)
 	row_type := checker_type_row(ctx, target.type)
 	if stmt.source != nil {
-		source := checker_check_expr(ctx, stmt.source)
+		expected := row_type
+		if stmt.lines_of {
+			expected = target.type
+		}
+		source_ctx := ctx^
+		source_ctx.type_hint = expected
+		source_ctx.type_hint_expr = stmt.source
+		source_ctx.diagnose_unresolved_value_refs = true
+		source := checker_check_expr(&source_ctx, stmt.source)
 		if !checker_check_unresolved_variable_operand(ctx, stmt.source, source) {
-			expected := row_type
-			if stmt.lines_of {
-				expected = target.type
-			}
 			checker_check_assignment_compatibility(ctx, source.type, expected, checker_expr_range(stmt.source))
 		}
 	}
@@ -1826,11 +1837,11 @@ checker_check_call_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Call_Stmt) {
 		checker_check_expr(ctx, stmt.call)
 	case .Function, .Customer_Function:
 		routine := checker_lookup_call_function_entity(ctx, stmt.target)
-		checker_check_expr(ctx, stmt.function_destination)
-		checker_check_expr(ctx, stmt.function_task)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.function_destination)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.function_task)
 		checker_check_expr(ctx, stmt.function_end_task_handler, .Routine)
-		checker_check_expr(ctx, stmt.function_parameter_table)
-		checker_check_expr(ctx, stmt.function_exception_table)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.function_parameter_table)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.function_exception_table)
 		checker_check_call_stmt_args(ctx, stmt.named_args[:], routine, stmt.range, stmt.function_parameter_table != nil)
 	case .Method:
 		target := checker_check_expr(ctx, stmt.target, .Routine)
@@ -1876,7 +1887,7 @@ checker_check_call_stmt_args :: proc(
 		return
 	}
 	for arg in args {
-		checker_check_call_argument_value(ctx, arg, nil, false)
+		checker_check_call_argument_value(ctx, arg, nil, false, diagnose_unresolved_value_refs = true)
 		if arg.message != nil {
 			checker_check_call_function_exception_message(ctx, arg.message, arg.message_range)
 		}
@@ -1987,7 +1998,13 @@ checker_check_routine_call_arguments :: proc(
 ) {
 	if routine == nil || routine.kind == .Builtin {
 		for arg in args {
-			checker_check_call_argument_value(ctx, arg, nil, checker_call_arg_requires_writable(arg.section))
+			checker_check_call_argument_value(
+				ctx,
+				arg,
+				nil,
+				checker_call_arg_requires_writable(arg.section),
+				diagnose_unresolved_value_refs = true,
+			)
 		}
 		return
 	}
@@ -1995,7 +2012,13 @@ checker_check_routine_call_arguments :: proc(
 	payload, ok := routine.payload.(^Entity_Routine_Payload)
 	if !ok || payload == nil {
 		for arg in args {
-			checker_check_call_argument_value(ctx, arg, nil, checker_call_arg_requires_writable(arg.section))
+			checker_check_call_argument_value(
+				ctx,
+				arg,
+				nil,
+				checker_call_arg_requires_writable(arg.section),
+				diagnose_unresolved_value_refs = true,
+			)
 		}
 		return
 	}
@@ -2007,7 +2030,7 @@ checker_check_routine_call_arguments :: proc(
 
 	for arg, index in args {
 		if arg.section == .Exceptions {
-			checker_check_call_argument_value(ctx, arg, nil, false)
+			checker_check_call_argument_value(ctx, arg, nil, false, diagnose_unresolved_value_refs = true)
 			if arg.message != nil {
 				checker_check_call_function_exception_message(ctx, arg.message, arg.message_range)
 			}
@@ -2020,7 +2043,13 @@ checker_check_routine_call_arguments :: proc(
 		section := checker_call_effective_actual_section(routine.kind, arg.section, arg.has_section)
 		formal, formal_ok := checker_call_find_named_parameter(ctx, routine, payload.parameters[:], arg.name, section)
 		if !formal_ok {
-			checker_check_call_argument_value(ctx, arg, nil, checker_call_arg_requires_writable(section))
+			checker_check_call_argument_value(
+				ctx,
+				arg,
+				nil,
+				checker_call_arg_requires_writable(section),
+				diagnose_unresolved_value_refs = true,
+			)
 			checker_add_diagnostic(
 				ctx,
 				.Unknown_Named_Parameter,
@@ -2178,7 +2207,7 @@ checker_check_call_argument_with_parameter :: proc(
 	arg: Checker_Call_Argument,
 	actual_section: ast.Call_Arg_Section_Kind,
 	formal: ^Entity,
-	diagnose_unresolved_value_refs := false,
+	diagnose_unresolved_value_refs := true,
 ) {
 	checker_check_entity_for_operand(ctx, formal)
 	if formal != nil && arg.name != "" && arg.name_range.end > arg.name_range.start {
@@ -2376,7 +2405,7 @@ checker_check_call_function_exception_message :: proc(
 	expr: ^ast.Expr,
 	range: Range,
 ) {
-	operand := checker_check_expr(ctx, expr)
+	operand := checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
 	if ok, known := checker_type_message_field_compatible(ctx, operand.type); known && !ok {
 		checker_add_diagnostic(ctx, .Incompatible_Argument_Type, range, "message field must be type c, n, d, or t")
 	}

@@ -2504,6 +2504,39 @@ lr_i = lr_data.`
 }
 
 @(test)
+root_semantic_stmt_checker_reports_unresolved_assignment_operands :: proc(t: ^testing.T) {
+	source := `FORM run.
+DATA lv_text TYPE string.
+
+rv_ok = abap_true.
+lv_text = lv_missing.
+ENDFORM.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_assignment_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+	seen_rv_ok := false
+	seen_missing := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Reference {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		testing.expect_value(t, diagnostic.message, checker_unresolved_variable_message(text))
+		if text == "rv_ok" {
+			seen_rv_ok = true
+		} else if text == "lv_missing" {
+			seen_missing = true
+		}
+	}
+	testing.expect(t, seen_rv_ok)
+	testing.expect(t, seen_missing)
+}
+
+@(test)
 root_semantic_stmt_checker_resolves_describe_operands :: proc(t: ^testing.T) {
 	source := `DATA lv_value TYPE string.
 DATA lv_lines TYPE i.
@@ -2702,6 +2735,63 @@ APPEND lv_text TO lt_missing.`
 	testing.expect(t, seen_not_writable)
 	testing.expect(t, seen_missing_source)
 	testing.expect(t, seen_missing_target)
+}
+
+@(test)
+root_semantic_stmt_checker_validates_append_value_constructor_components :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         sign TYPE string,
+         option TYPE string,
+         low TYPE string,
+         high TYPE string,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lv_high TYPE string.
+
+APPEND VALUE #(
+  sign = 'I'
+  option1 = 'BT'
+  low = ls_missing-low
+  high = lv_high
+) TO lt_rows.
+
+LOOP AT lt_rows INTO DATA(ls_row).
+  APPEND VALUE #(
+    sign = ls_del-sign
+    option = ls_del-option
+    low = ls_del-low
+    high = ls_del-high
+  ) TO lt_rows.
+ENDLOOP.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_append_value_components.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 5)
+	seen_option1 := false
+	seen_missing := false
+	seen_ls_del := 0
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Unknown_Field {
+			testing.expect_value(t, text, "option1")
+			testing.expect_value(t, diagnostic.message, "unknown structure field option1")
+			seen_option1 = true
+		} else if diagnostic.kind == .Unresolved_Reference {
+			testing.expect_value(t, diagnostic.message, checker_unresolved_variable_message(text))
+			if text == "ls_missing" {
+				seen_missing = true
+			} else if text == "ls_del" {
+				seen_ls_del += 1
+			}
+		}
+	}
+	testing.expect(t, seen_option1)
+	testing.expect(t, seen_missing)
+	testing.expect_value(t, seen_ls_del, 4)
 }
 
 @(test)
@@ -3688,6 +3778,44 @@ CALL FUNCTION 'Z_DEMO'
 	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_func_exception_message.abap")
 
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 1)
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_call_function_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_msg TYPE c.
+CALL FUNCTION 'Z_DEMO' DESTINATION c_s4_dest
+  TABLES
+    return = lt_return_
+  EXCEPTIONS
+    system_failure = 1 MESSAGE lv_msg1
+    communication_failure = 2 MESSAGE lv_msg.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_func_unresolved_operands.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 3)
+	seen_dest := false
+	seen_return := false
+	seen_message := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Reference {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		testing.expect_value(t, diagnostic.message, checker_unresolved_variable_message(text))
+		if text == "c_s4_dest" {
+			seen_dest = true
+		} else if text == "lt_return_" {
+			seen_return = true
+		} else if text == "lv_msg1" {
+			seen_message = true
+		}
+	}
+	testing.expect(t, seen_dest)
+	testing.expect(t, seen_return)
+	testing.expect(t, seen_message)
 }
 
 @(test)
