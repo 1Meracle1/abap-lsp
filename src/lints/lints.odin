@@ -805,7 +805,11 @@ collect_select_order :: proc(
 	range: tokenizer.Range,
 	allocator: mem.Allocator,
 ) {
-	if query == nil || query.result == nil || !query.result.table || len(query.order_by_fields) == 0 {
+	if query == nil ||
+	   query.result == nil ||
+	   !query.result.table ||
+	   len(query.order_by_fields) == 0 ||
+	   query.order_by_has_descending {
 		return
 	}
 	access, ok := value_access_from_expr(query.result.target, allocator)

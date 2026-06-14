@@ -47,6 +47,7 @@ Checker_Cursor_Query :: struct {
 
 OPEN_SQL_REQUIRED_GROUP_BY_MESSAGE :: "Open SQL SELECT with aggregate expressions must use GROUP BY for unaggregated fields"
 OPEN_SQL_INTERNAL_TABLE_WHERE_HOST_MESSAGE :: "Open SQL WHERE can reference an internal table row field only with FOR ALL ENTRIES IN the same table"
+OPEN_SQL_ORDER_BY_FIELD_NOT_SELECTED_MESSAGE :: "Open SQL ORDER BY field must be part of the SELECT list"
 
 checker_sql_unknown_query_shape :: proc(ctx: ^Checker_Context) -> Sql_Query_Shape {
 	return Sql_Query_Shape {
@@ -102,6 +103,7 @@ checker_check_sql_select_query :: proc(ctx: ^Checker_Context, query: ast.Select_
 	}
 
 	fields := checker_sql_check_projection_list(ctx, &sql, query)
+	checker_check_sql_order_by(ctx, query, fields[:])
 	checker_check_sql_group_by(ctx, &sql, query)
 	shape := checker_sql_query_shape(ctx, fields[:], query.result)
 	checker_check_sql_select_result(ctx, query.result, shape)
@@ -320,6 +322,41 @@ checker_sql_check_projection_list :: proc(
 		checker_sql_append_projection(ctx, sql, &fields, projection, {}, checker_expr_range(projection), false)
 	}
 	return fields
+}
+
+checker_check_sql_order_by :: proc(
+	ctx: ^Checker_Context,
+	query: ast.Select_Query_Clause,
+	fields: []Sql_Output_Field,
+) {
+	if query.order_by_primary_key || len(query.order_by_fields) == 0 || len(fields) == 0 {
+		return
+	}
+	for field in query.order_by_fields {
+		name := project_intern_lower_ascii(ctx.project, field.text)
+		if name == "" || checker_sql_output_field_present(fields, name) {
+			continue
+		}
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Open_Sql_Order_By,
+			field.range,
+			OPEN_SQL_ORDER_BY_FIELD_NOT_SELECTED_MESSAGE,
+			severity = .Warning,
+		)
+	}
+}
+
+checker_sql_output_field_present :: proc(fields: []Sql_Output_Field, name: string) -> bool {
+	if name == "" {
+		return false
+	}
+	for field in fields {
+		if field.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 checker_check_sql_group_by :: proc(

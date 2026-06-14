@@ -1128,6 +1128,9 @@ open_sql_order_by_rejects_table_alias_field_access :: proc(t: ^testing.T) {
 		source[stmt.query.order_by_clause.start:stmt.query.order_by_clause.end],
 		"ORDER BY w~creation_time DESCENDING",
 	)
+	testing.expect(t, stmt.query.order_by_has_descending)
+	testing.expect_value(t, len(stmt.query.order_by_fields), 1)
+	testing.expect_value(t, stmt.query.order_by_fields[0].text, "creation_time")
 }
 
 @(test)
@@ -1155,6 +1158,10 @@ SELECT q~trnid, w~evtid, w~creation_time
 		source[stmt.query.order_by_clause.start:stmt.query.order_by_clause.end],
 		"ORDER BY trnid creation_time DESCENDING",
 	)
+	testing.expect(t, stmt.query.order_by_has_descending)
+	testing.expect_value(t, len(stmt.query.order_by_fields), 2)
+	testing.expect_value(t, stmt.query.order_by_fields[0].text, "trnid")
+	testing.expect_value(t, stmt.query.order_by_fields[1].text, "creation_time")
 }
 
 @(test)

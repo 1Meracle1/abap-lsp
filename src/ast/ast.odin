@@ -2542,6 +2542,7 @@ Select_Query_Clause :: struct {
 	having_clause:          tokenizer.Range,
 	order_by_clause:        tokenizer.Range,
 	order_by_primary_key:   bool,
+	order_by_has_descending: bool,
 	order_by_fields:        [dynamic]Token_Text,
 	for_all_entries_clause: tokenizer.Range,
 	for_update_clause:      tokenizer.Range,

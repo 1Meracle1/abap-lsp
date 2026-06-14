@@ -1719,6 +1719,7 @@ clone_select_query :: proc(clause: Select_Query_Clause, allocator: mem.Allocator
 		having_clause          = clause.having_clause,
 		order_by_clause        = clause.order_by_clause,
 		order_by_primary_key   = clause.order_by_primary_key,
+		order_by_has_descending = clause.order_by_has_descending,
 		order_by_fields        = clone_token_text_list(clause.order_by_fields, allocator),
 		for_all_entries_clause = clause.for_all_entries_clause,
 		for_update_clause      = clause.for_update_clause,

@@ -1677,7 +1677,6 @@ parse_select_order_by_clause :: proc(
 		query.order_by_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
 		return
 	}
-	descending := false
 	if allow_keyword(p, "PRIMARY") {
 		query.order_by_primary_key = allow_keyword(p, "KEY")
 		query.order_by_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
@@ -1696,7 +1695,7 @@ parse_select_order_by_clause :: proc(
 			continue
 		}
 		if allow_keyword(p, "DESCENDING") {
-			descending = true
+			query.order_by_has_descending = true
 			continue
 		}
 		if select_order_by_direction_typo(p, current_token(p)) {
@@ -1716,31 +1715,24 @@ parse_select_order_by_clause :: proc(
 					tokenizer.text_range(current_token(p).range.start, p.tokens[p.index + 2].range.end),
 					OPEN_SQL_ORDER_BY_ALIAS_MESSAGE,
 				)
-				if !descending {
-					append(
-						&query.order_by_fields,
-						parser_ast_name_token(p, p.tokens[p.index + 2]),
-					)
-				}
+				append(
+					&query.order_by_fields,
+					parser_ast_name_token(p, p.tokens[p.index + 2]),
+				)
 				bump_token(p)
 				bump_token(p)
 				bump_token(p)
 			} else {
-				if !descending {
-					append(
-						&query.order_by_fields,
-						parser_ast_name_token(p, current_token(p)),
-					)
-				}
+				append(
+					&query.order_by_fields,
+					parser_ast_name_token(p, current_token(p)),
+				)
 				bump_token(p)
 			}
 			needs_comma = true
 			continue
 		}
 		bump_token(p)
-	}
-	if descending {
-		query.order_by_fields = make([dynamic]ast.Token_Text, 0, 0, p.allocator)
 	}
 	query.order_by_clause = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 }

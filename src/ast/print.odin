@@ -3611,7 +3611,7 @@ emit_select_query :: proc(p: ^Printer, query: Select_Query_Clause) {
 		emit(p, " GROUP BY ")
 		emit_select_group_by(p, query.group_by)
 	}
-	if query.order_by_primary_key || len(query.order_by_fields) > 0 {
+	if query.order_by_primary_key || (len(query.order_by_fields) > 0 && !query.order_by_has_descending) {
 		emit(p, " ORDER BY ")
 		if query.order_by_primary_key {
 			emit(p, "PRIMARY KEY")

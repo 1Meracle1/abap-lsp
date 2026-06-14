@@ -4720,6 +4720,45 @@ SELECT q~trnid, MAX( w~creation_time ) AS creation_time, COUNT( * ) AS count
 }
 
 @(test)
+root_semantic_sql_checker_warns_order_by_field_not_selected :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF zrep_evt,
+         evtid TYPE string,
+         status_rep_evt TYPE string,
+         modified_time TYPE t,
+         creation_time TYPE t,
+       END OF zrep_evt.
+
+SELECT evtid, status_rep_evt, modified_time
+  FROM zrep_evt
+  INTO TABLE @DATA(lt_rep_evt)
+  ORDER BY creation_time DESCENDING.
+
+SELECT *
+  FROM zrep_evt
+  INTO TABLE @DATA(lt_all)
+  ORDER BY creation_time DESCENDING.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://sql_order_by_projection.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Open_Sql_Order_By), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Open_Sql_Order_By {
+			continue
+		}
+		found = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "creation_time")
+		testing.expect_value(t, diagnostic.severity, Checker_Diagnostic_Severity.Warning)
+		testing.expect_value(t, diagnostic.message, OPEN_SQL_ORDER_BY_FIELD_NOT_SELECTED_MESSAGE)
+	}
+	testing.expect(t, found)
+}
+
+@(test)
 root_semantic_sql_checker_combines_join_star_inline_rows :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF zhead,
          id TYPE i,
