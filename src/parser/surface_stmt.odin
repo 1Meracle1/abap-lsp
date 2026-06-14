@@ -758,6 +758,7 @@ OPEN_SQL_INLINE_DATA_TARGET_MESSAGE :: "syntax error: Open SQL inline DATA targe
 OPEN_SQL_RESULT_TARGET_MESSAGE :: "syntax error: invalid SELECT result target"
 OPEN_SQL_MISSING_ENDSELECT_MESSAGE :: "syntax error: SELECT without SINGLE or INTO TABLE requires ENDSELECT"
 OPEN_SQL_FOR_ALL_ENTRIES_GROUP_BY_MESSAGE :: "syntax error: GROUP BY cannot be used with FOR ALL ENTRIES"
+OPEN_SQL_FOR_ALL_ENTRIES_AGGREGATE_MESSAGE :: "syntax error: aggregate functions other than COUNT( * ) cannot be used with FOR ALL ENTRIES"
 OPEN_SQL_ORDER_BY_ALIAS_MESSAGE :: "syntax error: Open SQL ORDER BY fields cannot be qualified with a table alias"
 OPEN_SQL_UNEXPECTED_TOKEN_MESSAGE :: "syntax error: unexpected token in Open SQL SELECT statement"
 OPEN_SQL_ORDER_BY_DIRECTION_MESSAGE :: "syntax error: expected ASCENDING or DESCENDING in ORDER BY"
@@ -1318,6 +1319,7 @@ parse_select_query_clause :: proc(
 		}
 		select_reject_unexpected_tail(p, body_start, stop_at_rparen)
 	}
+	validate_select_query_for_all_entries_aggregates(p, &query)
 	validate_select_query_host_escapes(p, &query)
 	return query
 }
@@ -1332,6 +1334,43 @@ select_reject_unexpected_tail :: proc(p: ^Parser, body_start: int, stop_at_rpare
 		tokenizer.text_range(start.range.start, previous_token(p).range.end),
 		OPEN_SQL_UNEXPECTED_TOKEN_MESSAGE,
 	)
+}
+
+validate_select_query_for_all_entries_aggregates :: proc(p: ^Parser, query: ^ast.Select_Query_Clause) {
+	if query.for_all_entries == nil {
+		return
+	}
+	visitor := ast.Visitor {
+		visit = select_for_all_entries_aggregate_visit,
+		data  = rawptr(p),
+	}
+	for projection in query.projections {
+		ast.walk(&visitor, projection)
+	}
+}
+
+select_for_all_entries_aggregate_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil {
+		return v
+	}
+	call, ok := node.derived.(^ast.Sql_Call_Expr)
+	if ok && call.kind == .Aggregate && !select_sql_call_is_count_star(call) {
+		p := cast(^Parser)v.data
+		error(p, call.range, OPEN_SQL_FOR_ALL_ENTRIES_AGGREGATE_MESSAGE)
+	}
+	return v
+}
+
+select_sql_call_is_count_star :: proc(call: ^ast.Sql_Call_Expr) -> bool {
+	if call == nil ||
+	   call.kind != .Aggregate ||
+	   !strings.equal_fold(call.name.text, "COUNT") ||
+	   call.modifier != .None ||
+	   len(call.args) != 1 {
+		return false
+	}
+	_, ok := call.args[0].derived_expr.(^ast.Sql_Star_Expr)
+	return ok
 }
 
 validate_select_query_host_escapes :: proc(p: ^Parser, query: ^ast.Select_Query_Clause) {

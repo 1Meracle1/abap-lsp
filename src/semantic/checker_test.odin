@@ -4616,6 +4616,70 @@ DELETE zdelete_tab FROM TABLE lt_delete.`
 }
 
 @(test)
+root_semantic_sql_where_rejects_internal_table_component_without_for_all_entries :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF zrow,
+         trnid TYPE string,
+         docnum TYPE string,
+       END OF zrow.
+DATA lt_rows TYPE STANDARD TABLE OF zrow WITH EMPTY KEY.
+
+SELECT trnid
+  FROM zrow
+  INTO TABLE @DATA(lt_out)
+  WHERE trnid = @lt_rows-trnid.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://sql_where_itab_without_fae.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Open_Sql_Where_Operand), 1)
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Open_Sql_Where_Operand {
+			continue
+		}
+		found = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "@lt_rows-trnid")
+		testing.expect_value(t, diagnostic.message, OPEN_SQL_INTERNAL_TABLE_WHERE_HOST_MESSAGE)
+	}
+	testing.expect(t, found)
+}
+
+@(test)
+root_semantic_sql_where_allows_matching_for_all_entries_table_component :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF zrow,
+         trnid TYPE string,
+         docnum TYPE string,
+       END OF zrow.
+DATA lt_rows TYPE STANDARD TABLE OF zrow WITH EMPTY KEY.
+DATA lt_other TYPE STANDARD TABLE OF zrow WITH EMPTY KEY.
+
+SELECT trnid
+  FROM zrow
+  INTO TABLE @DATA(lt_out)
+  FOR ALL ENTRIES IN @lt_rows
+  WHERE trnid = @lt_rows-trnid
+    AND docnum = @lt_other-docnum.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://sql_where_itab_with_fae.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Open_Sql_Where_Operand), 1)
+	found_other := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Open_Sql_Where_Operand {
+			continue
+		}
+		found_other = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "@lt_other-docnum")
+	}
+	testing.expect(t, found_other)
+}
+
+@(test)
 root_semantic_internal_table_components_do_not_emit_symbol_candidates :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_nested,
          part TYPE string,

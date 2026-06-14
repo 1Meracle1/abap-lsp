@@ -34,10 +34,18 @@ Sql_Query_Shape :: struct {
 	scalar_type: ^Type,
 }
 
+Sql_For_All_Entries_Info :: struct {
+	present: bool,
+	name:    string,
+	entity:  ^Entity,
+}
+
 Checker_Cursor_Query :: struct {
 	handle: ^Entity,
 	shape:  Sql_Query_Shape,
 }
+
+OPEN_SQL_INTERNAL_TABLE_WHERE_HOST_MESSAGE :: "Open SQL WHERE can reference an internal table row field only with FOR ALL ENTRIES IN the same table"
 
 checker_sql_unknown_query_shape :: proc(ctx: ^Checker_Context) -> Sql_Query_Shape {
 	return Sql_Query_Shape {
@@ -95,14 +103,28 @@ checker_check_sql_select_query :: proc(ctx: ^Checker_Context, query: ast.Select_
 	fields := checker_sql_check_projection_list(ctx, &sql, query)
 	shape := checker_sql_query_shape(ctx, fields[:], query.result)
 	checker_check_sql_select_result(ctx, query.result, shape)
-	checker_check_sql_expr(ctx, &sql, query.where_cond, true)
-	checker_check_expr(ctx, query.for_all_entries)
+	for_all_entries := checker_check_sql_for_all_entries(ctx, query.for_all_entries)
+	checker_check_sql_expr(ctx, &sql, query.where_cond, true, validate_where_hosts = true, for_all_entries = for_all_entries)
 	checker_check_expr(ctx, query.package_size)
 	checker_check_expr(ctx, query.up_to_rows)
 	for set in query.set_ops {
 		_ = checker_check_sql_select_query(ctx, set.query)
 	}
 	return shape
+}
+
+checker_check_sql_for_all_entries :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+) -> Sql_For_All_Entries_Info {
+	info := Sql_For_All_Entries_Info{present = expr != nil}
+	if expr == nil {
+		return info
+	}
+	operand := checker_check_expr(ctx, expr)
+	info.name = checker_sql_simple_expr_name(ctx, expr)
+	info.entity = operand.entity
+	return info
 }
 
 checker_check_sql_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_Stmt) {
@@ -410,6 +432,8 @@ checker_check_sql_expr :: proc(
 	sql: ^Sql_Source_Scope,
 	expr: ^ast.Expr,
 	predicate: bool,
+	validate_where_hosts := false,
+	for_all_entries: Sql_For_All_Entries_Info = {},
 ) -> ^Type {
 	if expr == nil {
 		return project_type_unknown(ctx.project)
@@ -417,7 +441,11 @@ checker_check_sql_expr :: proc(
 	_ = predicate
 	#partial switch n in expr.derived_expr {
 	case ^ast.Host_Expr:
-		return checker_check_host_expr(ctx, &expr.expr_base, n, .Value, false).type
+		operand := checker_check_host_expr(ctx, &expr.expr_base, n, .Value, false)
+		if validate_where_hosts {
+			checker_check_sql_where_host_expr(ctx, n, for_all_entries)
+		}
+		return operand.type
 	case ^ast.Sql_Column_Expr:
 		field, ok := checker_sql_lookup_column(ctx, sql, n.name.text, n.qualifier.text, n.name.range)
 		if ok {
@@ -433,7 +461,7 @@ checker_check_sql_expr :: proc(
 	case ^ast.Sql_Call_Expr:
 		result := project_type_unknown(ctx.project)
 		for arg in n.args {
-			arg_type := checker_check_sql_expr(ctx, sql, arg, false)
+			arg_type := checker_check_sql_expr(ctx, sql, arg, false, validate_where_hosts, for_all_entries)
 			if checker_type_is_unknown(result) {
 				result = arg_type
 			}
@@ -443,40 +471,40 @@ checker_check_sql_expr :: proc(
 		}
 		return result
 	case ^ast.Sql_Case_When_Expr:
-		checker_check_sql_expr(ctx, sql, n.condition, true)
-		return checker_check_sql_expr(ctx, sql, n.result, false)
+		checker_check_sql_expr(ctx, sql, n.condition, true, validate_where_hosts, for_all_entries)
+		return checker_check_sql_expr(ctx, sql, n.result, false, validate_where_hosts, for_all_entries)
 	case ^ast.Sql_Case_Expr:
-		checker_check_sql_expr(ctx, sql, n.operand, false)
+		checker_check_sql_expr(ctx, sql, n.operand, false, validate_where_hosts, for_all_entries)
 		result := project_type_unknown(ctx.project)
 		for when_expr in n.whens {
-			when_type := checker_check_sql_expr(ctx, sql, when_expr, false)
+			when_type := checker_check_sql_expr(ctx, sql, when_expr, false, validate_where_hosts, for_all_entries)
 			if checker_type_is_unknown(result) {
 				result = when_type
 			}
 		}
-		else_type := checker_check_sql_expr(ctx, sql, n.else_expr, false)
+		else_type := checker_check_sql_expr(ctx, sql, n.else_expr, false, validate_where_hosts, for_all_entries)
 		if checker_type_is_unknown(result) {
 			result = else_type
 		}
 		return result
 	case ^ast.Binary_Expr:
-		checker_check_sql_expr(ctx, sql, n.left, true)
-		checker_check_sql_expr(ctx, sql, n.right, true)
+		checker_check_sql_expr(ctx, sql, n.left, true, validate_where_hosts, for_all_entries)
+		checker_check_sql_expr(ctx, sql, n.right, true, validate_where_hosts, for_all_entries)
 		return checker_builtin_type_from_name(ctx.checker, "abap_bool")
 	case ^ast.Unary_Expr:
-		return checker_check_sql_expr(ctx, sql, n.expr, predicate)
+		return checker_check_sql_expr(ctx, sql, n.expr, predicate, validate_where_hosts, for_all_entries)
 	case ^ast.Paren_Expr:
-		return checker_check_sql_expr(ctx, sql, n.expr, predicate)
+		return checker_check_sql_expr(ctx, sql, n.expr, predicate, validate_where_hosts, for_all_entries)
 	case ^ast.Between_Expr:
-		checker_check_sql_expr(ctx, sql, n.subject, true)
-		checker_check_sql_expr(ctx, sql, n.low, true)
-		checker_check_sql_expr(ctx, sql, n.high, true)
+		checker_check_sql_expr(ctx, sql, n.subject, true, validate_where_hosts, for_all_entries)
+		checker_check_sql_expr(ctx, sql, n.low, true, validate_where_hosts, for_all_entries)
+		checker_check_sql_expr(ctx, sql, n.high, true, validate_where_hosts, for_all_entries)
 		return checker_builtin_type_from_name(ctx.checker, "abap_bool")
 	case ^ast.Is_Predicate_Expr:
-		checker_check_sql_expr(ctx, sql, n.subject, true)
+		checker_check_sql_expr(ctx, sql, n.subject, true, validate_where_hosts, for_all_entries)
 		return checker_builtin_type_from_name(ctx.checker, "abap_bool")
 	case ^ast.Instance_Of_Predicate_Expr:
-		checker_check_sql_expr(ctx, sql, n.subject, true)
+		checker_check_sql_expr(ctx, sql, n.subject, true, validate_where_hosts, for_all_entries)
 		checker_check_expr(ctx, n.type_ref, .Type)
 		return checker_builtin_type_from_name(ctx.checker, "abap_bool")
 	case ^ast.Table_Expr:
@@ -501,20 +529,136 @@ checker_check_sql_expr :: proc(
 		return checker_check_expr(ctx, expr).type
 	case ^ast.Call_Expr:
 		checker_check_expr(ctx, n.callee)
-		checker_check_sql_expr(ctx, sql, n.args, false)
+		checker_check_sql_expr(ctx, sql, n.args, false, validate_where_hosts, for_all_entries)
 		return project_type_unknown(ctx.project)
 	case ^ast.Call_Arg_List_Expr:
 		for arg in n.args {
-			checker_check_sql_expr(ctx, sql, arg, false)
+			checker_check_sql_expr(ctx, sql, arg, false, validate_where_hosts, for_all_entries)
 		}
 	case ^ast.Call_Named_Arg_Expr:
-		return checker_check_sql_expr(ctx, sql, n.value, false)
+		return checker_check_sql_expr(ctx, sql, n.value, false, validate_where_hosts, for_all_entries)
 	case ^ast.Call_Positional_Arg_Expr:
-		return checker_check_sql_expr(ctx, sql, n.value, false)
+		return checker_check_sql_expr(ctx, sql, n.value, false, validate_where_hosts, for_all_entries)
 	case:
 		return checker_check_expr(ctx, expr).type
 	}
 	return project_type_unknown(ctx.project)
+}
+
+checker_check_sql_where_host_expr :: proc(
+	ctx: ^Checker_Context,
+	host: ^ast.Host_Expr,
+	for_all_entries: Sql_For_All_Entries_Info,
+) {
+	if host == nil {
+		return
+	}
+	base, base_name, ok := checker_sql_for_all_entries_like_base(ctx, host.value)
+	if !ok {
+		return
+	}
+	if !checker_type_is_table_like(ctx, base.type) {
+		return
+	}
+	if checker_sql_where_host_matches_for_all_entries(base, base_name, for_all_entries) {
+		return
+	}
+	checker_add_diagnostic(
+		ctx,
+		.Invalid_Open_Sql_Where_Operand,
+		host.range,
+		OPEN_SQL_INTERNAL_TABLE_WHERE_HOST_MESSAGE,
+	)
+}
+
+checker_sql_where_host_matches_for_all_entries :: proc(
+	base: Operand,
+	base_name: string,
+	for_all_entries: Sql_For_All_Entries_Info,
+) -> bool {
+	if !for_all_entries.present {
+		return false
+	}
+	if for_all_entries.entity != nil && base.entity == for_all_entries.entity {
+		return true
+	}
+	return base_name != "" && base_name == for_all_entries.name
+}
+
+checker_sql_for_all_entries_like_base :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+) -> (
+	Operand,
+	string,
+	bool,
+) {
+	if expr == nil {
+		return checker_invalid_operand(), "", false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Paren_Expr:
+		return checker_sql_for_all_entries_like_base(ctx, n.expr)
+	case ^ast.Substring_Expr:
+		return checker_sql_for_all_entries_like_base(ctx, n.base)
+	case ^ast.Selector_Expr:
+		if n.op != .Dash {
+			return checker_invalid_operand(), "", false
+		}
+		base_expr := checker_sql_leftmost_dash_base_expr(n.base)
+		if base_expr == nil {
+			return checker_invalid_operand(), "", false
+		}
+		base := checker_check_expr(ctx, base_expr)
+		return base, checker_sql_simple_expr_name(ctx, base_expr), true
+	case ^ast.Type_Ref_Expr:
+		if n.raw_operand || len(n.path) == 0 || n.path[0].selector != .Dash {
+			return checker_invalid_operand(), "", false
+		}
+		name := n.base_name
+		if name.text == "" {
+			name = n.name
+		}
+		if name.text == "" {
+			return checker_invalid_operand(), "", false
+		}
+		base := checker_sql_value_operand(ctx, name)
+		return base, project_intern_lower_ascii(ctx.project, name.text), true
+	}
+	return checker_invalid_operand(), "", false
+}
+
+checker_sql_leftmost_dash_base_expr :: proc(expr: ^ast.Expr) -> ^ast.Expr {
+	if expr == nil {
+		return nil
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Paren_Expr:
+		return checker_sql_leftmost_dash_base_expr(n.expr)
+	case ^ast.Selector_Expr:
+		if n.op == .Dash {
+			return checker_sql_leftmost_dash_base_expr(n.base)
+		}
+	}
+	return expr
+}
+
+checker_sql_value_operand :: proc(ctx: ^Checker_Context, name: ast.Token_Text) -> Operand {
+	interned := project_intern_lower_ascii(ctx.project, name.text)
+	if interned == "" {
+		return checker_invalid_operand()
+	}
+	_, entity, ok := checker_lookup_reference(ctx, .Value, interned)
+	if !ok {
+		return Operand{mode = .Value, type = project_type_unknown(ctx.project)}
+	}
+	checker_check_entity_for_operand(ctx, entity)
+	typ := entity.type if entity.type != nil else project_type_unknown(ctx.project)
+	return Operand {
+		mode   = checker_addressing_mode_for_entity(entity),
+		type   = typ,
+		entity = entity,
+	}
 }
 
 checker_sql_lookup_column :: proc(

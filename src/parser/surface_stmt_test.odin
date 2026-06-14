@@ -1132,7 +1132,7 @@ open_sql_order_by_rejects_table_alias_field_access :: proc(t: ^testing.T) {
 
 @(test)
 open_sql_select_rejects_unexpected_tail_tokens :: proc(t: ^testing.T) {
-	source := `SELECT q~trnid, MAX( w~creation_time ) AS creation_time, COUNT( * ) AS count
+	source := `SELECT q~trnid, w~creation_time AS creation_time
   FROM /sttp/dm_trn_evt AS q
   JOIN /sttp/dm_evt AS w ON w~evtid = q~evtid AND w~bizstep = '013'
   INTO TABLE @DATA(lt_dm_trn_evt)
@@ -1572,5 +1572,62 @@ SELECT matnr FROM mara GROUP BY matnr FOR ALL ENTRIES IN @lt_keys INTO TABLE @lt
 		t,
 		source[group_before_entries.query.group_by_clause.start:group_before_entries.query.group_by_clause.end],
 		"GROUP BY matnr",
+	)
+}
+
+@(test)
+open_sql_for_all_entries_allows_count_star :: proc(t: ^testing.T) {
+	source := `SELECT COUNT( * )
+  FROM mara
+  FOR ALL ENTRIES IN @lt_keys
+  WHERE matnr = @lt_keys-matnr
+  INTO @DATA(lv_count).`
+	parsed := parse(source, "sql_fae_count_star.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+}
+
+@(test)
+open_sql_for_all_entries_rejects_aggregates_except_count_star :: proc(t: ^testing.T) {
+	source := `SELECT q~trnid, MAX( w~creation_time ) AS creation_time, COUNT( * ) AS count
+  FROM /sttp/dm_trn_evt AS q
+  JOIN /sttp/dm_evt AS w ON w~evtid = q~evtid AND w~bizstep = '013'
+  INTO TABLE @DATA(lt_dm_trn_evt)
+  FOR ALL ENTRIES IN @lt_dm_trn
+  WHERE trnid = @lt_dm_trn-trnid.
+SELECT COUNT( matnr )
+  FROM mara
+  FOR ALL ENTRIES IN @lt_keys
+  WHERE matnr = @lt_keys-matnr
+  INTO @DATA(lv_count).
+SELECT COUNT( DISTINCT matnr )
+  FROM mara
+  FOR ALL ENTRIES IN @lt_keys
+  WHERE matnr = @lt_keys-matnr
+  INTO @DATA(lv_distinct_count).`
+	parsed := parse(source, "sql_fae_aggregates.abap", context.allocator)
+
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, OPEN_SQL_FOR_ALL_ENTRIES_AGGREGATE_MESSAGE),
+		3,
+	)
+	testing.expect_value(t, parsed.errors[0].message, OPEN_SQL_FOR_ALL_ENTRIES_AGGREGATE_MESSAGE)
+	testing.expect_value(
+		t,
+		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
+		"MAX( w~creation_time )",
+	)
+	testing.expect_value(t, parsed.errors[1].message, OPEN_SQL_FOR_ALL_ENTRIES_AGGREGATE_MESSAGE)
+	testing.expect_value(
+		t,
+		source[parsed.errors[1].range.start:parsed.errors[1].range.end],
+		"COUNT( matnr )",
+	)
+	testing.expect_value(t, parsed.errors[2].message, OPEN_SQL_FOR_ALL_ENTRIES_AGGREGATE_MESSAGE)
+	testing.expect_value(
+		t,
+		source[parsed.errors[2].range.start:parsed.errors[2].range.end],
+		"COUNT( DISTINCT matnr )",
 	)
 }
