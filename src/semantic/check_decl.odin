@@ -1321,6 +1321,7 @@ checker_collect_oop_simple_stmt :: proc(
 					payload.event_range = member.event_handler.event_name.range
 					payload.event_source_type = checker_type_ref_data_from_expr(ctx, member.event_handler.source_type, .Type)
 				}
+				checker_check_oop_constructor_definition_form(ctx, stmt, member, entity)
 			}
 		}
 	case .Events, .Class_Events:
@@ -1465,6 +1466,108 @@ checker_collect_method_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Method_Dec
 	payload.implementation_name_range = decl.name.range
 	entity.flags += {.Has_Implementation}
 	return entity
+}
+
+checker_check_oop_constructor_definition_form :: proc(
+	ctx: ^Checker_Context,
+	stmt: ^ast.Oop_Simple_Stmt,
+	member: ast.Oop_Member_Clause,
+	entity: ^Entity,
+) {
+	if entity == nil || entity.kind != .Method {
+		return
+	}
+	constructor_name := project_intern_lower_ascii(ctx.project, "constructor")
+	class_constructor_name := project_intern_lower_ascii(ctx.project, "class_constructor")
+	if entity.name == constructor_name {
+		checker_check_instance_constructor_definition_form(ctx, stmt, member, entity)
+	} else if entity.name == class_constructor_name {
+		checker_check_class_constructor_definition_form(ctx, stmt, member, entity)
+	}
+}
+
+checker_check_instance_constructor_definition_form :: proc(
+	ctx: ^Checker_Context,
+	stmt: ^ast.Oop_Simple_Stmt,
+	member: ast.Oop_Member_Clause,
+	entity: ^Entity,
+) {
+	if entity.owner == nil || entity.owner.kind != .Class {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, member.name.range, "constructor can only be declared in a class")
+	}
+	if stmt.kind == .Class_Methods {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, member.name.range, "constructor cannot be declared with CLASS-METHODS")
+	}
+	checker_check_constructor_member_flags(ctx, member, "constructor")
+	if member.event_handler.event_name.text != "" {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, member.event_handler.event_name.range, "constructor cannot be an event handler")
+	}
+	for sig in member.signatures {
+		#partial switch sig.kind {
+		case .Importing, .Raising, .Exceptions:
+		case:
+			checker_add_diagnostic(ctx, .Invalid_Syntax_Form, sig.range, "constructor allows only IMPORTING parameters and exceptions")
+		}
+	}
+}
+
+checker_check_class_constructor_definition_form :: proc(
+	ctx: ^Checker_Context,
+	stmt: ^ast.Oop_Simple_Stmt,
+	member: ast.Oop_Member_Clause,
+	entity: ^Entity,
+) {
+	if entity.owner == nil || entity.owner.kind != .Class {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, member.name.range, "class constructor can only be declared in a class")
+	}
+	if stmt.kind != .Class_Methods {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, member.name.range, "class constructor must be declared with CLASS-METHODS")
+	}
+	checker_check_constructor_member_flags(ctx, member, "class constructor")
+	if member.event_handler.event_name.text != "" {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, member.event_handler.event_name.range, "class constructor cannot be an event handler")
+	}
+	for sig in member.signatures {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, sig.range, "class constructor cannot declare a signature")
+	}
+}
+
+checker_check_constructor_member_flags :: proc(
+	ctx: ^Checker_Context,
+	member: ast.Oop_Member_Clause,
+	subject: string,
+) {
+	if .Abstract in member.flags {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			member.name.range,
+			checker_constructor_form_message(subject, " cannot be ABSTRACT"),
+		)
+	}
+	if .Final in member.flags {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			member.name.range,
+			checker_constructor_form_message(subject, " cannot be FINAL"),
+		)
+	}
+	if .Redefinition in member.flags {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			member.name.range,
+			checker_constructor_form_message(subject, " cannot be REDEFINITION"),
+		)
+	}
+}
+
+checker_constructor_form_message :: proc(subject, suffix: string) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, subject)
+	strings.write_string(&builder, suffix)
+	return strings.to_string(builder)
 }
 
 checker_find_routine_entity_in_scope :: proc(ctx: ^Checker_Context, name: string, kind: Entity_Kind) -> ^Entity {

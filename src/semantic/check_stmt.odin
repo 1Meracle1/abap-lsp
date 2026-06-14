@@ -1595,7 +1595,39 @@ checker_check_routine_call_arguments :: proc(
 	if len(positional) > 0 {
 		eligible := make([dynamic]^Entity, 0, len(payload.parameters), context.temp_allocator)
 		checker_call_eligible_positional_parameters(ctx, &eligible, routine, payload.parameters[:])
-		if len(positional) == len(eligible) {
+		if routine.kind == .Method {
+			first := args[positional[0]]
+			if formal := checker_first_unsupplied_positional_parameter(eligible[:], supplied[:]); formal != nil {
+				checker_check_call_argument_with_parameter(
+					ctx,
+					first,
+					checker_call_default_actual_section(routine.kind),
+					formal,
+					diagnose_unresolved_value_refs = true,
+				)
+				checker_note_supplied_parameter(&supplied, formal)
+			} else {
+				checker_check_call_argument_value(ctx, first, nil, false, diagnose_unresolved_value_refs = true)
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					first.value_range,
+					"method call does not accept an unnamed argument",
+				)
+				required_mapping_ok = false
+			}
+			for arg_index in positional[1:] {
+				arg := args[arg_index]
+				checker_check_call_argument_value(ctx, arg, nil, false, diagnose_unresolved_value_refs = true)
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.value_range,
+					"method call allows only one unnamed argument",
+				)
+				required_mapping_ok = false
+			}
+		} else if len(positional) == len(eligible) {
 			for arg_index, i in positional {
 				arg := args[arg_index]
 				formal := eligible[i]
@@ -1695,6 +1727,7 @@ checker_check_call_argument_with_parameter :: proc(
 	arg: Checker_Call_Argument,
 	actual_section: ast.Call_Arg_Section_Kind,
 	formal: ^Entity,
+	diagnose_unresolved_value_refs := false,
 ) {
 	checker_check_entity_for_operand(ctx, formal)
 	if formal != nil && arg.name != "" && arg.name_range.end > arg.name_range.start {
@@ -1703,7 +1736,13 @@ checker_check_call_argument_with_parameter :: proc(
 	formal_type := formal.type if formal != nil && formal.type != nil else project_type_unknown(ctx.project)
 	receives := checker_call_arg_receives_from_formal(actual_section)
 	writable := checker_call_arg_requires_writable(actual_section)
-	actual := checker_check_call_argument_value(ctx, arg, formal_type, writable)
+	actual := checker_check_call_argument_value(
+		ctx,
+		arg,
+		formal_type,
+		writable,
+		diagnose_unresolved_value_refs = diagnose_unresolved_value_refs,
+	)
 	if writable && !checker_operand_is_writable(actual) {
 		checker_add_diagnostic(ctx, .Incompatible_Argument_Type, arg.value_range, "argument is not writable")
 		return
@@ -1869,11 +1908,13 @@ checker_check_call_argument_value :: proc(
 	arg: Checker_Call_Argument,
 	type_hint: ^Type,
 	lhs: bool,
+	diagnose_unresolved_value_refs := false,
 ) -> Operand {
 	if arg.value != nil {
 		local := ctx^
 		local.type_hint = type_hint
 		local.type_hint_expr = arg.value
+		local.diagnose_unresolved_value_refs = diagnose_unresolved_value_refs
 		return checker_check_expr(&local, arg.value, .Value, lhs)
 	}
 	return checker_check_raw_operand_facts(ctx, arg.raw_decls, arg.raw_refs, type_hint, lhs)
@@ -1955,6 +1996,18 @@ checker_call_eligible_positional_parameters :: proc(
 			append(out, param)
 		}
 	}
+}
+
+checker_first_unsupplied_positional_parameter :: proc(
+	eligible: []^Entity,
+	supplied: []^Entity,
+) -> ^Entity {
+	for param in eligible {
+		if !checker_parameter_supplied(supplied, param) {
+			return param
+		}
+	}
+	return nil
 }
 
 checker_call_parameter_matches_section :: proc(
@@ -2205,17 +2258,42 @@ checker_check_assign_field_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Assign
 }
 
 checker_check_create_object_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Create_Object_Stmt) {
-	checker_check_expr(ctx, stmt.target, .Value, true)
+	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	constructor_type := checker_type_ref_target(ctx, target.type)
 	if stmt.type_dynamic {
 		checker_check_dynamic_type_name_expr(ctx, stmt.type_dynamic_expr, stmt.type_ref)
 		checker_check_create_type_clause_non_ref_operands(ctx, stmt.type_clause)
 	} else {
-		checker_check_expr(ctx, stmt.type_ref, .Type)
+		if type_operand := checker_check_expr(ctx, stmt.type_ref, .Type); type_operand.type != nil {
+			constructor_type = type_operand.type
+		}
 	}
 	if stmt.type_clause != nil && !stmt.type_dynamic {
-		checker_check_decl_type_clause(ctx, nil, stmt.type_clause)
+		if typ := checker_check_decl_type_clause(ctx, nil, stmt.type_clause); typ != nil {
+			constructor_type = typ
+		}
 	}
-	checker_check_expr_list(ctx, stmt.operands[:])
+	constructor := checker_constructor_method_for_type(ctx, constructor_type)
+	checker_check_create_object_arguments(ctx, stmt.operands[:], constructor, stmt.range)
+}
+
+checker_check_create_object_arguments :: proc(
+	ctx: ^Checker_Context,
+	operands: []^ast.Expr,
+	constructor: ^Entity,
+	range: Range,
+) {
+	args := make([dynamic]Checker_Call_Argument, 0, len(operands), context.temp_allocator)
+	for operand in operands {
+		checker_collect_constructor_call_argument(ctx, &args, operand, .Exporting, false)
+	}
+	if constructor != nil {
+		checker_check_routine_call_arguments(ctx, constructor, args[:], range)
+		return
+	}
+	for arg in args {
+		checker_check_call_argument_value(ctx, arg, nil, checker_call_arg_requires_writable(arg.section))
+	}
 }
 
 checker_check_create_data_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Create_Data_Stmt) {

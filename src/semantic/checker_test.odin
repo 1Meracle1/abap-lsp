@@ -2688,6 +2688,311 @@ lcl_demo=>run( EXPORTING iv_missing = lv_value ).`
 }
 
 @(test)
+root_semantic_stmt_checker_reports_missing_constructor_arguments :: proc(t: ^testing.T) {
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_param TYPE string
+        iv_param1 TYPE i OPTIONAL.
+ENDCLASS.
+CLASS lcl_class IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA(lo_inst) = NEW lcl_class( ).
+DATA lo_inst1 TYPE REF TO lcl_class.
+lo_inst1 = NEW #( ).
+CREATE OBJECT lo_inst1.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_constructor_args.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Required_Parameter), 3)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Missing_Required_Parameter,
+			"missing required parameter 'iv_param'",
+		),
+		3,
+	)
+}
+
+@(test)
+root_semantic_stmt_checker_accepts_supplied_constructor_arguments :: proc(t: ^testing.T) {
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_param TYPE string
+        iv_param1 TYPE i OPTIONAL.
+ENDCLASS.
+CLASS lcl_class IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA(lo_inst) = NEW lcl_class( iv_param = 'ok' ).
+DATA lo_inst1 TYPE REF TO lcl_class.
+lo_inst1 = NEW #( iv_param = 'ok' ).
+CREATE OBJECT lo_inst1 EXPORTING iv_param = 'ok'.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_constructor_args_valid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Required_Parameter), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Named_Parameter), 0)
+}
+
+@(test)
+root_semantic_stmt_checker_names_unknown_constructor_parameter :: proc(t: ^testing.T) {
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor IMPORTING iv_known TYPE string.
+ENDCLASS.
+CLASS lcl_class IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA(lo_inst) = NEW lcl_class( iv_missing = 'bad' ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_constructor_unknown_arg.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Named_Parameter), 1)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Unknown_Named_Parameter,
+			"unknown named parameter 'iv_missing' in EXPORTING section for method 'constructor'",
+		),
+		1,
+	)
+}
+
+@(test)
+root_semantic_stmt_checker_checks_unnamed_constructor_arguments_as_values :: proc(t: ^testing.T) {
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        iv_param TYPE string
+        iv_param1 TYPE i OPTIONAL.
+ENDCLASS.
+CLASS lcl_class IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA(lo_literal) = NEW lcl_class( 'some_literal' ).
+DATA lv_str TYPE string.
+lv_str = 'hello'.
+DATA lo_inst TYPE REF TO lcl_class.
+lo_inst = NEW lcl_class( lv_str ).
+lo_inst = NEW lcl_class( iv_param11111 ).
+lo_inst = NEW lcl_class( lv_str 1 ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_constructor_positional_arg.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Unresolved_Reference,
+			"unresolved variable iv_param11111",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"method call allows only one unnamed argument",
+		),
+		1,
+	)
+	unresolved_found := false
+	too_many_found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Unresolved_Reference &&
+		   diagnostic.message == "unresolved variable iv_param11111" {
+			unresolved_found = true
+			testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "iv_param11111")
+		} else if diagnostic.kind == .Invalid_Syntax_Form &&
+		          diagnostic.message == "method call allows only one unnamed argument" {
+			too_many_found = true
+			testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "1")
+		}
+	}
+	testing.expect(t, unresolved_found)
+	testing.expect(t, too_many_found)
+}
+
+@(test)
+root_semantic_stmt_checker_checks_unnamed_method_arguments_as_values :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run
+      IMPORTING
+        iv_param TYPE string
+        iv_param1 TYPE i OPTIONAL.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+lcl_demo=>run( 'some_literal' ).
+DATA lv_str TYPE string.
+lv_str = 'hello'.
+lcl_demo=>run( lv_str ).
+lcl_demo=>run( iv_param11111 ).
+lcl_demo=>run( lv_str 1 ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_method_positional_arg.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Unresolved_Reference,
+			"unresolved variable iv_param11111",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"method call allows only one unnamed argument",
+		),
+		1,
+	)
+}
+
+@(test)
+root_semantic_checker_diagnoses_invalid_constructor_definition_forms :: proc(t: ^testing.T) {
+	source := `CLASS lcl_static DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS constructor.
+ENDCLASS.
+
+CLASS lcl_exporting DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor EXPORTING ev_value TYPE i.
+ENDCLASS.
+
+CLASS lcl_changing DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor CHANGING cv_value TYPE i.
+ENDCLASS.
+
+CLASS lcl_returning DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+
+CLASS lcl_event DEFINITION.
+  PUBLIC SECTION.
+    EVENTS changed.
+    METHODS constructor FOR EVENT changed OF lcl_event.
+ENDCLASS.
+
+CLASS lcl_cc_wrong DEFINITION.
+  PUBLIC SECTION.
+    METHODS class_constructor.
+ENDCLASS.
+
+CLASS lcl_cc_sig DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS class_constructor IMPORTING iv_value TYPE i.
+ENDCLASS.
+
+INTERFACE lif_bad.
+  METHODS constructor.
+ENDINTERFACE.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://invalid_constructor_forms.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"constructor cannot be declared with CLASS-METHODS",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"constructor allows only IMPORTING parameters and exceptions",
+		),
+		3,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"constructor cannot be an event handler",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"class constructor must be declared with CLASS-METHODS",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"class constructor cannot declare a signature",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"constructor can only be declared in a class",
+		),
+		1,
+	)
+}
+
+@(test)
 root_semantic_stmt_checker_ignores_form_raising_for_perform_arguments :: proc(t: ^testing.T) {
 	source := `PERFORM open_gui.
 FORM open_gui RAISING zcx_abapgit_exception.

@@ -2700,6 +2700,20 @@ lsp_completion_case_and_expression_templates_sort_after_matching_symbols :: proc
 			symbol_sort = "1:for_candidate",
 			template_sort = "2:for ... in",
 		},
+		{
+			source = "DATA new_candidate TYPE i.\nWRITE ne",
+			symbol_label = "new_candidate",
+			template_label = "NEW #( ... )",
+			symbol_sort = "1:new_candidate",
+			template_sort = "2:new #( ... )",
+		},
+		{
+			source = "DATA new_candidate TYPE i.\nWRITE ne",
+			symbol_label = "new_candidate",
+			template_label = "NEW ...",
+			symbol_sort = "1:new_candidate",
+			template_sort = "2:new ...",
+		},
 	}
 
 	for test_case, i in cases {
@@ -3058,6 +3072,16 @@ lsp_completion_expression_templates_do_not_match_selector_prefixes :: proc(t: ^t
 		{
 			prefix = "fo",
 			label = "FOR ... IN",
+			insert_text = "",
+		},
+		{
+			prefix = "ne",
+			label = "NEW #( ... )",
+			insert_text = "",
+		},
+		{
+			prefix = "ne",
+			label = "NEW ...",
 			insert_text = "",
 		},
 	}

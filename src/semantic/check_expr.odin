@@ -716,6 +716,8 @@ checker_check_constructor_expr :: proc(
 ) -> Operand {
 	typ := checker_constructor_result_type(ctx, expr)
 	#partial switch expr.kind {
+	case .New:
+		checker_check_new_constructor_expr(ctx, expr, typ)
 	case .Filter:
 		checker_check_filter_constructor_expr(ctx, expr, typ)
 	case .Reduce:
@@ -726,6 +728,85 @@ checker_check_constructor_expr :: proc(
 		}
 	}
 	return checker_record_operand(ctx, node, .Value, typ, lhs = lhs)
+}
+
+checker_check_new_constructor_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Constructor_Expr,
+	typ: ^Type,
+) {
+	constructor := checker_constructor_method_for_type(ctx, typ)
+	if constructor == nil {
+		for arg in expr.args {
+			checker_check_expr(ctx, arg)
+		}
+		return
+	}
+	args := make([dynamic]Checker_Call_Argument, 0, len(expr.args), context.temp_allocator)
+	for arg in expr.args {
+		checker_collect_constructor_call_argument(ctx, &args, arg, .Exporting, false)
+	}
+	checker_check_routine_call_arguments(ctx, constructor, args[:], expr.range)
+}
+
+checker_constructor_method_for_type :: proc(ctx: ^Checker_Context, typ: ^Type) -> ^Entity {
+	owner := checker_type_object_entity(typ)
+	if owner == nil {
+		target := checker_type_ref_target(ctx, typ)
+		owner = checker_type_object_entity(target)
+	}
+	if owner == nil || owner.kind != .Class {
+		return nil
+	}
+	name := project_intern_lower_ascii(ctx.project, "constructor")
+	constructor, found := checker_lookup_object_member_cached(ctx, owner, .Routine, name)
+	if !found || constructor == nil || constructor.kind != .Method {
+		return nil
+	}
+	checker_check_entity_for_operand(ctx, constructor)
+	return constructor
+}
+
+checker_collect_constructor_call_argument :: proc(
+	ctx: ^Checker_Context,
+	args: ^[dynamic]Checker_Call_Argument,
+	expr: ^ast.Expr,
+	section: ast.Call_Arg_Section_Kind,
+	has_section: bool,
+) {
+	if expr == nil {
+		return
+	}
+	if section_expr, ok := expr.derived_expr.(^ast.Call_Arg_Section_Expr); ok {
+		for arg in section_expr.args {
+			checker_collect_constructor_call_argument(ctx, args, arg, section_expr.kind, true)
+		}
+		return
+	}
+	arg := Checker_Call_Argument {
+		section     = section,
+		has_section = has_section,
+		value_range = expr.range,
+	}
+	if named, named_ok := expr.derived_expr.(^ast.Constructor_Named_Assignment_Expr); named_ok {
+		arg.name_text = named.name.text
+		arg.name = project_intern_lower_ascii(ctx.project, named.name.text)
+		arg.name_range = named.name.range
+		arg.value = named.value
+		arg.value_range = checker_expr_range(named.value)
+	} else if call_named, call_named_ok := expr.derived_expr.(^ast.Call_Named_Arg_Expr); call_named_ok {
+		arg.name_text = call_named.name.text
+		arg.name = project_intern_lower_ascii(ctx.project, call_named.name.text)
+		arg.name_range = call_named.name.range
+		arg.value = call_named.value
+		arg.value_range = checker_expr_range(call_named.value)
+	} else if positional, positional_ok := expr.derived_expr.(^ast.Call_Positional_Arg_Expr); positional_ok {
+		arg.value = positional.value
+		arg.value_range = checker_expr_range(positional.value)
+	} else {
+		arg.value = expr
+	}
+	append(args, arg)
 }
 
 checker_check_filter_constructor_expr :: proc(

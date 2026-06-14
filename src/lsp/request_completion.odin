@@ -485,6 +485,18 @@ Completion_Statement_Template :: struct {
 
 EXPRESSION_TEMPLATES :: [?]Completion_Statement_Template {
 	{
+		keyword = "NEW",
+		label = "NEW #( ... )",
+		snippet = "NEW #( ${1} )$0",
+		plain = "NEW #( )",
+	},
+	{
+		keyword = "NEW",
+		label = "NEW ...",
+		snippet = "NEW ${1:lcl_class}( ${2} )$0",
+		plain = "NEW lcl_class( )",
+	},
+	{
 		keyword = "FILTER",
 		label = "FILTER #( ... WHERE ... )",
 		snippet = "FILTER #( ${1:itab} WHERE ${2:field} = ${3:lv_value} )$0",
