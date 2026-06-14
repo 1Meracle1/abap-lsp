@@ -4839,6 +4839,54 @@ APPEND VALUE #(  ) TO lt_table.`
 }
 
 @(test)
+lsp_code_action_fills_empty_value_constructor_with_range_fields :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/code_action_value_constructor_range_fields.abap"
+	source := `DATA lr_str TYPE RANGE OF string.
+APPEND VALUE #(  ) TO lr_str.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	value_offset := strings.index(source, "VALUE #(")
+	testing.expect(t, value_offset >= 0)
+	if value_offset < 0 {
+		return
+	}
+	params := lsp_test_code_action_params(
+		uri,
+		range_from_offsets(source, value_offset, value_offset),
+	)
+	actions := code_actions_for_params(&state, params, context.allocator)
+
+	action_found := false
+	for action in actions {
+		if action.title != "Fill VALUE with structure fields" {
+			continue
+		}
+		action_found = true
+		edits, edits_ok := action.edit.changes[uri]
+		testing.expect(t, edits_ok)
+		if !edits_ok {
+			return
+		}
+		testing.expect_value(t, len(edits), 1)
+		applied := lsp_test_apply_text_edits(t, source, edits, context.allocator)
+		testing.expect(
+			t,
+			strings.contains(
+				applied,
+				`APPEND VALUE #(
+  sign = VALUE #( )
+  option = VALUE #( )
+  low = VALUE #( )
+  high = VALUE #( )
+) TO lr_str.`,
+			),
+		)
+	}
+	testing.expect(t, action_found)
+}
+
+@(test)
 lsp_references_include_method_declaration_implementation_and_call :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/references_method.abap"
 	source := `CLASS lcl_demo DEFINITION.
@@ -5316,6 +5364,18 @@ lsp_hover_reports_unknown_open_sql_inline_table_type :: proc(t: ^testing.T) {
 
 	testing.expect(t, strings.contains(text, "`lt_jobs` variable"))
 	testing.expect(t, strings.contains(text, "type: `STANDARD TABLE OF unknown`"))
+}
+
+@(test)
+lsp_hover_reports_range_table_value_type :: proc(t: ^testing.T) {
+	source := `DATA lr_str TYPE RANGE OF string.
+APPEND VALUE #( ) TO lr_str.`
+
+	text := lsp_test_hover_text(t, source, "APPEND VALUE #( ) TO lr_str", "lr_str")
+
+	testing.expect(t, strings.contains(text, "`lr_str` variable"))
+	testing.expect(t, strings.contains(text, "type: `RANGE OF string`"))
+	testing.expect(t, !strings.contains(text, "RANGE OF range"))
 }
 
 @(test)

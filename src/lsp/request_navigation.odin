@@ -408,6 +408,10 @@ type_label :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
 		}
 		return "structure"
 	case .Table:
+		if typ.table_form == .Range_Of {
+			base := range_table_value_type_label(project, typ)
+			return fmt.tprintf("RANGE OF %s", base) if base != "" else "RANGE"
+		}
 		base := type_label(project, typ.base)
 		if !table_type_form_has_row_type(typ.table_form) && (base == "" || base == "unknown") {
 			return table_type_form_label(typ.table_form)
@@ -425,6 +429,20 @@ type_label :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
 		return "unknown"
 	}
 	return ""
+}
+
+range_table_value_type_label :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
+	if typ == nil || typ.table_form != .Range_Of || typ.base == nil {
+		return ""
+	}
+	if typ.base.kind == .Structure && typ.base.structure != nil {
+		for field in typ.base.structure.fields {
+			if field != nil && field.name == "low" {
+				return type_label(project, field.type)
+			}
+		}
+	}
+	return type_label(project, typ.base)
 }
 
 table_type_form_label :: proc(form: ast.Data_Type_Form) -> string {

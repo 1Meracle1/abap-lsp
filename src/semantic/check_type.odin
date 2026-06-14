@@ -112,7 +112,7 @@ checker_type_from_ref_data_with_form :: proc(
 		case .Type_Line_Of, .Like_Line_Of:
 			return checker_type_row(ctx, base)
 		case .Range_Of:
-			return project_type_table(ctx.project, base, form)
+			return checker_range_table_type(ctx, base, node)
 		case .Any_Table,
 		     .Table,
 		     .Like_Table,
@@ -127,6 +127,71 @@ checker_type_from_ref_data_with_form :: proc(
 		}
 	}
 	return base
+}
+
+checker_range_table_type :: proc(
+	ctx: ^Checker_Context,
+	value_type: ^Type,
+	node: ^ast.Node,
+) -> ^Type {
+	row_type := checker_range_row_type(ctx, value_type, node)
+	return project_type_table(ctx.project, row_type, .Range_Of)
+}
+
+checker_range_row_type :: proc(
+	ctx: ^Checker_Context,
+	value_type: ^Type,
+	node: ^ast.Node,
+) -> ^Type {
+	structure := checker_range_row_structure(ctx, value_type, node)
+	return project_type_structure(ctx.project, structure)
+}
+
+checker_range_row_structure :: proc(
+	ctx: ^Checker_Context,
+	value_type: ^Type,
+	node: ^ast.Node,
+) -> ^Structure {
+	parent := ctx.scope
+	if parent == nil {
+		parent = checker_ensure_builtin_scope(ctx.checker)
+	}
+	scope := checker_create_scope(ctx.checker, parent, .Structure, Range{})
+	structure := project_new_structure(ctx.project, "range", ctx.file, scope, Range{})
+	component_type := value_type if value_type != nil else project_type_unknown(ctx.project)
+	char_type := checker_builtin_type_from_name(ctx.checker, "c")
+	checker_add_range_row_field(ctx, structure, scope, "sign", char_type, node)
+	checker_add_range_row_field(ctx, structure, scope, "option", char_type, node)
+	checker_add_range_row_field(ctx, structure, scope, "low", component_type, node)
+	checker_add_range_row_field(ctx, structure, scope, "high", component_type, node)
+	return structure
+}
+
+checker_add_range_row_field :: proc(
+	ctx: ^Checker_Context,
+	structure: ^Structure,
+	scope: ^Scope,
+	name: string,
+	typ: ^Type,
+	node: ^ast.Node,
+) -> ^Entity {
+	entity := project_new_entity(ctx.project, .Field)
+	entity.node = node
+	entity.source_file = ctx.file
+	entity.name = project_intern_lower_ascii(ctx.project, name)
+	entity.scope = scope
+	entity.type = typ if typ != nil else project_type_unknown(ctx.project)
+	entity.state = .Resolved
+	payload, ok := entity.payload.(^Entity_Field_Payload)
+	assert(ok && payload != nil)
+	payload.owner_structure = structure
+	payload.decl_unit = ctx.file
+	payload.field_index = len(structure.fields)
+	append(&structure.fields, entity)
+	previous := scope_insert_declaration(scope, entity)
+	assert(previous == nil || previous == entity)
+	checker_add_definition(ctx.info, entity)
+	return entity
 }
 
 checker_type_from_ref_data :: proc(
@@ -754,7 +819,17 @@ checker_type_same :: proc(a, b: ^Type, depth := 0) -> bool {
 	case .Structure:
 		return a.structure == b.structure
 	case .Table:
-		return a.table_form == b.table_form && checker_type_same(a.base, b.base, depth + 1)
+		if a.table_form != b.table_form {
+			return false
+		}
+		if a.table_form == .Range_Of {
+			return checker_type_same(
+				checker_type_range_low_type(a),
+				checker_type_range_low_type(b),
+				depth + 1,
+			)
+		}
+		return checker_type_same(a.base, b.base, depth + 1)
 	case .Ref:
 		return checker_type_same(a.base, b.base, depth + 1)
 	case .Class, .Interface:
@@ -766,6 +841,18 @@ checker_type_same :: proc(a, b: ^Type, depth := 0) -> bool {
 		return a.routine.signature_scope == b.routine.signature_scope
 	}
 	return false
+}
+
+checker_type_range_low_type :: proc(typ: ^Type) -> ^Type {
+	if typ == nil || typ.kind != .Table || typ.table_form != .Range_Of {
+		return nil
+	}
+	if structure := checker_type_structure(typ.base); structure != nil {
+		if field, ok := checker_lookup_structure_field(structure, "low"); ok {
+			return field.type
+		}
+	}
+	return typ.base
 }
 
 checker_expand_structure_include :: proc(ctx: ^Checker_Context, include_entity: ^Entity) {

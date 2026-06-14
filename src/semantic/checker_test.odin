@@ -733,7 +733,7 @@ DATA int_eket LIKE beket OCCURS 0 WITH HEADER LINE.`
 	project := project_make()
 	defer project_destroy(&project)
 
-	_, file := checker_test_check_source(t, &project, source, "mem://like_line_of.abap")
+	checker, file := checker_test_check_source(t, &project, source, "mem://like_line_of.abap")
 
 	ty_line := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_line", .Type_Def)
 	ty_range := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_range", .Type_Def)
@@ -748,7 +748,19 @@ DATA int_eket LIKE beket OCCURS 0 WITH HEADER LINE.`
 	if ty_range.type != nil && ty_range.type.base != nil {
 		testing.expect_value(t, ty_range.type.base.kind, Type_Kind.Table)
 		testing.expect_value(t, ty_range.type.base.table_form, ast.Data_Type_Form.Range_Of)
-		testing.expect_value(t, checker_test_type_name(&project, ty_range.type.base.base), "string")
+		row_structure := checker_type_structure(checker_type_row(&checker.builtin_context, ty_range.type))
+		testing.expect(t, row_structure != nil)
+		if row_structure != nil {
+			testing.expect_value(t, len(row_structure.fields), 4)
+			sign := checker_test_structure_field(t, &project, row_structure, "sign")
+			option := checker_test_structure_field(t, &project, row_structure, "option")
+			low := checker_test_structure_field(t, &project, row_structure, "low")
+			high := checker_test_structure_field(t, &project, row_structure, "high")
+			testing.expect_value(t, checker_test_type_name(&project, sign.type), "c")
+			testing.expect_value(t, checker_test_type_name(&project, option.type), "c")
+			testing.expect_value(t, checker_test_type_name(&project, low.type), "string")
+			testing.expect_value(t, checker_test_type_name(&project, high.type), "string")
+		}
 	}
 	testing.expect_value(t, int_eket.type.kind, Type_Kind.Table)
 	testing.expect_value(t, int_eket.type.table_form, ast.Data_Type_Form.Like_Table)
