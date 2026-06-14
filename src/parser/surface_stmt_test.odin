@@ -1092,7 +1092,7 @@ open_sql_mixed_host_escape_styles_are_diagnosed :: proc(t: ^testing.T) {
   FOR ALL ENTRIES IN @mt_trn
   WHERE w~trnid = @mt_trn-trnid
     AND e~bizstep = /sttp/cl_dm_constants=>gcs_bizstep-shipping
-  ORDER BY trnid evttime DESCENDING creation_time DESCENDING
+  ORDER BY trnid, evttime DESCENDING, creation_time DESCENDING
   INTO TABLE @mt_event.`
 	parsed := parse(source, "sql_mixed_host_escapes.abap", context.allocator)
 
@@ -1127,6 +1127,33 @@ open_sql_order_by_rejects_table_alias_field_access :: proc(t: ^testing.T) {
 		t,
 		source[stmt.query.order_by_clause.start:stmt.query.order_by_clause.end],
 		"ORDER BY w~creation_time DESCENDING",
+	)
+}
+
+@(test)
+open_sql_order_by_rejects_missing_field_comma :: proc(t: ^testing.T) {
+	source := `DATA lr_trnid TYPE RANGE OF /sttp/e_trnid.
+
+SELECT q~trnid, w~evtid, w~creation_time
+  FROM /sttp/dm_trn_evt AS q
+  JOIN /sttp/dm_evt AS w ON w~evtid = q~evtid AND w~bizstep = '013'
+  INTO TABLE @DATA(lt_trn_evt)
+  WHERE trnid IN @lr_trnid
+  ORDER BY trnid creation_time DESCENDING.`
+	parsed := parse(source, "sql_order_by_missing_comma.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 1)
+	testing.expect_value(t, parsed.errors[0].message, OPEN_SQL_ORDER_BY_COMMA_MESSAGE)
+	testing.expect_value(
+		t,
+		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
+		"creation_time",
+	)
+	stmt := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(
+		t,
+		source[stmt.query.order_by_clause.start:stmt.query.order_by_clause.end],
+		"ORDER BY trnid creation_time DESCENDING",
 	)
 }
 

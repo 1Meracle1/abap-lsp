@@ -762,6 +762,7 @@ OPEN_SQL_FOR_ALL_ENTRIES_AGGREGATE_MESSAGE :: "syntax error: aggregate functions
 OPEN_SQL_ORDER_BY_ALIAS_MESSAGE :: "syntax error: Open SQL ORDER BY fields cannot be qualified with a table alias"
 OPEN_SQL_UNEXPECTED_TOKEN_MESSAGE :: "syntax error: unexpected token in Open SQL SELECT statement"
 OPEN_SQL_ORDER_BY_DIRECTION_MESSAGE :: "syntax error: expected ASCENDING or DESCENDING in ORDER BY"
+OPEN_SQL_ORDER_BY_COMMA_MESSAGE :: "syntax error: expected ',' between ORDER BY fields"
 
 SELECT_RESULT_TARGET_STOP_KEYWORDS :: []string {
 	"PACKAGE",
@@ -1682,9 +1683,13 @@ parse_select_order_by_clause :: proc(
 		query.order_by_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
 		return
 	}
+	needs_comma := false
 	for !select_query_done(p, body_start, stop_at_rparen) && !select_clause_starts(p) {
-		if allow_token(p, .Comma) ||
-		   allow_keyword(p, "ASCENDING") ||
+		if allow_token(p, .Comma) {
+			needs_comma = false
+			continue
+		}
+		if allow_keyword(p, "ASCENDING") ||
 		   allow_keyword(p, "NULLS") ||
 		   allow_keyword(p, "FIRST") ||
 		   allow_keyword(p, "LAST") {
@@ -1700,6 +1705,9 @@ parse_select_order_by_clause :: proc(
 			continue
 		}
 		if current_token(p).kind == .Ident {
+			if needs_comma {
+				error_current(p, OPEN_SQL_ORDER_BY_COMMA_MESSAGE)
+			}
 			if p.index + 2 < len(p.tokens) &&
 			   p.tokens[p.index + 1].kind == .Tilde &&
 			   p.tokens[p.index + 2].kind == .Ident {
@@ -1726,6 +1734,7 @@ parse_select_order_by_clause :: proc(
 				}
 				bump_token(p)
 			}
+			needs_comma = true
 			continue
 		}
 		bump_token(p)

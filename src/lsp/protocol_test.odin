@@ -1709,6 +1709,11 @@ lsp_completion_expression_templates_expand_from_keyword_prefixes :: proc(t: ^tes
 		},
 		{
 			prefix = "re",
+			label = "REDUCE ... FOR ... IN ... WHERE",
+			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:row} IN ${5:itab} WHERE ( ${6:field} = ${7:lv_value} ) NEXT ${2:result} = ${2:result} + ${4:row}-${8:amount} )$0",
+		},
+		{
+			prefix = "re",
 			label = "REDUCE ... FOR ... THEN ... UNTIL",
 			insert_text = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:index} = ${5:1} THEN ${4:index} + ${6:1} UNTIL ${4:index} > ${7:limit} NEXT ${2:result} = ${2:result} + ${4:index} )$0",
 		},
@@ -3228,32 +3233,46 @@ lsp_completion_case_template_falls_back_to_plain_text_without_snippet_support ::
 lsp_completion_expression_template_falls_back_to_plain_text_without_snippet_support :: proc(
 	t: ^testing.T,
 ) {
-	uri := "file:///D:/repo/completion_expression_template_plain.abap"
-	source := "DATA dummy TYPE i.\nWRITE fo"
-	state := lsp_test_state_with_open_document(uri, source)
-	defer lsp_test_state_destroy(&state)
-
-	offset := len(source)
-	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
-	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
-	testing.expect(t, snapshot_ok)
-	if !snapshot_ok {
-		return
+	cases := [?]Completion_Template_Prefix_Test_Case {
+		{
+			prefix = "fo",
+			label = "FOR ... THEN ... WHILE",
+			insert_text = "FOR index = 1 THEN index + 1 WHILE index <= limit ( index )",
+		},
+		{
+			prefix = "re",
+			label = "REDUCE ... FOR ... IN ... WHERE",
+			insert_text = "REDUCE i( INIT result = 0 FOR row IN itab WHERE ( field = lv_value ) NEXT result = result + row-amount )",
+		},
 	}
 
-	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
-	item, item_ok := lsp_test_find_completion_item(items, "FOR ... THEN ... WHILE")
-	testing.expect(t, item_ok)
-	if !item_ok {
-		return
-	}
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_expression_template_plain_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		source := strings.concatenate({"DATA dummy TYPE i.\nWRITE ", test_case.prefix}, context.temp_allocator)
+		state := lsp_test_state_with_open_document(uri, source)
+		defer lsp_test_state_destroy(&state)
 
-	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
-	testing.expect_value(
-		t,
-		item.insert_text,
-		"FOR index = 1 THEN index + 1 WHILE index <= limit ( index )",
-	)
+		offset := len(source)
+		params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+		item, item_ok := lsp_test_find_completion_item(items, test_case.label)
+		testing.expect(t, item_ok)
+		if !item_ok {
+			continue
+		}
+
+		testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+		testing.expect_value(t, item.insert_text, test_case.insert_text)
+	}
 }
 
 @(test)
@@ -4258,6 +4277,11 @@ lsp_completion_expression_templates_do_not_match_selector_prefixes :: proc(t: ^t
 		{
 			prefix = "re",
 			label = "REDUCE ... FOR ... IN",
+			insert_text = "",
+		},
+		{
+			prefix = "re",
+			label = "REDUCE ... FOR ... IN ... WHERE",
 			insert_text = "",
 		},
 		{

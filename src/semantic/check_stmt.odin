@@ -1312,33 +1312,54 @@ checker_check_internal_table_where_expr :: proc(
 			right = checker_check_internal_table_where_expr(ctx, n.right, row_type, row_structure)
 		} else if checker_internal_table_where_component_binary_op(n.op) {
 			left = checker_check_internal_table_where_component_expr(ctx, n.left, row_type, row_structure)
-			right = checker_check_expr(ctx, n.right)
+			right = checker_check_expr_with_unresolved_value_diagnostics(ctx, n.right)
+			checker_check_internal_table_where_operand_compatibility(
+				ctx,
+				n.op,
+				right.type,
+				left.type,
+				checker_expr_range(n.right),
+			)
 		} else {
-			left = checker_check_expr(ctx, n.left)
-			right = checker_check_expr(ctx, n.right)
+			left = checker_check_expr_with_unresolved_value_diagnostics(ctx, n.left)
+			right = checker_check_expr_with_unresolved_value_diagnostics(ctx, n.right)
 		}
 		return checker_record_operand(ctx, node, .Value, checker_binary_result_type(ctx, n.op, left, right))
 	case ^ast.Unary_Expr:
-		operand := checker_check_internal_table_where_expr(ctx, n.expr, row_type, row_structure) if n.op == .Not else checker_check_expr(ctx, n.expr)
+		operand := checker_check_internal_table_where_expr(ctx, n.expr, row_type, row_structure) if n.op == .Not else checker_check_expr_with_unresolved_value_diagnostics(ctx, n.expr)
 		return checker_record_operand(ctx, node, .Value, operand.type)
 	case ^ast.Paren_Expr:
 		operand := checker_check_internal_table_where_expr(ctx, n.expr, row_type, row_structure)
 		return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity)
 	case ^ast.Substring_Expr:
 		base := checker_check_internal_table_where_component_expr(ctx, n.base, row_type, row_structure)
-		checker_check_expr(ctx, n.offset)
-		checker_check_expr(ctx, n.length)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.offset)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.length)
 		return checker_record_operand(ctx, node, .Value, base.type, base.entity)
 	case ^ast.Between_Expr:
-		checker_check_internal_table_where_component_expr(ctx, n.subject, row_type, row_structure)
-		checker_check_expr(ctx, n.low)
-		checker_check_expr(ctx, n.high)
+		subject := checker_check_internal_table_where_component_expr(ctx, n.subject, row_type, row_structure)
+		low := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.low)
+		high := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.high)
+		checker_check_internal_table_where_operand_compatibility(
+			ctx,
+			.Between,
+			low.type,
+			subject.type,
+			checker_expr_range(n.low),
+		)
+		checker_check_internal_table_where_operand_compatibility(
+			ctx,
+			.Between,
+			high.type,
+			subject.type,
+			checker_expr_range(n.high),
+		)
 		return checker_record_operand(ctx, node, .Value, checker_builtin_type_from_name(ctx.checker, "abap_bool"))
 	case ^ast.Is_Predicate_Expr:
 		checker_check_internal_table_where_component_expr(ctx, n.subject, row_type, row_structure)
 		return checker_record_operand(ctx, node, .Value, checker_builtin_type_from_name(ctx.checker, "abap_bool"))
 	}
-	return checker_check_expr(ctx, expr)
+	return checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
 }
 
 checker_check_internal_table_where_component_expr :: proc(
@@ -1360,11 +1381,11 @@ checker_check_internal_table_where_component_expr :: proc(
 		return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity)
 	case ^ast.Substring_Expr:
 		base := checker_check_internal_table_where_component_expr(ctx, n.base, row_type, row_structure)
-		checker_check_expr(ctx, n.offset)
-		checker_check_expr(ctx, n.length)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.offset)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.length)
 		return checker_record_operand(ctx, node, .Value, base.type, base.entity)
 	}
-	return checker_check_expr(ctx, expr)
+	return checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
 }
 
 checker_internal_table_where_component_binary_op :: proc(op: ast.Binary_Op) -> bool {
@@ -1393,6 +1414,67 @@ checker_internal_table_where_component_binary_op :: proc(op: ast.Binary_Op) -> b
 		return true
 	}
 	return false
+}
+
+checker_check_internal_table_where_operand_compatibility :: proc(
+	ctx: ^Checker_Context,
+	op: ast.Binary_Op,
+	actual: ^Type,
+	expected: ^Type,
+	range: Range,
+) {
+	if !checker_internal_table_where_operator_requires_value_compatibility(op) ||
+	   checker_type_is_unknown(actual) ||
+	   checker_type_is_unknown(expected) {
+		return
+	}
+	if ok, known := checker_type_assignment_compatible(ctx, actual, expected); known {
+		if !ok {
+			checker_add_internal_table_where_type_diagnostic(ctx, actual, expected, range)
+		}
+		return
+	}
+	if checker_internal_table_where_type_category_mismatch(ctx, actual, expected) {
+		checker_add_internal_table_where_type_diagnostic(ctx, actual, expected, range)
+	}
+}
+
+checker_internal_table_where_operator_requires_value_compatibility :: proc(op: ast.Binary_Op) -> bool {
+	#partial switch op {
+	case .In, .Not_In:
+		return false
+	}
+	return checker_internal_table_where_component_binary_op(op) || op == .Between
+}
+
+checker_internal_table_where_type_category_mismatch :: proc(
+	ctx: ^Checker_Context,
+	actual: ^Type,
+	expected: ^Type,
+) -> bool {
+	actual_table := checker_type_is_table_like(ctx, actual)
+	expected_table := checker_type_is_table_like(ctx, expected)
+	actual_structure := checker_type_structure(actual) != nil
+	expected_structure := checker_type_structure(expected) != nil
+	actual_ref := checker_type_is_ref(actual)
+	expected_ref := checker_type_is_ref(expected)
+	return actual_table != expected_table ||
+	       actual_structure != expected_structure ||
+	       actual_ref != expected_ref
+}
+
+checker_add_internal_table_where_type_diagnostic :: proc(
+	ctx: ^Checker_Context,
+	actual: ^Type,
+	expected: ^Type,
+	range: Range,
+) {
+	checker_add_diagnostic(
+		ctx,
+		.Incompatible_Argument_Type,
+		range,
+		checker_type_mismatch_message(ctx, "incompatible WHERE operand", actual, expected),
+	)
 }
 
 checker_check_table_component_expr :: proc(

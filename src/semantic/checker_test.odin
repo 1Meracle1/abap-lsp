@@ -4018,6 +4018,83 @@ lv_sum = REDUCE i( INIT total = 0 FOR idx = 1 UNTIL idx > 3 NEXT total = total +
 }
 
 @(test)
+root_semantic_checker_reports_unresolved_reduce_for_in_where_values :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_line,
+         docnum TYPE string,
+       END OF ty_line.
+DATA lt_dm_trn TYPE TABLE OF ty_line WITH EMPTY KEY.
+DATA(lv_count) =
+  REDUCE i(
+    INIT count = 0
+    FOR item IN lt_dm_trn
+    WHERE ( docnum = sdfaaa )
+    NEXT count = count + 1 ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://reduce_for_in_where_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Global_Symbol,
+			.Value,
+			"sdfaaa",
+		),
+		1,
+	)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Reference {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "sdfaaa")
+		testing.expect_value(t, diagnostic.message, "unresolved variable sdfaaa")
+	}
+}
+
+@(test)
+root_semantic_checker_reports_incompatible_reduce_for_in_where_values :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_line,
+         docnum TYPE string,
+       END OF ty_line.
+DATA lt_dm_trn TYPE TABLE OF ty_line WITH EMPTY KEY.
+DATA ls_line TYPE ty_line.
+DATA(lv_count) = REDUCE i(
+  INIT count = 0
+  FOR item IN lt_dm_trn
+  WHERE ( docnum = ls_line )
+  NEXT count = count + 1
+).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://reduce_for_in_where_incompatible.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 1)
+
+	diagnostic_found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Incompatible_Argument_Type {
+			continue
+		}
+		diagnostic_found = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "ls_line")
+		testing.expect(t, strings.contains(diagnostic.message, "incompatible WHERE operand"))
+		testing.expect(t, strings.contains(diagnostic.message, "current type 'ty_line'"))
+		testing.expect(t, strings.contains(diagnostic.message, "expected type 'string'"))
+	}
+	testing.expect(t, diagnostic_found)
+}
+
+@(test)
 root_semantic_checker_accepts_constructor_for_iterator_reuse_with_same_table_type :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_row,
          id TYPE string,

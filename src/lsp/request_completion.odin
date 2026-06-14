@@ -625,6 +625,12 @@ EXPRESSION_TEMPLATES :: [?]Completion_Statement_Template {
 	},
 	{
 		keyword = "REDUCE",
+		label = "REDUCE ... FOR ... IN ... WHERE",
+		snippet = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:row} IN ${5:itab} WHERE ( ${6:field} = ${7:lv_value} ) NEXT ${2:result} = ${2:result} + ${4:row}-${8:amount} )$0",
+		plain = "REDUCE i( INIT result = 0 FOR row IN itab WHERE ( field = lv_value ) NEXT result = result + row-amount )",
+	},
+	{
+		keyword = "REDUCE",
 		label = "REDUCE ... FOR ... THEN ... UNTIL",
 		snippet = "REDUCE ${1:i}( INIT ${2:result} = ${3:0} FOR ${4:index} = ${5:1} THEN ${4:index} + ${6:1} UNTIL ${4:index} > ${7:limit} NEXT ${2:result} = ${2:result} + ${4:index} )$0",
 		plain = "REDUCE i( INIT result = 0 FOR index = 1 THEN index + 1 UNTIL index > limit NEXT result = result + index )",
