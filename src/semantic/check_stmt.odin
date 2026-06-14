@@ -318,8 +318,8 @@ checker_check_stmt :: proc(
 	case ^ast.Try_Stmt:
 		checker_check_stmt_list(ctx, n.body)
 		for clause in n.catches {
-			checker_check_expr_list(ctx, clause.exceptions[:], .Type)
-			checker_check_expr(ctx, clause.into, .Value, true)
+			catch_type := checker_check_catch_exceptions(ctx, clause.exceptions[:])
+			checker_check_catch_into(ctx, clause.into, catch_type)
 			checker_check_stmt_list(ctx, clause.body)
 		}
 		if n.cleanup != nil {
@@ -392,6 +392,93 @@ checker_check_describe_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Describe_S
 		target := checker_check_expr(&target_ctx, entry.target, .Value, true)
 		checker_check_unresolved_variable_operand(ctx, entry.target, target)
 	}
+}
+
+checker_check_catch_exceptions :: proc(ctx: ^Checker_Context, exceptions: []^ast.Expr) -> ^Type {
+	target_type := project_type_unknown(ctx.project)
+	for exception, i in exceptions {
+		typ, entity := checker_type_from_expr(ctx, exception, .Type)
+		node: ^ast.Node
+		if exception != nil {
+			node = &exception.expr_base
+		}
+		checker_record_operand(ctx, node, .Type, typ, entity)
+		if i == 0 {
+			target_type = checker_catch_exception_target_type(ctx, typ)
+		}
+	}
+	return target_type
+}
+
+checker_catch_exception_target_type :: proc(ctx: ^Checker_Context, typ: ^Type) -> ^Type {
+	if typ == nil || checker_type_is_unknown(typ) {
+		return project_type_unknown(ctx.project)
+	}
+	if checker_type_is_ref(typ) {
+		return typ
+	}
+	return project_type_ref(ctx.project, typ)
+}
+
+checker_check_catch_into :: proc(
+	ctx: ^Checker_Context,
+	into: ^ast.Expr,
+	type_hint: ^Type,
+) -> Operand {
+	if into == nil {
+		return checker_invalid_operand()
+	}
+	local := ctx^
+	local.type_hint = type_hint
+	local.type_hint_expr = into
+	target := checker_check_expr(&local, into, .Value, true)
+	checker_check_catch_into_compatibility(ctx, type_hint, target.type, checker_expr_range(into))
+	return target
+}
+
+checker_check_catch_into_compatibility :: proc(
+	ctx: ^Checker_Context,
+	expected: ^Type,
+	actual: ^Type,
+	range: Range,
+) {
+	if checker_type_is_unknown(expected) || checker_type_is_unknown(actual) {
+		return
+	}
+	expected_ref := checker_type_is_ref(expected)
+	actual_ref := checker_type_is_ref(actual)
+	if expected_ref != actual_ref {
+		checker_add_catch_into_incompatible_diagnostic(ctx, expected, actual, range)
+		return
+	}
+	if !expected_ref {
+		return
+	}
+	if actual_target, actual_target_ok := checker_ref_target(ctx, actual); actual_target_ok {
+		if actual_target.kind == .Object_Generic {
+			return
+		}
+		if actual_target.kind == .Data_Generic ||
+		   (actual_target.kind == .Data && actual_target.entity != nil) {
+			checker_add_catch_into_incompatible_diagnostic(ctx, expected, actual, range)
+			return
+		}
+	}
+	checker_check_assignment_compatibility(ctx, expected, actual, range)
+}
+
+checker_add_catch_into_incompatible_diagnostic :: proc(
+	ctx: ^Checker_Context,
+	expected: ^Type,
+	actual: ^Type,
+	range: Range,
+) {
+	checker_add_diagnostic(
+		ctx,
+		.Incompatible_Assignment_Type,
+		range,
+		checker_type_mismatch_message(ctx, "incompatible assignment", expected, actual),
+	)
 }
 
 checker_describe_target_type_hint :: proc(

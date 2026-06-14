@@ -2347,6 +2347,67 @@ DESCRIBE TABLE itab LINES DATA(lv_inline).`
 }
 
 @(test)
+root_semantic_stmt_checker_infers_catch_inline_exception_ref_type :: proc(t: ^testing.T) {
+	source := `TRY.
+CATCH cx_root INTO DATA(lx_error).
+ENDTRY.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://stmt_catch_inline.abap")
+
+	lx_error := checker_test_lookup(t, &project, file.root_scope, .Value, "lx_error", .Variable)
+	testing.expect(t, lx_error != nil && lx_error.type != nil)
+	if lx_error == nil || lx_error.type == nil {
+		return
+	}
+	testing.expect_value(t, lx_error.type.kind, Type_Kind.Ref)
+	testing.expect(t, lx_error.type.base != nil)
+	if lx_error.type.base != nil {
+		testing.expect_value(t, lx_error.type.base.name, "cx_root")
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_rejects_catch_into_non_ref_target :: proc(t: ^testing.T) {
+	source := `DATA lv_str TYPE string.
+TRY.
+CATCH cx_root INTO lv_str.
+ENDTRY.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_catch_into_string.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 1)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Incompatible_Assignment_Type {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "lv_str")
+		testing.expect(t, strings.contains(diagnostic.message, "REF TO cx_root"))
+		testing.expect(t, strings.contains(diagnostic.message, "string"))
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_accepts_catch_into_object_ref_target :: proc(t: ^testing.T) {
+	source := `DATA lo_error TYPE REF TO object.
+TRY.
+CATCH cx_root INTO lo_error.
+ENDTRY.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_catch_into_object_ref.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 0)
+}
+
+@(test)
 root_semantic_stmt_checker_reports_unresolved_describe_operands :: proc(t: ^testing.T) {
 	source := `DATA lv_value TYPE string.
 DESCRIBE TABLE itab LINES lv_lines.

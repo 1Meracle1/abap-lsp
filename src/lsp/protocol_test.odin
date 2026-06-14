@@ -4902,6 +4902,21 @@ CLOSE CURSOR @lv_cursor.`
 }
 
 @(test)
+lsp_hover_reports_catch_inline_exception_ref_type :: proc(t: ^testing.T) {
+	source := `TRY.
+  
+CATCH cx_root INTO DATA(lx_error).
+  
+ENDTRY.`
+
+	text := lsp_test_hover_text(t, source, "DATA(lx_error)", "lx_error")
+
+	testing.expect(t, strings.contains(text, "`lx_error` variable"))
+	testing.expect(t, strings.contains(text, "type: `ref to cx_root`"))
+	testing.expect(t, !strings.contains(text, "type: `unknown`"))
+}
+
+@(test)
 lsp_hover_reports_leading_declaration_comment_documentation :: proc(t: ^testing.T) {
 	source := `DATA lv_seed TYPE i.
 " local accumulator
