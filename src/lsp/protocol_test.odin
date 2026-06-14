@@ -1195,6 +1195,40 @@ ENDCLASS.`,
 }
 
 @(test)
+lsp_completion_interface_template_expands_from_interface_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_interface_template.abap"
+	source := "int"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "INTERFACE ... ENDINTERFACE")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+	testing.expect_value(t, item.sort_text, "2:interface ... endinterface")
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		`INTERFACE ${1:lif_interface}.
+  $0
+ENDINTERFACE.`,
+	)
+}
+
+@(test)
 lsp_completion_loop_templates_expand_from_loop_prefix :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_loop_template.abap"
 	source := "REPORT zmain.\nFORM run.\n  lo"
@@ -1909,6 +1943,122 @@ lsp_completion_method_definition_templates_expand_from_keyword_prefixes :: proc(
 	}
 	if basic_method_ok {
 		testing.expect_value(t, basic_method.insert_text, "METHODS ${1:method_name}.$0")
+	}
+
+	interfaces_uri := "file:///D:/repo/completion_interfaces_template.abap"
+	interfaces_source := "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    interfaces\nENDCLASS."
+	interfaces_state := lsp_test_state_with_open_document(interfaces_uri, interfaces_source)
+	defer lsp_test_state_destroy(&interfaces_state)
+
+	interfaces_offset := strings.index(interfaces_source, "interfaces") + len("interfaces")
+	testing.expect(t, interfaces_offset >= len("interfaces"))
+	interfaces_params := lsp_test_rename_position_params(
+		interfaces_uri,
+		offset_to_position(interfaces_source, interfaces_offset),
+		"",
+	)
+	interfaces_snapshot, interfaces_completion_offset, interfaces_snapshot_ok := snapshot_for_position(
+		&interfaces_state,
+		interfaces_params,
+	)
+	testing.expect(t, interfaces_snapshot_ok)
+	if !interfaces_snapshot_ok {
+		return
+	}
+
+	interfaces_items := completion_items_for_snapshot(
+		interfaces_snapshot,
+		interfaces_completion_offset,
+		true,
+		context.allocator,
+	)
+	interfaces_item, interfaces_item_ok := lsp_test_find_completion_item(
+		interfaces_items,
+		"INTERFACES ...",
+	)
+	testing.expect(t, interfaces_item_ok)
+	if interfaces_item_ok {
+		testing.expect_value(t, interfaces_item.kind, COMPLETION_SNIPPET)
+		testing.expect_value(
+			t,
+			interfaces_item.sort_text,
+			"2:interfaces ...",
+		)
+		testing.expect_value(
+			t,
+			interfaces_item.insert_text_format,
+			COMPLETION_INSERT_TEXT_FORMAT_SNIPPET,
+		)
+		testing.expect_value(
+			t,
+			interfaces_item.insert_text,
+			"INTERFACES ${1:lif_interface}.$0",
+		)
+		edit, edit_ok := interfaces_item.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			testing.expect_value(t, edit.new_text, interfaces_item.insert_text)
+			testing.expect_value(t, edit.range.start.line, 2)
+			testing.expect_value(t, edit.range.start.character, 4)
+			testing.expect_value(t, edit.range.end.line, 2)
+			testing.expect_value(t, edit.range.end.character, 14)
+		}
+	}
+
+	aliases_uri := "file:///D:/repo/completion_aliases_template.abap"
+	aliases_source := "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    aliases\nENDCLASS."
+	aliases_state := lsp_test_state_with_open_document(aliases_uri, aliases_source)
+	defer lsp_test_state_destroy(&aliases_state)
+
+	aliases_offset := strings.index(aliases_source, "aliases") + len("aliases")
+	testing.expect(t, aliases_offset >= len("aliases"))
+	aliases_params := lsp_test_rename_position_params(
+		aliases_uri,
+		offset_to_position(aliases_source, aliases_offset),
+		"",
+	)
+	aliases_snapshot, aliases_completion_offset, aliases_snapshot_ok := snapshot_for_position(
+		&aliases_state,
+		aliases_params,
+	)
+	testing.expect(t, aliases_snapshot_ok)
+	if !aliases_snapshot_ok {
+		return
+	}
+
+	aliases_items := completion_items_for_snapshot(
+		aliases_snapshot,
+		aliases_completion_offset,
+		true,
+		context.allocator,
+	)
+	aliases_item, aliases_item_ok := lsp_test_find_completion_item(
+		aliases_items,
+		"ALIASES ... FOR ...",
+	)
+	testing.expect(t, aliases_item_ok)
+	if aliases_item_ok {
+		testing.expect_value(t, aliases_item.kind, COMPLETION_SNIPPET)
+		testing.expect_value(t, aliases_item.sort_text, "2:aliases ... for ...")
+		testing.expect_value(
+			t,
+			aliases_item.insert_text_format,
+			COMPLETION_INSERT_TEXT_FORMAT_SNIPPET,
+		)
+		testing.expect_value(
+			t,
+			aliases_item.insert_text,
+			"ALIASES ${1:alias_name} FOR ${2:lif_interface}~${3:member_name}.$0",
+		)
+		edit, edit_ok := aliases_item.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			testing.expect_value(t, edit.new_text, aliases_item.insert_text)
+			testing.expect_value(t, edit.range.start.line, 2)
+			testing.expect_value(t, edit.range.start.character, 4)
+			testing.expect_value(t, edit.range.end.line, 2)
+			testing.expect_value(t, edit.range.end.character, 11)
+		}
 	}
 
 	class_uri := "file:///D:/repo/completion_class_methods_template.abap"
@@ -2793,6 +2943,64 @@ lsp_completion_method_definition_template_falls_back_to_plain_text_without_snipp
 }
 
 @(test)
+lsp_completion_interfaces_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_interfaces_template_plain.abap"
+	source := "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    interfaces\nENDCLASS."
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "interfaces") + len("interfaces")
+	testing.expect(t, offset >= len("interfaces"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "INTERFACES ...")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(t, item.insert_text, "INTERFACES lif_interface.")
+}
+
+@(test)
+lsp_completion_aliases_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_aliases_template_plain.abap"
+	source := "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    aliases\nENDCLASS."
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "aliases") + len("aliases")
+	testing.expect(t, offset >= len("aliases"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "ALIASES ... FOR ...")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(t, item.insert_text, "ALIASES alias_name FOR lif_interface~member_name.")
+}
+
+@(test)
 lsp_completion_begin_end_statement_template_falls_back_to_plain_text_without_snippet_support :: proc(
 	t: ^testing.T,
 ) {
@@ -3170,6 +3378,34 @@ lsp_completion_class_template_falls_back_to_plain_text_without_snippet_support :
 		item.insert_text,
 		"CLASS lcl_class DEFINITION.\n  PUBLIC SECTION.\n    \nENDCLASS.\n\nCLASS lcl_class IMPLEMENTATION.\nENDCLASS.",
 	)
+}
+
+@(test)
+lsp_completion_interface_template_falls_back_to_plain_text_without_snippet_support :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_interface_template_plain.abap"
+	source := "int"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, false, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "INTERFACE ... ENDINTERFACE")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
+	testing.expect_value(t, item.insert_text, "INTERFACE lif_interface.\n  \nENDINTERFACE.")
 }
 
 @(test)

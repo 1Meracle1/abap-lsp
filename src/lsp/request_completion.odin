@@ -79,6 +79,11 @@ completion_items_for_snapshot :: proc(
 		offset,
 		template_prefix,
 	)
+	interface_template_count := completion_interface_template_count(
+		snapshot.source,
+		offset,
+		template_prefix,
+	)
 	try_template_count := completion_try_template_count(snapshot.source, offset, template_prefix)
 	loop_template_count := completion_loop_template_count(snapshot.source, offset, template_prefix)
 	select_template_count := completion_select_template_count(
@@ -120,6 +125,7 @@ completion_items_for_snapshot :: proc(
 		if_template_count +
 		case_template_count +
 		class_template_count +
+		interface_template_count +
 		loop_template_count +
 		select_template_count +
 		get_time_stamp_template_count +
@@ -169,6 +175,14 @@ completion_items_for_snapshot :: proc(
 			allocator,
 		)
 		template_index += class_template_count
+	}
+	if interface_template_count > 0 {
+		out[template_index] = completion_interface_template_item(
+			template_indent,
+			snippets_supported,
+			allocator,
+		)
+		template_index += interface_template_count
 	}
 	if try_template_count > 0 {
 		out[template_index] = completion_try_template_item(
@@ -404,6 +418,14 @@ completion_class_template_count :: proc(source: string, offset: int, prefix: str
 		return 0
 	}
 	return CLASS_TEMPLATE_COUNT
+}
+
+completion_interface_template_count :: proc(source: string, offset: int, prefix: string) -> int {
+	if !completion_keyword_prefix_matches(prefix, "INTERFACE") ||
+	   !completion_template_at_statement_start(source, offset) {
+		return 0
+	}
+	return 1
 }
 
 completion_try_template_count :: proc(source: string, offset: int, prefix: string) -> int {
@@ -853,6 +875,18 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		label = "CLASS-DATA: BEGIN OF ... END OF",
 		snippet = "CLASS-DATA: BEGIN OF ${1:gs_row},\n              ${2:field} TYPE ${3:string},\n            END OF ${1:gs_row}.$0",
 		plain = "CLASS-DATA: BEGIN OF gs_row,\n              field TYPE string,\n            END OF gs_row.",
+	},
+	{
+		keyword = "INTERFACES",
+		label = "INTERFACES ...",
+		snippet = "INTERFACES ${1:lif_interface}.$0",
+		plain = "INTERFACES lif_interface.",
+	},
+	{
+		keyword = "ALIASES",
+		label = "ALIASES ... FOR ...",
+		snippet = "ALIASES ${1:alias_name} FOR ${2:lif_interface}~${3:member_name}.$0",
+		plain = "ALIASES alias_name FOR lif_interface~member_name.",
 	},
 	{
 		keyword = "METHODS",
@@ -2261,6 +2295,46 @@ completion_write_class_implementation :: proc(
 		strings.concatenate({"CLASS ", class_name, " IMPLEMENTATION."}, context.temp_allocator),
 	)
 	completion_template_write_newline_indent(out, indent, 0, "ENDCLASS.")
+}
+
+completion_interface_template_item :: proc(
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> Completion_Item {
+	label := "INTERFACE ... ENDINTERFACE"
+	return Completion_Item {
+		label = label,
+		kind = COMPLETION_SNIPPET,
+		sort_text = completion_sort_text("2", label, allocator),
+		insert_text = completion_interface_template_insert_text(
+			indent,
+			snippets_supported,
+			allocator,
+		),
+		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
+	}
+}
+
+completion_interface_template_insert_text :: proc(
+	indent: string,
+	snippets_supported: bool,
+	allocator: mem.Allocator,
+) -> string {
+	interface_name := "${1:lif_interface}" if snippets_supported else "lif_interface"
+	base_indent := completion_template_base_indent(indent, snippets_supported)
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "INTERFACE ")
+	strings.write_string(&out, interface_name)
+	strings.write_string(&out, ".")
+	completion_template_write_newline_indent(
+		&out,
+		base_indent,
+		1,
+		"$0" if snippets_supported else "",
+	)
+	completion_template_write_newline_indent(&out, base_indent, 0, "ENDINTERFACE.")
+	return strings.to_string(out)
 }
 
 completion_append_select_templates :: proc(
