@@ -204,7 +204,7 @@ parse_stmt_list_until :: proc(p: ^Parser, stop_keywords: []string) -> [dynamic]^
 
 parse_stmt :: proc(p: ^Parser, stop_keywords: []string) -> ^ast.Stmt {
 	mark := mark_statement_start(p)
-	stmt := parse_stmt_result(p)
+	stmt := parse_stmt_result(p, stop_keywords)
 	if stmt != nil {
 		attach_stmt_trivia(p, stmt, mark)
 		return stmt
@@ -224,7 +224,7 @@ parse_stmt :: proc(p: ^Parser, stop_keywords: []string) -> ^ast.Stmt {
 	return stmt
 }
 
-parse_stmt_result :: proc(p: ^Parser) -> ^ast.Stmt {
+parse_stmt_result :: proc(p: ^Parser, stop_keywords: []string = nil) -> ^ast.Stmt {
 	if at_eof(p) {
 		error_current(p, "syntax error: unexpected token")
 		return nil
@@ -263,12 +263,12 @@ parse_stmt_result :: proc(p: ^Parser) -> ^ast.Stmt {
 		return stmt
 	}
 	if simple_stmt_starts(p) {
-		return parse_simple_stmt(p)
+		return parse_simple_stmt(p, stop_keywords)
 	}
-	if constructor_expr_stmt_starts(p) {
+	if constructor_expr_stmt_starts(p, stop_keywords) {
 		return parse_expr_stmt(p)
 	}
-	if macro_call_stmt_starts(p) {
+	if macro_call_stmt_starts(p, stop_keywords) {
 		return parse_macro_call_stmt(p)
 	}
 	error_current(p, "syntax error: unexpected token")
@@ -905,7 +905,11 @@ recover_to_statement_boundary :: proc(p: ^Parser, stop_keywords: []string, consu
 	}
 }
 
-stmt_period_before_boundary :: proc(p: ^Parser, start: int) -> bool {
+stmt_period_before_boundary :: proc(
+	p: ^Parser,
+	start: int,
+	stop_keywords: []string = nil,
+) -> bool {
 	paren := 0
 	bracket := 0
 	brace := 0
@@ -916,6 +920,9 @@ stmt_period_before_boundary :: proc(p: ^Parser, start: int) -> bool {
 		}
 		top := paren == 0 && bracket == 0 && brace == 0
 		if top {
+			if i > start && keyword_phrase_at_any(p, i, stop_keywords) {
+				return false
+			}
 			if tok.kind == .Period {
 				return true
 			}
@@ -1862,6 +1869,15 @@ expr_lead_token :: proc(tok: Token) -> bool {
 	return false
 }
 
+keyword_phrase_at_any :: proc(p: ^Parser, index: int, keywords: []string) -> bool {
+	for keyword in keywords {
+		if keyword_phrase_at(p, index, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
 statement_lead_starts :: proc(p: ^Parser, index: int) -> bool {
 	if index >= len(p.tokens) {
 		return false
@@ -1873,8 +1889,9 @@ statement_lead_starts :: proc(p: ^Parser, index: int) -> bool {
 	return known_stmt_lead_at(p, index) || assignment_starts(p, index)
 }
 
-constructor_expr_stmt_starts :: proc(p: ^Parser) -> bool {
-	return constructor_expr_starts(p, current_token(p)) && stmt_period_before_boundary(p, p.index)
+constructor_expr_stmt_starts :: proc(p: ^Parser, stop_keywords: []string = nil) -> bool {
+	return constructor_expr_starts(p, current_token(p)) &&
+	       stmt_period_before_boundary(p, p.index, stop_keywords)
 }
 
 known_stmt_lead_at :: proc(p: ^Parser, index: int) -> bool {

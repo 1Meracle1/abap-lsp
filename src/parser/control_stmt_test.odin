@@ -1183,3 +1183,20 @@ ENDCLASS.`
 	testing.expect_value(t, ast.print_node(method, context.allocator), `METHOD if_demo~run.
 ENDMETHOD.`)
 }
+
+@(test)
+method_block_survives_incomplete_statement_before_endmethod :: proc(t: ^testing.T) {
+	source := `CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    rv_
+  ENDMETHOD.
+ENDCLASS.`
+	parsed := parse(source, "incomplete_method_block.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) > 0)
+	class := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl)
+	testing.expect_value(t, len(class.body), 1)
+	method := class.body[0].derived_stmt.(^ast.Method_Decl)
+	testing.expect_value(t, method.name.text, "run")
+	testing.expect_value(t, len(method.body), 1)
+}

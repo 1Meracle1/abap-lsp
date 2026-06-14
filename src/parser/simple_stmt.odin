@@ -74,10 +74,11 @@ simple_stmt_starts :: proc(p: ^Parser) -> bool {
 	)
 }
 
-parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
-	if !simple_full_period_stmt_starts(p) && !stmt_period_before_boundary(p, p.index) {
+parse_simple_stmt :: proc(p: ^Parser, stop_keywords: []string = nil) -> ^ast.Stmt {
+	if !simple_full_period_stmt_starts(p) &&
+	   !stmt_period_before_boundary(p, p.index, stop_keywords) {
 		error_current(p, "syntax error: expected '.' to end statement")
-		recover_to_statement_boundary(p, nil, false)
+		recover_to_statement_boundary(p, stop_keywords, false)
 		return nil
 	}
 	if at_keyword(p, "CLEAR") {
@@ -1962,12 +1963,12 @@ parse_macro_def_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
-macro_call_stmt_starts :: proc(p: ^Parser) -> bool {
+macro_call_stmt_starts :: proc(p: ^Parser, stop_keywords: []string = nil) -> bool {
 	return(
 		current_token(p).kind == .Ident &&
 		!known_stmt_lead_at(p, p.index) &&
 		!direct_call_stmt_starts(p) &&
-		stmt_period_before_boundary(p, p.index) \
+		stmt_period_before_boundary(p, p.index, stop_keywords) \
 	)
 }
 

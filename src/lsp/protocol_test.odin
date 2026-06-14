@@ -7,6 +7,7 @@ import workspace "src:workspace"
 import json "core:encoding/json"
 import "core:fmt"
 import "core:mem"
+import virtual "core:mem/virtual"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -492,6 +493,123 @@ START-OF-SELECTION.
 
 	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT)
 	testing.expect_value(t, item.insert_text, "execute")
+}
+
+@(test)
+lsp_completion_in_incomplete_method_implementation_reads_signature_scope :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_method_body_signature.abap"
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS do_something
+      IMPORTING
+        iv_param TYPE string
+      RETURNING
+        VALUE(rv_res) TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD do_something.
+    rv_
+  ENDMETHOD.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "\n    rv_") + len("\n    rv_")
+	testing.expect(t, offset >= len("\n    rv_"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "rv_res")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text, "rv_res")
+}
+
+@(test)
+lsp_completion_in_incomplete_method_implementation_works_after_server_init :: proc(t: ^testing.T) {
+	root := lsp_test_temp_root(t, `tmp\lsp_completion_method_body_signature`)
+	defer os.remove_all(root)
+	file_path := lsp_test_join_path(t, root, "completion_method_body_signature.abap")
+	uri, uri_ok := file_uri_from_path(file_path, context.allocator)
+	testing.expect(t, uri_ok)
+	if !uri_ok {
+		return
+	}
+	root_uri, root_uri_ok := file_uri_from_path(root, context.allocator)
+	testing.expect(t, root_uri_ok)
+	if !root_uri_ok {
+		return
+	}
+
+	output_path := `tmp\lsp_completion_method_body_signature.out`
+	os.remove(output_path)
+	output, output_err := os.create(output_path)
+	testing.expect(t, output_err == nil)
+	if output_err != nil {
+		return
+	}
+	defer os.close(output)
+	defer os.remove(output_path)
+
+	options := server_default_workspace_options()
+	options.flags += {.Disable_ADT_Dependency_Fetch}
+	state: Server_State
+	server_init_with_options(&state, context.allocator, options)
+	defer server_destroy(&state)
+
+	params := make(json.Object, 1, context.allocator)
+	params["rootUri"] = json.String(root_uri)
+	ctx := Request_Context {
+		state  = &state,
+		output = output,
+		id     = json.Integer(1),
+	}
+	handle_initialize(&ctx, params)
+
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS do_something
+      IMPORTING
+        iv_param TYPE string
+      RETURNING
+        VALUE(rv_res) TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD do_something.
+    rv_
+  ENDMETHOD.
+ENDCLASS.`
+	testing.expect(t, update_document_from_open(&state, lsp_test_did_open_params(uri, source)))
+	server_reanalyze(&state)
+
+	lsp_test_reset_temp_allocator()
+
+	offset := strings.index(source, "\n    rv_") + len("\n    rv_")
+	params = lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "rv_res")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text, "rv_res")
 }
 
 @(test)
@@ -3591,6 +3709,11 @@ lsp_test_join_path :: proc(t: ^testing.T, a, b: string) -> string {
 		return ""
 	}
 	return path
+}
+
+lsp_test_reset_temp_allocator :: proc() {
+	temp := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
+	virtual.arena_temp_end(temp)
 }
 
 lsp_test_rename_position_params :: proc(

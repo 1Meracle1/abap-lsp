@@ -4516,6 +4516,64 @@ ENDFORM.`
 }
 
 @(test)
+root_semantic_query_completion_in_method_implementation_reads_signature_scope :: proc(t: ^testing.T) {
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS do_something
+      IMPORTING
+        iv_param TYPE string
+      RETURNING
+        VALUE(rv_res) TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD do_something.
+    rv_
+ENDMETHOD.
+ENDCLASS.`
+
+	// Keep the source incomplete to match editor completion while typing.
+	parsed := parser.parse(source, "mem://query_method_impl_completion.abap", context.allocator)
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker := checker_make(&project)
+	file := checker_add_file(&checker, parsed.path, parsed.root)
+	checker_check_file(&checker, file)
+
+	query := semantic_query(&project, &checker, file)
+	offset := checker_test_find_text_last(source, "rv_") + len("rv_")
+	testing.expect(t, offset >= len("rv_"))
+
+	items := semantic_completion_items_at_offset(
+		semantic_query_completion(query),
+		offset,
+		"rv_",
+		context.allocator,
+		source,
+	)
+
+	returning_found := false
+	unrelated_found := false
+	for item in items {
+		name := item.name
+		if name == "rv_res" &&
+		   item.namespace == .Value &&
+		   item.source == .Lexical_Scope &&
+		   item.entity != nil &&
+		   item.entity.kind == .Parameter {
+			returning_found = true
+		}
+		if name == "iv_param" || name == "lcl_class" || name == "strlen" {
+			unrelated_found = true
+		}
+	}
+	testing.expect(t, returning_found)
+	testing.expect(t, !unrelated_found)
+}
+
+@(test)
 root_semantic_query_completion_after_static_selector_returns_accessible_static_members :: proc(t: ^testing.T) {
 	source := `REPORT zmain.
 CLASS lcl_repo DEFINITION.

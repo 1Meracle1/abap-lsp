@@ -409,7 +409,7 @@ semantic_completion_items_at_offset :: proc(
 	seen := make(map[Semantic_Completion_Item_Key]bool, 64, allocator)
 	canonical_prefix := project_intern_lower_ascii(q.project, prefix)
 
-	scope := semantic_query_scope_at_offset(q.project, q.file, offset)
+	scope := semantic_query_scope_at_offset(q.file, offset, q.checker)
 	if selector, selector_ok := semantic_completion_selector_context_at_offset(source, offset);
 	   selector_ok {
 		semantic_completion_append_selector_entities(
@@ -552,17 +552,17 @@ semantic_completion_name_char :: proc "contextless" (ch: u8) -> bool {
 }
 
 semantic_query_scope_at_offset :: proc(
-	project: ^Project,
 	file: ^Project_File,
 	offset: int,
+	checker: ^Checker = nil,
 ) -> ^Scope {
-	_ = project
 	if file == nil {
 		return nil
 	}
 	best := file.root_scope
 	best_width := semantic_range_width(file.root_scope.range) if file.root_scope != nil else 0
 	semantic_query_scope_at_offset_walk(file.root_scope, offset, &best, &best_width)
+	semantic_query_scope_at_offset_routine_implementations(checker, file, offset, &best, &best_width)
 	return best
 }
 
@@ -856,15 +856,57 @@ semantic_query_scope_at_offset_walk :: proc(
 	if scope == nil {
 		return
 	}
-	if semantic_range_contains_offset(scope.range, offset) {
-		width := semantic_range_width(scope.range)
-		if best^ == nil || best_width^ == 0 || width < best_width^ {
-			best^ = scope
-			best_width^ = width
-		}
-	}
+	semantic_query_scope_at_offset_consider(scope, scope.range, offset, best, best_width)
 	for child in scope.children {
 		semantic_query_scope_at_offset_walk(child, offset, best, best_width)
+	}
+}
+
+semantic_query_scope_at_offset_routine_implementations :: proc(
+	checker: ^Checker,
+	file: ^Project_File,
+	offset: int,
+	best: ^^Scope,
+	best_width: ^int,
+) {
+	if checker == nil {
+		return
+	}
+	for entity in checker.info.definitions {
+		if entity == nil {
+			continue
+		}
+		payload, ok := entity.payload.(^Entity_Routine_Payload)
+		if !ok ||
+		   payload == nil ||
+		   payload.body_scope == nil ||
+		   payload.implementation_unit != file {
+			continue
+		}
+		semantic_query_scope_at_offset_consider(
+			payload.body_scope,
+			payload.implementation_range,
+			offset,
+			best,
+			best_width,
+		)
+	}
+}
+
+semantic_query_scope_at_offset_consider :: proc(
+	scope: ^Scope,
+	range: Range,
+	offset: int,
+	best: ^^Scope,
+	best_width: ^int,
+) {
+	if scope == nil || !semantic_range_contains_offset(range, offset) {
+		return
+	}
+	width := semantic_range_width(range)
+	if best^ == nil || best_width^ == 0 || width < best_width^ {
+		best^ = scope
+		best_width^ = width
 	}
 }
 
@@ -914,7 +956,7 @@ semantic_fact_scope_for_node :: proc(q: Semantic_Fact_Query, node: ^ast.Node) ->
 			return use.scope
 		}
 	}
-	return semantic_query_scope_at_offset(q.project, q.file, node.range.start)
+	return semantic_query_scope_at_offset(q.file, node.range.start, q.checker)
 }
 
 semantic_expression_info_kind_from_node :: proc(node: ^ast.Node) -> Semantic_Expression_Info_Kind {

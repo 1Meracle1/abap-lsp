@@ -57,8 +57,8 @@ project_destroy :: proc(project: ^Project) {
 }
 
 project_intern_lower_ascii :: proc(project: ^Project, name: string) -> string {
-	lower := utils.to_lower_ascii(name, context.temp_allocator)
-	return lower
+	assert(project != nil)
+	return utils.to_lower_ascii(name, project.allocator)
 	// interned := string_interner.insert(project.name_interner, lower)
 	// return string_interner.load(project.name_interner, interned)
 }
