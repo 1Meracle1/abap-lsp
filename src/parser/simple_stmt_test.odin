@@ -354,6 +354,25 @@ method_call_missing_period_leaves_next_statement_token :: proc(t: ^testing.T) {
 }
 
 @(test)
+clear_chain_recovery_keeps_operand_after_missing_comma :: proc(t: ^testing.T) {
+	source := `CLEAR:
+  lv_var1
+  lv_var2.`
+	parsed := parse(source, "clear_missing_comma.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected ',' between CLEAR operands")
+	testing.expect_value(t, len(parsed.root.stmts), 1)
+
+	clear := parsed.root.stmts[0].derived_stmt.(^ast.Clear_Stmt)
+	testing.expect_value(t, len(clear.operands), 2)
+	first := clear.operands[0].target.derived_expr.(^ast.Ident_Expr)
+	second := clear.operands[1].target.derived_expr.(^ast.Ident_Expr)
+	testing.expect_value(t, first.name, "lv_var1")
+	testing.expect_value(t, second.name, "lv_var2")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), "CLEAR: lv_var1, lv_var2.")
+}
+
+@(test)
 simple_resource_and_arithmetic_statements_keep_fields :: proc(t: ^testing.T) {
 	source := `CLEAR: lv_a WITH 'X', lv_b.
 REFRESH TABLE lt_tab.

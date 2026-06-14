@@ -448,6 +448,24 @@ DATA lt_delivery_header TYPE STANDARD TABLE OF ty_line.`
 }
 
 @(test)
+data_chain_recovery_keeps_clause_after_missing_comma :: proc(t: ^testing.T) {
+	source := `DATA: lv_var1 TYPE c
+      lv_var2 TYPE c.`
+	parsed := parse(source, "data_missing_comma.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected ',' between DATA declarations")
+	testing.expect_value(t, len(parsed.root.stmts), 1)
+
+	data := parsed.root.stmts[0].derived_stmt.(^ast.Data_Chained_Decl)
+	testing.expect_value(t, len(data.decls), 2)
+	testing.expect_value(t, data.decls[0].name.text, "lv_var1")
+	testing.expect_value(t, data.decls[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name.text, "c")
+	testing.expect_value(t, data.decls[1].name.text, "lv_var2")
+	testing.expect_value(t, data.decls[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name.text, "c")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), "DATA: lv_var1 TYPE c, lv_var2 TYPE c.")
+}
+
+@(test)
 data_common_part_delimiters_mark_ast_fact :: proc(t: ^testing.T) {
 	source := `DATA: BEGIN OF COMMON PART fm06lcbe.
 DATA: END OF COMMON PART.

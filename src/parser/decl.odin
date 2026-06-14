@@ -91,9 +91,15 @@ parse_data_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.decls = make([dynamic]ast.Data_Decl_Clause, 0, 2, p.allocator)
 	append(&stmt.decls, branch)
 	if has_colon {
-		for allow_token(p, .Comma) {
-			if current_token(p).kind == .Period || current_token(p).kind == .Eof {
-				error_current(p, "syntax error: expected declaration after ','")
+		for {
+			if allow_token(p, .Comma) {
+				if current_token(p).kind == .Period || current_token(p).kind == .Eof {
+					error_current(p, "syntax error: expected declaration after ','")
+					break
+				}
+			} else if decl_clause_recovery_head_starts(p, p.index) {
+				error_current(p, "syntax error: expected ',' between DATA declarations")
+			} else {
 				break
 			}
 			next_branch, next_ok := parse_data_or_class_data_clause(p)
@@ -183,7 +189,7 @@ parse_types_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				}
 				continue
 			}
-			if types_clause_recovery_head_starts(p, p.index) {
+			if decl_clause_recovery_head_starts(p, p.index) {
 				error_current(p, "syntax error: expected ',' between TYPES clauses")
 				continue
 			}
@@ -1179,7 +1185,7 @@ parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			   .Has_Newline_Before in tok.flags &&
 			   !type_ref_selector_field(p) &&
 			   (statement_lead_starts(p, p.index) ||
-			    types_clause_recovery_head_starts(p, p.index)) {
+			    decl_clause_recovery_head_starts(p, p.index)) {
 				break
 			}
 			if p.index > start && at_keyword(p, "END") &&
@@ -1789,11 +1795,11 @@ types_clause_end :: proc(p: ^Parser, clause_start: int) -> bool {
 		decl_clause_end(p, clause_start) ||
 		(p.index > clause_start &&
 				.Has_Newline_Before in tok.flags &&
-				types_clause_recovery_head_starts(p, p.index)) \
+				decl_clause_recovery_head_starts(p, p.index)) \
 	)
 }
 
-types_clause_recovery_head_starts :: proc(p: ^Parser, index: int) -> bool {
+decl_clause_recovery_head_starts :: proc(p: ^Parser, index: int) -> bool {
 	if index >= len(p.tokens) || known_stmt_lead_at(p, index) {
 		return false
 	}
@@ -1815,6 +1821,9 @@ decl_clause_end :: proc(p: ^Parser, clause_start: int) -> bool {
 		(p.index > clause_start &&
 				at_keyword(p, "END") &&
 				at_keyword_index(p, p.index + 1, "OF")) ||
+		(p.index > clause_start &&
+				.Has_Newline_Before in tok.flags &&
+				decl_clause_recovery_head_starts(p, p.index)) ||
 		(p.index > clause_start &&
 				.Has_Newline_Before in tok.flags &&
 				statement_lead_starts(p, p.index)) \

@@ -368,6 +368,17 @@ consume_simple_entry_tail :: proc(p: ^Parser, body_start: int) {
 	}
 }
 
+simple_chained_entry_recovery_head_starts :: proc(p: ^Parser, body_start: int) -> bool {
+	tok := current_token(p)
+	return(
+		p.index > body_start &&
+		.Has_Newline_Before in tok.flags &&
+		expr_lead_token(tok) &&
+		!statement_lead_starts(p, p.index) &&
+		!line_continuation_starts(p, p.index) \
+	)
+}
+
 parse_generic_simple_operands :: proc(
 	p: ^Parser,
 	body_start: int,
@@ -3035,7 +3046,7 @@ parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	body_start := p.index
 	stmt := ast.new(ast.Clear_Stmt, start.range, p.allocator)
 	stmt.operands = make([dynamic]ast.Clear_Operand_Clause, 0, 2, p.allocator)
-	allow_token(p, .Colon)
+	has_colon := allow_token(p, .Colon)
 	for !simple_stmt_done(p, body_start) {
 		if allow_token(p, .Comma) {
 			continue
@@ -3054,6 +3065,10 @@ parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			clause.mode = .Initial
 		}
 		append(&stmt.operands, clause)
+		if has_colon && simple_chained_entry_recovery_head_starts(p, body_start) {
+			error_current(p, "syntax error: expected ',' between CLEAR operands")
+			continue
+		}
 		consume_simple_entry_tail(p, body_start)
 	}
 	stmt.range = simple_stmt_range(p, start)
