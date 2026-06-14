@@ -1778,3 +1778,114 @@ DATA(lv_res1) = REDUCE string( INIT text = `Count up:`
                     (identifier))
                   (template_interpolation_end))
                 (template_end)))))))))
+
+==================
+FIND additions highlight as keywords
+==================
+
+FIND ALL OCCURRENCES OF REGEX 'pattern' IN TABLE lt_text RESULTS lt_results.
+FIND 'text' IN SECTION OFFSET lv_offset LENGTH lv_length OF lv_text MATCH OFFSET lv_match_offset.
+FIND ALL OCCURRENCES OF 'text' IN lv_text MATCH COUNT lv_count.
+FIND FIRST OCCURRENCE OF 'text' IN lv_text MATCH OFFSET lv_offset MATCH LENGTH lv_length.
+FIND REGEX 'pattern' IN lv_text MATCH OFFSET lv_offset MATCH LENGTH lv_length.
+FIND REGEX 'pattern' IN TABLE lt_text MATCH LINE lv_line MATCH OFFSET lv_offset SUBMATCHES lv_match.
+
+---
+
+(source_file
+  (find_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (string)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (find_statement
+    (keyword)
+    (string)
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (find_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (string)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (find_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (string)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (find_statement
+    (keyword)
+    (keyword)
+    (string)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (find_statement
+    (keyword)
+    (keyword)
+    (string)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))))

@@ -160,6 +160,10 @@
         "named": true
       },
       {
+        "type": "find_statement",
+        "named": true
+      },
+      {
         "type": "form_definition",
         "named": true
       },
@@ -2178,6 +2182,61 @@
         },
         {
           "type": "value_tail",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "find_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_literal",
+          "named": true
+        },
+        {
+          "type": "dynamic_name",
+          "named": true
+        },
+        {
+          "type": "field_path",
+          "named": true
+        },
+        {
+          "type": "field_symbol_path",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "qualified_name",
+          "named": true
+        },
+        {
+          "type": "static_type_path",
+          "named": true
+        },
+        {
+          "type": "substring_expression",
+          "named": true
+        },
+        {
+          "type": "tail_fragment",
           "named": true
         }
       ]

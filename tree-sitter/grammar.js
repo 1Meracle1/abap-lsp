@@ -101,7 +101,6 @@ const SIMPLE_STATEMENT_KEYWORDS = [
   "REPLACE",
   "TRANSLATE",
   "SHIFT",
-  "FIND",
   "SEARCH",
   "PERFORM",
   "WRITE",
@@ -417,6 +416,25 @@ const MEMORY_TRANSFER_KEYWORDS = [
   "CLIENT",
 ];
 
+const FIND_TAIL_KEYWORDS = [
+  "ALL",
+  "COUNT",
+  "FIRST",
+  "IN",
+  "LENGTH",
+  "LINE",
+  "MATCH",
+  "OCCURRENCE",
+  "OCCURRENCES",
+  "OF",
+  "OFFSET",
+  "REGEX",
+  "RESULTS",
+  "SECTION",
+  "SUBMATCHES",
+  "TABLE",
+];
+
 const STATEMENT_TAIL_KEYWORDS = [
   "ACCEPTING",
   "ADD",
@@ -620,6 +638,7 @@ module.exports = grammar({
         $.report_statement,
         $.include_statement,
         $.assign_statement,
+        $.find_statement,
         $.assignment_statement,
         $.expression_statement,
         $.simple_statement,
@@ -1432,6 +1451,31 @@ module.exports = grammar({
           field("target", choice($.field_symbol, $.field_symbol_path)),
           ".",
         ),
+      ),
+
+    find_statement: ($) =>
+      prec(
+        3,
+        seq(
+          keyword($, "FIND"),
+          repeat1($._find_tail_token),
+          ".",
+        ),
+      ),
+
+    _find_tail_token: ($) =>
+      choice(
+        keywordChoice($, FIND_TAIL_KEYWORDS),
+        $.static_type_path,
+        $.field_symbol_path,
+        $.field_path,
+        $.dynamic_name,
+        $.substring_expression,
+        $.qualified_name,
+        $._literal,
+        $.operator,
+        $.punctuation,
+        $.tail_fragment,
       ),
 
     assignment_statement: ($) =>
