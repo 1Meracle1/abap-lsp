@@ -4657,6 +4657,77 @@ ENDCLASS.`
 }
 
 @(test)
+root_semantic_query_completion_after_me_selector_in_method_implementation_returns_members :: proc(t: ^testing.T) {
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS do_something
+      IMPORTING
+        iv_param TYPE string
+      RETURNING
+        VALUE(rv_res) TYPE string.
+
+    METHODS method_name
+      IMPORTING
+        iv_input TYPE string
+      RETURNING
+        VALUE(rv_result) TYPE string.
+
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD do_something.
+    me->
+  ENDMETHOD.
+  METHOD method_name.
+  ENDMETHOD.
+ENDCLASS.`
+
+	// Keep the selector incomplete to match editor completion after typing `me->`.
+	parsed := parser.parse(source, "mem://query_method_me_completion.abap", context.allocator)
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker := checker_make(&project)
+	file := checker_add_file(&checker, parsed.path, parsed.root)
+	checker_check_file(&checker, file)
+
+	query := semantic_query(&project, &checker, file)
+	offset := checker_test_find_text_last(source, "me->") + len("me->")
+	testing.expect(t, offset >= len("me->"))
+
+	items := semantic_completion_items_at_offset(
+		semantic_query_completion(query),
+		offset,
+		"",
+		context.allocator,
+		source,
+	)
+
+	do_something_found := false
+	method_name_found := false
+	unrelated_found := false
+	for item in items {
+		name := item.name
+		if name == "do_something" && item.namespace == .Routine && item.source == .Selector_Member {
+			do_something_found = true
+		}
+		if name == "method_name" && item.namespace == .Routine && item.source == .Selector_Member {
+			method_name_found = true
+		}
+		if name == "iv_param" ||
+		   name == "rv_res" ||
+		   name == "lcl_class" ||
+		   name == "strlen" {
+			unrelated_found = true
+		}
+	}
+	testing.expect(t, do_something_found)
+	testing.expect(t, method_name_found)
+	testing.expect(t, !unrelated_found)
+}
+
+@(test)
 root_semantic_query_completion_after_static_selector_returns_accessible_static_members :: proc(t: ^testing.T) {
 	source := `REPORT zmain.
 CLASS lcl_repo DEFINITION.

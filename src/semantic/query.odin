@@ -583,7 +583,7 @@ semantic_completion_append_selector_entities :: proc(
 		return
 	}
 	if selector.op == .Arrow {
-		owner := semantic_completion_resolve_instance_owner(q, selector.base_end)
+		owner := semantic_completion_resolve_instance_owner(q, scope, selector)
 		if owner == nil || (owner.kind != .Class && owner.kind != .Interface) {
 			return
 		}
@@ -599,16 +599,30 @@ semantic_completion_append_selector_entities :: proc(
 
 semantic_completion_resolve_instance_owner :: proc(
 	q: Semantic_Completion_Query,
-	base_end: int,
+	scope: ^Scope,
+	selector: Semantic_Completion_Selector_Context,
 ) -> ^Entity {
 	if q.checker == nil {
 		return nil
 	}
-	info, ok := semantic_completion_operand_info_before_offset(q, base_end)
-	if !ok {
+	if info, ok := semantic_completion_operand_info_before_offset(q, selector.base_end); ok {
+		target := checker_type_ref_target(&q.checker.builtin_context, info.type)
+		if owner := checker_type_object_entity(target); owner != nil {
+			return owner
+		}
+	}
+	if selector.base_name == "" || scope == nil {
 		return nil
 	}
-	target := checker_type_ref_target(&q.checker.builtin_context, info.type)
+	interned := project_intern_lower_ascii(q.project, selector.base_name)
+	if interned == "" {
+		return nil
+	}
+	_, entity, ok := checker_lookup_declaration_from_scope(scope, .Value, interned)
+	if !ok || entity == nil || entity.type == nil {
+		return nil
+	}
+	target := checker_type_ref_target(&q.checker.builtin_context, entity.type)
 	return checker_type_object_entity(target)
 }
 

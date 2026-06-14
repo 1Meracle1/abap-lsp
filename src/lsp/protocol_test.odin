@@ -410,6 +410,143 @@ START-OF-SELECTION.
 }
 
 @(test)
+lsp_completion_me_selector_uses_selector_text_edit_and_filter :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_me_selector_text_edit.abap"
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS do_something
+      IMPORTING
+        iv_param TYPE string
+      RETURNING
+        VALUE(rv_res) TYPE string.
+
+    METHODS method_name
+      IMPORTING
+        iv_input TYPE string
+      RETURNING
+        VALUE(rv_result) TYPE string.
+
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD do_something.
+    me->
+  ENDMETHOD.
+  METHOD method_name.
+  ENDMETHOD.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "me->") + len("me->")
+	testing.expect(t, offset >= len("me->"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "method_name")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+	testing.expect_value(
+		t,
+		item.insert_text,
+		`method_name(
+      iv_input = $1
+    )$0`,
+	)
+	filter_text, filter_text_ok := item.filter_text.?
+	testing.expect(t, filter_text_ok)
+	if filter_text_ok {
+		testing.expect_value(t, filter_text, "me->method_name")
+	}
+	edit, edit_ok := item.text_edit.?
+	testing.expect(t, edit_ok)
+	if edit_ok {
+		replace_start := offset - len("me->")
+		replace_start_position := offset_to_position(source, replace_start)
+		replace_end_position := offset_to_position(source, offset)
+		testing.expect_value(t, edit.range.start.line, replace_start_position.line)
+		testing.expect_value(t, edit.range.start.character, replace_start_position.character)
+		testing.expect_value(t, edit.range.end.line, replace_end_position.line)
+		testing.expect_value(t, edit.range.end.character, replace_end_position.character)
+		testing.expect_value(
+			t,
+			edit.new_text,
+			`me->method_name(
+      iv_input = $1
+    )$0`,
+		)
+	}
+}
+
+@(test)
+lsp_completion_me_selector_text_edit_replaces_typed_member_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_me_selector_typed_prefix_text_edit.abap"
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS method_name
+      IMPORTING
+        iv_input TYPE string.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD method_name.
+    me->meth
+  ENDMETHOD.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := strings.index(source, "me->meth") + len("me->meth")
+	testing.expect(t, offset >= len("me->meth"))
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	item, item_ok := lsp_test_find_completion_item(items, "method_name")
+	testing.expect(t, item_ok)
+	if !item_ok {
+		return
+	}
+
+	filter_text, filter_text_ok := item.filter_text.?
+	testing.expect(t, filter_text_ok)
+	if filter_text_ok {
+		testing.expect_value(t, filter_text, "me->method_name")
+	}
+	edit, edit_ok := item.text_edit.?
+	testing.expect(t, edit_ok)
+	if edit_ok {
+		replace_start := offset - len("me->meth")
+		replace_start_position := offset_to_position(source, replace_start)
+		replace_end_position := offset_to_position(source, offset)
+		testing.expect_value(t, edit.range.start.line, replace_start_position.line)
+		testing.expect_value(t, edit.range.start.character, replace_start_position.character)
+		testing.expect_value(t, edit.range.end.line, replace_end_position.line)
+		testing.expect_value(t, edit.range.end.character, replace_end_position.character)
+		testing.expect_value(
+			t,
+			edit.new_text,
+			`me->method_name(
+      iv_input = $1
+    )$0`,
+		)
+	}
+}
+
+@(test)
 lsp_completion_selector_method_omits_exporting_for_only_exporting_args :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_method_exporting_shorthand.abap"
 	source := `CLASS lcl_repo DEFINITION.

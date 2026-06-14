@@ -101,6 +101,7 @@ Completion_Item :: struct {
 	sort_text:          string `json:"sortText"`,
 	insert_text:        string `json:"insertText"`,
 	insert_text_format: int    `json:"insertTextFormat"`,
+	filter_text:        Maybe(string) `json:"filterText,omitempty"`,
 	text_edit:          Maybe(Text_Edit) `json:"textEdit,omitempty"`,
 }
 

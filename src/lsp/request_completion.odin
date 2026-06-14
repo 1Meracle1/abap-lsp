@@ -50,6 +50,19 @@ completion_items_for_snapshot :: proc(
 		snapshot.source,
 	)
 	indent := completion_line_indent(snapshot.source, offset, context.temp_allocator)
+	member_prefix_start := completion_prefix_start(snapshot.source, offset)
+	selector_filter_prefix_start := completion_selector_filter_prefix_start(snapshot.source, offset)
+	selector_filter_prefix := completion_selector_filter_prefix(
+		snapshot.source,
+		selector_filter_prefix_start,
+		member_prefix_start,
+		context.temp_allocator,
+	)
+	selector_replace_range := range_from_offsets(
+		snapshot.source,
+		selector_filter_prefix_start,
+		offset,
+	)
 	template_replace_range := completion_template_replace_range(snapshot.source, offset)
 	if_template_count := completion_if_template_count(snapshot.source, offset, template_prefix)
 	case_template_count := completion_case_template_count(snapshot.source, offset, template_prefix)
@@ -113,6 +126,8 @@ completion_items_for_snapshot :: proc(
 		out[i] = completion_item_from_semantic_item(
 			snapshot.project,
 			item,
+			selector_replace_range,
+			selector_filter_prefix,
 			indent,
 			snippets_supported,
 			allocator,
@@ -223,6 +238,8 @@ completion_items_for_snapshot :: proc(
 completion_item_from_semantic_item :: proc(
 	project: ^semantic.Project,
 	item: semantic.Semantic_Completion_Item,
+	selector_replace_range: Range,
+	selector_filter_prefix: string,
 	indent: string,
 	snippets_supported: bool,
 	allocator: mem.Allocator,
@@ -246,6 +263,14 @@ completion_item_from_semantic_item :: proc(
 			allocator,
 		)
 		out.insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET
+	}
+	if item.source == .Selector_Member {
+		new_text := out.insert_text
+		if selector_filter_prefix != "" {
+			out.filter_text = strings.concatenate({selector_filter_prefix, item.name}, allocator)
+			new_text = strings.concatenate({selector_filter_prefix, out.insert_text}, allocator)
+		}
+		out.text_edit = Text_Edit{range = selector_replace_range, new_text = new_text}
 	}
 	return out
 }
@@ -2249,6 +2274,28 @@ completion_prefix_start :: proc(source: string, offset: int) -> int {
 	return start
 }
 
+completion_selector_filter_prefix :: proc(
+	source: string,
+	start: int,
+	offset: int,
+	allocator: mem.Allocator,
+) -> string {
+	end := clamp(offset, 0, len(source))
+	prefix_start := clamp(start, 0, end)
+	if prefix_start == end {
+		return ""
+	}
+	return strings.clone(source[prefix_start:end], allocator)
+}
+
+completion_selector_filter_prefix_start :: proc(source: string, offset: int) -> int {
+	start := clamp(offset, 0, len(source))
+	for start > 0 && completion_selector_filter_prefix_char(source[start - 1]) {
+		start -= 1
+	}
+	return start
+}
+
 completion_template_prefix_start :: proc(source: string, offset: int) -> int {
 	start := clamp(offset, 0, len(source))
 	for start > 0 && completion_template_prefix_char(source[start - 1]) {
@@ -2269,6 +2316,10 @@ completion_prefix_char :: proc "contextless" (ch: u8) -> bool {
 
 completion_template_prefix_char :: proc "contextless" (ch: u8) -> bool {
 	return completion_prefix_char(ch) || ch == '-'
+}
+
+completion_selector_filter_prefix_char :: proc "contextless" (ch: u8) -> bool {
+	return completion_prefix_char(ch) || ch == '-' || ch == '>' || ch == '=' || ch == '~'
 }
 
 completion_line_indent :: proc(source: string, offset: int, allocator: mem.Allocator) -> string {
