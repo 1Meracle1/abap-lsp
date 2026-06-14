@@ -1,7 +1,7 @@
 package abap_frontend_lsp
 
 import "src:semantic"
-import uri_key "src:uri_key"
+import utils "src:utils"
 
 import json "core:encoding/json"
 import "core:mem"
@@ -135,9 +135,9 @@ workspace_index_for_path :: proc(state: ^Server_State, path: string) -> (int, bo
 lsp_path_key :: proc(path: string, allocator: mem.Allocator) -> string {
 	cleaned, clean_err := os.clean_path(path, allocator)
 	if clean_err == nil {
-		return uri_key.normalized_uri_path_key(cleaned, allocator)
+		return utils.normalized_uri_path_key(cleaned, allocator)
 	}
-	return uri_key.normalized_uri_path_key(path, allocator)
+	return utils.normalized_uri_path_key(path, allocator)
 }
 
 lsp_uri_matches_or_under :: proc(candidate_uri, root_uri: string) -> bool {

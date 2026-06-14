@@ -39,7 +39,7 @@ Top-level usage:
    Use the checker API directly for focused tests or tools that already know the
    exact root source:
 
-   - Create a `Project` with `project_make` or `project_make_with_interner`.
+   - Create a `Project` with `project_make`.
    - Create a `Checker` with `checker_make` or `checker_init`.
    - Add parsed files with `checker_add_file` or `checker_add_file`-equivalent
      workspace helpers.
@@ -170,8 +170,9 @@ Architecture:
 Important invariants:
 
 - Pointer identity is valid only for the owning project/checker snapshot.
-- A workspace-level interner should be shared across projects and external
-  semantics when keys must compare across snapshots.
+- Semantic names are canonical lowercase strings. Snapshot-owned names live in
+  the owning project arena; persistent graph/index references clone names into
+  their owning allocator before crossing snapshot boundaries.
 - The checker is the owner of semantic facts. Avoid call-site workarounds that
   duplicate declaration, type, lookup, expression, OOP, SQL, or dependency
   policies.

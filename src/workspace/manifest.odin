@@ -2,7 +2,7 @@ package abap_frontend_workspace
 
 import dep_store "src:dependency_store"
 import toml "src:encoding/toml"
-import uri_key "src:uri_key"
+import utils "src:utils"
 
 import "core:mem"
 import "core:os"
@@ -271,5 +271,5 @@ absolute_clean_path :: proc(path: string, allocator: mem.Allocator) -> (string, 
 }
 
 normalized_uri_path_key :: proc(uri: string, allocator: mem.Allocator) -> string {
-	return uri_key.normalized_uri_path_key(uri, allocator)
+	return utils.normalized_uri_path_key(uri, allocator)
 }

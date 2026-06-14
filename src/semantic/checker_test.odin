@@ -2,7 +2,6 @@ package abap_frontend_semantic2
 
 import "src:ast"
 import "src:parser"
-import string_interner "src:string_interner"
 import "src:tokenizer"
 
 import "core:strings"
@@ -31,7 +30,7 @@ checker_test_lookup :: proc(
 	name: string,
 	kind: Entity_Kind,
 ) -> ^Entity {
-	interned := string_interner.insert(project.interner, name)
+	interned := project_intern_lower_ascii(project, name)
 	_, entity, ok := checker_lookup_declaration_from_scope(scope, namespace, interned)
 	testing.expect(t, ok)
 	if ok {
@@ -47,7 +46,7 @@ checker_test_find_scope_entity :: proc(
 	name: string,
 	kind: Entity_Kind,
 ) -> ^Entity {
-	interned := string_interner.insert(project.interner, name)
+	interned := project_intern_lower_ascii(project, name)
 	for entity in scope.declarations {
 		if entity.name == interned && entity.kind == kind {
 			return entity
@@ -63,17 +62,17 @@ checker_test_structure_field :: proc(
 	structure: ^Structure,
 	name: string,
 ) -> ^Entity {
-	interned := string_interner.insert(project.interner, name)
+	interned := project_intern_lower_ascii(project, name)
 	field, ok := checker_lookup_structure_field(structure, interned)
 	testing.expect(t, ok)
 	return field if ok else nil
 }
 
 checker_test_type_name :: proc(project: ^Project, typ: ^Type) -> string {
-	if typ == nil || !string_interner.is_valid(typ.name) {
+	if typ == nil || typ.name == "" {
 		return ""
 	}
-	return string_interner.load(project.interner, typ.name)
+	return typ.name
 }
 
 checker_test_diagnostic_count :: proc(checker: ^Checker, kind: Checker_Diagnostic_Kind) -> int {
@@ -106,7 +105,7 @@ checker_test_unresolved_candidate_count :: proc(
 	kind: External_Candidate_Kind,
 	name: string,
 ) -> int {
-	interned := checker_intern_name(project, name)
+	interned := project_intern_lower_ascii(project, name)
 	count := 0
 	for candidate in checker.info.unresolved {
 		if candidate.kind == kind && candidate.name == interned {
@@ -123,7 +122,7 @@ checker_test_unresolved_candidate_namespace_count :: proc(
 	namespace: Namespace,
 	name: string,
 ) -> int {
-	interned := checker_intern_name(project, name)
+	interned := project_intern_lower_ascii(project, name)
 	count := 0
 	for candidate in checker.info.unresolved {
 		if candidate.kind == kind && candidate.namespace == namespace && candidate.name == interned {
@@ -236,7 +235,7 @@ root_semantic_builtin_registry_registers_project_owned_entities :: proc(t: ^test
 			testing.expect_value(t, abap_bool.type.kind, Type_Kind.Named)
 			testing.expect(t, abap_bool.type.base != nil)
 			if abap_bool.type.base != nil {
-				testing.expect_value(t, string_interner.load(project.interner, abap_bool.type.base.name), "c")
+				testing.expect_value(t, abap_bool.type.base.name, "c")
 			}
 		}
 	}
@@ -257,7 +256,7 @@ root_semantic_builtin_registry_registers_project_owned_entities :: proc(t: ^test
 		}
 		testing.expect(t, abap_true.type != nil)
 		if abap_true.type != nil {
-			testing.expect_value(t, string_interner.load(project.interner, abap_true.type.name), "abap_bool")
+			testing.expect_value(t, abap_true.type.name, "abap_bool")
 		}
 	}
 
@@ -277,7 +276,7 @@ root_semantic_builtin_registry_registers_project_owned_entities :: proc(t: ^test
 		}
 		testing.expect(t, abap_func_exporting.type != nil)
 		if abap_func_exporting.type != nil {
-			testing.expect_value(t, string_interner.load(project.interner, abap_func_exporting.type.name), "i")
+			testing.expect_value(t, abap_func_exporting.type.name, "i")
 		}
 	}
 
@@ -305,7 +304,7 @@ root_semantic_builtin_registry_registers_project_owned_entities :: proc(t: ^test
 		testing.expect(t, strlen.type != nil)
 		testing.expect_value(t, strlen.type.kind, Type_Kind.Routine)
 		testing.expect(t, strlen.type.base != nil)
-		testing.expect_value(t, string_interner.load(project.interner, strlen.type.base.name), "i")
+		testing.expect_value(t, strlen.type.base.name, "i")
 	}
 
 	nmin, nmin_ok := checker_builtin_proc_metadata_by_name("nmin")
@@ -350,7 +349,7 @@ root_semantic_builtin_structures_create_project_owned_fields :: proc(t: ^testing
 		return
 	}
 
-	subrc_name := string_interner.insert(project.interner, "subrc")
+	subrc_name := project_intern_lower_ascii(&project, "subrc")
 	subrc, subrc_ok := checker_lookup_structure_field(syst_payload.structure, subrc_name)
 	testing.expect(t, subrc_ok)
 	if subrc_ok {
@@ -360,12 +359,12 @@ root_semantic_builtin_structures_create_project_owned_fields :: proc(t: ^testing
 		testing.expect(t, field_ok)
 		if field_ok {
 			testing.expect(t, .Has_Type_Ref in field.flags)
-			testing.expect_value(t, string_interner.load(project.interner, field.type_ref.base_name), "i")
+			testing.expect_value(t, field.type_ref.base_name, "i")
 			testing.expect_value(t, checker_builtin_structure_field_description("syst", "subrc"), "Return code set by many ABAP statements; 0 usually indicates success for the documented statement.")
 		}
 	}
 
-	screen_name_key := string_interner.insert(project.interner, "name")
+	screen_name_key := project_intern_lower_ascii(&project, "name")
 	screen_name, screen_name_ok := checker_lookup_structure_field(screen_payload.structure, screen_name_key)
 	testing.expect(t, screen_name_ok)
 	if screen_name_ok {
@@ -374,7 +373,7 @@ root_semantic_builtin_structures_create_project_owned_fields :: proc(t: ^testing
 		field, field_ok := screen_name.payload.(^Entity_Field_Payload)
 		testing.expect(t, field_ok)
 		if field_ok {
-			testing.expect_value(t, string_interner.load(project.interner, field.type_ref.base_name), "c")
+			testing.expect_value(t, field.type_ref.base_name, "c")
 			testing.expect_value(t, checker_builtin_structure_field_description("screen", "name"), "Name of the current dynpro field or screen element.")
 		}
 	}
@@ -432,7 +431,7 @@ ENDFORM.`
 		testing.expect_value(t, record.info.mode, ast.Addressing_Mode.Value)
 		testing.expect(t, record.info.type != nil)
 		if record.info.type != nil {
-			testing.expect_value(t, string_interner.load(project.interner, record.info.type.name), "i")
+			testing.expect_value(t, record.info.type.name, "i")
 		}
 	}
 	testing.expect(t, call_info_found)
@@ -608,12 +607,12 @@ TYPES: BEGIN OF ty_wrap,
 		return
 	}
 	testing.expect_value(t, len(structure.fields), 2)
-	testing.expect_value(t, string_interner.load(project.interner, structure.fields[0].name), "a")
-	testing.expect_value(t, string_interner.load(project.interner, structure.fields[1].name), "b")
+	testing.expect_value(t, structure.fields[0].name, "a")
+	testing.expect_value(t, structure.fields[1].name, "b")
 	testing.expect_value(t, checker_test_type_name(&project, structure.fields[0].type), "i")
 	testing.expect_value(t, checker_test_type_name(&project, structure.fields[1].type), "string")
 
-	include_name := string_interner.insert(project.interner, "include")
+	include_name := project_intern_lower_ascii(&project, "include")
 	_, include_found := checker_lookup_structure_field(structure, include_name)
 	testing.expect(t, !include_found)
 }
@@ -649,9 +648,9 @@ TYPES:
 		return
 	}
 	testing.expect_value(t, len(structure.fields), 3)
-	testing.expect_value(t, string_interner.load(project.interner, structure.fields[0].name), "key")
-	testing.expect_value(t, string_interner.load(project.interner, structure.fields[1].name), "bus_msg_no")
-	testing.expect_value(t, string_interner.load(project.interner, structure.fields[2].name), "arbgb")
+	testing.expect_value(t, structure.fields[0].name, "key")
+	testing.expect_value(t, structure.fields[1].name, "bus_msg_no")
+	testing.expect_value(t, structure.fields[2].name, "arbgb")
 }
 
 @(test)
@@ -679,8 +678,8 @@ DATA lt_ranges TYPE ty_code_ranges.`
 	testing.expect(t, structure != nil)
 	if structure != nil {
 		testing.expect_value(t, len(structure.fields), 2)
-		testing.expect_value(t, string_interner.load(project.interner, structure.fields[0].name), "begin")
-		testing.expect_value(t, string_interner.load(project.interner, structure.fields[1].name), "end")
+		testing.expect_value(t, structure.fields[0].name, "begin")
+		testing.expect_value(t, structure.fields[1].name, "end")
 	}
 	testing.expect(t, code_ranges.type != nil && code_ranges.type.base != nil)
 	if code_ranges.type != nil && code_ranges.type.base != nil {
@@ -920,7 +919,7 @@ root_semantic_checker_registers_checks_and_records_entity_uses :: proc(t: ^testi
 	queue_before := len(checker.info.entity_queue)
 	checked_before := len(checker.info.checked_entities)
 
-	name := string_interner.insert(project.interner, "gv_value")
+	name := project_intern_lower_ascii(&project, "gv_value")
 	entity := project_new_entity(&project, .Variable)
 	decl := project_new_decl_info(
 		&project,
@@ -964,7 +963,7 @@ root_semantic_checker_reports_duplicate_declarations :: proc(t: ^testing.T) {
 	file := checker_add_file(&checker, "ZPROG.abap")
 	ctx := checker_context_make(&checker, file)
 
-	name := string_interner.insert(project.interner, "gv_value")
+	name := project_intern_lower_ascii(&project, "gv_value")
 	first := project_new_entity(&project, .Variable)
 	first_decl := project_new_decl_info(&project, first, file.root_scope, name, .Variable)
 	second := project_new_entity(&project, .Variable)
@@ -1002,7 +1001,7 @@ ENDFORM.`
 		return
 	}
 	run_payload := run.payload.(^Entity_Routine_Payload)
-	name := string_interner.insert(project.interner, "shared")
+	name := project_intern_lower_ascii(&project, "shared")
 
 	_, local_value, value_ok := checker_lookup_declaration_from_scope(run_payload.body_scope, .Value, name)
 	testing.expect(t, value_ok)
@@ -1117,7 +1116,7 @@ root_semantic_scope_lookup_prefers_local_then_imported_then_parent :: proc(t: ^t
 	imported := checker_create_scope(&checker, checker.info.builtin_scope, .File)
 	append(&file.root_scope.imported, imported)
 
-	name := string_interner.insert(project.interner, "remote_value")
+	name := project_intern_lower_ascii(&project, "remote_value")
 	imported_entity := project_new_entity(&project, .Variable)
 	imported_decl := project_new_decl_info(&project, imported_entity, imported, name, .Variable)
 	imported_entity.source_file = file
@@ -1159,7 +1158,7 @@ ENDFORM.`
 	file := checker_add_file(&checker, parsed.path, parsed.root)
 	checker_check_file(&checker, file)
 
-	ty_name := string_interner.insert(project.interner, "ty_line")
+	ty_name := project_intern_lower_ascii(&project, "ty_line")
 	_, ty_entity, ty_ok := checker_lookup_declaration_from_scope(file.root_scope, .Type, ty_name)
 	testing.expect(t, ty_ok)
 	testing.expect_value(t, ty_entity.kind, Entity_Kind.Type_Def)
@@ -1172,7 +1171,7 @@ ENDFORM.`
 	testing.expect_value(t, len(type_payload.structure.fields), 1)
 	testing.expect_value(t, type_payload.structure.fields[0].kind, Entity_Kind.Field)
 
-	form_name := string_interner.insert(project.interner, "add")
+	form_name := project_intern_lower_ascii(&project, "add")
 	_, form_entity, form_ok := checker_lookup_declaration_from_scope(file.root_scope, .Routine, form_name)
 	testing.expect(t, form_ok)
 	testing.expect_value(t, form_entity.kind, Entity_Kind.Form)
@@ -1181,18 +1180,18 @@ ENDFORM.`
 	testing.expect(t, form_payload.body_scope != nil)
 	testing.expect_value(t, len(form_payload.parameters), 1)
 
-	iv_name := string_interner.insert(project.interner, "iv")
+	iv_name := project_intern_lower_ascii(&project, "iv")
 	_, iv_entity, iv_ok := checker_lookup_declaration_from_scope(form_payload.body_scope, .Value, iv_name)
 	testing.expect(t, iv_ok)
 	testing.expect_value(t, iv_entity.kind, Entity_Kind.Parameter)
 
-	lv_name := string_interner.insert(project.interner, "lv")
+	lv_name := project_intern_lower_ascii(&project, "lv")
 	_, lv_entity, lv_ok := checker_lookup_declaration_from_scope(form_payload.body_scope, .Value, lv_name)
 	testing.expect(t, lv_ok)
 	testing.expect_value(t, lv_entity.kind, Entity_Kind.Variable)
 	testing.expect_value(t, lv_entity.state, Entity_State.Resolved)
 
-	gv_name := string_interner.insert(project.interner, "gv")
+	gv_name := project_intern_lower_ascii(&project, "gv")
 	_, gv_entity, gv_ok := checker_lookup_declaration_from_scope(file.root_scope, .Value, gv_name)
 	testing.expect(t, gv_ok)
 	testing.expect(t, .Used in gv_entity.flags)
@@ -1258,15 +1257,15 @@ ENDCLASS.`
 		testing.expect(t, local != nil && .Used in local.flags)
 	}
 
-	alias_name := string_interner.insert(project.interner, "alias_copy")
+	alias_name := project_intern_lower_ascii(&project, "alias_copy")
 	alias_target, alias_ok := checker_lookup_object_member(class, .Routine, alias_name)
 	testing.expect(t, alias_ok)
 	if alias_ok {
 		testing.expect(t, alias_target.owner == iface)
-		testing.expect_value(t, string_interner.load(project.interner, alias_target.name), "copy")
+		testing.expect_value(t, alias_target.name, "copy")
 	}
 
-	rename_name := string_interner.insert(project.interner, "rename")
+	rename_name := project_intern_lower_ascii(&project, "rename")
 	rename, rename_ok := checker_lookup_object_member(class, .Routine, rename_name)
 	testing.expect(t, rename_ok)
 	if rename_ok {
@@ -1510,7 +1509,7 @@ ENDCLASS.`
 	handler_payload := handler_class.payload.(^Entity_Object_Payload)
 	method := checker_test_lookup(t, &project, handler_payload.definition_scope, .Routine, "on_event", .Method)
 	method_payload := method.payload.(^Entity_Routine_Payload)
-	frame := checker_routine_parameter_named(method_payload, checker_intern_name(&project, "frame"))
+	frame := checker_routine_parameter_named(method_payload, project_intern_lower_ascii(&project, "frame"))
 	testing.expect(t, frame != nil && .Optional in frame.flags)
 }
 
@@ -1549,7 +1548,7 @@ ENDCLASS.`
 	method_payload := method.payload.(^Entity_Routine_Payload)
 	testing.expect_value(t, len(method_payload.parameters), 1)
 	param := method_payload.parameters[0]
-	testing.expect_value(t, string_interner.load(project.interner, param.name), "preserve_newlines")
+	testing.expect_value(t, param.name, "preserve_newlines")
 	testing.expect_value(t, checker_test_type_name(&project, param.type), "abap_bool")
 	testing.expect(t, .Used in param.flags)
 }
@@ -1968,8 +1967,8 @@ ENDCLASS.`
 
 	if alias != nil {
 		payload := alias.payload.(^Entity_Alias_Payload)
-		testing.expect_value(t, string_interner.load(project.interner, payload.target_interface_name), "lif_demo")
-		testing.expect_value(t, string_interner.load(project.interner, payload.target_member_name), "get_value")
+		testing.expect_value(t, payload.target_interface_name, "lif_demo")
+		testing.expect_value(t, payload.target_member_name, "get_value")
 	}
 	testing.expect(t, attr != nil && .Read_Only in attr.flags)
 	testing.expect(t, static_attr != nil && .Static in static_attr.flags)
@@ -3899,7 +3898,7 @@ lv_copy = lv_value + 1.`
 		return
 	}
 	testing.expect_value(t, decl.kind, Entity_Kind.Variable)
-	testing.expect_value(t, string_interner.load(project.interner, decl.name), "lv_value")
+	testing.expect_value(t, decl.name, "lv_value")
 	testing.expect_value(t, source[decl.name_range.start:decl.name_range.end], "lv_value")
 
 	by_range := semantic_decl_entity_with_kind_and_decl_range(decl_query, .Variable, decl.name_range)
@@ -4335,7 +4334,7 @@ TYPES: BEGIN OF ty_demo,
 	testing.expect(t, member != nil)
 	if member != nil {
 		testing.expect_value(t, member.kind, Entity_Kind.Method)
-		testing.expect_value(t, string_interner.load(project.interner, member.name), "run")
+		testing.expect_value(t, member.name, "run")
 	}
 
 	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_demo", .Class)
@@ -4350,7 +4349,7 @@ TYPES: BEGIN OF ty_demo,
 		return
 	}
 	testing.expect_value(t, field.kind, Entity_Kind.Field)
-	testing.expect_value(t, string_interner.load(project.interner, field.name), "comp")
+	testing.expect_value(t, field.name, "comp")
 	testing.expect_value(t, source[field.name_range.start:field.name_range.end], "comp")
 	type_offset := checker_test_find_text(source, "TYPE")
 	testing.expect(t, type_offset >= 0)
@@ -4501,7 +4500,7 @@ ENDFORM.`
 	global_found := false
 	builtin_found := false
 	for item in items {
-		name := string_interner.load(project.interner, item.name)
+		name := item.name
 		if name == "lv_local" && item.namespace == .Value && item.source == .Lexical_Scope {
 			local_found = true
 		}
@@ -4562,7 +4561,7 @@ lcl_repo=>get_instance( ).`
 	c_public_found := false
 	unrelated_found := false
 	for item in items {
-		name := string_interner.load(project.interner, item.name)
+		name := item.name
 		if name == "get_instance" && item.namespace == .Routine && item.source == .Selector_Member {
 			get_instance_found = true
 		}
@@ -4636,7 +4635,7 @@ lcl_repo=>get_instance( )->scan( ).`
 	mv_public_found := false
 	unrelated_found := false
 	for item in items {
-		name := string_interner.load(project.interner, item.name)
+		name := item.name
 		if name == "scan" && item.namespace == .Routine && item.source == .Selector_Member {
 			scan_found = true
 		}

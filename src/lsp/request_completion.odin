@@ -1,7 +1,7 @@
 package abap_frontend_lsp
 
 import "src:semantic"
-import string_interner "src:string_interner"
+import "src:utils"
 
 import json "core:encoding/json"
 import "core:fmt"
@@ -53,12 +53,28 @@ completion_items_for_snapshot :: proc(
 	template_replace_range := completion_template_replace_range(snapshot.source, offset)
 	if_template_count := completion_if_template_count(snapshot.source, offset, template_prefix)
 	case_template_count := completion_case_template_count(snapshot.source, offset, template_prefix)
-	class_template_count := completion_class_template_count(snapshot.source, offset, template_prefix)
+	class_template_count := completion_class_template_count(
+		snapshot.source,
+		offset,
+		template_prefix,
+	)
 	try_template_count := completion_try_template_count(snapshot.source, offset, template_prefix)
 	loop_template_count := completion_loop_template_count(snapshot.source, offset, template_prefix)
-	select_template_count := completion_select_template_count(snapshot.source, offset, template_prefix)
-	commit_template_count := completion_commit_template_count(snapshot.source, offset, template_prefix)
-	continue_template_count := completion_continue_template_count(snapshot.source, offset, template_prefix)
+	select_template_count := completion_select_template_count(
+		snapshot.source,
+		offset,
+		template_prefix,
+	)
+	commit_template_count := completion_commit_template_count(
+		snapshot.source,
+		offset,
+		template_prefix,
+	)
+	continue_template_count := completion_continue_template_count(
+		snapshot.source,
+		offset,
+		template_prefix,
+	)
 	read_table_template_count := completion_read_table_template_count(
 		snapshot.source,
 		offset,
@@ -79,12 +95,19 @@ completion_items_for_snapshot :: proc(
 		offset,
 		template_prefix,
 	)
-	template_count := if_template_count + case_template_count + class_template_count +
-	                  loop_template_count + select_template_count +
-	                  get_time_stamp_template_count + try_template_count +
-	                  commit_template_count + continue_template_count +
-	                  read_table_template_count + expression_template_count +
-	                  common_statement_template_count
+	template_count :=
+		if_template_count +
+		case_template_count +
+		class_template_count +
+		loop_template_count +
+		select_template_count +
+		get_time_stamp_template_count +
+		try_template_count +
+		commit_template_count +
+		continue_template_count +
+		read_table_template_count +
+		expression_template_count +
+		common_statement_template_count
 	out := make([]Completion_Item, len(items) + template_count, allocator)
 	for item, i in items {
 		out[i] = completion_item_from_semantic_item(
@@ -124,11 +147,7 @@ completion_items_for_snapshot :: proc(
 		template_index += class_template_count
 	}
 	if try_template_count > 0 {
-		out[template_index] = completion_try_template_item(
-			indent,
-			snippets_supported,
-			allocator,
-		)
+		out[template_index] = completion_try_template_item(indent, snippets_supported, allocator)
 		template_index += try_template_count
 	}
 	if loop_template_count > 0 {
@@ -208,12 +227,11 @@ completion_item_from_semantic_item :: proc(
 	snippets_supported: bool,
 	allocator: mem.Allocator,
 ) -> Completion_Item {
-	name := string_interner.load(project.interner, item.name)
 	out := Completion_Item {
-		label              = name,
+		label              = item.name,
 		kind               = completion_kind(item.entity),
-		sort_text          = completion_sort_text("1", name, allocator),
-		insert_text        = name,
+		sort_text          = completion_sort_text("1", item.name, allocator),
+		insert_text        = item.name,
 		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
 	}
 	if snippets_supported &&
@@ -223,7 +241,7 @@ completion_item_from_semantic_item :: proc(
 		out.insert_text = completion_method_call_snippet(
 			project,
 			item.entity,
-			name,
+			item.name,
 			indent,
 			allocator,
 		)
@@ -233,7 +251,7 @@ completion_item_from_semantic_item :: proc(
 }
 
 completion_sort_text :: proc(priority, label: string, allocator: mem.Allocator) -> string {
-	lower := strings.to_lower(label, context.temp_allocator)
+	lower := utils.to_lower_ascii(label, context.temp_allocator)
 	return strings.concatenate({priority, ":", lower}, allocator)
 }
 
@@ -902,8 +920,8 @@ completion_keyword_prefix_matches :: proc(prefix, keyword: string) -> bool {
 	if prefix == "" || len(prefix) > len(keyword) {
 		return false
 	}
-	lower := strings.to_lower(prefix, context.temp_allocator)
-	keyword_lower := strings.to_lower(keyword, context.temp_allocator)
+	lower := utils.to_lower_ascii(prefix, context.temp_allocator)
+	keyword_lower := utils.to_lower_ascii(keyword, context.temp_allocator)
 	return strings.has_prefix(keyword_lower, lower)
 }
 
@@ -961,10 +979,7 @@ completion_case_template_insert_text :: proc(
 	allocator: mem.Allocator,
 ) -> string {
 	out := strings.builder_make(allocator)
-	strings.write_string(
-		&out,
-		"CASE ${1:lv_value}." if snippets_supported else "CASE lv_value.",
-	)
+	strings.write_string(&out, "CASE ${1:lv_value}." if snippets_supported else "CASE lv_value.")
 	completion_template_write_newline_indent(
 		&out,
 		indent,
@@ -1084,7 +1099,9 @@ completion_if_template_header :: proc "contextless" (
 	case .Is_Initial:
 		return "IF ${1:lv_value} IS INITIAL." if snippets_supported else "IF lv_value IS INITIAL."
 	case .Is_Not_Initial:
-		return "IF ${1:lv_value} IS NOT INITIAL." if snippets_supported else "IF lv_value IS NOT INITIAL."
+		return(
+			"IF ${1:lv_value} IS NOT INITIAL." if snippets_supported else "IF lv_value IS NOT INITIAL." \
+		)
 	}
 	return ""
 }
@@ -1189,7 +1206,10 @@ completion_class_template_insert_text :: proc(
 		completion_write_class_definition_header(
 			&out,
 			class_name,
-			strings.concatenate({"DEFINITION INHERITING FROM ", superclass_name, "."}, context.temp_allocator),
+			strings.concatenate(
+				{"DEFINITION INHERITING FROM ", superclass_name, "."},
+				context.temp_allocator,
+			),
 		)
 		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
 		completion_write_class_implementation(&out, class_name, indent)
@@ -1204,11 +1224,7 @@ completion_class_template_insert_text :: proc(
 		completion_write_class_implementation(&out, class_name, indent)
 	case .Abstract:
 		class_name := "${1:lcl_class}" if snippets_supported else "lcl_class"
-		completion_write_class_definition_header(
-			&out,
-			class_name,
-			"DEFINITION ABSTRACT.",
-		)
+		completion_write_class_definition_header(&out, class_name, "DEFINITION ABSTRACT.")
 		completion_write_class_public_section(&out, indent, "$0" if snippets_supported else "")
 		completion_write_class_implementation(&out, class_name, indent)
 	case .For_Testing:
@@ -1224,7 +1240,10 @@ completion_class_template_insert_text :: proc(
 			&out,
 			indent,
 			2,
-			strings.concatenate({"METHODS ", method_name, " FOR TESTING."}, context.temp_allocator),
+			strings.concatenate(
+				{"METHODS ", method_name, " FOR TESTING."},
+				context.temp_allocator,
+			),
 		)
 		completion_template_write_newline_indent(&out, indent, 0, "ENDCLASS.")
 		completion_template_write_newline_indent(&out, indent, 0, "")
@@ -1232,7 +1251,10 @@ completion_class_template_insert_text :: proc(
 			&out,
 			indent,
 			0,
-			strings.concatenate({"CLASS ", class_name, " IMPLEMENTATION."}, context.temp_allocator),
+			strings.concatenate(
+				{"CLASS ", class_name, " IMPLEMENTATION."},
+				context.temp_allocator,
+			),
 		)
 		completion_template_write_newline_indent(
 			&out,
@@ -1240,7 +1262,12 @@ completion_class_template_insert_text :: proc(
 			1,
 			strings.concatenate({"METHOD ", method_name, "."}, context.temp_allocator),
 		)
-		completion_template_write_newline_indent(&out, indent, 2, "$0" if snippets_supported else "")
+		completion_template_write_newline_indent(
+			&out,
+			indent,
+			2,
+			"$0" if snippets_supported else "",
+		)
 		completion_template_write_newline_indent(&out, indent, 1, "ENDMETHOD.")
 		completion_template_write_newline_indent(&out, indent, 0, "ENDCLASS.")
 	}
@@ -1374,8 +1401,18 @@ completion_select_template_insert_text :: proc(
 		if snippets_supported {
 			strings.write_string(&out, "SELECT ${1:fields}")
 			completion_template_write_newline_indent(&out, indent, 1, "FROM ${2:table}")
-			completion_template_write_newline_indent(&out, indent, 1, "INTO TABLE @DATA(${3:lt_rows})")
-			completion_template_write_newline_indent(&out, indent, 1, "WHERE ${4:field} = @${5:lv_value}.$0")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"INTO TABLE @DATA(${3:lt_rows})",
+			)
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"WHERE ${4:field} = @${5:lv_value}.$0",
+			)
 		} else {
 			strings.write_string(&out, "SELECT fields")
 			completion_template_write_newline_indent(&out, indent, 1, "FROM table")
@@ -1387,7 +1424,12 @@ completion_select_template_insert_text :: proc(
 			strings.write_string(&out, "SELECT SINGLE ${1:field}")
 			completion_template_write_newline_indent(&out, indent, 1, "FROM ${2:table}")
 			completion_template_write_newline_indent(&out, indent, 1, "INTO @DATA(${3:lv_value})")
-			completion_template_write_newline_indent(&out, indent, 1, "WHERE ${4:key_field} = @${5:lv_key}.$0")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"WHERE ${4:key_field} = @${5:lv_key}.$0",
+			)
 		} else {
 			strings.write_string(&out, "SELECT SINGLE field")
 			completion_template_write_newline_indent(&out, indent, 1, "FROM table")
@@ -1398,10 +1440,25 @@ completion_select_template_insert_text :: proc(
 		if snippets_supported {
 			strings.write_string(&out, "SELECT ${1:fields}")
 			completion_template_write_newline_indent(&out, indent, 1, "FROM ${2:table}")
-			completion_template_write_newline_indent(&out, indent, 1, "INTO TABLE @DATA(${3:lt_rows})")
-			completion_template_write_newline_indent(&out, indent, 1, "WHERE ${4:field} = @${5:lv_value}")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"INTO TABLE @DATA(${3:lt_rows})",
+			)
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"WHERE ${4:field} = @${5:lv_value}",
+			)
 			completion_template_write_newline_indent(&out, indent, 1, "ORDER BY ${6:field}")
-			completion_template_write_newline_indent(&out, indent, 1, "UP TO @${7:lv_page_size} ROWS")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"UP TO @${7:lv_page_size} ROWS",
+			)
 			completion_template_write_newline_indent(&out, indent, 1, "OFFSET @${8:lv_offset}.$0")
 		} else {
 			strings.write_string(&out, "SELECT fields")
@@ -1417,9 +1474,24 @@ completion_select_template_insert_text :: proc(
 			strings.write_string(&out, "IF ${1:lt_keys} IS NOT INITIAL.")
 			completion_template_write_newline_indent(&out, indent, 1, "SELECT ${2:fields}")
 			completion_template_write_newline_indent(&out, indent, 2, "FROM ${3:table}")
-			completion_template_write_newline_indent(&out, indent, 2, "INTO TABLE @DATA(${4:lt_rows})")
-			completion_template_write_newline_indent(&out, indent, 2, "FOR ALL ENTRIES IN @${1:lt_keys}")
-			completion_template_write_newline_indent(&out, indent, 2, "WHERE ${5:key_field} = @${1:lt_keys}-${6:key_field}.")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				2,
+				"INTO TABLE @DATA(${4:lt_rows})",
+			)
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				2,
+				"FOR ALL ENTRIES IN @${1:lt_keys}",
+			)
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				2,
+				"WHERE ${5:key_field} = @${1:lt_keys}-${6:key_field}.",
+			)
 			completion_template_write_newline_indent(&out, indent, 1, "$0")
 			completion_template_write_newline_indent(&out, indent, 0, "ENDIF.")
 		} else {
@@ -1427,8 +1499,18 @@ completion_select_template_insert_text :: proc(
 			completion_template_write_newline_indent(&out, indent, 1, "SELECT fields")
 			completion_template_write_newline_indent(&out, indent, 2, "FROM table")
 			completion_template_write_newline_indent(&out, indent, 2, "INTO TABLE @DATA(lt_rows)")
-			completion_template_write_newline_indent(&out, indent, 2, "FOR ALL ENTRIES IN @lt_keys")
-			completion_template_write_newline_indent(&out, indent, 2, "WHERE key_field = @lt_keys-key_field.")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				2,
+				"FOR ALL ENTRIES IN @lt_keys",
+			)
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				2,
+				"WHERE key_field = @lt_keys-key_field.",
+			)
 			completion_template_write_newline_indent(&out, indent, 1, "")
 			completion_template_write_newline_indent(&out, indent, 0, "ENDIF.")
 		}
@@ -1436,13 +1518,33 @@ completion_select_template_insert_text :: proc(
 		if snippets_supported {
 			strings.write_string(&out, "SELECT ${1:a~field}, ${2:b~field}")
 			completion_template_write_newline_indent(&out, indent, 1, "FROM ${3:table_a} AS a")
-			completion_template_write_newline_indent(&out, indent, 1, "INNER JOIN ${4:table_b} AS b ON b~${5:key} = a~${6:key}")
-			completion_template_write_newline_indent(&out, indent, 1, "INTO TABLE @DATA(${7:lt_rows})")
-			completion_template_write_newline_indent(&out, indent, 1, "WHERE a~${8:field} = @${9:lv_value}.$0")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"INNER JOIN ${4:table_b} AS b ON b~${5:key} = a~${6:key}",
+			)
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"INTO TABLE @DATA(${7:lt_rows})",
+			)
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"WHERE a~${8:field} = @${9:lv_value}.$0",
+			)
 		} else {
 			strings.write_string(&out, "SELECT a~field, b~field")
 			completion_template_write_newline_indent(&out, indent, 1, "FROM table_a AS a")
-			completion_template_write_newline_indent(&out, indent, 1, "INNER JOIN table_b AS b ON b~key = a~key")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"INNER JOIN table_b AS b ON b~key = a~key",
+			)
 			completion_template_write_newline_indent(&out, indent, 1, "INTO TABLE @DATA(lt_rows)")
 			completion_template_write_newline_indent(&out, indent, 1, "WHERE a~field = @lv_value.")
 		}
@@ -1450,13 +1552,28 @@ completion_select_template_insert_text :: proc(
 		if snippets_supported {
 			strings.write_string(&out, "SELECT ${1:fields}")
 			completion_template_write_newline_indent(&out, indent, 1, "FROM ${2:table}")
-			completion_template_write_newline_indent(&out, indent, 1, "INTO TABLE @DATA(${3:lt_package})")
-			completion_template_write_newline_indent(&out, indent, 1, "WHERE ${4:field} = @${5:lv_value}")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"INTO TABLE @DATA(${3:lt_package})",
+			)
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"WHERE ${4:field} = @${5:lv_value}",
+			)
 			completion_template_write_newline_indent(&out, indent, 1, "PACKAGE SIZE ${6:100}.$0")
 		} else {
 			strings.write_string(&out, "SELECT fields")
 			completion_template_write_newline_indent(&out, indent, 1, "FROM table")
-			completion_template_write_newline_indent(&out, indent, 1, "INTO TABLE @DATA(lt_package)")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"INTO TABLE @DATA(lt_package)",
+			)
 			completion_template_write_newline_indent(&out, indent, 1, "WHERE field = @lv_value")
 			completion_template_write_newline_indent(&out, indent, 1, "PACKAGE SIZE 100.")
 		}
@@ -1465,11 +1582,26 @@ completion_select_template_insert_text :: proc(
 			strings.write_string(&out, "OPEN CURSOR WITH HOLD @${1:lv_cursor} FOR")
 			completion_template_write_newline_indent(&out, indent, 1, "SELECT ${2:fields}")
 			completion_template_write_newline_indent(&out, indent, 2, "FROM ${3:table}")
-			completion_template_write_newline_indent(&out, indent, 2, "WHERE ${4:field} = @${5:lv_value}.")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				2,
+				"WHERE ${4:field} = @${5:lv_value}.",
+			)
 			completion_template_write_newline_indent(&out, indent, 0, "")
 			completion_template_write_newline_indent(&out, indent, 0, "DO.")
-			completion_template_write_newline_indent(&out, indent, 1, "FETCH NEXT CURSOR @${1:lv_cursor}")
-			completion_template_write_newline_indent(&out, indent, 2, "INTO TABLE @DATA(${6:lt_package})")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"FETCH NEXT CURSOR @${1:lv_cursor}",
+			)
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				2,
+				"INTO TABLE @DATA(${6:lt_package})",
+			)
 			completion_template_write_newline_indent(&out, indent, 2, "PACKAGE SIZE ${7:100}.")
 			completion_template_write_newline_indent(&out, indent, 0, "")
 			completion_template_write_newline_indent(&out, indent, 1, "IF sy-subrc <> 0.")
@@ -1479,7 +1611,12 @@ completion_select_template_insert_text :: proc(
 			completion_template_write_newline_indent(&out, indent, 1, "$0")
 			completion_template_write_newline_indent(&out, indent, 0, "ENDDO.")
 			completion_template_write_newline_indent(&out, indent, 0, "")
-			completion_template_write_newline_indent(&out, indent, 0, "CLOSE CURSOR @${1:lv_cursor}.")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				0,
+				"CLOSE CURSOR @${1:lv_cursor}.",
+			)
 		} else {
 			strings.write_string(&out, "OPEN CURSOR WITH HOLD @lv_cursor FOR")
 			completion_template_write_newline_indent(&out, indent, 1, "SELECT fields")
@@ -1487,8 +1624,18 @@ completion_select_template_insert_text :: proc(
 			completion_template_write_newline_indent(&out, indent, 2, "WHERE field = @lv_value.")
 			completion_template_write_newline_indent(&out, indent, 0, "")
 			completion_template_write_newline_indent(&out, indent, 0, "DO.")
-			completion_template_write_newline_indent(&out, indent, 1, "FETCH NEXT CURSOR @lv_cursor")
-			completion_template_write_newline_indent(&out, indent, 2, "INTO TABLE @DATA(lt_package)")
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				1,
+				"FETCH NEXT CURSOR @lv_cursor",
+			)
+			completion_template_write_newline_indent(
+				&out,
+				indent,
+				2,
+				"INTO TABLE @DATA(lt_package)",
+			)
 			completion_template_write_newline_indent(&out, indent, 2, "PACKAGE SIZE 100.")
 			completion_template_write_newline_indent(&out, indent, 0, "")
 			completion_template_write_newline_indent(&out, indent, 1, "IF sy-subrc <> 0.")
@@ -1558,12 +1705,7 @@ completion_append_commit_templates :: proc(
 	allocator: mem.Allocator,
 ) {
 	assert(len(out) == COMMIT_TEMPLATE_COUNT)
-	out[0] = completion_commit_template_item(
-		"COMMIT WORK",
-		.Work,
-		snippets_supported,
-		allocator,
-	)
+	out[0] = completion_commit_template_item("COMMIT WORK", .Work, snippets_supported, allocator)
 	out[1] = completion_commit_template_item(
 		"COMMIT WORK AND WAIT",
 		.Work_And_Wait,
@@ -1582,7 +1724,11 @@ completion_commit_template_item :: proc(
 		label = label,
 		kind = COMPLETION_SNIPPET,
 		sort_text = completion_sort_text("2", label, allocator),
-		insert_text = completion_commit_template_insert_text(variant, snippets_supported, allocator),
+		insert_text = completion_commit_template_insert_text(
+			variant,
+			snippets_supported,
+			allocator,
+		),
 		insert_text_format = COMPLETION_INSERT_TEXT_FORMAT_SNIPPET if snippets_supported else COMPLETION_INSERT_TEXT_FORMAT_PLAIN_TEXT,
 	}
 }
@@ -1860,7 +2006,11 @@ completion_prefix :: proc(source: string, offset: int, allocator: mem.Allocator)
 	return strings.clone(source[start:end], allocator)
 }
 
-completion_template_prefix :: proc(source: string, offset: int, allocator: mem.Allocator) -> string {
+completion_template_prefix :: proc(
+	source: string,
+	offset: int,
+	allocator: mem.Allocator,
+) -> string {
 	end := clamp(offset, 0, len(source))
 	start := completion_template_prefix_start(source, offset)
 	if start == end {
@@ -2032,7 +2182,7 @@ completion_write_method_call_section :: proc(
 		}
 		strings.write_string(out, indent)
 		strings.write_string(out, "  " if heading == "" else "    ")
-		completion_snippet_write_text(out, string_interner.load(project.interner, param.name))
+		completion_snippet_write_text(out, param.name)
 		strings.write_string(out, " = ")
 		strings.write_string(out, fmt.tprintf("$%d", tabstop^))
 		strings.write_byte(out, '\n')

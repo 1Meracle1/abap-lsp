@@ -1,7 +1,6 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 import "src:tokenizer"
 
 import "core:container/xar"
@@ -22,7 +21,7 @@ root_semantic_project_storage_keeps_entity_scope_and_file_pointers_stable :: pro
 	scope.owner = entity
 	file.root_scope = scope
 
-	name := string_interner.insert(project.interner, "gv_value")
+	name := project_intern_lower_ascii(&project, "gv_value")
 	info := project_new_decl_info(
 		&project,
 		entity,
@@ -63,15 +62,16 @@ root_semantic_project_storage_keeps_entity_scope_and_file_pointers_stable :: pro
 }
 
 @(test)
-root_semantic_project_owns_an_interner :: proc(t: ^testing.T) {
+root_semantic_project_canonical_names_only_fold_ascii :: proc(t: ^testing.T) {
 	project := project_make()
 	defer project_destroy(&project)
 
-	name := string_interner.insert(project.interner, "gv_value")
-	name_again := string_interner.insert(project.interner, "gv_value")
+	input := [?]byte{'Z', 'C', 'L', '_', 0xc3, 0x84, 'B', 'C', '_', 0xc4, 0xb0}
+	expected := [?]byte{'z', 'c', 'l', '_', 0xc3, 0x84, 'b', 'c', '_', 0xc4, 0xb0}
 
-	testing.expect_value(t, name, name_again)
-	testing.expect_value(t, string_interner.load(project.interner, name), "gv_value")
+	name := project_intern_lower_ascii(&project, string(input[:]))
+
+	testing.expect_value(t, name, string(expected[:]))
 }
 
 @(test)
@@ -81,7 +81,7 @@ root_semantic_project_storage_keeps_type_structure_and_decl_pointers_stable :: p
 
 	file := project_add_file(&project, "ZTYPE.abap")
 	scope := project_new_scope(&project)
-	name := string_interner.insert(project.interner, "ty_line")
+	name := project_intern_lower_ascii(&project, "ty_line")
 	entity := project_new_entity(&project, .Type_Def)
 	info := project_new_decl_info(&project, entity, scope, name, .Type_Def, tokenizer.text_range(5, 12))
 	structure := project_new_structure(&project, name, file, scope, tokenizer.text_range(5, 40))
@@ -93,7 +93,7 @@ root_semantic_project_storage_keeps_type_structure_and_decl_pointers_stable :: p
 	for _ in 0 ..< 300 {
 		_ = project_new_type(&project)
 		_ = project_new_structure(&project)
-		_ = project_new_decl_info(&project, nil, nil, string_interner.String(0), .Invalid, {})
+		_ = project_new_decl_info(&project, nil, nil, "", .Invalid, {})
 	}
 
 	unknown := project_type_unknown(&project)

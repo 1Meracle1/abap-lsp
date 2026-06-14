@@ -1,12 +1,11 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 
 import "core:strings"
 
 Checker_Call_Argument :: struct {
-	name:          string_interner.String,
+	name:          string,
 	name_text:     string,
 	name_range:    Range,
 	section:       ast.Call_Arg_Section_Kind,
@@ -21,7 +20,7 @@ Checker_Call_Argument :: struct {
 
 Checker_Call_Parameter_Key :: struct {
 	section: Entity_Parameter_Section,
-	name:    string_interner.String,
+	name:    string,
 }
 
 Checker_Ref_Target_Kind :: enum {
@@ -34,7 +33,7 @@ Checker_Ref_Target_Kind :: enum {
 
 Checker_Ref_Target :: struct {
 	kind:   Checker_Ref_Target_Kind,
-	name:   string_interner.String,
+	name:   string,
 	entity: ^Entity,
 }
 
@@ -762,8 +761,8 @@ checker_type_is_range_like :: proc(ctx: ^Checker_Context, typ: ^Type) -> bool {
 	}
 	names := [?]string{"sign", "option", "low", "high"}
 	for name_text in names {
-		name := checker_intern_name(ctx.project, name_text)
-		if !string_interner.is_valid(name) {
+		name := project_intern_lower_ascii(ctx.project, name_text)
+		if name == "" {
 			return false
 		}
 		if _, ok := checker_lookup_structure_field(structure, name); !ok {
@@ -803,8 +802,8 @@ checker_check_transporting_field :: proc(
 		if current_structure == nil {
 			return
 		}
-		name := checker_intern_name(ctx.project, segment.name.text)
-		if !string_interner.is_valid(name) {
+		name := project_intern_lower_ascii(ctx.project, segment.name.text)
+		if name == "" {
 			return
 		}
 		entity, ok := checker_lookup_structure_field(current_structure, name)
@@ -855,7 +854,7 @@ checker_check_read_table_key_name :: proc(
 		if structure == nil {
 			return
 		}
-		name := checker_intern_name(ctx.project, segment.name.text)
+		name := project_intern_lower_ascii(ctx.project, segment.name.text)
 		field, ok := checker_lookup_structure_field(structure, name)
 		if !ok {
 			return
@@ -998,7 +997,7 @@ checker_modify_stmt_uses_db_source :: proc(ctx: ^Checker_Context, stmt: ^ast.Mod
 		return true
 	}
 	name := checker_sql_simple_expr_name(ctx, stmt.target)
-	if !string_interner.is_valid(name) {
+	if name == "" {
 		return false
 	}
 	_, _, value_ok := checker_lookup_reference(ctx, .Value, name)
@@ -1156,8 +1155,8 @@ checker_check_table_component_expr :: proc(
 	}
 	first := segments[0]
 	if allow_local_value && !checker_table_component_is_table_line(first.name) {
-		first_name := checker_intern_name(ctx.project, first.name)
-		if string_interner.is_valid(first_name) {
+		first_name := project_intern_lower_ascii(ctx.project, first.name)
+		if first_name != "" {
 			if _, _, ok := checker_lookup_declaration(ctx, .Value, first_name); ok {
 				return checker_invalid_operand(), false
 			}
@@ -1182,8 +1181,8 @@ checker_check_table_component_expr :: proc(
 		if current_structure == nil {
 			return checker_record_operand(ctx, &expr.expr_base, .Value, project_type_unknown(ctx.project)), true
 		}
-		name := checker_intern_name(ctx.project, segment.name)
-		if !string_interner.is_valid(name) {
+		name := project_intern_lower_ascii(ctx.project, segment.name)
+		if name == "" {
 			return checker_record_operand(ctx, &expr.expr_base, .Value, project_type_unknown(ctx.project)), true
 		}
 		field, ok := checker_lookup_structure_field(current_structure, name)
@@ -1300,11 +1299,11 @@ checker_table_component_is_table_line :: proc(name: string) -> bool {
 checker_table_component_message :: proc(
 	ctx: ^Checker_Context,
 	prefix: string,
-	name: string_interner.String,
+	name: string,
 ) -> string {
 	builder := strings.builder_make(context.temp_allocator)
 	strings.write_string(&builder, prefix)
-	strings.write_string(&builder, string_interner.load(ctx.project.interner, name))
+	strings.write_string(&builder, name)
 	return strings.to_string(builder)
 }
 
@@ -1357,7 +1356,7 @@ checker_collect_call_expr_argument :: proc(
 	}
 	if named, named_ok := expr.derived_expr.(^ast.Call_Named_Arg_Expr); named_ok {
 		arg.name_text = named.name.text
-		arg.name = checker_intern_name(ctx.project, named.name.text)
+		arg.name = project_intern_lower_ascii(ctx.project, named.name.text)
 		arg.name_range = named.name.range
 		arg.value = named.value
 		arg.value_range = checker_expr_range(named.value)
@@ -1407,7 +1406,7 @@ checker_check_call_stmt_args :: proc(
 	args := make([dynamic]Checker_Call_Argument, 0, len(named_args), context.temp_allocator)
 	for named in named_args {
 		arg := Checker_Call_Argument {
-			name          = checker_intern_name(ctx.project, named.name.text),
+			name          = project_intern_lower_ascii(ctx.project, named.name.text),
 			name_text     = named.name.text,
 			name_range    = named.name.range,
 			section       = named.section,
@@ -1439,7 +1438,7 @@ checker_lookup_call_function_entity :: proc(ctx: ^Checker_Context, target: ^ast.
 		checker_check_expr(ctx, target)
 		return nil
 	}
-	interned := checker_intern_name(ctx.project, name)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	_, entity, ok := checker_lookup_reference(ctx, .Routine, interned, .Function_Module)
 	if !ok {
 		checker_add_unresolved_candidate(
@@ -1563,7 +1562,7 @@ checker_check_routine_call_arguments :: proc(
 			}
 			continue
 		}
-		if !string_interner.is_valid(arg.name) {
+		if arg.name == "" {
 			append(&positional, index)
 			continue
 		}
@@ -1631,8 +1630,8 @@ checker_unknown_named_parameter_message :: proc(
 	builder := strings.builder_make(context.temp_allocator)
 	strings.write_string(&builder, "unknown named parameter")
 	name := arg.name_text
-	if name == "" && string_interner.is_valid(arg.name) {
-		name = string_interner.load(ctx.project.interner, arg.name)
+	if name == "" && arg.name != "" {
+		name = arg.name
 	}
 	if name != "" {
 		strings.write_string(&builder, " '")
@@ -1645,13 +1644,13 @@ checker_unknown_named_parameter_message :: proc(
 		strings.write_string(&builder, section_text)
 		strings.write_string(&builder, " section")
 	}
-	if routine != nil && string_interner.is_valid(routine.name) {
+	if routine != nil && routine.name != "" {
 		routine_kind := checker_routine_kind_text(routine.kind)
 		if routine_kind != "" {
 			strings.write_string(&builder, " for ")
 			strings.write_string(&builder, routine_kind)
 			strings.write_string(&builder, " '")
-			strings.write_string(&builder, string_interner.load(ctx.project.interner, routine.name))
+			strings.write_string(&builder, routine.name)
 			strings.write_string(&builder, "'")
 		}
 	}
@@ -1698,7 +1697,7 @@ checker_check_call_argument_with_parameter :: proc(
 	formal: ^Entity,
 ) {
 	checker_check_entity_for_operand(ctx, formal)
-	if formal != nil && string_interner.is_valid(arg.name) && arg.name_range.end > arg.name_range.start {
+	if formal != nil && arg.name != "" && arg.name_range.end > arg.name_range.start {
 		checker_add_entity_use_at_range(ctx, nil, formal, arg.name_range)
 	}
 	formal_type := formal.type if formal != nil && formal.type != nil else project_type_unknown(ctx.project)
@@ -1914,12 +1913,12 @@ checker_check_missing_required_parameters :: proc(
 }
 
 checker_missing_required_parameter_message :: proc(ctx: ^Checker_Context, param: ^Entity) -> string {
-	if param == nil || !string_interner.is_valid(param.name) {
+	if param == nil || param.name == "" {
 		return "missing required parameter"
 	}
 	builder := strings.builder_make(context.temp_allocator)
 	strings.write_string(&builder, "missing required parameter '")
-	strings.write_string(&builder, string_interner.load(ctx.project.interner, param.name))
+	strings.write_string(&builder, param.name)
 	strings.write_string(&builder, "'")
 	return strings.to_string(builder)
 }
@@ -1928,7 +1927,7 @@ checker_call_find_named_parameter :: proc(
 	ctx: ^Checker_Context,
 	routine: ^Entity,
 	params: []^Entity,
-	name: string_interner.String,
+	name: string,
 	section: ast.Call_Arg_Section_Kind,
 ) -> (^Entity, bool) {
 	_ = ctx
@@ -2138,8 +2137,8 @@ checker_check_report_dependency_target :: proc(
 	if name == "" {
 		return
 	}
-	interned := checker_intern_name(ctx.project, name)
-	if !string_interner.is_valid(interned) {
+	interned := project_intern_lower_ascii(ctx.project, name)
+	if interned == "" {
 		return
 	}
 	_, entity, ok := checker_lookup_reference(ctx, .Value, interned, .Report)
@@ -2268,8 +2267,8 @@ checker_check_dynamic_type_name_expr :: proc(
 	if !static_name {
 		return
 	}
-	interned := checker_intern_name(ctx.project, name)
-	if !string_interner.is_valid(interned) {
+	interned := project_intern_lower_ascii(ctx.project, name)
+	if interned == "" {
 		return
 	}
 	node := &node_expr.expr_base if node_expr != nil else &dynamic_expr.expr_base
@@ -2327,7 +2326,7 @@ checker_dynamic_type_constant_name :: proc(
 	if ref.name.text == "" || ref.type_base || ref.call_like || ref.dynamic_path || len(ref.path) > 0 {
 		return "", false
 	}
-	interned := checker_intern_name(ctx.project, ref.name.text)
+	interned := project_intern_lower_ascii(ctx.project, ref.name.text)
 	_, entity, ok := checker_lookup_reference(ctx, .Value, interned)
 	if !ok || entity == nil || entity.kind != .Constant {
 		return "", false
@@ -2565,7 +2564,7 @@ checker_type_ref_compatible :: proc(
 	if !src_known || !dst_known {
 		return true, false
 	}
-	if src_target.name == dst_target.name && string_interner.is_valid(src_target.name) {
+	if src_target.name == dst_target.name && src_target.name != "" {
 		return true, true
 	}
 	if dst_target.kind == .Data_Generic {
@@ -2628,10 +2627,10 @@ checker_ref_target :: proc(ctx: ^Checker_Context, typ: ^Type) -> (Checker_Ref_Ta
 	if !name_ok {
 		return {}, false
 	}
-	if name == checker_intern_name(ctx.project, "data") {
+	if name == project_intern_lower_ascii(ctx.project, "data") {
 		return Checker_Ref_Target{kind = .Data_Generic, name = name}, true
 	}
-	if name == checker_intern_name(ctx.project, "object") {
+	if name == project_intern_lower_ascii(ctx.project, "object") {
 		return Checker_Ref_Target{kind = .Object_Generic, name = name}, true
 	}
 	if entity := checker_type_object_entity(target_type); entity != nil {
@@ -2655,7 +2654,7 @@ checker_ref_target_kind_is_object :: proc(kind: Checker_Ref_Target_Kind) -> bool
 checker_class_is_or_inherits_from :: proc(
 	ctx: ^Checker_Context,
 	class_entity: ^Entity,
-	target_name: string_interner.String,
+	target_name: string,
 	depth := 0,
 ) -> bool {
 	if depth > 32 || class_entity == nil || class_entity.kind != .Class {
@@ -2665,7 +2664,7 @@ checker_class_is_or_inherits_from :: proc(
 		return true
 	}
 	payload, ok := class_entity.payload.(^Entity_Object_Payload)
-	if !ok || payload == nil || !string_interner.is_valid(payload.superclass_name) {
+	if !ok || payload == nil || payload.superclass_name == "" {
 		return false
 	}
 	super, super_ok := checker_lookup_type_name_from_scope(ctx, class_entity.scope, payload.superclass_name, .Class)
@@ -2678,7 +2677,7 @@ checker_class_is_or_inherits_from :: proc(
 checker_type_exposes_interface :: proc(
 	ctx: ^Checker_Context,
 	entity: ^Entity,
-	interface_name: string_interner.String,
+	interface_name: string,
 	depth := 0,
 ) -> bool {
 	if depth > 32 || entity == nil {
@@ -2700,7 +2699,7 @@ checker_type_exposes_interface :: proc(
 			return true
 		}
 	}
-	if entity.kind == .Class && string_interner.is_valid(payload.superclass_name) {
+	if entity.kind == .Class && payload.superclass_name != "" {
 		super, super_ok := checker_lookup_type_name_from_scope(ctx, entity.scope, payload.superclass_name, .Class)
 		if super_ok && checker_type_exposes_interface(ctx, super, interface_name, depth + 1) {
 			return true
@@ -2825,12 +2824,12 @@ checker_type_builtin_name :: proc(ctx: ^Checker_Context, typ: ^Type, depth := 0)
 	}
 	#partial switch typ.kind {
 	case .Builtin:
-		if string_interner.is_valid(typ.name) {
-			return string_interner.load(ctx.project.interner, typ.name), true
+		if typ.name != "" {
+			return typ.name, true
 		}
 	case .Named:
-		if typ.entity != nil && entity_is_builtin(typ.entity) && string_interner.is_valid(typ.name) {
-			return string_interner.load(ctx.project.interner, typ.name), true
+		if typ.entity != nil && entity_is_builtin(typ.entity) && typ.name != "" {
+			return typ.name, true
 		}
 		return checker_type_builtin_name(ctx, typ.base, depth + 1)
 	case:
@@ -2838,11 +2837,11 @@ checker_type_builtin_name :: proc(ctx: ^Checker_Context, typ: ^Type, depth := 0)
 	return "", false
 }
 
-checker_type_named_name :: proc(ctx: ^Checker_Context, typ: ^Type, depth := 0) -> (string_interner.String, bool) {
+checker_type_named_name :: proc(ctx: ^Checker_Context, typ: ^Type, depth := 0) -> (string, bool) {
 	if depth > 16 || typ == nil {
-		return string_interner.String(0), false
+		return "", false
 	}
-	if string_interner.is_valid(typ.name) {
+	if typ.name != "" {
 		return typ.name, true
 	}
 	return checker_type_named_name(ctx, typ.base, depth + 1)
@@ -2944,13 +2943,13 @@ checker_type_diagnostic_name :: proc(ctx: ^Checker_Context, typ: ^Type, depth :=
 	case .Unknown:
 		return "", false
 	case .Builtin, .Named, .Class, .Interface:
-		if string_interner.is_valid(typ.name) {
-			return string_interner.load(ctx.project.interner, typ.name), true
+		if typ.name != "" {
+			return typ.name, true
 		}
 		return checker_type_diagnostic_name(ctx, typ.base, depth + 1)
 	case .Structure:
-		if typ.structure != nil && string_interner.is_valid(typ.structure.name) {
-			return string_interner.load(ctx.project.interner, typ.structure.name), true
+		if typ.structure != nil && typ.structure.name != "" {
+			return typ.structure.name, true
 		}
 	case .Table:
 		row_name, row_ok := checker_type_diagnostic_name(ctx, typ.base, depth + 1)

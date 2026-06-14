@@ -1,7 +1,6 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 
 import "core:strings"
 
@@ -89,40 +88,132 @@ BUILTIN_STRUCTURE_SPECS :: []Builtin_Structure_Spec {
 	{
 		name = "syst",
 		fields = []Builtin_Field_Spec {
-			{name = "abcde", type_name = "c", docs = "Latin alphabet helper text that can be indexed directly by offset and length."},
-			{name = "batch", type_name = "c", docs = "Set to 'X' in background processing and initial in dialog processing."},
-			{name = "binpt", type_name = "c", docs = "Set to 'X' while batch input is being processed."},
-			{name = "cprog", type_name = "c", docs = "Calling program for external procedures, otherwise the current program."},
+			{
+				name = "abcde",
+				type_name = "c",
+				docs = "Latin alphabet helper text that can be indexed directly by offset and length.",
+			},
+			{
+				name = "batch",
+				type_name = "c",
+				docs = "Set to 'X' in background processing and initial in dialog processing.",
+			},
+			{
+				name = "binpt",
+				type_name = "c",
+				docs = "Set to 'X' while batch input is being processed.",
+			},
+			{
+				name = "cprog",
+				type_name = "c",
+				docs = "Calling program for external procedures, otherwise the current program.",
+			},
 			{name = "datum", type_name = "d", docs = "Current system date."},
 			{name = "datlo", type_name = "d", docs = "Local date of the current user."},
-			{name = "dbcnt", type_name = "i", docs = "Number of database rows processed by the last SQL statement that documents it."},
+			{
+				name = "dbcnt",
+				type_name = "i",
+				docs = "Number of database rows processed by the last SQL statement that documents it.",
+			},
 			{name = "dynnr", type_name = "c", docs = "Current dynpro number."},
-			{name = "fdpos", type_name = "i", docs = "Found offset after supported search and comparison operations such as FIND."},
-			{name = "host", type_name = "c", docs = "Host name of the current application server instance."},
-			{name = "index", type_name = "i", docs = "Loop counter inside DO and WHILE loops; nested loops use the innermost counter."},
-			{name = "langu", type_name = "c", docs = "Single-character locale language key for the current internal session."},
+			{
+				name = "fdpos",
+				type_name = "i",
+				docs = "Found offset after supported search and comparison operations such as FIND.",
+			},
+			{
+				name = "host",
+				type_name = "c",
+				docs = "Host name of the current application server instance.",
+			},
+			{
+				name = "index",
+				type_name = "i",
+				docs = "Loop counter inside DO and WHILE loops; nested loops use the innermost counter.",
+			},
+			{
+				name = "langu",
+				type_name = "c",
+				docs = "Single-character locale language key for the current internal session.",
+			},
 			{name = "mandt", type_name = "c", docs = "Client ID of the current user."},
-			{name = "msgid", type_name = "c", docs = "Message class captured by the last MESSAGE statement."},
-			{name = "msgno", type_name = "n", docs = "Message number captured by the last MESSAGE statement."},
-			{name = "msgty", type_name = "c", docs = "Message type captured by the last MESSAGE statement."},
-			{name = "msgv1", type_name = "c", docs = "First MESSAGE placeholder value captured by the last MESSAGE statement."},
-			{name = "msgv2", type_name = "c", docs = "Second MESSAGE placeholder value captured by the last MESSAGE statement."},
-			{name = "msgv3", type_name = "c", docs = "Third MESSAGE placeholder value captured by the last MESSAGE statement."},
-			{name = "msgv4", type_name = "c", docs = "Fourth MESSAGE placeholder value captured by the last MESSAGE statement."},
+			{
+				name = "msgid",
+				type_name = "c",
+				docs = "Message class captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgno",
+				type_name = "n",
+				docs = "Message number captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgty",
+				type_name = "c",
+				docs = "Message type captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgv1",
+				type_name = "c",
+				docs = "First MESSAGE placeholder value captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgv2",
+				type_name = "c",
+				docs = "Second MESSAGE placeholder value captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgv3",
+				type_name = "c",
+				docs = "Third MESSAGE placeholder value captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgv4",
+				type_name = "c",
+				docs = "Fourth MESSAGE placeholder value captured by the last MESSAGE statement.",
+			},
 			{name = "pfkey", type_name = "c", docs = "Current GUI status."},
-			{name = "repid", type_name = "c", docs = "Program name exposed through sy-repid and syst-repid."},
-			{name = "saprl", type_name = "c", docs = "ABAP release identifier of the current system."},
+			{
+				name = "repid",
+				type_name = "c",
+				docs = "Program name exposed through sy-repid and syst-repid.",
+			},
+			{
+				name = "saprl",
+				type_name = "c",
+				docs = "ABAP release identifier of the current system.",
+			},
 			{name = "scols", type_name = "i", docs = "Number of columns on the screen."},
 			{name = "srows", type_name = "i", docs = "Number of screen rows."},
-			{name = "subrc", type_name = "i", docs = "Return code set by many ABAP statements; 0 usually indicates success for the documented statement."},
+			{
+				name = "subrc",
+				type_name = "i",
+				docs = "Return code set by many ABAP statements; 0 usually indicates success for the documented statement.",
+			},
 			{name = "sysid", type_name = "c", docs = "SAP system ID."},
-			{name = "tabix", type_name = "i", docs = "Current internal-table index from READ TABLE or LOOP AT on indexed access paths."},
+			{
+				name = "tabix",
+				type_name = "i",
+				docs = "Current internal-table index from READ TABLE or LOOP AT on indexed access paths.",
+			},
 			{name = "tcode", type_name = "c", docs = "Current transaction code."},
-			{name = "tfill", type_name = "i", docs = "Row count of the internal table accessed by DESCRIBE TABLE, LOOP AT, or READ TABLE."},
+			{
+				name = "tfill",
+				type_name = "i",
+				docs = "Row count of the internal table accessed by DESCRIBE TABLE, LOOP AT, or READ TABLE.",
+			},
 			{name = "timlo", type_name = "t", docs = "Current user time in the user's time zone."},
-			{name = "tzone", type_name = "i", docs = "System time-zone offset from UTC in seconds."},
+			{
+				name = "tzone",
+				type_name = "i",
+				docs = "System time-zone offset from UTC in seconds.",
+			},
 			{name = "zonlo", type_name = "c", docs = "Current user's time zone."},
-			{name = "ucomm", type_name = "c", docs = "Function code that triggered the current PAI processing."},
+			{
+				name = "ucomm",
+				type_name = "c",
+				docs = "Function code that triggered the current PAI processing.",
+			},
 			{name = "uname", type_name = "c", docs = "User name of the current session."},
 			{name = "uzeit", type_name = "t", docs = "Current system time."},
 		},
@@ -130,31 +221,108 @@ BUILTIN_STRUCTURE_SPECS :: []Builtin_Structure_Spec {
 	{
 		name = "screen",
 		fields = []Builtin_Field_Spec {
-			{name = "name", type_name = "c", docs = "Name of the current dynpro field or screen element."},
-			{name = "group1", type_name = "c", docs = "Modification group 1 of the current screen element."},
-			{name = "group2", type_name = "c", docs = "Modification group 2 of the current screen element."},
-			{name = "group3", type_name = "c", docs = "Modification group 3 of the current screen element."},
-			{name = "group4", type_name = "c", docs = "Modification group 4 of the current screen element."},
-			{name = "required", type_name = "c", docs = "Whether the field is mandatory on the current dynpro."},
-			{name = "input", type_name = "c", docs = "Whether the field is ready for input on the current dynpro."},
-			{name = "output", type_name = "c", docs = "Whether the field is output-only on the current dynpro."},
-			{name = "intensified", type_name = "c", docs = "Whether the field is highlighted on the current dynpro."},
-			{name = "invisible", type_name = "c", docs = "Whether the field is hidden on the current dynpro."},
-			{name = "length", type_name = "x", docs = "Visible field length of the current dynpro element."},
-			{name = "active", type_name = "c", docs = "Combined active flag for the current dynpro element."},
-			{name = "display_3d", type_name = "c", docs = "Whether the current dynpro box is shown three-dimensionally."},
-			{name = "value_help", type_name = "c", docs = "Whether input help is shown for the current dynpro field."},
-			{name = "request", type_name = "c", docs = "Whether input exists, or is simulated, for the current dynpro field."},
-			{name = "values_in_combo", type_name = "c", docs = "Whether values exist in the current dynpro dropdown list box."},
+			{
+				name = "name",
+				type_name = "c",
+				docs = "Name of the current dynpro field or screen element.",
+			},
+			{
+				name = "group1",
+				type_name = "c",
+				docs = "Modification group 1 of the current screen element.",
+			},
+			{
+				name = "group2",
+				type_name = "c",
+				docs = "Modification group 2 of the current screen element.",
+			},
+			{
+				name = "group3",
+				type_name = "c",
+				docs = "Modification group 3 of the current screen element.",
+			},
+			{
+				name = "group4",
+				type_name = "c",
+				docs = "Modification group 4 of the current screen element.",
+			},
+			{
+				name = "required",
+				type_name = "c",
+				docs = "Whether the field is mandatory on the current dynpro.",
+			},
+			{
+				name = "input",
+				type_name = "c",
+				docs = "Whether the field is ready for input on the current dynpro.",
+			},
+			{
+				name = "output",
+				type_name = "c",
+				docs = "Whether the field is output-only on the current dynpro.",
+			},
+			{
+				name = "intensified",
+				type_name = "c",
+				docs = "Whether the field is highlighted on the current dynpro.",
+			},
+			{
+				name = "invisible",
+				type_name = "c",
+				docs = "Whether the field is hidden on the current dynpro.",
+			},
+			{
+				name = "length",
+				type_name = "x",
+				docs = "Visible field length of the current dynpro element.",
+			},
+			{
+				name = "active",
+				type_name = "c",
+				docs = "Combined active flag for the current dynpro element.",
+			},
+			{
+				name = "display_3d",
+				type_name = "c",
+				docs = "Whether the current dynpro box is shown three-dimensionally.",
+			},
+			{
+				name = "value_help",
+				type_name = "c",
+				docs = "Whether input help is shown for the current dynpro field.",
+			},
+			{
+				name = "request",
+				type_name = "c",
+				docs = "Whether input exists, or is simulated, for the current dynpro field.",
+			},
+			{
+				name = "values_in_combo",
+				type_name = "c",
+				docs = "Whether values exist in the current dynpro dropdown list box.",
+			},
 		},
 	},
 	{
 		name = "match_result",
 		fields = []Builtin_Field_Spec {
-			{name = "offset", type_name = "i", docs = "Zero-based offset of the match in the searched data object."},
+			{
+				name = "offset",
+				type_name = "i",
+				docs = "Zero-based offset of the match in the searched data object.",
+			},
 			{name = "length", type_name = "i", docs = "Length of the matched segment."},
-			{name = "submatches", type_name = "match_result_tab", structure_name = "match_result", docs = "Nested table containing captured submatches for a regex result."},
-			{name = "line", type_name = "i", docs = "Line number of the match for searches in internal tables."},
+			{
+				name = "submatches",
+				type_name = "match_result_tab",
+				structure_name = "match_result",
+				docs = "Nested table containing captured submatches for a regex result.",
+			},
+			{
+				name = "line",
+				type_name = "i",
+				docs = "Line number of the match for searches in internal tables.",
+			},
 		},
 	},
 	{
@@ -170,7 +338,11 @@ BUILTIN_STRUCTURE_SPECS :: []Builtin_Structure_Spec {
 		name = "cntl_simple_event",
 		fields = []Builtin_Field_Spec {
 			{name = "eventid", type_name = "i", docs = "Control Framework event identifier."},
-			{name = "appl_event", type_name = "abap_bool", docs = "Whether the event is raised as an application event."},
+			{
+				name = "appl_event",
+				type_name = "abap_bool",
+				docs = "Whether the event is raised as an application event.",
+			},
 		},
 	},
 	{
@@ -314,7 +486,11 @@ BUILTIN_SYMBOL_SPECS :: []Builtin_Symbol_Spec {
 	{name = "abap_trans_parmbind", kind = .Type, structure_name = "abap_trans_parmbind"},
 	{name = "abap_trans_parm_obj_bind", kind = .Type, structure_name = "abap_trans_parm_obj_bind"},
 	{name = "abap_trans_parmbind_tab", kind = .Type, structure_name = "abap_trans_parmbind"},
-	{name = "abap_trans_parm_obj_bind_tab", kind = .Type, structure_name = "abap_trans_parm_obj_bind"},
+	{
+		name = "abap_trans_parm_obj_bind_tab",
+		kind = .Type,
+		structure_name = "abap_trans_parm_obj_bind",
+	},
 	{name = "abap_trans_objname", kind = .Type},
 	{name = "abap_trans_objbind", kind = .Type, structure_name = "abap_trans_objbind"},
 	{name = "abap_trans_objbind_tab", kind = .Type, structure_name = "abap_trans_objbind"},
@@ -334,25 +510,124 @@ BUILTIN_SYMBOL_SPECS :: []Builtin_Symbol_Spec {
 	{name = "%_cr_lf", kind = .Constant, type_name = "abap_cr_lf"},
 	{name = "%_formfeed", kind = .Constant, type_name = "abap_char1"},
 	{name = "%_backspace", kind = .Constant, type_name = "abap_char1"},
-	{name = "abap_true", kind = .Constant, type_name = "abap_bool", value = {kind = .Text, text = "X"}},
-	{name = "abap_false", kind = .Constant, type_name = "abap_bool", value = {kind = .Text, text = " "}},
-	{name = "abap_undefined", kind = .Constant, type_name = "abap_bool", value = {kind = .Text, text = "-"}},
-	{name = "abap_on", kind = .Constant, type_name = "abap_bool", value = {kind = .Text, text = "X"}},
-	{name = "abap_off", kind = .Constant, type_name = "abap_bool", value = {kind = .Text, text = " "}},
-	{name = "abap_max_abs_type_name_ln", kind = .Constant, type_name = "i", value = {kind = .Integer, integer = 200}},
-	{name = "abap_max_class_name_ln", kind = .Constant, type_name = "i", value = {kind = .Integer, integer = 30}},
-	{name = "abap_max_intf_name_ln", kind = .Constant, type_name = "i", value = {kind = .Integer, integer = 30}},
-	{name = "abap_max_comp_name_ln", kind = .Constant, type_name = "i", value = {kind = .Integer, integer = 30}},
-	{name = "abap_max_key_name_ln", kind = .Constant, type_name = "i", value = {kind = .Integer, integer = 255}},
-	{name = "abap_max_class_comp_name_ln", kind = .Constant, type_name = "i", value = {kind = .Integer, integer = 61}},
-	{name = "abap_max_edit_mask_ln", kind = .Constant, type_name = "i", value = {kind = .Integer, integer = 7}},
-	{name = "abap_max_help_id_ln", kind = .Constant, type_name = "i", value = {kind = .Integer, integer = 62}},
-	{name = "abap_max_db_string_ln", kind = .Constant, type_name = "i", value = {kind = .Integer, integer = 536870912}},
-	{name = "abap_max_db_rawstring_ln", kind = .Constant, type_name = "i", value = {kind = .Integer, integer = 1073741824}},
-	{name = "abap_func_exporting", kind = .Constant, type_name = "abap_func_parmbind", type_field_name = "kind", value = {kind = .Integer, integer = 10}},
-	{name = "abap_func_importing", kind = .Constant, type_name = "abap_func_parmbind", type_field_name = "kind", value = {kind = .Integer, integer = 20}},
-	{name = "abap_func_tables", kind = .Constant, type_name = "abap_func_parmbind", type_field_name = "kind", value = {kind = .Integer, integer = 30}},
-	{name = "abap_func_changing", kind = .Constant, type_name = "abap_func_parmbind", type_field_name = "kind", value = {kind = .Integer, integer = 40}},
+	{
+		name = "abap_true",
+		kind = .Constant,
+		type_name = "abap_bool",
+		value = {kind = .Text, text = "X"},
+	},
+	{
+		name = "abap_false",
+		kind = .Constant,
+		type_name = "abap_bool",
+		value = {kind = .Text, text = " "},
+	},
+	{
+		name = "abap_undefined",
+		kind = .Constant,
+		type_name = "abap_bool",
+		value = {kind = .Text, text = "-"},
+	},
+	{
+		name = "abap_on",
+		kind = .Constant,
+		type_name = "abap_bool",
+		value = {kind = .Text, text = "X"},
+	},
+	{
+		name = "abap_off",
+		kind = .Constant,
+		type_name = "abap_bool",
+		value = {kind = .Text, text = " "},
+	},
+	{
+		name = "abap_max_abs_type_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value = {kind = .Integer, integer = 200},
+	},
+	{
+		name = "abap_max_class_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value = {kind = .Integer, integer = 30},
+	},
+	{
+		name = "abap_max_intf_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value = {kind = .Integer, integer = 30},
+	},
+	{
+		name = "abap_max_comp_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value = {kind = .Integer, integer = 30},
+	},
+	{
+		name = "abap_max_key_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value = {kind = .Integer, integer = 255},
+	},
+	{
+		name = "abap_max_class_comp_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value = {kind = .Integer, integer = 61},
+	},
+	{
+		name = "abap_max_edit_mask_ln",
+		kind = .Constant,
+		type_name = "i",
+		value = {kind = .Integer, integer = 7},
+	},
+	{
+		name = "abap_max_help_id_ln",
+		kind = .Constant,
+		type_name = "i",
+		value = {kind = .Integer, integer = 62},
+	},
+	{
+		name = "abap_max_db_string_ln",
+		kind = .Constant,
+		type_name = "i",
+		value = {kind = .Integer, integer = 536870912},
+	},
+	{
+		name = "abap_max_db_rawstring_ln",
+		kind = .Constant,
+		type_name = "i",
+		value = {kind = .Integer, integer = 1073741824},
+	},
+	{
+		name = "abap_func_exporting",
+		kind = .Constant,
+		type_name = "abap_func_parmbind",
+		type_field_name = "kind",
+		value = {kind = .Integer, integer = 10},
+	},
+	{
+		name = "abap_func_importing",
+		kind = .Constant,
+		type_name = "abap_func_parmbind",
+		type_field_name = "kind",
+		value = {kind = .Integer, integer = 20},
+	},
+	{
+		name = "abap_func_tables",
+		kind = .Constant,
+		type_name = "abap_func_parmbind",
+		type_field_name = "kind",
+		value = {kind = .Integer, integer = 30},
+	},
+	{
+		name = "abap_func_changing",
+		kind = .Constant,
+		type_name = "abap_func_parmbind",
+		type_field_name = "kind",
+		value = {kind = .Integer, integer = 40},
+	},
 	{name = "space", kind = .Constant, type_name = "c", value = {kind = .Text, text = " "}},
 	{name = "text", kind = .Variable},
 	{name = "cntl_simple_event", kind = .Type, structure_name = "cntl_simple_event"},
@@ -395,7 +670,10 @@ checker_register_builtins :: proc(checker: ^Checker) {
 	}
 }
 
-checker_register_builtin_symbol :: proc(ctx: ^Checker_Context, spec: Builtin_Symbol_Spec) -> ^Entity {
+checker_register_builtin_symbol :: proc(
+	ctx: ^Checker_Context,
+	spec: Builtin_Symbol_Spec,
+) -> ^Entity {
 	kind := Entity_Kind.Type_Def
 	switch spec.kind {
 	case .Type:
@@ -420,15 +698,26 @@ checker_register_builtin_symbol :: proc(ctx: ^Checker_Context, spec: Builtin_Sym
 		payload.constant_value = checker_constant_value_from_builtin_spec(ctx, spec.value)
 	}
 	structure := checker_builtin_structure_by_name(ctx.checker, spec.structure_name)
-	checker_set_builtin_entity_type(ctx, entity, type_name, spec.type_field_name, type_is_ref, type_is_table, structure)
+	checker_set_builtin_entity_type(
+		ctx,
+		entity,
+		type_name,
+		spec.type_field_name,
+		type_is_ref,
+		type_is_table,
+		structure,
+	)
 	return entity
 }
 
-checker_register_builtin_proc :: proc(ctx: ^Checker_Context, metadata: Builtin_Proc_Metadata) -> ^Entity {
+checker_register_builtin_proc :: proc(
+	ctx: ^Checker_Context,
+	metadata: Builtin_Proc_Metadata,
+) -> ^Entity {
 	entity := checker_register_builtin_entity(ctx, metadata.name, .Builtin)
 	if payload, ok := entity.payload.(^Entity_Builtin_Payload); ok && payload != nil {
 		payload.id = i32(metadata.id)
-		payload.docs = strings.clone(metadata.docs, ctx.project.allocator) if metadata.docs != "" else ""
+		payload.docs = strings.clone(metadata.docs, ctx.project.allocator)
 		payload.supports_named_args = metadata.supports_named_args
 	}
 	entity.type = project_type_routine(ctx.project)
@@ -450,7 +739,7 @@ checker_constant_value_from_builtin_spec :: proc(
 		return value
 	case .Text:
 		value := new(Constant_Text_Value, ctx.project.allocator)
-		value.value = strings.clone(spec.text, ctx.project.allocator) if spec.text != "" else ""
+		value.value = strings.clone(spec.text, ctx.project.allocator)
 		return value
 	case .None:
 		return nil
@@ -465,7 +754,7 @@ checker_register_builtin_entity :: proc(
 ) -> ^Entity {
 	assert(ctx != nil && ctx.scope != nil && kind != .Invalid)
 	namespace := checker_builtin_namespace_for_kind(kind)
-	interned := checker_intern_name(ctx.project, name)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	if existing, ok := scope_lookup_declaration(ctx.scope, namespace, interned); ok {
 		existing.flags += {.Builtin}
 		return existing
@@ -490,13 +779,23 @@ checker_mark_builtin_entity_resolved :: proc(ctx: ^Checker_Context, entity: ^Ent
 	append(&ctx.info.checked_entities, entity)
 }
 
-checker_register_builtin_structure :: proc(ctx: ^Checker_Context, spec: Builtin_Structure_Spec) -> ^Structure {
+checker_register_builtin_structure :: proc(
+	ctx: ^Checker_Context,
+	spec: Builtin_Structure_Spec,
+) -> ^Structure {
 	owner := checker_register_builtin_entity(ctx, spec.name, .Type_Def)
-	if payload, ok := owner.payload.(^Entity_Type_Name_Payload); ok && payload != nil && payload.structure != nil {
+	if payload, ok := owner.payload.(^Entity_Type_Name_Payload);
+	   ok && payload != nil && payload.structure != nil {
 		return payload.structure
 	}
 
-	structure_scope := checker_create_scope(ctx.checker, ctx.info.builtin_scope, .Structure, owner = owner, decl_info = owner.decl_info)
+	structure_scope := checker_create_scope(
+		ctx.checker,
+		ctx.info.builtin_scope,
+		.Structure,
+		owner = owner,
+		decl_info = owner.decl_info,
+	)
 	structure := project_new_structure(ctx.project, owner.name, nil, structure_scope)
 	structure_type := project_type_structure(ctx.project, structure)
 	if owner.type == nil || owner.type.kind == .Builtin {
@@ -518,8 +817,7 @@ checker_register_builtin_structure_field :: proc(
 	owner: ^Entity,
 	spec: Builtin_Field_Spec,
 ) -> ^Entity {
-	assert(structure != nil && structure.scope != nil && owner != nil)
-	interned := checker_intern_name(ctx.project, spec.name)
+	interned := project_intern_lower_ascii(ctx.project, spec.name)
 	if existing, ok := scope_lookup_declaration(structure.scope, .Value, interned); ok {
 		return existing
 	}
@@ -537,7 +835,7 @@ checker_register_builtin_structure_field :: proc(
 	if spec.type_name != "" {
 		payload.flags += {.Has_Type_Ref}
 		payload.type_ref.namespace = .Type
-		payload.type_ref.base_name = checker_intern_name(ctx.project, spec.type_name)
+		payload.type_ref.base_name = project_intern_lower_ascii(ctx.project, spec.type_name)
 		payload.type_ref.is_ref = spec.is_ref
 	}
 	entity.type = checker_builtin_type_from_name(ctx.checker, spec.type_name, spec.is_ref)
@@ -562,24 +860,47 @@ checker_set_builtin_entity_type :: proc(
 	structure: ^Structure,
 ) {
 	assert(entity != nil)
-	if payload, ok := entity.payload.(^Entity_Type_Name_Payload); ok && payload != nil && structure != nil {
+	if payload, ok := entity.payload.(^Entity_Type_Name_Payload);
+	   ok && payload != nil && structure != nil {
 		payload.structure = structure
 	}
 	#partial switch entity.kind {
 	case .Type_Def:
 		if type_name != "" {
-			base := checker_builtin_type_from_symbol(ctx.checker, type_name, type_field_name, is_ref, is_table)
+			base := checker_builtin_type_from_symbol(
+				ctx.checker,
+				type_name,
+				type_field_name,
+				is_ref,
+				is_table,
+			)
 			entity.type = project_type_named(ctx.project, entity.name, entity, base)
 		} else if structure != nil {
-			entity.type = project_type_named(ctx.project, entity.name, entity, project_type_structure(ctx.project, structure))
+			entity.type = project_type_named(
+				ctx.project,
+				entity.name,
+				entity,
+				project_type_structure(ctx.project, structure),
+			)
 		} else if entity.type == nil {
 			entity.type = project_type_builtin(ctx.project, entity.name, entity)
 		}
 	case .Constant, .Variable:
 		if type_name != "" {
-			entity.type = checker_builtin_type_from_symbol(ctx.checker, type_name, type_field_name, is_ref, is_table)
+			entity.type = checker_builtin_type_from_symbol(
+				ctx.checker,
+				type_name,
+				type_field_name,
+				is_ref,
+				is_table,
+			)
 		} else if structure != nil {
-			entity.type = project_type_named(ctx.project, entity.name, entity, project_type_structure(ctx.project, structure))
+			entity.type = project_type_named(
+				ctx.project,
+				entity.name,
+				entity,
+				project_type_structure(ctx.project, structure),
+			)
 		} else if entity.type == nil {
 			entity.type = project_type_unknown(ctx.project)
 		}
@@ -647,7 +968,13 @@ checker_check_builtin_call :: proc(
 	     .Lines,
 	     .Concat_Lines_Of:
 		if metadata, metadata_ok := checker_builtin_proc_metadata(id); metadata_ok {
-			return checker_record_operand(ctx, node, .Value, checker_builtin_type_from_name(ctx.checker, metadata.return_type), lhs = lhs)
+			return checker_record_operand(
+				ctx,
+				node,
+				.Value,
+				checker_builtin_type_from_name(ctx.checker, metadata.return_type),
+				lhs = lhs,
+			)
 		}
 	case .Invalid:
 	}
@@ -663,7 +990,8 @@ checker_builtin_type_from_name :: proc(
 	if name == "" {
 		return project_type_unknown(checker.project)
 	}
-	if entity, ok := checker_lookup_builtin_entity(checker, .Type, name); ok && entity.type != nil {
+	if entity, ok := checker_lookup_builtin_entity(checker, .Type, name);
+	   ok && entity.type != nil {
 		base := entity.type
 		if is_ref {
 			base = project_type_ref(checker.project, base)
@@ -686,7 +1014,7 @@ checker_builtin_type_from_symbol :: proc(
 	base: ^Type
 	if type_field_name != "" {
 		if structure := checker_builtin_structure_by_name(checker, type_name); structure != nil {
-			field_name := checker_intern_name(checker.project, type_field_name)
+			field_name := project_intern_lower_ascii(checker.project, type_field_name)
 			if field, ok := scope_lookup_declaration(structure.scope, .Value, field_name); ok {
 				base = field.type
 			}
@@ -710,13 +1038,15 @@ checker_lookup_builtin_entity :: proc(
 	checker: ^Checker,
 	namespace: Namespace,
 	name: string,
-) -> (^Entity, bool) {
-	assert(checker != nil && checker.info.builtin_scope != nil)
-	interned := checker_intern_name(checker.project, name)
-	if !string_interner.is_valid(interned) {
+) -> (
+	^Entity,
+	bool,
+) {
+	interned := project_intern_lower_ascii(checker.project, name)
+	if interned == "" {
 		return nil, false
 	}
-	_, entity, ok := checker_lookup_lexical_declaration_from_scope(
+	_, entity, ok := lookup_lexical_declaration_from_scope(
 		checker.info.builtin_scope,
 		namespace,
 		interned,
@@ -732,7 +1062,8 @@ checker_builtin_structure_by_name :: proc(checker: ^Checker, name: string) -> ^S
 	if !ok {
 		return nil
 	}
-	if payload, payload_ok := entity.payload.(^Entity_Type_Name_Payload); payload_ok && payload != nil {
+	if payload, payload_ok := entity.payload.(^Entity_Type_Name_Payload);
+	   payload_ok && payload != nil {
 		return payload.structure
 	}
 	return nil
@@ -765,7 +1096,12 @@ checker_builtin_symbol_description :: proc(name: string, kind: Entity_Kind) -> s
 	return ""
 }
 
-checker_builtin_symbol_kind_from_entity_kind :: proc(kind: Entity_Kind) -> (Builtin_Symbol_Kind, bool) {
+checker_builtin_symbol_kind_from_entity_kind :: proc(
+	kind: Entity_Kind,
+) -> (
+	Builtin_Symbol_Kind,
+	bool,
+) {
 	#partial switch kind {
 	case .Type_Def:
 		return .Type, true

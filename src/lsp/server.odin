@@ -14,16 +14,17 @@ import "core:os"
 import "core:strings"
 
 Document :: struct {
-	uri:          string,
-	text:         string,
-	owns_uri:     bool,
-	owns_text:    bool,
-	version:      int,
-	dirty:        bool,
-	parse_arena:  ^virtual.Arena,
-	parse_root:   ^ast.File,
-	parse_errors: []parser.Parse_Error,
-	has_parse:    bool,
+	uri:                 string,
+	text:                string,
+	owns_uri:            bool,
+	owns_text:           bool,
+	version:             int,
+	dirty:               bool,
+	has_unsaved_changes: bool,
+	parse_arena:         ^virtual.Arena,
+	parse_root:          ^ast.File,
+	parse_errors:        []parser.Parse_Error,
+	has_parse:           bool,
 }
 
 Parse_Diagnostic_Bucket :: struct {

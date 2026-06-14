@@ -310,6 +310,39 @@ lsp_reanalysis_preserves_workspace_analysis_session :: proc(t: ^testing.T) {
 }
 
 @(test)
+lsp_reanalysis_suspends_dependency_fetches_for_unsaved_document :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/zmain.abap"
+	initial_source := "REPORT zmain."
+	changed_source := "REPORT zmain. DATA lo_remote TYPE REF TO zcl_remote."
+	state := lsp_test_empty_state()
+	append(&state.workspaces, Server_Workspace{root = workspace.Workspace{root_path = `D:\repo`}})
+	defer lsp_test_state_destroy(&state)
+
+	testing.expect(t, update_document_from_open(&state, lsp_test_did_open_params(uri, initial_source)))
+	server_reanalyze(&state)
+	testing.expect(t, state.workspaces[0].has_analysis)
+
+	testing.expect(t, update_document_from_change(&state, lsp_test_did_change_params(uri, changed_source, 2)))
+	server_reanalyze(&state)
+
+	doc := state.documents[uri]
+	testing.expect(t, doc.has_unsaved_changes)
+	testing.expect_value(t, len(state.workspaces[0].analysis.remote_result.misses), 0)
+	analysis := semantic.semantic_graph_session_current_analysis(&state.workspaces[0].analysis.session)
+	testing.expect(t, analysis != nil)
+	if analysis != nil {
+		testing.expect_value(t, lsp_test_unresolved_count(analysis, .Global_Symbol, "zcl_remote"), 1)
+	}
+
+	testing.expect(t, update_document_from_save(&state, lsp_test_did_save_params(uri, changed_source)))
+	server_reanalyze(&state)
+
+	doc = state.documents[uri]
+	testing.expect(t, !doc.has_unsaved_changes)
+	testing.expect(t, len(state.workspaces[0].analysis.remote_result.misses) > 0)
+}
+
+@(test)
 lsp_completion_selector_method_uses_full_call_snippet :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_method_snippet.abap"
 	source := `CLASS lcl_repo DEFINITION.
@@ -3596,4 +3629,42 @@ lsp_test_did_open_params :: proc(uri, source: string) -> json.Object {
 	text_document["version"] = json.Integer(1)
 	params["textDocument"] = text_document
 	return params
+}
+
+lsp_test_did_change_params :: proc(uri, source: string, version: int) -> json.Object {
+	params := make(json.Object, 2, context.allocator)
+	text_document := make(json.Object, 2, context.allocator)
+	text_document["uri"] = json.String(uri)
+	text_document["version"] = json.Integer(version)
+	params["textDocument"] = text_document
+
+	changes := make(json.Array, 0, 1, context.allocator)
+	change := make(json.Object, 1, context.allocator)
+	change["text"] = json.String(source)
+	append(&changes, change)
+	params["contentChanges"] = changes
+	return params
+}
+
+lsp_test_did_save_params :: proc(uri, source: string) -> json.Object {
+	params := make(json.Object, 2, context.allocator)
+	text_document := make(json.Object, 1, context.allocator)
+	text_document["uri"] = json.String(uri)
+	params["textDocument"] = text_document
+	params["text"] = json.String(source)
+	return params
+}
+
+lsp_test_unresolved_count :: proc(
+	analysis: ^semantic.Workspace_Analysis,
+	kind: semantic.External_Candidate_Kind,
+	name: string,
+) -> int {
+	count := 0
+	for candidate in analysis.unresolved {
+		if candidate.kind == kind && candidate.name == name {
+			count += 1
+		}
+	}
+	return count
 }

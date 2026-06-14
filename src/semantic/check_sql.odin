@@ -1,13 +1,12 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 
 import "core:strings"
 
 Sql_Source_Info :: struct {
-	name:      string_interner.String,
-	alias:     string_interner.String,
+	name:      string,
+	alias:     string,
 	range:     Range,
 	entity:    ^Entity,
 	typ:       ^Type,
@@ -23,7 +22,7 @@ Sql_Source_Scope :: struct {
 }
 
 Sql_Output_Field :: struct {
-	name:  string_interner.String,
+	name:  string,
 	range: Range,
 	typ:   ^Type,
 	field: ^Entity,
@@ -189,7 +188,7 @@ checker_sql_add_select_source :: proc(
 	if host, ok := expr.derived_expr.(^ast.Host_Expr); ok {
 		operand := checker_check_host_expr(ctx, &expr.expr_base, host, .Value, false)
 		source := Sql_Source_Info {
-			alias     = checker_intern_name(ctx.project, alias.text),
+			alias     = project_intern_lower_ascii(ctx.project, alias.text),
 			range     = expr.range,
 			typ       = operand.type,
 			row_type  = checker_type_row(ctx, operand.type),
@@ -207,7 +206,7 @@ checker_sql_add_select_source :: proc(
 		return nil
 	}
 	source := checker_sql_resolve_source(ctx, name, name_range)
-	source.alias = checker_intern_name(ctx.project, alias.text)
+	source.alias = project_intern_lower_ascii(ctx.project, alias.text)
 	if range.end > range.start {
 		source.range = range
 	}
@@ -248,10 +247,10 @@ checker_sql_add_db_source :: proc(
 
 checker_sql_resolve_source :: proc(ctx: ^Checker_Context, name: string, range: Range) -> Sql_Source_Info {
 	source := Sql_Source_Info {
-		name  = checker_intern_name(ctx.project, name),
+		name  = project_intern_lower_ascii(ctx.project, name),
 		range = range,
 	}
-	if !string_interner.is_valid(source.name) {
+	if source.name == "" {
 		return source
 	}
 	_, entity, ok := checker_lookup_reference(ctx, .Type, source.name, .DDIC_Table)
@@ -322,7 +321,7 @@ checker_sql_append_projection :: proc(
 	}
 	typ := checker_check_sql_expr(ctx, sql, expr, false)
 	name, name_range := checker_sql_projection_name(ctx, expr, alias, range)
-	if !string_interner.is_valid(name) {
+	if name == "" {
 		return
 	}
 	append(
@@ -340,24 +339,24 @@ checker_sql_projection_name :: proc(
 	expr: ^ast.Expr,
 	alias: ast.Token_Text,
 	range: Range,
-) -> (string_interner.String, Range) {
+) -> (string, Range) {
 	if alias.text != "" {
-		return checker_intern_name(ctx.project, alias.text), alias.range
+		return project_intern_lower_ascii(ctx.project, alias.text), alias.range
 	}
 	if expr == nil {
-		return string_interner.String(0), range
+		return "", range
 	}
 	#partial switch n in expr.derived_expr {
 	case ^ast.Sql_Column_Expr:
-		return checker_intern_name(ctx.project, n.name.text), n.name.range
+		return project_intern_lower_ascii(ctx.project, n.name.text), n.name.range
 	case ^ast.Sql_Call_Expr:
-		return checker_intern_name(ctx.project, n.name.text), n.name.range
+		return project_intern_lower_ascii(ctx.project, n.name.text), n.name.range
 	case ^ast.Ident_Expr:
-		return checker_intern_name(ctx.project, n.name), n.range
+		return project_intern_lower_ascii(ctx.project, n.name), n.range
 	case ^ast.Type_Ref_Expr:
-		return checker_intern_name(ctx.project, n.name.text), n.name.range
+		return project_intern_lower_ascii(ctx.project, n.name.text), n.name.range
 	}
-	return string_interner.String(0), range
+	return "", range
 }
 
 checker_sql_append_star_fields :: proc(
@@ -368,7 +367,7 @@ checker_sql_append_star_fields :: proc(
 	range: Range,
 ) {
 	if qualifier != "" {
-		source, ok := checker_sql_source_for_qualifier(ctx, sql, checker_intern_name(ctx.project, qualifier))
+		source, ok := checker_sql_source_for_qualifier(ctx, sql, project_intern_lower_ascii(ctx.project, qualifier))
 		if !ok {
 			return
 		}
@@ -428,7 +427,7 @@ checker_check_sql_expr :: proc(
 		return project_type_unknown(ctx.project)
 	case ^ast.Sql_Star_Expr:
 		if n.qualifier.text != "" {
-			_, _ = checker_sql_source_for_qualifier(ctx, sql, checker_intern_name(ctx.project, n.qualifier.text))
+			_, _ = checker_sql_source_for_qualifier(ctx, sql, project_intern_lower_ascii(ctx.project, n.qualifier.text))
 		}
 		return project_type_unknown(ctx.project)
 	case ^ast.Sql_Call_Expr:
@@ -490,7 +489,7 @@ checker_check_sql_expr :: proc(
 		if n.op == .Tilde {
 			qualifier := checker_sql_simple_expr_name(ctx, n.base)
 			name := checker_sql_simple_expr_name(ctx, n.field)
-			if string_interner.is_valid(qualifier) && string_interner.is_valid(name) {
+			if qualifier != "" && name != "" {
 				field, ok := checker_sql_lookup_column_by_name(ctx, sql, name, qualifier, expr.range)
 				if ok {
 					checker_add_entity_use(ctx, &expr.expr_base, field)
@@ -528,8 +527,8 @@ checker_sql_lookup_column :: proc(
 	return checker_sql_lookup_column_by_name(
 		ctx,
 		sql,
-		checker_intern_name(ctx.project, name),
-		checker_intern_name(ctx.project, qualifier),
+		project_intern_lower_ascii(ctx.project, name),
+		project_intern_lower_ascii(ctx.project, qualifier),
 		range,
 	)
 }
@@ -537,14 +536,14 @@ checker_sql_lookup_column :: proc(
 checker_sql_lookup_column_by_name :: proc(
 	ctx: ^Checker_Context,
 	sql: ^Sql_Source_Scope,
-	name: string_interner.String,
-	qualifier: string_interner.String,
+	name: string,
+	qualifier: string,
 	range: Range,
 ) -> (^Entity, bool) {
-	if !string_interner.is_valid(name) {
+	if name == "" {
 		return nil, false
 	}
-	if string_interner.is_valid(qualifier) {
+	if qualifier != "" {
 		source, source_ok := checker_sql_source_for_qualifier(ctx, sql, qualifier)
 		if !source_ok {
 			return nil, false
@@ -577,10 +576,10 @@ checker_sql_lookup_column_by_name :: proc(
 checker_sql_source_for_qualifier :: proc(
 	ctx: ^Checker_Context,
 	sql: ^Sql_Source_Scope,
-	qualifier: string_interner.String,
+	qualifier: string,
 ) -> (^Sql_Source_Info, bool) {
 	_ = ctx
-	if !string_interner.is_valid(qualifier) {
+	if qualifier == "" {
 		return nil, false
 	}
 	for &source in sql.sources {
@@ -594,7 +593,7 @@ checker_sql_source_for_qualifier :: proc(
 checker_sql_source_field :: proc(
 	ctx: ^Checker_Context,
 	source: ^Sql_Source_Info,
-	name: string_interner.String,
+	name: string,
 	range: Range,
 ) -> (^Entity, bool) {
 	if source == nil || source.structure == nil {
@@ -607,7 +606,7 @@ checker_sql_source_field :: proc(
 	return nil, false
 }
 
-checker_sql_structure_field :: proc(structure: ^Structure, name: string_interner.String) -> (^Entity, bool) {
+checker_sql_structure_field :: proc(structure: ^Structure, name: string) -> (^Entity, bool) {
 	if structure == nil {
 		return nil, false
 	}
@@ -724,19 +723,19 @@ checker_sql_add_structure_field :: proc(
 	return entity
 }
 
-checker_sql_inline_structure_name :: proc(ctx: ^Checker_Context, result: ^ast.Select_Result_Clause) -> string_interner.String {
+checker_sql_inline_structure_name :: proc(ctx: ^Checker_Context, result: ^ast.Select_Result_Clause) -> string {
 	target_name := ""
 	if result != nil {
 		target_name = checker_sql_target_name(result.target)
 	}
 	if target_name == "" {
-		return checker_intern_name(ctx.project, "<open_sql_inline>")
+		return project_intern_lower_ascii(ctx.project, "<open_sql_inline>")
 	}
 	builder := strings.builder_make(context.temp_allocator)
 	strings.write_string(&builder, "<open_sql_inline:")
 	strings.write_string(&builder, target_name)
 	strings.write_byte(&builder, '>')
-	return checker_intern_name(ctx.project, strings.to_string(builder))
+	return project_intern_lower_ascii(ctx.project, strings.to_string(builder))
 }
 
 checker_check_sql_assignment :: proc(
@@ -744,13 +743,13 @@ checker_check_sql_assignment :: proc(
 	sql: ^Sql_Source_Scope,
 	assignment: ast.Sql_Assignment_Clause,
 ) {
-	field_name := checker_intern_name(ctx.project, assignment.column_name.text)
+	field_name := project_intern_lower_ascii(ctx.project, assignment.column_name.text)
 	range := assignment.column_name.range
-	if !string_interner.is_valid(field_name) {
+	if field_name == "" {
 		field_name = checker_sql_simple_expr_name(ctx, assignment.name)
 		range = checker_expr_range(assignment.name)
 	}
-	field, field_ok := checker_sql_lookup_column_by_name(ctx, sql, field_name, string_interner.String(0), range)
+	field, field_ok := checker_sql_lookup_column_by_name(ctx, sql, field_name, "", range)
 	value_type := checker_check_sql_expr(ctx, sql, assignment.value, false)
 	if field_ok {
 		checker_check_assignment_compatibility(ctx, value_type, field.type, checker_expr_range(assignment.value))
@@ -785,30 +784,30 @@ checker_sql_source_expr_name :: proc(
 		}
 	case ^ast.Host_Expr:
 		name := checker_sql_simple_expr_name(ctx, n.value)
-		if string_interner.is_valid(name) {
-			return string_interner.load(ctx.project.interner, name), n.value.range, true
+		if name != "" {
+			return name, n.value.range, true
 		}
 	}
 	return "", Range{}, false
 }
 
-checker_sql_simple_expr_name :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) -> string_interner.String {
+checker_sql_simple_expr_name :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) -> string {
 	if expr == nil {
-		return string_interner.String(0)
+		return ""
 	}
 	#partial switch n in expr.derived_expr {
 	case ^ast.Ident_Expr:
-		return checker_intern_name(ctx.project, n.name)
+		return project_intern_lower_ascii(ctx.project, n.name)
 	case ^ast.Type_Ref_Expr:
-		return checker_intern_name(ctx.project, n.name.text)
+		return project_intern_lower_ascii(ctx.project, n.name.text)
 	case ^ast.Sql_Column_Expr:
 		if n.qualifier.text == "" {
-			return checker_intern_name(ctx.project, n.name.text)
+			return project_intern_lower_ascii(ctx.project, n.name.text)
 		}
 	case ^ast.Host_Expr:
 		return checker_sql_simple_expr_name(ctx, n.value)
 	}
-	return string_interner.String(0)
+	return ""
 }
 
 checker_sql_target_name :: proc(expr: ^ast.Expr) -> string {
@@ -852,13 +851,13 @@ checker_check_sql_dynamic_expr :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) {
 checker_sql_source_message :: proc(
 	ctx: ^Checker_Context,
 	prefix: string,
-	name: string_interner.String,
+	name: string,
 ) -> string {
-	if !string_interner.is_valid(name) {
+	if name == "" {
 		return prefix
 	}
 	builder := strings.builder_make(context.temp_allocator)
 	strings.write_string(&builder, prefix)
-	strings.write_string(&builder, string_interner.load(ctx.project.interner, name))
+	strings.write_string(&builder, name)
 	return strings.to_string(builder)
 }

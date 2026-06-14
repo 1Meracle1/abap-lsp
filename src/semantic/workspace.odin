@@ -1,7 +1,6 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 
 import "core:mem"
 import "core:strings"
@@ -11,7 +10,6 @@ Workspace_Input :: struct {
 	external:            ^External_Semantics,
 	external_sources:    []External_Source_Input,
 	external_interfaces: []External_Interface_Input,
-	interner:            ^string_interner.Interner,
 }
 
 Workspace_File_Project_Usage :: struct {
@@ -30,8 +28,6 @@ Workspace_Project_Result :: struct {
 
 Workspace_Analysis :: struct {
 	allocator:             mem.Allocator,
-	interner:              ^string_interner.Interner,
-	owns_interner:         bool,
 	external_context:      ^External_Semantics,
 	owns_external_context: bool,
 	discovery:             Project_Discovery,
@@ -60,27 +56,15 @@ semantic_workspace_analyze :: proc(
 	input: Workspace_Input,
 	allocator: mem.Allocator = context.allocator,
 ) -> Workspace_Analysis {
-	interner := input.interner
-	owns_interner := false
-	if interner == nil {
-		interner = string_interner.create()
-		owns_interner = true
-	}
-	external, owns_external := semantic_workspace_prepare_external_context(
-		input,
-		interner,
-		allocator,
-	)
+	external, owns_external := semantic_workspace_prepare_external_context(input, allocator)
 	provider_context := external
 	owns_provider_context := owns_external
 	if input.external != nil || provider_context == nil {
-		provider_context = semantic_workspace_provider_context(external, interner, allocator)
+		provider_context = semantic_workspace_provider_context(external, allocator)
 		owns_provider_context = true
 	}
 	analysis := Workspace_Analysis {
 		allocator             = allocator,
-		interner              = interner,
-		owns_interner         = owns_interner,
 		external_context      = provider_context,
 		owns_external_context = owns_provider_context,
 		projects              = make([dynamic]^Project, 0, len(input.files), allocator),
@@ -90,7 +74,7 @@ semantic_workspace_analyze :: proc(
 			len(input.files),
 			allocator,
 		),
-		external_index        = external_semantic_index_make(interner, allocator),
+		external_index        = external_semantic_index_make(allocator),
 		file_projects         = make(
 			[dynamic]Workspace_File_Project_Usage,
 			0,
@@ -105,16 +89,11 @@ semantic_workspace_analyze :: proc(
 		external_semantic_index_import_providers(&analysis.external_index, &external.index)
 		semantic_workspace_import_external_interface_records(&analysis, external)
 	}
-	analysis.discovery = project_discovery_build(
-		input.files,
-		interner,
-		provider_context,
-		allocator,
-	)
+	analysis.discovery = project_discovery_build(input.files, provider_context, allocator)
 	semantic_workspace_add_local_root_providers(provider_context, &analysis.discovery)
 	for diagnostic in analysis.discovery.diagnostics {
 		copied := diagnostic
-		copied.message = strings.clone(diagnostic.message, allocator) if diagnostic.message != "" else ""
+		copied.message = strings.clone(diagnostic.message, allocator)
 		append(&analysis.workspace_diags, copied)
 	}
 	for plan in analysis.discovery.plans {
@@ -125,20 +104,19 @@ semantic_workspace_analyze :: proc(
 
 semantic_workspace_provider_context :: proc(
 	external: ^External_Semantics,
-	interner: ^string_interner.Interner,
 	allocator: mem.Allocator,
 ) -> ^External_Semantics {
 	provider := new(External_Semantics, allocator)
 	assert(provider != nil)
-	provider^ = external_semantics_make(interner, allocator)
+	provider^ = external_semantics_make(allocator)
 	if external == nil {
 		return provider
 	}
 	external_semantic_index_import_providers(&provider.index, &external.index)
 	for source in external.source_files {
-		names := make([dynamic]string_interner.String, 0, len(source.provided_names), allocator)
+		names := make([dynamic]string, 0, len(source.provided_names), allocator)
 		for name in source.provided_names {
-			append(&names, name)
+			append(&names, strings.clone(name, allocator))
 		}
 		append(
 			&provider.source_files,
@@ -146,6 +124,11 @@ semantic_workspace_provider_context :: proc(
 				path = strings.clone(source.path, allocator) if source.path != "" else "",
 				root = source.root,
 				provided_names = names,
+				syntax_diagnostics = syntax_diagnostic_list_clone(
+					source.syntax_diagnostics[:],
+					allocator,
+				),
+				has_syntax_errors = source.has_syntax_errors || len(source.syntax_diagnostics) > 0,
 			},
 		)
 	}
@@ -175,7 +158,14 @@ semantic_workspace_add_local_root_providers :: proc(
 		}
 		_ = external_semantics_analyze_interface_input(
 			external,
-			External_Interface_Input{key = key, path = facts.path, root = facts.root, role = role},
+			External_Interface_Input {
+				key = key,
+				path = facts.path,
+				root = facts.root,
+				role = role,
+				syntax_diagnostics = facts.syntax_diagnostics,
+				has_syntax_errors = facts.has_syntax_errors,
+			},
 		)
 	}
 }
@@ -202,7 +192,6 @@ semantic_workspace_external_role_for_file_kind :: proc(
 
 semantic_workspace_prepare_external_context :: proc(
 	input: Workspace_Input,
-	interner: ^string_interner.Interner,
 	allocator: mem.Allocator,
 ) -> (
 	^External_Semantics,
@@ -213,7 +202,7 @@ semantic_workspace_prepare_external_context :: proc(
 	if (len(input.external_sources) > 0 || len(input.external_interfaces) > 0) && external == nil {
 		external = new(External_Semantics, allocator)
 		assert(external != nil)
-		external^ = external_semantics_make(interner, allocator)
+		external^ = external_semantics_make(allocator)
 		owns_external = true
 	}
 	if external != nil {
@@ -238,13 +227,29 @@ semantic_workspace_import_external_interface_records :: proc(
 		&analysis.external_index,
 		&external.index,
 	)
+	unresolved_seen := checker_unresolved_candidate_set_make(
+		analysis.unresolved[:],
+		context.temp_allocator,
+	)
+	external_request_seen := checker_unresolved_candidate_set_make(
+		analysis.external_requests[:],
+		context.temp_allocator,
+	)
 	for record in external.index.projects {
 		if record.role != .External_Interface || !semantic_object_key_is_valid(record.root_key) {
 			continue
 		}
 		for candidate in record.unresolved {
-			checker_add_unresolved_candidate_to_list(&analysis.unresolved, candidate)
-			checker_add_unresolved_candidate_to_list(&analysis.external_requests, candidate)
+			checker_add_unresolved_candidate_to_list_with_set(
+				&analysis.unresolved,
+				&unresolved_seen,
+				candidate,
+			)
+			checker_add_unresolved_candidate_to_list_with_set(
+				&analysis.external_requests,
+				&external_request_seen,
+				candidate,
+			)
 		}
 	}
 }
@@ -253,6 +258,7 @@ semantic_workspace_analysis_destroy :: proc(analysis: ^Workspace_Analysis) {
 	if analysis == nil {
 		return
 	}
+	external_semantic_index_destroy(&analysis.external_index)
 	project_discovery_destroy(&analysis.discovery)
 	for result in analysis.project_results {
 		if result.project != nil {
@@ -275,7 +281,6 @@ semantic_workspace_analysis_destroy :: proc(analysis: ^Workspace_Analysis) {
 	if analysis.project_results.allocator.procedure != nil {
 		delete(analysis.project_results)
 	}
-	external_semantic_index_destroy(&analysis.external_index)
 	for &usage in analysis.file_projects {
 		if usage.path != "" {
 			delete(usage.path, analysis.allocator)
@@ -297,9 +302,6 @@ semantic_workspace_analysis_destroy :: proc(analysis: ^Workspace_Analysis) {
 	if analysis.owns_external_context && analysis.external_context != nil {
 		external_semantics_destroy(analysis.external_context)
 		free(analysis.external_context, analysis.allocator)
-	}
-	if analysis.owns_interner {
-		string_interner.destroy(analysis.interner)
 	}
 	analysis^ = {}
 }
@@ -339,7 +341,7 @@ semantic_workspace_build_project :: proc(
 ) {
 	project := new(Project, analysis.allocator)
 	assert(project != nil)
-	project^ = project_make_with_interner(analysis.interner)
+	project^ = project_make()
 
 	checker := new(Checker, analysis.allocator)
 	assert(checker != nil)
@@ -351,7 +353,13 @@ semantic_workspace_build_project :: proc(
 	)
 
 	root_facts := &analysis.discovery.facts[plan.root_index]
-	root_file := checker_add_file(checker, root_facts.path, root_facts.root)
+	root_file := checker_add_file(
+		checker,
+		root_facts.path,
+		root_facts.root,
+		root_facts.syntax_diagnostics[:],
+		root_facts.has_syntax_errors,
+	)
 	result := Workspace_Project_Result {
 		project   = project,
 		checker   = checker,
@@ -390,6 +398,7 @@ semantic_workspace_build_project :: proc(
 	workspace_collect_expanded_file_entities(&state, &ctx, plan.root_index)
 	checker_check_queued_entities(&ctx)
 	workspace_check_expanded_file_stmts(&state, &ctx, plan.root_index)
+	project_has_syntax_errors := workspace_project_result_has_syntax_errors(project_result)
 
 	append(&analysis.projects, project)
 	for file in project_result.files {
@@ -397,7 +406,9 @@ semantic_workspace_build_project :: proc(
 	}
 	for candidate in checker.info.unresolved {
 		checker_add_unresolved_candidate_to_list(&analysis.unresolved, candidate)
-		checker_add_unresolved_candidate_to_list(&analysis.external_requests, candidate)
+		if !project_has_syntax_errors {
+			checker_add_unresolved_candidate_to_list(&analysis.external_requests, candidate)
+		}
 	}
 	semantic_workspace_record_project_dependencies(analysis, project_result, plan)
 }
@@ -426,11 +437,13 @@ semantic_workspace_record_project_dependencies :: proc(
 	for edge in project_result.checker.info.resolved_external_dependencies {
 		semantic_project_record_add_dependency(&record, edge)
 	}
-	for edge in project_result.checker.info.unresolved_external_dependencies {
-		semantic_project_record_add_dependency(&record, edge)
-	}
-	for candidate in project_result.checker.info.unresolved {
-		checker_add_unresolved_candidate_to_list(&record.unresolved, candidate)
+	if !workspace_project_result_has_syntax_errors(project_result) {
+		for edge in project_result.checker.info.unresolved_external_dependencies {
+			semantic_project_record_add_dependency(&record, edge)
+		}
+		for candidate in project_result.checker.info.unresolved {
+			checker_add_unresolved_candidate_to_list(&record.unresolved, candidate)
+		}
 	}
 	stored := external_semantic_index_add_project_record(&analysis.external_index, record)
 	project_result.record_id = stored.id
@@ -540,7 +553,7 @@ workspace_collect_include_targets :: proc(
 	include: ^ast.Include_Stmt,
 ) {
 	for include_name in include.names {
-		name := checker_intern_name(ctx.project, include_name.name.text)
+		name := project_intern_lower_ascii(ctx.project, include_name.name.text)
 		edge, edge_ok := project_discovery_edge_for_include(facts, name, include_name.name.range)
 		if !edge_ok || !edge.has_target {
 			workspace_note_unresolved_include(
@@ -605,7 +618,7 @@ workspace_collect_external_source_entities :: proc(
 		if include, ok := stmt.derived_stmt.(^ast.Include_Stmt); ok {
 			checker_collect_include_stmt(ctx, include)
 			for include_name in include.names {
-				name := checker_intern_name(ctx.project, include_name.name.text)
+				name := project_intern_lower_ascii(ctx.project, include_name.name.text)
 				if target_index, local_ok := project_discovery_find_local_provided_name(
 					state.discovery,
 					name,
@@ -675,7 +688,7 @@ workspace_check_include_targets :: proc(
 	include: ^ast.Include_Stmt,
 ) {
 	for include_name in include.names {
-		name := checker_intern_name(ctx.project, include_name.name.text)
+		name := project_intern_lower_ascii(ctx.project, include_name.name.text)
 		edge, edge_ok := project_discovery_edge_for_include(facts, name, include_name.name.range)
 		if !edge_ok || !edge.has_target {
 			continue
@@ -713,7 +726,7 @@ workspace_check_external_source_stmts :: proc(
 	for stmt in file.root.stmts {
 		if include, ok := stmt.derived_stmt.(^ast.Include_Stmt); ok {
 			for include_name in include.names {
-				name := checker_intern_name(ctx.project, include_name.name.text)
+				name := project_intern_lower_ascii(ctx.project, include_name.name.text)
 				if target_index, local_ok := project_discovery_find_local_provided_name(
 					state.discovery,
 					name,
@@ -741,13 +754,13 @@ workspace_collect_type_pool_candidates :: proc(
 ) {
 	if pools, pools_ok := stmt.derived_stmt.(^ast.Type_Pools_Decl); pools_ok {
 		for pool in pools.pools {
-			name := checker_intern_name(ctx.project, pool.text)
-			if !string_interner.is_valid(name) {
+			name := project_intern_lower_ascii(ctx.project, pool.text)
+			if name == "" {
 				continue
 			}
 			if ctx.info.external != nil {
-				if _, external_ok := external_semantics_lookup(
-					ctx.info.external,
+				if _, _, external_ok := external_semantic_index_lookup(
+					&ctx.info.external.index,
 					.Type,
 					name,
 					.Type_Pool,
@@ -777,9 +790,16 @@ workspace_project_file_for_local :: proc(
 		return existing
 	}
 	facts := &state.discovery.facts[file_index]
-	file := project_add_file(state.project, facts.path, facts.root)
+	file := project_add_file(
+		state.project,
+		facts.path,
+		facts.root,
+		facts.syntax_diagnostics[:],
+		facts.has_syntax_errors,
+	)
 	file.root_scope = state.root_scope
 	checker_register_file(state.checker, file)
+	checker_add_file_syntax_diagnostics(state.checker, file)
 	state.local_files[file_index] = file
 	append(&state.project_result.files, file)
 	return file
@@ -793,20 +813,39 @@ workspace_project_file_for_external :: proc(
 		return existing
 	}
 	source := &state.discovery.external.source_files[external_index]
-	file := project_add_file(state.project, source.path, source.root)
+	file := project_add_file(
+		state.project,
+		source.path,
+		source.root,
+		source.syntax_diagnostics[:],
+		source.has_syntax_errors,
+	)
 	file.root_scope = state.root_scope
 	checker_register_file(state.checker, file)
+	checker_add_file_syntax_diagnostics(state.checker, file)
 	state.external_files[external_index] = file
 	append(&state.project_result.files, file)
 	return file
 }
 
+workspace_project_result_has_syntax_errors :: proc(result: ^Workspace_Project_Result) -> bool {
+	if result == nil {
+		return false
+	}
+	for file in result.files {
+		if project_file_has_syntax_errors(file) {
+			return true
+		}
+	}
+	return false
+}
+
 workspace_set_include_entity_target :: proc(
 	ctx: ^Checker_Context,
-	name: string_interner.String,
+	name: string,
 	target: ^Project_File,
 ) {
-	if !string_interner.is_valid(name) || target == nil {
+	if name == "" || target == nil {
 		return
 	}
 	if entity, ok := scope_lookup_declaration(ctx.scope, .Value, name);
@@ -821,7 +860,7 @@ workspace_set_include_entity_target :: proc(
 workspace_note_unresolved_include :: proc(
 	state: ^Workspace_Project_Build_State,
 	ctx: ^Checker_Context,
-	name: string_interner.String,
+	name: string,
 	range: Range,
 	stmt: ^ast.Include_Stmt,
 	if_found: bool,

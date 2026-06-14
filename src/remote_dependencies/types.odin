@@ -2,6 +2,7 @@ package abap_frontend_remote_dependencies
 
 import "src:adt"
 import "src:ast"
+import "src:utils"
 import dep_store "src:dependency_store"
 
 import "core:hash"
@@ -97,21 +98,23 @@ Artifact :: struct {
 }
 
 Interface_AST :: struct {
-	key:         Remote_Dependency_Key,
-	role:        Remote_Dependency_Object_Role,
-	path:        string,
-	root:        ^ast.File,
-	source_hash: u64,
-	generation:  u64,
+	key:              Remote_Dependency_Key,
+	role:             Remote_Dependency_Object_Role,
+	path:             string,
+	root:             ^ast.File,
+	source_hash:      u64,
+	generation:       u64,
+	has_parse_errors: bool,
 }
 
 Source_AST :: struct {
-	key:            Remote_Dependency_Key,
-	path:           string,
-	root:           ^ast.File,
-	provided_names: [dynamic]string,
-	source_hash:    u64,
-	generation:     u64,
+	key:              Remote_Dependency_Key,
+	path:             string,
+	root:             ^ast.File,
+	provided_names:   [dynamic]string,
+	source_hash:      u64,
+	generation:       u64,
+	has_parse_errors: bool,
 }
 
 Diagnostic :: struct {
@@ -121,17 +124,18 @@ Diagnostic :: struct {
 }
 
 Open_Source :: struct {
-	request:        Request,
-	source_kind:    Source_Kind,
-	object_kind:    string,
-	object_name:    string,
-	object_uri:     string,
-	object_type:    string,
-	file_extension: string,
-	path:           string,
-	source_text:    string,
-	root:           ^ast.File,
-	source_hash:    u64,
+	request:          Request,
+	source_kind:      Source_Kind,
+	object_kind:      string,
+	object_name:      string,
+	object_uri:       string,
+	object_type:      string,
+	file_extension:   string,
+	path:             string,
+	source_text:      string,
+	root:             ^ast.File,
+	source_hash:      u64,
+	has_parse_errors: bool,
 }
 
 Result :: struct {
@@ -178,7 +182,7 @@ normalize_request :: proc(
 	request: Request,
 	allocator: mem.Allocator,
 ) -> (Request, bool) {
-	name := strings.to_lower(strings.trim_space(request.name), allocator)
+	name := utils.to_lower_ascii(strings.trim_space(request.name), allocator)
 	if name == "" {
 		return {}, false
 	}

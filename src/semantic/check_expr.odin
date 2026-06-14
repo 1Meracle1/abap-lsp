@@ -1,7 +1,6 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 
 import "core:strings"
 
@@ -17,7 +16,7 @@ Checker_Reduce_Validation_State :: struct {
 	init_seen:  bool,
 	for_seen:   bool,
 	next_seen:  bool,
-	init_names: [dynamic]string_interner.String,
+	init_names: [dynamic]string,
 }
 
 checker_check_expr :: proc(
@@ -313,8 +312,8 @@ checker_check_ident_name :: proc(
 	if entity, ok, handled := checker_check_oop_receiver_ident(ctx, node, name, namespace, use_range); handled {
 		return entity, ok
 	}
-	interned := checker_intern_name(ctx.project, name)
-	if !string_interner.is_valid(interned) {
+	interned := project_intern_lower_ascii(ctx.project, name)
+	if interned == "" {
 		return nil, false
 	}
 	_, entity, ok := checker_lookup_reference(ctx, namespace, interned)
@@ -495,7 +494,7 @@ checker_check_interface_selector_expr :: proc(
 			return checker_record_operand(ctx, node, .Field, project_type_unknown(ctx.project), lhs = lhs)
 		}
 	}
-	if member, ok := checker_lookup_object_member_visible(ctx, interface_operand.entity, member_namespace, checker_intern_name(ctx.project, name), member_node.range if member_node != nil else Range{}); ok {
+	if member, ok := checker_lookup_object_member_visible(ctx, interface_operand.entity, member_namespace, project_intern_lower_ascii(ctx.project, name), member_node.range if member_node != nil else Range{}); ok {
 		member_operand := checker_record_entity_operand(ctx, member_node, member, lhs)
 		return checker_record_operand(ctx, node, member_operand.mode, member_operand.type, member, lhs = lhs)
 	}
@@ -513,8 +512,8 @@ checker_lookup_selector_member :: proc(
 	lhs: bool,
 	use_range: Range = {},
 ) -> Operand {
-	interned := checker_intern_name(ctx.project, name)
-	if !string_interner.is_valid(interned) {
+	interned := project_intern_lower_ascii(ctx.project, name)
+	if interned == "" {
 		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
 	}
 	if op == .Arrow && name == "*" {
@@ -607,7 +606,7 @@ checker_check_table_key_operand :: proc(
 	if !ok {
 		return false
 	}
-	interned := checker_intern_name(ctx.project, name)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	if row_structure != nil {
 		if field, field_ok := checker_lookup_structure_field(row_structure, interned); field_ok {
 			checker_record_entity_operand(ctx, node, field)
@@ -836,7 +835,7 @@ checker_check_reduce_constructor_expr :: proc(
 	defer checker_close_scope(ctx)
 
 	state := Checker_Reduce_Validation_State {
-		init_names = make([dynamic]string_interner.String, 0, 4, context.temp_allocator),
+		init_names = make([dynamic]string, 0, 4, context.temp_allocator),
 	}
 	checker_check_reduce_sequence(ctx, expr.args[:], &state)
 	if !state.init_seen {
@@ -1002,8 +1001,8 @@ checker_check_reduce_init_clause_expr :: proc(
 			continue
 		}
 		value := checker_check_expr_with_unresolved_value_diagnostics(ctx, named.value)
-		name := checker_intern_name(ctx.project, named.name.text)
-		if !string_interner.is_valid(name) {
+		name := project_intern_lower_ascii(ctx.project, named.name.text)
+		if name == "" {
 			checker_record_operand(ctx, &assignment.expr_base, .No_Value, value.type)
 			continue
 		}
@@ -1044,7 +1043,7 @@ checker_check_reduce_next_clause_expr :: proc(
 			"REDUCE NEXT requires at least one assignment",
 		)
 	}
-	assigned := make([dynamic]string_interner.String, 0, len(expr.assignments), context.temp_allocator)
+	assigned := make([dynamic]string, 0, len(expr.assignments), context.temp_allocator)
 	for assignment in expr.assignments {
 		named, ok := assignment.derived_expr.(^ast.Constructor_Named_Assignment_Expr)
 		if !ok {
@@ -1057,19 +1056,19 @@ checker_check_reduce_next_clause_expr :: proc(
 			checker_check_expr(ctx, assignment)
 			continue
 		}
-		name := checker_intern_name(ctx.project, named.name.text)
-		if string_interner.is_valid(name) && checker_reduce_name_list_contains(assigned[:], name) {
+		name := project_intern_lower_ascii(ctx.project, named.name.text)
+		if name != "" && checker_reduce_name_list_contains(assigned[:], name) {
 			checker_add_diagnostic(
 				ctx,
 				.Invalid_Syntax_Form,
 				named.name.range,
 				"REDUCE NEXT assignment name is duplicated",
 			)
-		} else if string_interner.is_valid(name) {
+		} else if name != "" {
 			append(&assigned, name)
 		}
 		target_type := project_type_unknown(ctx.project)
-		if !string_interner.is_valid(name) || !checker_reduce_state_has_init_name(state, name) {
+		if name == "" || !checker_reduce_state_has_init_name(state, name) {
 			checker_add_diagnostic(
 				ctx,
 				.Invalid_Syntax_Form,
@@ -1093,12 +1092,12 @@ checker_check_reduce_next_clause_expr :: proc(
 
 checker_reduce_state_has_init_name :: proc(
 	state: ^Checker_Reduce_Validation_State,
-	name: string_interner.String,
+	name: string,
 ) -> bool {
 	return checker_reduce_name_list_contains(state.init_names[:], name)
 }
 
-checker_reduce_name_list_contains :: proc(names: []string_interner.String, name: string_interner.String) -> bool {
+checker_reduce_name_list_contains :: proc(names: []string, name: string) -> bool {
 	for existing in names {
 		if existing == name {
 			return true
@@ -1297,8 +1296,8 @@ checker_collect_inferred_expr_decl :: proc(
 }
 
 checker_apply_inline_decl_type :: proc(ctx: ^Checker_Context, name: string, typ: ^Type) {
-	interned := checker_intern_name(ctx.project, name)
-	if !string_interner.is_valid(interned) {
+	interned := project_intern_lower_ascii(ctx.project, name)
+	if interned == "" {
 		return
 	}
 	if entity, ok := scope_lookup_declaration(ctx.scope, .Value, interned); ok {

@@ -4,7 +4,9 @@ import "src:ast"
 import execution "src:execution"
 import "src:parser"
 import analyze "src:semantic/analyze"
+import "src:semantic"
 import "src:tokenizer"
+import "src:utils"
 
 import "core:mem"
 import "core:mem/virtual"
@@ -755,7 +757,7 @@ collect_read_table_binary_searches :: proc(out: ^Unit_Lints, stmt: ^ast.Read_Tab
 		}
 		keys := make([dynamic]string, 0, len(entry.key_values), allocator)
 		for key in entry.key_values {
-			append(&keys, canonical_name(key.name, allocator))
+			append(&keys, utils.to_lower_ascii(key.name, allocator))
 		}
 		name := ""
 		if access, ok := value_access_from_expr(entry.table, allocator); ok {
@@ -765,7 +767,7 @@ collect_read_table_binary_searches :: proc(out: ^Unit_Lints, stmt: ^ast.Read_Tab
 			&out.read_table_binary_searches,
 			Read_Table_Binary_Search_Data {
 				range = entry.binary_search_clause,
-				table_name = canonical_name(name, allocator),
+				table_name = utils.to_lower_ascii(name, allocator),
 				key_fields = keys,
 			},
 		)
@@ -785,7 +787,7 @@ collect_sort_order :: proc(out: ^Unit_Lints, stmt: ^ast.Sort_Stmt, allocator: me
 		if field.name == "" || field.descending {
 			return
 		}
-		append(&keys, canonical_name(field.name, allocator))
+		append(&keys, utils.to_lower_ascii(field.name, allocator))
 	}
 	append(
 		&out.internal_table_orders,
@@ -812,7 +814,7 @@ collect_select_order :: proc(
 	}
 	keys := make([dynamic]string, 0, len(query.order_by_fields), allocator)
 	for field in query.order_by_fields {
-		append(&keys, canonical_name(field.text, allocator))
+		append(&keys, utils.to_lower_ascii(field.text, allocator))
 	}
 	append(
 		&out.internal_table_orders,
@@ -828,7 +830,7 @@ collect_perform_call :: proc(out: ^Unit_Lints, stmt: ^ast.Perform_Stmt, allocato
 	routine_name := ""
 	routine_range := tokenizer.Range{}
 	if name, range, ok := expr_name(stmt.form); ok && stmt.form_kind == .Static {
-		routine_name = canonical_name(name, allocator)
+		routine_name = utils.to_lower_ascii(name, allocator)
 		routine_range = range
 	}
 	program := Perform_Program_Data{}
@@ -887,14 +889,14 @@ static_perform_program_name :: proc(stmt: ^ast.Perform_Stmt, allocator: mem.Allo
 	}
 	if stmt.program_kind == .Static {
 		if name, range, ok := expr_name(stmt.program); ok {
-			return canonical_name(strip_quotes(name), allocator), range, true
+			return utils.to_lower_ascii(strip_quotes(name), allocator), range, true
 		}
 	}
 	if stmt.program_kind == .Dynamic {
 		if paren, ok := stmt.program.derived_expr.(^ast.Paren_Expr); ok {
 			if name, range, name_ok := expr_name(paren.expr); name_ok {
 				if _, lit_ok := paren.expr.derived_expr.(^ast.Literal_Expr); lit_ok {
-					return canonical_name(strip_quotes(name), allocator), range, true
+					return utils.to_lower_ascii(strip_quotes(name), allocator), range, true
 				}
 			}
 		}
@@ -1006,7 +1008,7 @@ value_access_from_expr :: proc(expr: ^ast.Expr, allocator: mem.Allocator) -> (Va
 			return {}, false
 		}
 		return Value_Access {
-			base_name = canonical_name(n.name, allocator),
+			base_name = utils.to_lower_ascii(n.name, allocator),
 			base_range = n.range,
 			fields = make([dynamic]string, 0, 2, allocator),
 		}, true
@@ -1015,7 +1017,7 @@ value_access_from_expr :: proc(expr: ^ast.Expr, allocator: mem.Allocator) -> (Va
 			return {}, false
 		}
 		return Value_Access {
-			base_name = canonical_name(n.name, allocator),
+			base_name = utils.to_lower_ascii(n.name, allocator),
 			base_range = n.range,
 			fields = make([dynamic]string, 0, 2, allocator),
 		}, true
@@ -1024,7 +1026,7 @@ value_access_from_expr :: proc(expr: ^ast.Expr, allocator: mem.Allocator) -> (Va
 			return {}, false
 		}
 		return Value_Access {
-			base_name = canonical_name(n.name, allocator),
+			base_name = utils.to_lower_ascii(n.name, allocator),
 			base_range = n.range,
 			fields = make([dynamic]string, 0, 2, allocator),
 		}, true
@@ -1033,7 +1035,7 @@ value_access_from_expr :: proc(expr: ^ast.Expr, allocator: mem.Allocator) -> (Va
 			return {}, false
 		}
 		return Value_Access {
-			base_name = canonical_name(n.name, allocator),
+			base_name = utils.to_lower_ascii(n.name, allocator),
 			base_range = n.range,
 			fields = make([dynamic]string, 0, 2, allocator),
 		}, true
@@ -1043,7 +1045,7 @@ value_access_from_expr :: proc(expr: ^ast.Expr, allocator: mem.Allocator) -> (Va
 			return {}, false
 		}
 		if name, _, name_ok := expr_name(n.field); name_ok {
-			append(&access.fields, canonical_name(name, allocator))
+			append(&access.fields, utils.to_lower_ascii(name, allocator))
 			return access, true
 		}
 	}
@@ -1083,10 +1085,6 @@ expr_name :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range, bool) {
 		return n.value, n.range, n.value != ""
 	}
 	return "", tokenizer.Range{}, false
-}
-
-canonical_name :: proc(name: string, allocator: mem.Allocator) -> string {
-	return strings.to_lower(name, allocator)
 }
 
 strip_quotes :: proc(value: string) -> string {

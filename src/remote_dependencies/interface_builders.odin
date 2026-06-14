@@ -4,6 +4,7 @@ package abap_frontend_remote_dependencies
 import "src:ast"
 import ddic_xml "src:ddic_xml"
 import "src:parser"
+import "src:utils"
 
 import "core:mem"
 import "core:strings"
@@ -25,6 +26,7 @@ Prepared_Artifact :: struct {
 	provided_names: [dynamic]string,
 	source_hash:    u64,
 	diagnostics:    [dynamic]string,
+	has_parse_errors: bool,
 }
 
 result_add_artifact :: proc(
@@ -93,6 +95,7 @@ prepare_artifact_source :: proc(
 	for err in parsed.errors {
 		append(&prepared.diagnostics, err.message)
 	}
+	prepared.has_parse_errors = len(parsed.errors) > 0
 
 	if artifact_is_full_source(artifact) {
 		prepared.ok = true
@@ -188,6 +191,7 @@ result_add_prepared_artifact_outputs :: proc(
 				root           = root,
 				provided_names = provided_names,
 				source_hash    = prepared.source_hash,
+				has_parse_errors = prepared.has_parse_errors,
 			},
 		)
 		return true
@@ -212,6 +216,7 @@ result_add_prepared_artifact_outputs :: proc(
 				path        = path,
 				root        = root,
 				source_hash = prepared.source_hash,
+				has_parse_errors = prepared.has_parse_errors,
 			},
 		)
 		return true
@@ -284,7 +289,7 @@ append_provided_name :: proc(
 	name: string,
 	allocator: mem.Allocator,
 ) {
-	canonical := strings.to_lower(strings.trim_space(name), allocator)
+	canonical := utils.to_lower_ascii(strings.trim_space(name), allocator)
 	if canonical == "" {
 		return
 	}
@@ -306,7 +311,7 @@ interface_key :: proc(
 		name = artifact.request.name
 	}
 	key := Remote_Dependency_Key {
-		name = strings.to_lower(strings.trim_space(name), allocator),
+		name = utils.to_lower_ascii(strings.trim_space(name), allocator),
 		kind = role_request_kind(role),
 	}
 	return key
@@ -427,6 +432,7 @@ open_source_from_artifact :: proc(
 		source_text    = source,
 		root           = parsed.root,
 		source_hash    = source_hash(source),
+		has_parse_errors = len(parsed.errors) > 0,
 	}
 }
 

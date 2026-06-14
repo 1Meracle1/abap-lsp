@@ -287,6 +287,28 @@ FIELD-SYMBOL(<ls_stab>).`
 }
 
 @(test)
+unterminated_append_constructor_recovers_before_following_statement :: proc(t: ^testing.T) {
+	source := `APPEND VALUE #( field = 'hello'
+SELECT *
+  FROM ztab
+  INTO TABLE @DATA(lt_rows)
+  WHERE status = 'I'.
+LOOP AT lt_rows INTO DATA(ls_row).
+  UPDATE ztab
+    SET status = 'R'
+    WHERE job_id = @ls_row-job_id.
+ENDLOOP.`
+	parsed := parse(source, "append_constructor_recovery.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	expect_error_contains(t, parsed, "expected ')' to close constructor expression")
+	testing.expect(t, len(parsed.errors) <= 2)
+	testing.expect_value(t, counts.select_stmt, 1)
+	testing.expect_value(t, counts.loop_stmt, 1)
+	testing.expect_value(t, counts.update_stmt, 1)
+}
+
+@(test)
 insert_initial_line_keeps_insert_shape :: proc(t: ^testing.T) {
 	source := `INSERT INITIAL LINE INTO TABLE lt_stab ASSIGNING <ls_stab> INDEX 1.`
 	parsed := parse(source, "insert_initial_line.abap", context.allocator)

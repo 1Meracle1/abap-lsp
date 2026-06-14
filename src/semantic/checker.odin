@@ -1,11 +1,11 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 
 import "core:strings"
 
 Checker_Diagnostic_Kind :: enum {
+	Syntax_Error,
 	Duplicate_Declaration,
 	Shadowed_Declaration,
 	Declaration_Cycle,
@@ -72,6 +72,18 @@ Checker_Dependency :: struct {
 	entity: ^Entity,
 }
 
+Object_Member_Lookup_Key :: struct {
+	owner:     ^Entity,
+	namespace: Namespace,
+	name:      string,
+	excluded:  ^Entity,
+}
+
+Object_Member_Lookup_Result :: struct {
+	entity: ^Entity,
+	found:  bool,
+}
+
 Checker_Entity_Use :: struct {
 	node:   ^ast.Node,
 	file:   ^Project_File,
@@ -82,39 +94,42 @@ Checker_Entity_Use :: struct {
 }
 
 Checker_Info :: struct {
-	checker:          ^Checker,
-	project:          ^Project,
-	builtin_scope:    ^Scope,
-	files:            [dynamic]^Project_File,
-	definitions:      [dynamic]^Entity,
-	entity_queue:     [dynamic]^Entity,
-	checked_entities: [dynamic]^Entity,
-	dependencies:     [dynamic]Checker_Dependency,
-	uses:             [dynamic]Checker_Entity_Use,
-	expr_infos:       [dynamic]Checker_Expr_Record,
-	diagnostics:      [dynamic]Checker_Diagnostic,
-	unresolved:       [dynamic]Checker_Unresolved_Candidate,
-	resolved_external_dependencies:   [dynamic]Semantic_Dependency_Edge,
-	unresolved_external_dependencies: [dynamic]Semantic_Dependency_Edge,
-	external:         ^External_Semantics,
+	checker:                                ^Checker,
+	project:                                ^Project,
+	builtin_scope:                          ^Scope,
+	files:                                  [dynamic]^Project_File,
+	definitions:                            [dynamic]^Entity,
+	entity_queue:                           [dynamic]^Entity,
+	checked_entities:                       [dynamic]^Entity,
+	dependencies:                           [dynamic]Checker_Dependency,
+	uses:                                   [dynamic]Checker_Entity_Use,
+	expr_infos:                             [dynamic]Checker_Expr_Record,
+	diagnostics:                            [dynamic]Checker_Diagnostic,
+	unresolved:                             [dynamic]Checker_Unresolved_Candidate,
+	resolved_external_dependencies:         [dynamic]Semantic_Dependency_Edge,
+	unresolved_external_dependencies:       [dynamic]Semantic_Dependency_Edge,
+	resolved_external_dependency_indexes:   map[Semantic_Dependency_Edge_Key]int,
+	unresolved_external_dependency_indexes: map[Semantic_Dependency_Edge_Key]int,
+	object_member_lookup_cache:             map[Object_Member_Lookup_Key]Object_Member_Lookup_Result,
+	external:                               ^External_Semantics,
 }
 
 Checker_Context :: struct {
-	checker:           ^Checker,
-	info:              ^Checker_Info,
-	project:           ^Project,
-	file:              ^Project_File,
-	scope:             ^Scope,
-	decl:              ^Decl_Info,
-	type_hint:         ^Type,
-	type_hint_expr:    ^ast.Node,
+	checker:                        ^Checker,
+	info:                           ^Checker_Info,
+	project:                        ^Project,
+	file:                           ^Project_File,
+	scope:                          ^Scope,
+	decl:                           ^Decl_Info,
+	type_hint:                      ^Type,
+	type_hint_expr:                 ^ast.Node,
 	diagnose_unresolved_value_refs: bool,
-	cursor_shapes:     [dynamic]Checker_Cursor_Query,
-	current_decl:      ^Decl_Info,
-	current_routine:   ^Entity,
-	current_signature: ^Type,
-	in_signature:      bool,
-	type_path:         [dynamic]^Entity,
+	cursor_shapes:                  [dynamic]Checker_Cursor_Query,
+	current_decl:                   ^Decl_Info,
+	current_routine:                ^Entity,
+	current_signature:              ^Type,
+	in_signature:                   bool,
+	type_path:                      [dynamic]^Entity,
 }
 
 Checker :: struct {
@@ -123,7 +138,12 @@ Checker :: struct {
 	builtin_context: Checker_Context,
 }
 
-checker_make :: proc(project: ^Project, external: ^External_Semantics = nil) -> (checker: Checker) {
+checker_make :: proc(
+	project: ^Project,
+	external: ^External_Semantics = nil,
+) -> (
+	checker: Checker,
+) {
 	checker_init(&checker, project, external)
 	return
 }
@@ -161,20 +181,45 @@ checker_info_make :: proc(
 	external: ^External_Semantics = nil,
 ) -> Checker_Info {
 	return Checker_Info {
-		checker          = checker,
-		project          = project,
-		files            = make([dynamic]^Project_File, 0, 8, project.allocator),
-		definitions      = make([dynamic]^Entity, 0, 16, project.allocator),
-		entity_queue     = make([dynamic]^Entity, 0, 16, project.allocator),
+		checker = checker,
+		project = project,
+		files = make([dynamic]^Project_File, 0, 8, project.allocator),
+		definitions = make([dynamic]^Entity, 0, 16, project.allocator),
+		entity_queue = make([dynamic]^Entity, 0, 16, project.allocator),
 		checked_entities = make([dynamic]^Entity, 0, 16, project.allocator),
-		dependencies     = make([dynamic]Checker_Dependency, 0, 16, project.allocator),
-		uses             = make([dynamic]Checker_Entity_Use, 0, 32, project.allocator),
-		expr_infos       = make([dynamic]Checker_Expr_Record, 0, 32, project.allocator),
-		diagnostics      = make([dynamic]Checker_Diagnostic, 0, 8, project.allocator),
-		unresolved       = make([dynamic]Checker_Unresolved_Candidate, 0, 8, project.allocator),
-		resolved_external_dependencies   = make([dynamic]Semantic_Dependency_Edge, 0, 8, project.allocator),
-		unresolved_external_dependencies = make([dynamic]Semantic_Dependency_Edge, 0, 8, project.allocator),
-		external         = external,
+		dependencies = make([dynamic]Checker_Dependency, 0, 16, project.allocator),
+		uses = make([dynamic]Checker_Entity_Use, 0, 32, project.allocator),
+		expr_infos = make([dynamic]Checker_Expr_Record, 0, 32, project.allocator),
+		diagnostics = make([dynamic]Checker_Diagnostic, 0, 8, project.allocator),
+		unresolved = make([dynamic]Checker_Unresolved_Candidate, 0, 8, project.allocator),
+		resolved_external_dependencies = make(
+			[dynamic]Semantic_Dependency_Edge,
+			0,
+			8,
+			project.allocator,
+		),
+		unresolved_external_dependencies = make(
+			[dynamic]Semantic_Dependency_Edge,
+			0,
+			8,
+			project.allocator,
+		),
+		resolved_external_dependency_indexes = make(
+			map[Semantic_Dependency_Edge_Key]int,
+			8,
+			project.allocator,
+		),
+		unresolved_external_dependency_indexes = make(
+			map[Semantic_Dependency_Edge_Key]int,
+			8,
+			project.allocator,
+		),
+		object_member_lookup_cache = make(
+			map[Object_Member_Lookup_Key]Object_Member_Lookup_Result,
+			64,
+			project.allocator,
+		),
+		external = external,
 	}
 }
 
@@ -238,10 +283,19 @@ checker_add_file :: proc(
 	checker: ^Checker,
 	path: string = "",
 	root: ^ast.File = nil,
+	syntax_diagnostics: []Syntax_Diagnostic = nil,
+	has_syntax_errors: bool = false,
 ) -> ^Project_File {
 	assert(checker != nil)
-	file := project_add_file(checker.project, path, root)
+	file := project_add_file(
+		checker.project,
+		path,
+		root,
+		syntax_diagnostics,
+		has_syntax_errors,
+	)
 	checker_register_file(checker, file)
+	checker_add_file_syntax_diagnostics(checker, file)
 	return file
 }
 
@@ -255,6 +309,51 @@ checker_register_file :: proc(checker: ^Checker, file: ^Project_File) -> bool {
 	}
 	append(&checker.info.files, file)
 	return true
+}
+
+checker_add_file_syntax_diagnostics :: proc(checker: ^Checker, file: ^Project_File) {
+	if file == nil {
+		return
+	}
+	for diagnostic in file.syntax_diagnostics {
+		if checker_diagnostic_present(
+			checker.info.diagnostics[:],
+			.Syntax_Error,
+			diagnostic.range,
+			file,
+			diagnostic.message,
+		) {
+			continue
+		}
+		append(
+			&checker.info.diagnostics,
+			Checker_Diagnostic {
+				kind = .Syntax_Error,
+				severity = .Error,
+				range = diagnostic.range,
+				message = strings.clone(diagnostic.message, checker.project.allocator),
+				file = file,
+			},
+		)
+	}
+}
+
+checker_diagnostic_present :: proc(
+	diagnostics: []Checker_Diagnostic,
+	kind: Checker_Diagnostic_Kind,
+	range: Range,
+	file: ^Project_File,
+	message: string,
+) -> bool {
+	for diagnostic in diagnostics {
+		if diagnostic.kind == kind &&
+		   diagnostic.range == range &&
+		   diagnostic.file == file &&
+		   diagnostic.message == message {
+			return true
+		}
+	}
+	return false
 }
 
 checker_ensure_file_scope :: proc(checker: ^Checker, file: ^Project_File) -> ^Scope {
@@ -321,7 +420,7 @@ checker_close_scope :: proc(ctx: ^Checker_Context) {
 checker_lookup_declaration :: proc(
 	ctx: ^Checker_Context,
 	namespace: Namespace,
-	name: string_interner.String,
+	name: string,
 ) -> (
 	^Scope,
 	^Entity,
@@ -334,19 +433,30 @@ checker_lookup_declaration :: proc(
 checker_lookup_declaration_from_scope :: proc(
 	scope: ^Scope,
 	namespace: Namespace,
-	name: string_interner.String,
+	name: string,
 	excluded: ^Entity = nil,
 ) -> (
 	^Scope,
 	^Entity,
 	bool,
 ) {
-	if found_scope, entity, ok := checker_lookup_lexical_declaration_from_scope(scope, namespace, name, excluded); ok {
+	if found_scope, entity, ok := lookup_lexical_declaration_from_scope(
+		scope,
+		namespace,
+		name,
+		excluded,
+	); ok {
 		return found_scope, entity, true
 	}
 
 	if owner := checker_enclosing_object_owner(scope); owner != nil {
-		if entity, ok := checker_lookup_object_member_from_scope(scope, owner, namespace, name, excluded); ok {
+		if entity, ok := checker_lookup_object_member_from_scope(
+			scope,
+			owner,
+			namespace,
+			name,
+			excluded,
+		); ok {
 			return entity.scope, entity, true
 		}
 	}
@@ -354,23 +464,24 @@ checker_lookup_declaration_from_scope :: proc(
 	return nil, nil, false
 }
 
-checker_lookup_lexical_declaration_from_scope :: proc(
+lookup_lexical_declaration_from_scope :: proc(
 	scope: ^Scope,
 	namespace: Namespace,
-	name: string_interner.String,
+	name: string,
 	excluded: ^Entity = nil,
 ) -> (
 	^Scope,
 	^Entity,
 	bool,
 ) {
-	assert(scope != nil)
 	for current := scope; current != nil; current = current.parent {
-		if entity, ok := scope_lookup_declaration(current, namespace, name); ok && entity != excluded {
+		if entity, ok := scope_lookup_declaration(current, namespace, name);
+		   ok && entity != excluded {
 			return current, entity, true
 		}
 		for imported in current.imported {
-			if entity, ok := scope_lookup_declaration(imported, namespace, name); ok && entity != excluded {
+			if entity, ok := scope_lookup_declaration(imported, namespace, name);
+			   ok && entity != excluded {
 				return imported, entity, true
 			}
 		}
@@ -381,7 +492,7 @@ checker_lookup_lexical_declaration_from_scope :: proc(
 checker_lookup_reference :: proc(
 	ctx: ^Checker_Context,
 	namespace: Namespace,
-	name: string_interner.String,
+	name: string,
 	preferred_external_kind: External_Candidate_Kind = .Global_Symbol,
 	excluded: ^Entity = nil,
 ) -> (
@@ -389,8 +500,12 @@ checker_lookup_reference :: proc(
 	^Entity,
 	bool,
 ) {
-	assert(ctx != nil && ctx.scope != nil)
-	if scope, entity, ok := checker_lookup_declaration_from_scope(ctx.scope, namespace, name, excluded); ok {
+	if scope, entity, ok := checker_lookup_declaration_from_scope(
+		ctx.scope,
+		namespace,
+		name,
+		excluded,
+	); ok {
 		return scope, entity, true
 	}
 	if owner := checker_enclosing_object_owner(ctx.scope); owner != nil {
@@ -399,17 +514,32 @@ checker_lookup_reference :: proc(
 		}
 	}
 	if namespace == .Value {
-		if scope, entity, ok := checker_lookup_declaration_from_scope(ctx.scope, .Type, name, excluded); ok {
+		if scope, entity, ok := checker_lookup_declaration_from_scope(
+			ctx.scope,
+			.Type,
+			name,
+			excluded,
+		); ok {
 			return scope, entity, true
 		}
 	}
 	if ctx.info.external != nil {
-		if key, binding, ok := external_semantic_index_lookup(&ctx.info.external.index, namespace, name, preferred_external_kind); ok {
+		if key, binding, ok := external_semantic_index_lookup(
+			&ctx.info.external.index,
+			namespace,
+			name,
+			preferred_external_kind,
+		); ok {
 			checker_add_resolved_external_dependency(ctx, key, binding)
 			return binding.entity.scope, binding.entity, true
 		}
 		if namespace == .Value {
-			if key, binding, ok := external_semantic_index_lookup(&ctx.info.external.index, .Type, name, preferred_external_kind); ok {
+			if key, binding, ok := external_semantic_index_lookup(
+				&ctx.info.external.index,
+				.Type,
+				name,
+				preferred_external_kind,
+			); ok {
 				checker_add_resolved_external_dependency(ctx, key, binding)
 				return binding.entity.scope, binding.entity, true
 			}
@@ -421,39 +551,72 @@ checker_lookup_reference :: proc(
 checker_lookup_object_member :: proc(
 	owner: ^Entity,
 	namespace: Namespace,
-	name: string_interner.String,
+	name: string,
 	excluded: ^Entity = nil,
-) -> (^Entity, bool) {
+) -> (
+	^Entity,
+	bool,
+) {
 	return checker_lookup_object_member_internal(owner, namespace, name, 0, excluded)
 }
 
-checker_lookup_object_member_checked :: proc(
+checker_lookup_object_member_cached :: proc(
 	ctx: ^Checker_Context,
 	owner: ^Entity,
 	namespace: Namespace,
-	name: string_interner.String,
+	name: string,
 	excluded: ^Entity = nil,
-) -> (^Entity, bool) {
-	return checker_lookup_object_member_internal(owner, namespace, name, 0, excluded, ctx)
+) -> (
+	^Entity,
+	bool,
+) {
+	key := Object_Member_Lookup_Key {
+		owner     = owner,
+		namespace = namespace,
+		name      = name,
+		excluded  = excluded,
+	}
+	if cached, ok := ctx.info.object_member_lookup_cache[key]; ok {
+		return cached.entity, cached.found
+	}
+	entity, found := checker_lookup_object_member_internal(
+		owner,
+		namespace,
+		name,
+		0,
+		excluded,
+		ctx,
+	)
+	stored_key := key
+	stored_key.name = strings.clone(name, ctx.project.allocator)
+	ctx.info.object_member_lookup_cache[stored_key] = Object_Member_Lookup_Result {
+		entity = entity,
+		found  = found,
+	}
+	return entity, found
 }
 
-checker_lookup_structure_field :: proc(
+checker_lookup_structure_field :: #force_inline proc(
 	structure: ^Structure,
-	name: string_interner.String,
-) -> (^Entity, bool) {
-	assert(structure != nil && structure.scope != nil)
+	name: string,
+) -> (
+	^Entity,
+	bool,
+) {
 	return scope_lookup_declaration(structure.scope, .Value, name)
 }
 
 checker_lookup_object_member_internal :: proc(
 	owner: ^Entity,
 	namespace: Namespace,
-	name: string_interner.String,
+	name: string,
 	depth: int,
 	excluded: ^Entity = nil,
 	ctx: ^Checker_Context = nil,
-) -> (^Entity, bool) {
-	assert(owner != nil)
+) -> (
+	^Entity,
+	bool,
+) {
 	if depth > 64 {
 		return nil, false
 	}
@@ -462,18 +625,45 @@ checker_lookup_object_member_internal :: proc(
 	if payload.definition_scope == nil {
 		return nil, false
 	}
-	if entity, found := scope_lookup_declaration(payload.definition_scope, namespace, name); found && entity != excluded {
+	if entity, found := scope_lookup_declaration(payload.definition_scope, namespace, name);
+	   found && entity != excluded {
 		return entity, true
 	}
-	if entity, found := checker_lookup_object_alias_member(owner, namespace, name, depth + 1, excluded, ctx); found {
+	if entity, found := checker_lookup_object_alias_member(
+		owner,
+		namespace,
+		name,
+		depth + 1,
+		excluded,
+		ctx,
+	); found {
 		return entity, true
 	}
-	if entity, found := checker_lookup_implemented_interface_member(owner, namespace, name, depth + 1, excluded, ctx); found {
+	if entity, found := checker_lookup_implemented_interface_member(
+		owner,
+		namespace,
+		name,
+		depth + 1,
+		excluded,
+		ctx,
+	); found {
 		return entity, true
 	}
-	if string_interner.is_valid(payload.superclass_name) {
-		if super, super_ok := checker_lookup_object_type_from_scope(ctx, owner.scope, payload.superclass_name, .Class); super_ok {
-			if entity, found := checker_lookup_object_member_internal(super, namespace, name, depth + 1, excluded, ctx); found {
+	if payload.superclass_name != "" {
+		if super, super_ok := checker_lookup_object_type_from_scope(
+			ctx,
+			owner.scope,
+			payload.superclass_name,
+			.Class,
+		); super_ok {
+			if entity, found := checker_lookup_object_member_internal(
+				super,
+				namespace,
+				name,
+				depth + 1,
+				excluded,
+				ctx,
+			); found {
 				return entity, true
 			}
 		}
@@ -484,11 +674,14 @@ checker_lookup_object_member_internal :: proc(
 checker_lookup_object_alias_member :: proc(
 	owner: ^Entity,
 	namespace: Namespace,
-	name: string_interner.String,
+	name: string,
 	depth: int,
 	excluded: ^Entity = nil,
 	ctx: ^Checker_Context = nil,
-) -> (^Entity, bool) {
+) -> (
+	^Entity,
+	bool,
+) {
 	payload, ok := owner.payload.(^Entity_Object_Payload)
 	assert(ok && payload != nil)
 	if payload.definition_scope == nil {
@@ -500,18 +693,30 @@ checker_lookup_object_alias_member :: proc(
 		}
 		alias_payload, alias_ok := alias.payload.(^Entity_Alias_Payload)
 		assert(alias_ok && alias_payload != nil)
-		if !string_interner.is_valid(alias_payload.target_interface_name) {
+		if alias_payload.target_interface_name == "" {
 			continue
 		}
-		target_interface, interface_ok := checker_lookup_object_type_from_scope(ctx, owner.scope, alias_payload.target_interface_name, .Interface)
+		target_interface, interface_ok := checker_lookup_object_type_from_scope(
+			ctx,
+			owner.scope,
+			alias_payload.target_interface_name,
+			.Interface,
+		)
 		if !interface_ok {
 			continue
 		}
 		target_name := alias_payload.target_member_name
-		if !string_interner.is_valid(target_name) {
+		if target_name == "" {
 			target_name = name
 		}
-		if entity, found := checker_lookup_object_member_internal(target_interface, namespace, target_name, depth + 1, excluded, ctx); found {
+		if entity, found := checker_lookup_object_member_internal(
+			target_interface,
+			namespace,
+			target_name,
+			depth + 1,
+			excluded,
+			ctx,
+		); found {
 			return entity, true
 		}
 	}
@@ -521,22 +726,37 @@ checker_lookup_object_alias_member :: proc(
 checker_lookup_implemented_interface_member :: proc(
 	owner: ^Entity,
 	namespace: Namespace,
-	name: string_interner.String,
+	name: string,
 	depth: int,
 	excluded: ^Entity = nil,
 	ctx: ^Checker_Context = nil,
-) -> (^Entity, bool) {
+) -> (
+	^Entity,
+	bool,
+) {
 	payload, ok := owner.payload.(^Entity_Object_Payload)
 	assert(ok && payload != nil)
 	for interface_name in payload.implemented_interfaces {
-		if !string_interner.is_valid(interface_name) {
+		if interface_name == "" {
 			continue
 		}
-		interface_entity, interface_ok := checker_lookup_object_type_from_scope(ctx, owner.scope, interface_name, .Interface)
+		interface_entity, interface_ok := checker_lookup_object_type_from_scope(
+			ctx,
+			owner.scope,
+			interface_name,
+			.Interface,
+		)
 		if !interface_ok {
 			continue
 		}
-		if entity, found := checker_lookup_object_member_internal(interface_entity, namespace, name, depth + 1, excluded, ctx); found {
+		if entity, found := checker_lookup_object_member_internal(
+			interface_entity,
+			namespace,
+			name,
+			depth + 1,
+			excluded,
+			ctx,
+		); found {
 			return entity, true
 		}
 	}
@@ -546,21 +766,27 @@ checker_lookup_implemented_interface_member :: proc(
 checker_lookup_object_type_from_scope :: proc(
 	ctx: ^Checker_Context,
 	scope: ^Scope,
-	name: string_interner.String,
+	name: string,
 	kind: Entity_Kind,
-) -> (^Entity, bool) {
+) -> (
+	^Entity,
+	bool,
+) {
 	assert(kind == .Class || kind == .Interface)
-	if scope == nil || !string_interner.is_valid(name) {
+	if scope == nil || name == "" {
 		return nil, false
 	}
 	if ctx != nil {
-		preferred := External_Candidate_Kind.Class if kind == .Class else External_Candidate_Kind.Interface
-		if entity, ok := checker_lookup_type_name_from_scope(ctx, scope, name, preferred); ok && entity.kind == kind {
+		preferred :=
+			External_Candidate_Kind.Class if kind == .Class else External_Candidate_Kind.Interface
+		if entity, ok := checker_lookup_type_name_from_scope(ctx, scope, name, preferred);
+		   ok && entity.kind == kind {
 			return entity, true
 		}
 		return nil, false
 	}
-	if _, entity, ok := checker_lookup_lexical_declaration_from_scope(scope, .Type, name); ok && entity.kind == kind {
+	if _, entity, ok := lookup_lexical_declaration_from_scope(scope, .Type, name);
+	   ok && entity.kind == kind {
 		return entity, true
 	}
 	return nil, false
@@ -582,10 +808,7 @@ checker_add_entity_and_decl_info :: proc(
 	decl: ^Decl_Info,
 	insert_in_scope := true,
 ) -> bool {
-	assert(ctx != nil && entity != nil && decl != nil)
-	assert(ctx.scope != nil && decl.scope != nil)
 	scope := decl.scope
-
 	decl.scope = scope
 	decl.entity = entity
 	entity.decl_info = decl
@@ -600,9 +823,20 @@ checker_add_entity_and_decl_info :: proc(
 	assert(entity_is_builtin(entity) || entity.source_file != nil)
 
 	if insert_in_scope {
-		if previous := scope_insert_declaration(scope, entity); previous != nil && previous != entity {
-			checker_add_diagnostic(ctx, .Duplicate_Declaration, entity.name_range, "duplicate declaration", entity, decl)
+		if previous := scope_insert_declaration(scope, entity);
+		   previous != nil && previous != entity {
+			checker_add_diagnostic(
+				ctx,
+				.Duplicate_Declaration,
+				entity.name_range,
+				"duplicate declaration",
+				entity,
+				decl,
+			)
 			return false
+		}
+		if scope.kind == .Class || scope.kind == .Interface {
+			checker_clear_object_member_lookup_cache(ctx.info)
 		}
 		if shadowed := checker_shadowed_declaration(scope, entity); shadowed != nil {
 			checker_add_diagnostic(
@@ -624,8 +858,12 @@ checker_add_entity_and_decl_info :: proc(
 	return true
 }
 
+checker_clear_object_member_lookup_cache :: proc(info: ^Checker_Info) {
+	assert(info != nil && info.object_member_lookup_cache != nil)
+	clear(&info.object_member_lookup_cache)
+}
+
 checker_shadowed_declaration :: proc(scope: ^Scope, entity: ^Entity) -> ^Entity {
-	assert(scope != nil && entity != nil)
 	if entity_is_builtin(entity) {
 		return nil
 	}
@@ -639,7 +877,8 @@ checker_shadowed_declaration :: proc(scope: ^Scope, entity: ^Entity) -> ^Entity 
 			if !entity_kind_occupies(entity.kind, namespace) {
 				continue
 			}
-			if existing, ok := scope_lookup_declaration(parent, namespace, entity.name); ok && !entity_is_builtin(existing) {
+			if existing, ok := scope_lookup_declaration(parent, namespace, entity.name);
+			   ok && !entity_is_builtin(existing) {
 				return existing
 			}
 		}
@@ -665,11 +904,7 @@ checker_enqueue_entity :: proc(info: ^Checker_Info, entity: ^Entity) {
 	append(&info.entity_queue, entity)
 }
 
-checker_add_entity_use :: proc(
-	ctx: ^Checker_Context,
-	node: ^ast.Node,
-	entity: ^Entity,
-) {
+checker_add_entity_use :: proc(ctx: ^Checker_Context, node: ^ast.Node, entity: ^Entity) {
 	range := node.range if node != nil else Range{}
 	checker_add_entity_use_at_range(ctx, node, entity, range)
 }
@@ -680,24 +915,22 @@ checker_add_entity_use_at_range :: proc(
 	entity: ^Entity,
 	range: Range,
 ) {
-	assert(entity != nil)
 	entity.flags += {.Used}
 	checker_add_dependency(ctx, entity)
 	append(
 		&ctx.info.uses,
 		Checker_Entity_Use {
-			node   = node,
-			file   = ctx.file,
-			scope  = ctx.scope,
-			decl   = ctx.decl,
+			node = node,
+			file = ctx.file,
+			scope = ctx.scope,
+			decl = ctx.decl,
 			entity = entity,
-			range  = range,
+			range = range,
 		},
 	)
 }
 
 checker_add_dependency :: proc(ctx: ^Checker_Context, entity: ^Entity) {
-	assert(ctx != nil && entity != nil)
 	if ctx.decl == nil {
 		return
 	}
@@ -711,17 +944,13 @@ checker_add_dependency :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 
 checker_check_file :: proc(checker: ^Checker, file: ^Project_File) {
 	checker_register_file(checker, file)
+	checker_add_file_syntax_diagnostics(checker, file)
 	ctx := checker_context_make(checker, file)
 	checker_collect_file_entities(&ctx, file)
 	checker_check_queued_entities(&ctx)
 	if file.root != nil {
 		checker_check_stmt_list(&ctx, file.root.stmts, collect_declarations = false)
 	}
-}
-
-checker_intern_name :: proc(project: ^Project, name: string) -> string_interner.String {
-	canonical := strings.to_lower(name, context.temp_allocator)
-	return string_interner.insert(project.interner, canonical)
 }
 
 checker_add_diagnostic :: proc(
@@ -736,13 +965,13 @@ checker_add_diagnostic :: proc(
 	append(
 		&ctx.info.diagnostics,
 		Checker_Diagnostic {
-			kind     = kind,
+			kind = kind,
 			severity = severity,
-			range    = range,
-			message  = strings.clone(message, ctx.project.allocator) if message != "" else "",
-			file     = ctx.file,
-			entity   = entity,
-			decl     = decl,
+			range = range,
+			message = strings.clone(message, ctx.project.allocator),
+			file = ctx.file,
+			entity = entity,
+			decl = decl,
 		},
 	)
 }

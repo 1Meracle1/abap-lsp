@@ -626,6 +626,11 @@ workspace_file_input_from_source :: proc(
 		root        = parsed.root,
 		kind        = input.kind,
 		object_name = strings.clone(input.object_name, allocator) if input.object_name != "" else "",
+		syntax_diagnostics = syntax_diagnostics_from_parse_errors(
+			parsed.errors,
+			allocator,
+		),
+		has_syntax_errors = len(parsed.errors) > 0,
 	}
 }
 

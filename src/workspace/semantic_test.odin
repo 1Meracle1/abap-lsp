@@ -3,7 +3,7 @@ package abap_frontend_workspace
 import execution "src:execution"
 import "src:parser"
 import "src:semantic"
-import string_interner "src:string_interner"
+import "src:utils"
 
 import "core:os"
 import "core:testing"
@@ -106,6 +106,110 @@ unknown_value = 1.`
 }
 
 @(test)
+workspace_file_analysis_reports_parse_errors_and_skips_remote_fetches :: proc(t: ^testing.T) {
+	root := `tmp\workspace_parse_errors`
+	os.remove_all(root)
+	testing.expect(t, os.make_directory_all(root) == nil)
+	defer os.remove_all(root)
+
+	report_path := `tmp\workspace_parse_errors\zmain.report.abap`
+	source := `REPORT zmain.
+DATA lv TYPE zmissing.
+APPEND VALUE #( field = 'hello'`
+	testing.expect(t, os.write_entire_file(report_path, source) == nil)
+
+	input, input_ok := workspace_file_input_from_path(report_path, context.allocator)
+	testing.expect(t, input_ok)
+	testing.expect(t, len(input.syntax_diagnostics) > 0)
+	if !input_ok {
+		return
+	}
+
+	files := [?]semantic.Workspace_File_Input {input}
+	opened := Workspace {root_path = root}
+	pool: execution.Pool
+	execution.pool_init(
+		&pool,
+		execution.Options {
+			worker_count = 0,
+			task_capacity = 8,
+			queue_capacity = 8,
+			deque_capacity = 8,
+			edge_capacity = 8,
+		},
+		context.allocator,
+	)
+	defer execution.pool_destroy(&pool)
+
+	result := analyze_inputs(&opened, files[:], &pool, context.allocator)
+	defer analysis_result_destroy(&result, context.allocator)
+	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
+	testing.expect(t, analysis != nil)
+	if analysis == nil || len(analysis.project_results) == 0 {
+		return
+	}
+
+	testing.expect_value(t, workspace_test_unresolved_count(analysis, .Global_Symbol, "zmissing"), 1)
+	testing.expect_value(t, len(analysis.external_requests), 0)
+	testing.expect_value(t, len(result.remote_result.misses), 0)
+	syntax_count := 0
+	for diagnostic in analysis.project_results[0].checker.info.diagnostics {
+		if diagnostic.kind == .Syntax_Error {
+			syntax_count += 1
+		}
+	}
+	testing.expect_value(t, syntax_count, len(input.syntax_diagnostics))
+}
+
+@(test)
+workspace_update_options_suspend_external_dependency_acquisition :: proc(t: ^testing.T) {
+	source := "REPORT zmain. DATA lo_remote TYPE REF TO zcl_remote."
+	parsed := parser.parse(source, "mem://zmain.report.abap", context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+	files := [?]semantic.Workspace_File_Input {
+		{path = "mem://zmain.report.abap", root = parsed.root, kind = .Unknown},
+	}
+	opened := Workspace {root_path = "mem://"}
+	pool: execution.Pool
+	execution.pool_init(
+		&pool,
+		execution.Options {
+			worker_count = 0,
+			task_capacity = 8,
+			queue_capacity = 8,
+			deque_capacity = 8,
+			edge_capacity = 8,
+		},
+		context.allocator,
+	)
+	defer execution.pool_destroy(&pool)
+
+	suspended: Analysis_Result
+	suspended_ok := analysis_result_update_inputs(
+		&suspended,
+		&opened,
+		files[:],
+		nil,
+		&pool,
+		context.allocator,
+		Analysis_Update_Options{suspend_external_dependency_acquisition = true},
+	)
+	defer analysis_result_destroy(&suspended, context.allocator)
+	testing.expect(t, suspended_ok)
+	testing.expect_value(t, len(suspended.remote_result.misses), 0)
+	suspended_analysis := semantic.semantic_graph_session_current_analysis(&suspended.session)
+	testing.expect(t, suspended_analysis != nil)
+	if suspended_analysis != nil {
+		testing.expect_value(t, workspace_test_unresolved_count(suspended_analysis, .Global_Symbol, "zcl_remote"), 1)
+	}
+
+	allowed := analyze_inputs(&opened, files[:], &pool, context.allocator)
+	defer analysis_result_destroy(&allowed, context.allocator)
+	testing.expect(t, allowed.ok)
+	testing.expect(t, len(allowed.remote_result.misses) > 0)
+}
+
+@(test)
 analyze_path_uses_standalone_sibling_abap_files :: proc(t: ^testing.T) {
 	root := `tmp\workspace_standalone_sibling`
 	os.remove_all(root)
@@ -179,18 +283,11 @@ workspace_test_unresolved_count :: proc(
 	name: string,
 ) -> int {
 	count := 0
-	interned := semantic_name(analysis, name)
+	interned := utils.to_lower_ascii(name, context.temp_allocator)
 	for candidate in analysis.unresolved {
 		if candidate.kind == kind && candidate.name == interned {
 			count += 1
 		}
 	}
 	return count
-}
-
-semantic_name :: proc(
-	analysis: ^semantic.Workspace_Analysis,
-	name: string,
-) -> string_interner.String {
-	return string_interner.insert(analysis.interner, name)
 }

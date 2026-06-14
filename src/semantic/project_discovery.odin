@@ -1,7 +1,7 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
+import "src:utils"
 
 import "core:mem"
 import "core:strings"
@@ -21,15 +21,22 @@ Workspace_Project_Kind :: enum {
 	Include_Fragment,
 }
 
+Syntax_Diagnostic :: struct {
+	message: string,
+	range:   Range,
+}
+
 Workspace_File_Input :: struct {
-	path:        string,
-	root:        ^ast.File,
-	kind:        Workspace_File_Kind,
-	object_name: string,
+	path:               string,
+	root:               ^ast.File,
+	kind:               Workspace_File_Kind,
+	object_name:        string,
+	syntax_diagnostics: [dynamic]Syntax_Diagnostic,
+	has_syntax_errors:  bool,
 }
 
 Workspace_Include_Edge :: struct {
-	name:           string_interner.String,
+	name:           string,
 	name_range:     Range,
 	if_found:       bool,
 	target_index:   int,
@@ -44,9 +51,11 @@ Workspace_File_Facts :: struct {
 	root:              ^ast.File,
 	kind:              Workspace_File_Kind,
 	explicit_root:     bool,
-	provided_names:    [dynamic]string_interner.String,
+	syntax_diagnostics: [dynamic]Syntax_Diagnostic,
+	has_syntax_errors: bool,
+	provided_names:    [dynamic]string,
 	include_edges:     [dynamic]Workspace_Include_Edge,
-	type_pool_imports: [dynamic]string_interner.String,
+	type_pool_imports: [dynamic]string,
 	included_by_any:   bool,
 }
 
@@ -57,7 +66,6 @@ Workspace_Project_Plan :: struct {
 
 Project_Discovery :: struct {
 	allocator:   mem.Allocator,
-	interner:    ^string_interner.Interner,
 	external:    ^External_Semantics,
 	facts:       [dynamic]Workspace_File_Facts,
 	plans:       [dynamic]Workspace_Project_Plan,
@@ -66,13 +74,11 @@ Project_Discovery :: struct {
 
 project_discovery_build :: proc(
 	files: []Workspace_File_Input,
-	interner: ^string_interner.Interner,
 	external: ^External_Semantics,
 	allocator: mem.Allocator,
 ) -> Project_Discovery {
 	discovery := Project_Discovery {
 		allocator   = allocator,
-		interner    = interner,
 		external    = external,
 		facts       = make([dynamic]Workspace_File_Facts, 0, len(files), allocator),
 		plans       = make([dynamic]Workspace_Project_Plan, 0, len(files), allocator),
@@ -100,12 +106,14 @@ project_discovery_scan_file :: proc(
 	}
 	facts := Workspace_File_Facts {
 		input_index       = index,
-		path              = strings.clone(file.path, discovery.allocator) if file.path != "" else "",
+		path              = strings.clone(file.path, discovery.allocator),
 		root              = file.root,
 		kind              = kind,
-		provided_names    = make([dynamic]string_interner.String, 0, 4, discovery.allocator),
+		syntax_diagnostics = syntax_diagnostic_list_clone(file.syntax_diagnostics[:], discovery.allocator),
+		has_syntax_errors = file.has_syntax_errors || len(file.syntax_diagnostics) > 0,
+		provided_names    = make([dynamic]string, 0, 4, discovery.allocator),
 		include_edges     = make([dynamic]Workspace_Include_Edge, 0, 4, discovery.allocator),
-		type_pool_imports = make([dynamic]string_interner.String, 0, 1, discovery.allocator),
+		type_pool_imports = make([dynamic]string, 0, 1, discovery.allocator),
 	}
 	if file.object_name != "" {
 		project_discovery_add_provided_name(discovery, &facts, file.object_name)
@@ -135,14 +143,16 @@ project_discovery_scan_file :: proc(
 			facts.kind = .Function_Group
 			facts.explicit_root = true
 		case ^ast.Class_Decl:
-			if facts.kind == .Unknown && workspace_global_object_name_matches_file(file.path, n.name.text, .Class) {
+			if facts.kind == .Unknown &&
+			   workspace_global_object_name_matches_file(file.path, n.name.text, .Class) {
 				facts.kind = .Class
 			}
 			if facts.kind == .Class {
 				project_discovery_add_provided_name(discovery, &facts, n.name.text)
 			}
 		case ^ast.Interface_Decl:
-			if facts.kind == .Unknown && workspace_global_object_name_matches_file(file.path, n.name.text, .Interface) {
+			if facts.kind == .Unknown &&
+			   workspace_global_object_name_matches_file(file.path, n.name.text, .Interface) {
 				facts.kind = .Interface
 			}
 			if facts.kind == .Interface {
@@ -150,15 +160,15 @@ project_discovery_scan_file :: proc(
 			}
 		case ^ast.Include_Stmt:
 			for include in n.names {
-				name := project_discovery_intern_name(discovery, include.name.text)
-				if string_interner.is_valid(name) {
+				name := utils.to_lower_ascii(include.name.text, discovery.allocator)
+				if name != "" {
 					append(
 						&facts.include_edges,
 						Workspace_Include_Edge {
-							name           = name,
-							name_range     = include.name.range,
-							if_found       = n.if_found,
-							target_index   = -1,
+							name = name,
+							name_range = include.name.range,
+							if_found = n.if_found,
+							target_index = -1,
 							external_index = -1,
 						},
 					)
@@ -166,8 +176,8 @@ project_discovery_scan_file :: proc(
 			}
 		case ^ast.Type_Pools_Decl:
 			for pool in n.pools {
-				name := project_discovery_intern_name(discovery, pool.text)
-				if string_interner.is_valid(name) {
+				name := utils.to_lower_ascii(pool.text, discovery.allocator)
+				if name != "" {
 					append(&facts.type_pool_imports, name)
 				}
 			}
@@ -193,7 +203,10 @@ project_discovery_resolve_includes :: proc(discovery: ^Project_Discovery) {
 				}
 				continue
 			}
-			if external_index, external_ok := project_discovery_find_external_source_name(discovery, edge.name); external_ok {
+			if external_index, external_ok := project_discovery_find_external_source_name(
+				discovery,
+				edge.name,
+			); external_ok {
 				edge.external_index = external_index
 				edge.has_target = true
 				edge.is_external = true
@@ -222,11 +235,27 @@ project_discovery_destroy :: proc(discovery: ^Project_Discovery) {
 		if facts.path != "" {
 			delete(facts.path, discovery.allocator)
 		}
+		syntax_diagnostic_list_destroy(&facts.syntax_diagnostics, discovery.allocator)
+		for name in facts.provided_names {
+			if name != "" {
+				delete(name, discovery.allocator)
+			}
+		}
 		if facts.provided_names.allocator.procedure != nil {
 			delete(facts.provided_names)
 		}
+		for edge in facts.include_edges {
+			if edge.name != "" {
+				delete(edge.name, discovery.allocator)
+			}
+		}
 		if facts.include_edges.allocator.procedure != nil {
 			delete(facts.include_edges)
+		}
+		for name in facts.type_pool_imports {
+			if name != "" {
+				delete(name, discovery.allocator)
+			}
 		}
 		if facts.type_pool_imports.allocator.procedure != nil {
 			delete(facts.type_pool_imports)
@@ -262,10 +291,21 @@ project_discovery_visit_include_cycles :: proc(
 			continue
 		}
 		if visiting^[edge.target_index] {
-			project_discovery_add_diagnostic(discovery, .Include_Cycle, edge.name_range, "include cycle")
+			project_discovery_add_diagnostic(
+				discovery,
+				.Include_Cycle,
+				edge.name_range,
+				"include cycle",
+			)
 			continue
 		}
-		project_discovery_visit_include_cycles(discovery, edge.target_index, visiting, visited, stack)
+		project_discovery_visit_include_cycles(
+			discovery,
+			edge.target_index,
+			visiting,
+			visited,
+			stack,
+		)
 	}
 	_ = pop(stack)
 	delete_key(visiting, index)
@@ -279,15 +319,21 @@ project_discovery_build_plans :: proc(discovery: ^Project_Discovery) {
 			continue
 		}
 		if !facts.included_by_any {
-			append(&discovery.plans, Workspace_Project_Plan{root_index = index, kind = .Include_Fragment})
+			append(
+				&discovery.plans,
+				Workspace_Project_Plan{root_index = index, kind = .Include_Fragment},
+			)
 		}
 	}
 }
 
 project_discovery_find_local_provided_name :: proc(
 	discovery: ^Project_Discovery,
-	name: string_interner.String,
-) -> (int, bool) {
+	name: string,
+) -> (
+	int,
+	bool,
+) {
 	for facts, index in discovery.facts {
 		for provided in facts.provided_names {
 			if provided == name {
@@ -300,8 +346,11 @@ project_discovery_find_local_provided_name :: proc(
 
 project_discovery_find_external_source_name :: proc(
 	discovery: ^Project_Discovery,
-	name: string_interner.String,
-) -> (int, bool) {
+	name: string,
+) -> (
+	int,
+	bool,
+) {
 	if discovery.external == nil {
 		return -1, false
 	}
@@ -317,9 +366,12 @@ project_discovery_find_external_source_name :: proc(
 
 project_discovery_edge_for_include :: proc(
 	facts: ^Workspace_File_Facts,
-	name: string_interner.String,
+	name: string,
 	range: Range,
-) -> (^Workspace_Include_Edge, bool) {
+) -> (
+	^Workspace_Include_Edge,
+	bool,
+) {
 	for &edge in facts.include_edges {
 		if edge.name == name && edge.name_range == range {
 			return &edge, true
@@ -333,16 +385,72 @@ project_discovery_add_provided_name :: proc(
 	facts: ^Workspace_File_Facts,
 	name: string,
 ) {
-	interned := project_discovery_intern_name(discovery, name)
-	if !string_interner.is_valid(interned) {
+	interned := utils.to_lower_ascii(name, discovery.allocator)
+	if interned == "" {
 		return
 	}
 	for existing in facts.provided_names {
 		if existing == interned {
+			delete(interned, discovery.allocator)
 			return
 		}
 	}
 	append(&facts.provided_names, interned)
+}
+
+syntax_diagnostic_list_clone :: proc(
+	diagnostics: []Syntax_Diagnostic,
+	allocator: mem.Allocator,
+) -> [dynamic]Syntax_Diagnostic {
+	out := make([dynamic]Syntax_Diagnostic, 0, len(diagnostics), allocator)
+	for diagnostic in diagnostics {
+		append(
+			&out,
+			Syntax_Diagnostic {
+				message = strings.clone(diagnostic.message, allocator),
+				range = diagnostic.range,
+			},
+		)
+	}
+	return out
+}
+
+syntax_diagnostic_list_destroy :: proc(
+	diagnostics: ^[dynamic]Syntax_Diagnostic,
+	allocator: mem.Allocator,
+) {
+	if diagnostics == nil || diagnostics.allocator.procedure == nil {
+		return
+	}
+	for &diagnostic in diagnostics^ {
+		if diagnostic.message != "" {
+			delete(diagnostic.message, allocator)
+		}
+	}
+	delete(diagnostics^)
+	diagnostics^ = nil
+}
+
+syntax_diagnostic_list_equal :: proc(
+	left,
+	right: []Syntax_Diagnostic,
+) -> bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for diagnostic, i in left {
+		if diagnostic.message != right[i].message || diagnostic.range != right[i].range {
+			return false
+		}
+	}
+	return true
+}
+
+syntax_diagnostic_list_has_errors :: proc(
+	diagnostics: []Syntax_Diagnostic,
+	has_errors: bool,
+) -> bool {
+	return has_errors || len(diagnostics) > 0
 }
 
 project_discovery_add_diagnostic :: proc(
@@ -355,20 +463,12 @@ project_discovery_add_diagnostic :: proc(
 	append(
 		&discovery.diagnostics,
 		Checker_Diagnostic {
-			kind     = kind,
+			kind = kind,
 			severity = severity,
-			range    = range,
-			message  = strings.clone(message, discovery.allocator) if message != "" else "",
+			range = range,
+			message = strings.clone(message, discovery.allocator),
 		},
 	)
-}
-
-project_discovery_intern_name :: proc(
-	discovery: ^Project_Discovery,
-	name: string,
-) -> string_interner.String {
-	canonical := strings.to_lower(name, context.temp_allocator)
-	return string_interner.insert(discovery.interner, canonical)
 }
 
 workspace_file_kind_is_root :: proc(kind: Workspace_File_Kind) -> bool {
@@ -382,7 +482,10 @@ workspace_file_kind_is_root :: proc(kind: Workspace_File_Kind) -> bool {
 
 workspace_suffix_metadata :: proc(path: string) -> (Workspace_File_Kind, string) {
 	base := workspace_path_base_lower(path)
-	suffixes := [?]struct {suffix: string, kind: Workspace_File_Kind} {
+	suffixes := [?]struct {
+		suffix: string,
+		kind:   Workspace_File_Kind,
+	} {
 		{".report.abap", .Report},
 		{".program.abap", .Report},
 		{".include.abap", .Include},
@@ -412,16 +515,7 @@ workspace_global_object_name_matches_file :: proc(
 	name: string,
 	kind: Workspace_File_Kind,
 ) -> bool {
-	if name == "" {
-		return false
-	}
-	lower := strings.to_lower(name, context.temp_allocator)
-	if kind == .Class && (strings.has_prefix(lower, "lcl_") || strings.has_prefix(lower, "lif_")) {
-		return false
-	}
-	if kind == .Interface && strings.has_prefix(lower, "lif_") {
-		return false
-	}
+	lower := utils.to_lower_ascii(name, context.temp_allocator)
 	return lower == workspace_plain_abap_stem(path)
 }
 
@@ -433,5 +527,5 @@ workspace_path_base_lower :: proc(path: string) -> string {
 			break
 		}
 	}
-	return strings.to_lower(path[start:], context.temp_allocator)
+	return utils.to_lower_ascii(path[start:], context.temp_allocator)
 }

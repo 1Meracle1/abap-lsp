@@ -820,8 +820,9 @@ parse_constructor_expr :: proc(p: ^Parser) -> ^ast.Expr {
 
 	args := make([dynamic]^ast.Expr, 0, 4, p.allocator)
 	if allow_token(p, .LParen) {
-		parse_constructor_body_sequence(p, constructor_body_kind(p, kw), &args)
-		close := expect_token(p, .RParen)
+		body_start := p.index
+		parse_constructor_body_sequence(p, constructor_body_kind(p, kw), body_start, &args)
+		close := expect_token_message(p, .RParen, "syntax error: expected ')' to close constructor expression")
 		if close.kind != .RParen {
 			return nil
 		}
@@ -860,30 +861,31 @@ parse_substring_length_expr :: proc(p: ^Parser) -> ^ast.Expr {
 parse_constructor_body_sequence :: proc(
 	p: ^Parser,
 	kind: Constructor_Body_Kind,
+	body_start: int,
 	out: ^[dynamic]^ast.Expr,
 ) {
 	#partial switch kind {
 	case .Corresponding:
-		parse_corresponding_constructor_sequence(p, out)
+		parse_corresponding_constructor_sequence(p, body_start, out)
 	case .Cond:
-		parse_cond_constructor_sequence(p, out)
+		parse_cond_constructor_sequence(p, body_start, out)
 	case .Switch:
-		parse_switch_constructor_sequence(p, out)
+		parse_switch_constructor_sequence(p, body_start, out)
 	case .Reduce:
-		parse_reduce_constructor_sequence(p, out)
+		parse_reduce_constructor_sequence(p, body_start, out)
 	case .Filter:
-		parse_filter_constructor_sequence(p, out)
+		parse_filter_constructor_sequence(p, body_start, out)
 	case .Single:
-		if expr := parse_constructor_value_expr(p); expr != nil {
+		if expr := parse_constructor_value_expr(p, body_start); expr != nil {
 			append(out, expr)
 		}
 	case:
-		parse_value_constructor_sequence(p, out)
+		parse_value_constructor_sequence(p, body_start, out)
 	}
 }
 
-parse_value_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
-	for !constructor_args_done(p) {
+parse_value_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dynamic]^ast.Expr) {
+	for !constructor_args_done(p, body_start) {
 		if allow_token(p, .Comma) {
 			continue
 		}
@@ -891,116 +893,116 @@ parse_value_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
 		if at_keyword(p, "LET") {
 			append_if_expr(out, parse_let_expr(p, .Value))
 		} else if at_keyword(p, "FOR") {
-			append_if_expr(out, parse_constructor_for_clause_expr(p, .Value))
+			append_if_expr(out, parse_constructor_for_clause_expr(p, .Value, body_start))
 		} else if at_keyword(p, "BASE") {
-			append_if_expr(out, parse_constructor_base_clause_expr(p))
+			append_if_expr(out, parse_constructor_base_clause_expr(p, body_start))
 		} else if at_keyword(p, "LINES") && at_keyword_index(p, p.index + 1, "OF") {
-			append_if_expr(out, parse_constructor_lines_of_clause_expr(p))
+			append_if_expr(out, parse_constructor_lines_of_clause_expr(p, body_start))
 		} else if constructor_named_assignment_starts(p) {
-			append_if_expr(out, parse_constructor_named_assignment_expr(p))
+			append_if_expr(out, parse_constructor_named_assignment_expr(p, body_start))
 		} else if current_token(p).kind == .LParen {
 			append_if_expr(out, parse_constructor_row_expr(p, .Value))
 		} else {
-			append_if_expr(out, parse_constructor_value_expr(p))
+			append_if_expr(out, parse_constructor_value_expr(p, body_start))
 		}
 		ensure_forward_progress(p, start)
 	}
 }
 
-parse_corresponding_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
-	for !constructor_args_done(p) {
+parse_corresponding_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dynamic]^ast.Expr) {
+	for !constructor_args_done(p, body_start) {
 		if allow_token(p, .Comma) {
 			continue
 		}
 		start := p.index
 		if at_keyword(p, "BASE") {
-			append_if_expr(out, parse_constructor_base_clause_expr(p))
+			append_if_expr(out, parse_constructor_base_clause_expr(p, body_start))
 		} else if at_keyword(p, "MAPPING") {
-			append_if_expr(out, parse_constructor_mapping_clause_expr(p))
+			append_if_expr(out, parse_constructor_mapping_clause_expr(p, body_start))
 		} else if at_keyword(p, "EXCEPT") {
-			append_if_expr(out, parse_constructor_except_clause_expr(p))
+			append_if_expr(out, parse_constructor_except_clause_expr(p, body_start))
 		} else {
-			append_if_expr(out, parse_constructor_value_expr(p))
+			append_if_expr(out, parse_constructor_value_expr(p, body_start))
 		}
 		ensure_forward_progress(p, start)
 	}
 }
 
-parse_cond_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
+parse_cond_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dynamic]^ast.Expr) {
 	if at_keyword(p, "LET") {
 		append_if_expr(out, parse_let_expr(p, .Cond))
 		return
 	}
-	for !constructor_args_done(p) {
+	for !constructor_args_done(p, body_start) {
 		start := p.index
 		if at_keyword(p, "WHEN") {
-			append_if_expr(out, parse_constructor_when_clause_expr(p, false))
+			append_if_expr(out, parse_constructor_when_clause_expr(p, false, body_start))
 		} else if at_keyword(p, "ELSE") {
-			append_if_expr(out, parse_constructor_else_clause_expr(p))
+			append_if_expr(out, parse_constructor_else_clause_expr(p, body_start))
 		} else {
-			append_if_expr(out, parse_constructor_value_expr(p))
+			append_if_expr(out, parse_constructor_value_expr(p, body_start))
 		}
 		ensure_forward_progress(p, start)
 	}
 }
 
-parse_switch_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
+parse_switch_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dynamic]^ast.Expr) {
 	if at_keyword(p, "LET") {
 		append_if_expr(out, parse_let_expr(p, .Switch))
 		return
 	}
-	if !constructor_args_done(p) && !at_keyword(p, "WHEN") && !at_keyword(p, "ELSE") {
-		append_if_expr(out, parse_constructor_value_expr(p))
+	if !constructor_args_done(p, body_start) && !at_keyword(p, "WHEN") && !at_keyword(p, "ELSE") {
+		append_if_expr(out, parse_constructor_value_expr(p, body_start))
 	}
-	for !constructor_args_done(p) {
+	for !constructor_args_done(p, body_start) {
 		start := p.index
 		if at_keyword(p, "WHEN") {
-			append_if_expr(out, parse_constructor_when_clause_expr(p, true))
+			append_if_expr(out, parse_constructor_when_clause_expr(p, true, body_start))
 		} else if at_keyword(p, "ELSE") {
-			append_if_expr(out, parse_constructor_else_clause_expr(p))
+			append_if_expr(out, parse_constructor_else_clause_expr(p, body_start))
 		} else {
-			append_if_expr(out, parse_constructor_value_expr(p))
+			append_if_expr(out, parse_constructor_value_expr(p, body_start))
 		}
 		ensure_forward_progress(p, start)
 	}
 }
 
-parse_filter_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
-	for !constructor_args_done(p) {
+parse_filter_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dynamic]^ast.Expr) {
+	for !constructor_args_done(p, body_start) {
 		if allow_token(p, .Comma) {
 			continue
 		}
 		start := p.index
 		if allow_keyword(p, "EXCEPT") {
 			allow_keyword(p, "IN")
-			append_if_expr(out, parse_constructor_value_expr(p))
+			append_if_expr(out, parse_constructor_value_expr(p, body_start))
 		} else if allow_keyword(p, "IN") {
-			append_if_expr(out, parse_constructor_value_expr(p))
+			append_if_expr(out, parse_constructor_value_expr(p, body_start))
 		} else if allow_keyword(p, "USING") {
 			allow_keyword(p, "KEY")
 			_ = expect_token(p, .Ident)
 		} else if at_keyword(p, "WHERE") {
 			append_if_expr(out, parse_constructor_where_clause_expr(p))
 		} else {
-			append_if_expr(out, parse_constructor_value_expr(p))
+			append_if_expr(out, parse_constructor_value_expr(p, body_start))
 		}
 		ensure_forward_progress(p, start)
 	}
 }
 
-parse_reduce_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
-	for !constructor_args_done(p) {
+parse_reduce_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dynamic]^ast.Expr) {
+	for !constructor_args_done(p, body_start) {
 		start := p.index
 		if at_keyword(p, "LET") {
 			append_if_expr(out, parse_let_expr(p, .Reduce))
 		} else if at_keyword(p, "INIT") {
-			append_if_expr(out, parse_constructor_init_clause_expr(p))
+			append_if_expr(out, parse_constructor_init_clause_expr(p, body_start))
 		} else if at_keyword(p, "FOR") {
-			append_if_expr(out, parse_constructor_for_clause_expr(p, .Reduce))
+			append_if_expr(out, parse_constructor_for_clause_expr(p, .Reduce, body_start))
 		} else if at_keyword(p, "NEXT") {
-			append_if_expr(out, parse_constructor_next_clause_expr(p))
+			append_if_expr(out, parse_constructor_next_clause_expr(p, body_start))
 		} else {
-			append_if_expr(out, parse_constructor_value_expr(p))
+			append_if_expr(out, parse_constructor_value_expr(p, body_start))
 		}
 		ensure_forward_progress(p, start)
 	}
@@ -1013,8 +1015,9 @@ parse_constructor_row_expr :: proc(p: ^Parser, kind: Constructor_Body_Kind) -> ^
 	}
 	row := ast.new(ast.Call_Arg_List_Expr, open.range, p.allocator)
 	row.args = make([dynamic]^ast.Expr, 0, 2, p.allocator)
-	parse_constructor_body_sequence(p, kind, &row.args)
-	close := expect_token(p, .RParen)
+	body_start := p.index
+	parse_constructor_body_sequence(p, kind, body_start, &row.args)
+	close := expect_token_message(p, .RParen, "syntax error: expected ')' to close constructor row")
 	if close.kind != .RParen {
 		return nil
 	}
@@ -1022,8 +1025,8 @@ parse_constructor_row_expr :: proc(p: ^Parser, kind: Constructor_Body_Kind) -> ^
 	return row
 }
 
-parse_constructor_value_expr :: proc(p: ^Parser) -> ^ast.Expr {
-	if constructor_args_done(p) || constructor_clause_boundary(p) {
+parse_constructor_value_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
+	if constructor_args_done(p, body_start) || constructor_clause_boundary(p) {
 		return nil
 	}
 	expr := parse_expr(p)
@@ -1090,11 +1093,12 @@ parse_let_expr :: proc(p: ^Parser, body_kind: Constructor_Body_Kind) -> ^ast.Exp
 	if start.kind != .Ident {
 		return nil
 	}
+	bindings_start := p.index
 	expr := ast.new(ast.Let_Expr, start.range, p.allocator)
 	expr.bindings = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	expr.body = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 
-	for !constructor_args_done(p) && !at_keyword(p, "IN") {
+	for !constructor_args_done(p, bindings_start) && !at_keyword(p, "IN") {
 		start_idx := p.index
 		if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Eq {
 			append_if_expr(&expr.bindings, parse_constructor_let_binding_expr(p))
@@ -1107,7 +1111,8 @@ parse_let_expr :: proc(p: ^Parser, body_kind: Constructor_Body_Kind) -> ^ast.Exp
 		error_current(p, "syntax error: expected keyword")
 		return nil
 	}
-	parse_constructor_body_sequence(p, body_kind, &expr.body)
+	body_start := p.index
+	parse_constructor_body_sequence(p, body_kind, body_start, &expr.body)
 	expr.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 	return expr
 }
@@ -1132,7 +1137,7 @@ parse_constructor_let_binding_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return expr
 }
 
-parse_constructor_when_clause_expr :: proc(p: ^Parser, is_switch: bool) -> ^ast.Expr {
+parse_constructor_when_clause_expr :: proc(p: ^Parser, is_switch: bool, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "WHEN")
 	condition := parse_concat_expr(p) if is_switch else parse_logical_expr(p)
 	if condition == nil {
@@ -1142,7 +1147,7 @@ parse_constructor_when_clause_expr :: proc(p: ^Parser, is_switch: bool) -> ^ast.
 		error_current(p, "syntax error: expected keyword")
 		return nil
 	}
-	result := parse_constructor_result_expr(p)
+	result := parse_constructor_result_expr(p, body_start)
 	if result == nil {
 		return nil
 	}
@@ -1156,9 +1161,9 @@ parse_constructor_when_clause_expr :: proc(p: ^Parser, is_switch: bool) -> ^ast.
 	return expr
 }
 
-parse_constructor_else_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
+parse_constructor_else_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "ELSE")
-	result := parse_constructor_result_expr(p)
+	result := parse_constructor_result_expr(p, body_start)
 	if result == nil {
 		return nil
 	}
@@ -1171,14 +1176,18 @@ parse_constructor_else_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return expr
 }
 
-parse_constructor_result_expr :: proc(p: ^Parser) -> ^ast.Expr {
+parse_constructor_result_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	if at_keyword(p, "LET") {
 		return parse_let_expr(p, .Single)
 	}
-	return parse_constructor_value_expr(p)
+	return parse_constructor_value_expr(p, body_start)
 }
 
-parse_constructor_for_clause_expr :: proc(p: ^Parser, body_kind: Constructor_Body_Kind) -> ^ast.Expr {
+parse_constructor_for_clause_expr :: proc(
+	p: ^Parser,
+	body_kind: Constructor_Body_Kind,
+	body_start: int,
+) -> ^ast.Expr {
 	start := expect_keyword(p, "FOR")
 	name := expect_token(p, .Ident)
 	if name.kind != .Ident {
@@ -1224,7 +1233,7 @@ parse_constructor_for_clause_expr :: proc(p: ^Parser, body_kind: Constructor_Bod
 		return nil
 	}
 
-	parse_constructor_body_sequence(p, body_kind, &expr.body)
+	parse_constructor_body_sequence(p, body_kind, body_start, &expr.body)
 	expr.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 	return expr
 }
@@ -1256,29 +1265,29 @@ parse_constructor_where_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return expr
 }
 
-parse_constructor_init_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
+parse_constructor_init_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "INIT")
 	expr := ast.new(ast.Constructor_Init_Clause_Expr, start.range, p.allocator)
 	expr.assignments = make([dynamic]^ast.Expr, 0, 2, p.allocator)
-	parse_constructor_assignment_list(p, &expr.assignments)
+	parse_constructor_assignment_list(p, body_start, &expr.assignments)
 	expr.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 	return expr
 }
 
-parse_constructor_next_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
+parse_constructor_next_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "NEXT")
 	expr := ast.new(ast.Constructor_Next_Clause_Expr, start.range, p.allocator)
 	expr.assignments = make([dynamic]^ast.Expr, 0, 2, p.allocator)
-	parse_constructor_assignment_list(p, &expr.assignments)
+	parse_constructor_assignment_list(p, body_start, &expr.assignments)
 	expr.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 	return expr
 }
 
-parse_constructor_assignment_list :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
-	for !constructor_args_done(p) && !constructor_clause_boundary(p) {
+parse_constructor_assignment_list :: proc(p: ^Parser, body_start: int, out: ^[dynamic]^ast.Expr) {
+	for !constructor_args_done(p, body_start) && !constructor_clause_boundary(p) {
 		start := p.index
 		if constructor_named_assignment_starts(p) {
-			append_if_expr(out, parse_constructor_named_assignment_expr(p))
+			append_if_expr(out, parse_constructor_named_assignment_expr(p, body_start))
 		} else {
 			bump_token(p)
 		}
@@ -1286,14 +1295,14 @@ parse_constructor_assignment_list :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) 
 	}
 }
 
-parse_constructor_named_assignment_expr :: proc(p: ^Parser) -> ^ast.Expr {
+parse_constructor_named_assignment_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	target := parse_expr(p)
 	if target == nil {
 		return nil
 	}
 	name := parser_ast_token(parser_clone_range_text(p, target.range), target.range)
 	expect_token(p, .Eq)
-	value := parse_constructor_value_expr(p)
+	value := parse_constructor_value_expr(p, body_start)
 	if value == nil {
 		return nil
 	}
@@ -1341,9 +1350,9 @@ constructor_named_assignment_starts :: proc(p: ^Parser) -> bool {
 	return false
 }
 
-parse_constructor_base_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
+parse_constructor_base_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "BASE")
-	value := parse_constructor_value_expr(p)
+	value := parse_constructor_value_expr(p, body_start)
 	if value == nil {
 		return nil
 	}
@@ -1356,7 +1365,7 @@ parse_constructor_base_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return expr
 }
 
-parse_constructor_lines_of_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
+parse_constructor_lines_of_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "LINES")
 	if !allow_keyword(p, "OF") {
 		error_current(p, "syntax error: expected keyword")
@@ -1364,7 +1373,7 @@ parse_constructor_lines_of_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 	expr := ast.new(ast.Constructor_Lines_Of_Clause_Expr, start.range, p.allocator)
 	expr.source = parse_expr(p)
-	for !constructor_args_done(p) && !constructor_clause_boundary(p) {
+	for !constructor_args_done(p, body_start) && !constructor_clause_boundary(p) {
 		if allow_keyword(p, "FROM") {
 			expr.from = parse_expr(p)
 		} else if allow_keyword(p, "TO") {
@@ -1383,25 +1392,25 @@ parse_constructor_lines_of_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return expr
 }
 
-parse_constructor_mapping_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
+parse_constructor_mapping_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "MAPPING")
 	expr := ast.new(ast.Constructor_Corresponding_Mapping_Clause_Expr, start.range, p.allocator)
 	expr.assignments = make([dynamic]^ast.Expr, 0, 2, p.allocator)
-	for !constructor_args_done(p) && !at_keyword(p, "EXCEPT") {
+	for !constructor_args_done(p, body_start) && !at_keyword(p, "EXCEPT") {
 		if allow_token(p, .LParen) {
-			append_if_expr(&expr.assignments, parse_constructor_mapping_assignment_expr(p))
+			append_if_expr(&expr.assignments, parse_constructor_mapping_assignment_expr(p, body_start))
 			expect_token(p, .RParen)
 			continue
 		}
 		start_idx := p.index
-		append_if_expr(&expr.assignments, parse_constructor_mapping_assignment_expr(p))
+		append_if_expr(&expr.assignments, parse_constructor_mapping_assignment_expr(p, body_start))
 		ensure_forward_progress(p, start_idx)
 	}
 	expr.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 	return expr
 }
 
-parse_constructor_mapping_assignment_expr :: proc(p: ^Parser) -> ^ast.Expr {
+parse_constructor_mapping_assignment_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	name := expect_token(p, .Ident)
 	if name.kind != .Ident {
 		return nil
@@ -1412,7 +1421,7 @@ parse_constructor_mapping_assignment_expr :: proc(p: ^Parser) -> ^ast.Expr {
 
 	if allow_keyword(p, "DEFAULT") {
 		expr.default_value = parse_expr(p)
-	} else if !constructor_args_done(p) && !constructor_mapping_tail_starts(p) {
+	} else if !constructor_args_done(p, body_start) && !constructor_mapping_tail_starts(p) {
 		expr.source = parse_expr(p)
 	}
 	if allow_keyword(p, "DISCARDING") {
@@ -1423,20 +1432,20 @@ parse_constructor_mapping_assignment_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		expr.default_value = parse_expr(p)
 	}
 	if at_keyword(p, "MAPPING") {
-		expr.mapping = parse_constructor_mapping_clause_expr(p)
+		expr.mapping = parse_constructor_mapping_clause_expr(p, body_start)
 	}
 	if at_keyword(p, "EXCEPT") {
-		expr.except = parse_constructor_except_clause_expr(p)
+		expr.except = parse_constructor_except_clause_expr(p, body_start)
 	}
 	expr.range = tokenizer.text_range(name.range.start, previous_token(p).range.end)
 	return expr
 }
 
-parse_constructor_except_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
+parse_constructor_except_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "EXCEPT")
 	expr := ast.new(ast.Constructor_Corresponding_Except_Clause_Expr, start.range, p.allocator)
 	expr.names = make([dynamic]^ast.Expr, 0, 2, p.allocator)
-	for !constructor_args_done(p) && !at_keyword(p, "MAPPING") {
+	for !constructor_args_done(p, body_start) && !at_keyword(p, "MAPPING") {
 		tok := current_token(p)
 		if tok.kind != .Ident {
 			break
@@ -1620,9 +1629,26 @@ append_if_expr :: proc(list: ^[dynamic]^ast.Expr, expr: ^ast.Expr) {
 	}
 }
 
-constructor_args_done :: proc(p: ^Parser) -> bool {
+constructor_args_done :: proc(p: ^Parser, body_start: int) -> bool {
 	tok := current_token(p)
-	return tok.kind == .RParen || tok.kind == .Eof
+	return(
+		tok.kind == .RParen ||
+		tok.kind == .Period ||
+		tok.kind == .Eof ||
+		constructor_statement_boundary(p, body_start) \
+	)
+}
+
+constructor_statement_boundary :: proc(p: ^Parser, body_start: int) -> bool {
+	tok := current_token(p)
+	return(
+		p.index >= body_start &&
+		.Has_Newline_Before in tok.flags &&
+		known_stmt_lead_at(p, p.index) &&
+		!constructor_clause_boundary(p) &&
+		!line_continuation_starts(p, p.index) &&
+		next_token_kind(p, 1) != .Eq \
+	)
 }
 
 constructor_clause_boundary :: proc(p: ^Parser) -> bool {

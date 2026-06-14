@@ -1,6 +1,7 @@
-package abap_frontend_uri_key
+package abap_frontend_utils
 
 import "core:mem"
+import "core:strings"
 
 normalized_uri_path_key :: proc(uri: string, allocator: mem.Allocator) -> string {
 	end := len(uri)
@@ -19,4 +20,17 @@ normalized_uri_path_key :: proc(uri: string, allocator: mem.Allocator) -> string
 		out[i] = ch
 	}
 	return string(out)
+}
+
+to_lower_ascii :: proc(name: string, allocator: mem.Allocator) -> string {
+	b: strings.Builder
+	strings.builder_init(&b, 0, len(name), allocator)
+	for r in name {
+		if 'A' <= r && r <= 'Z' {
+			strings.write_rune(&b, r + ('a' - 'A'))
+		} else {
+			strings.write_rune(&b, r)
+		}
+	}
+	return strings.to_string(b)
 }

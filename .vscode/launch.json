@@ -35,7 +35,8 @@
         // "--folder-uri=D:/dev/abap/lsp_development_examples2/"
         // "--folder-uri=D:/dev/abap/reprocessing_report/"
         // "--folder-uri=D:/dev/abap/zabapgit"
-        "--folder-uri=D:/dev/abap/odata/"
+        // "--folder-uri=D:/dev/abap/odata/"
+        "--folder-uri=D:/dev/abap/fiori_apps/outbound_ship_messages_monitor"
       ],
       "outFiles": [
         "${workspaceFolder}/editors/vscode/out/**/*.js"

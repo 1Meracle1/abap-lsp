@@ -1,7 +1,6 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 
 import "core:mem"
 import "core:strings"
@@ -734,7 +733,7 @@ checker_record_structure_end_name_use :: proc(
 	if entity == nil || name.text == "" || name.range.start >= name.range.end {
 		return
 	}
-	if checker_intern_name(ctx.project, name.text) != entity.name {
+	if project_intern_lower_ascii(ctx.project, name.text) != entity.name {
 		checker_add_diagnostic(
 			ctx,
 			.Mismatched_Structure_End,
@@ -751,13 +750,13 @@ checker_record_structure_end_name_use :: proc(
 checker_structure_end_name_mismatch_message :: proc(
 	ctx: ^Checker_Context,
 	end_name: string,
-	begin_name: string_interner.String,
+	begin_name: string,
 ) -> string {
 	builder := strings.builder_make(context.temp_allocator)
 	strings.write_string(&builder, "END OF ")
 	strings.write_string(&builder, end_name)
 	strings.write_string(&builder, " does not match BEGIN OF ")
-	strings.write_string(&builder, string_interner.load(ctx.project.interner, begin_name))
+	strings.write_string(&builder, begin_name)
 	return strings.to_string(builder)
 }
 
@@ -797,7 +796,7 @@ checker_collect_type_decl :: proc(
 	}
 	entity := project_new_entity(ctx.project, .Type_Def)
 	entity.node = node
-	interned := checker_intern_name(ctx.project, name)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Type_Def, range, node, type_clause, occurs)
 	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
 	return entity
@@ -823,7 +822,7 @@ checker_collect_structure_field :: proc(
 	entity.node = node
 	entity.owner = owner
 	entity.source_file = ctx.file
-	interned := checker_intern_name(ctx.project, name)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Field, range, node, type_clause, occurs, value_clause)
 	payload, ok := entity.payload.(^Entity_Field_Payload)
 	if ok && payload != nil {
@@ -864,7 +863,7 @@ checker_collect_structure_include :: proc(
 	entity.node = node
 	entity.owner = owner
 	entity.source_file = ctx.file
-	interned := checker_intern_name(ctx.project, name) if name != "" else string_interner.String(0)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	decl := project_new_decl_info(
 		ctx.project,
 		entity,
@@ -918,7 +917,7 @@ checker_collect_variable_decl :: proc(
 	}
 	entity := project_new_entity(ctx.project, kind)
 	entity.node = node
-	interned := checker_intern_name(ctx.project, name)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	decl := project_new_decl_info(ctx.project, entity, scope, interned, kind, range, node, type_clause, occurs, value_clause, default_expr)
 	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
 	checker_note_variable_decl_flags(entity, has_type = type_clause != nil)
@@ -1114,7 +1113,7 @@ checker_collect_report_decl :: proc(ctx: ^Checker_Context, name: string, range: 
 	}
 	entity := project_new_entity(ctx.project, .Report)
 	entity.node = node
-	interned := checker_intern_name(ctx.project, name)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	decl := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Report, range, node)
 	if payload, ok := entity.payload.(^Entity_Report_Payload); ok && payload != nil {
 		append(&payload.provided_names, interned)
@@ -1130,7 +1129,7 @@ checker_collect_include_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Include_S
 		}
 		entity := project_new_entity(ctx.project, .Include)
 		entity.node = &stmt.node.stmt_base
-		interned := checker_intern_name(ctx.project, include_name.name.text)
+		interned := project_intern_lower_ascii(ctx.project, include_name.name.text)
 		decl := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Include, include_name.name.range, &stmt.node.stmt_base)
 		if payload, ok := entity.payload.(^Entity_Include_Payload); ok && payload != nil {
 			payload.if_found = stmt.if_found
@@ -1144,7 +1143,7 @@ checker_collect_class_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_Decl)
 	if entity == nil && decl.name.text != "" {
 		entity = project_new_entity(ctx.project, .Class)
 		entity.node = &decl.node.stmt_base
-		interned := checker_intern_name(ctx.project, decl.name.text)
+		interned := project_intern_lower_ascii(ctx.project, decl.name.text)
 		info := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Class, decl.name.range, &decl.node.stmt_base)
 		_ = checker_add_entity_and_decl_info(ctx, entity, info)
 	}
@@ -1177,12 +1176,12 @@ checker_collect_class_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_Decl)
 	payload.test_risk_level = decl.risk_level
 	payload.test_duration = decl.duration
 	if decl.superclass_name.text != "" {
-		payload.superclass_name = checker_intern_name(ctx.project, decl.superclass_name.text)
+		payload.superclass_name = project_intern_lower_ascii(ctx.project, decl.superclass_name.text)
 		payload.superclass_range = decl.superclass_name.range
 	}
 	for friend in decl.friends {
 		if friend.name.text != "" {
-			append(&payload.friends, checker_intern_name(ctx.project, friend.name.text))
+			append(&payload.friends, project_intern_lower_ascii(ctx.project, friend.name.text))
 		}
 	}
 	scope := checker_ensure_object_definition_scope(ctx, entity, .Class, decl.range)
@@ -1197,7 +1196,7 @@ checker_collect_interface_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Interfa
 	if entity == nil && decl.name.text != "" {
 		entity = project_new_entity(ctx.project, .Interface)
 		entity.node = &decl.node.stmt_base
-		interned := checker_intern_name(ctx.project, decl.name.text)
+		interned := project_intern_lower_ascii(ctx.project, decl.name.text)
 		info := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Interface, decl.name.range, &decl.node.stmt_base)
 		_ = checker_add_entity_and_decl_info(ctx, entity, info)
 	}
@@ -1223,7 +1222,7 @@ checker_find_object_entity :: proc(ctx: ^Checker_Context, name: string, kind: En
 	if name == "" {
 		return nil
 	}
-	interned := checker_intern_name(ctx.project, name)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	_, entity, ok := checker_lookup_declaration(ctx, .Type, interned)
 	if ok && entity.kind == kind {
 		return entity
@@ -1320,7 +1319,7 @@ checker_collect_oop_simple_stmt :: proc(
 				if member.event_handler.event_name.text != "" {
 					entity.flags += {.For_Event}
 					payload.for_event = true
-					payload.event_name = checker_intern_name(ctx.project, member.event_handler.event_name.text)
+					payload.event_name = project_intern_lower_ascii(ctx.project, member.event_handler.event_name.text)
 					payload.event_range = member.event_handler.event_name.range
 					payload.event_source_type = checker_type_ref_data_from_expr(ctx, member.event_handler.source_type, .Type)
 				}
@@ -1346,7 +1345,7 @@ checker_collect_oop_simple_stmt :: proc(
 		assert(ok && payload != nil)
 		for member in stmt.members {
 			if member.name.text != "" {
-				append(&payload.implemented_interfaces, checker_intern_name(ctx.project, member.name.text))
+				append(&payload.implemented_interfaces, project_intern_lower_ascii(ctx.project, member.name.text))
 			}
 		}
 	case .Aliases:
@@ -1429,7 +1428,7 @@ checker_collect_oop_alias :: proc(
 	entity.owner = owner
 	entity.member_kind = .None
 	entity.visibility = visibility
-	interned := checker_intern_name(ctx.project, name.text)
+	interned := project_intern_lower_ascii(ctx.project, name.text)
 	decl := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Alias, name.range, node)
 	if payload, ok := entity.payload.(^Entity_Alias_Payload); ok && payload != nil {
 		target_ref := checker_type_ref_data_from_expr(ctx, target, .Type)
@@ -1474,7 +1473,7 @@ checker_find_routine_entity_in_scope :: proc(ctx: ^Checker_Context, name: string
 	if name == "" {
 		return nil
 	}
-	interned := checker_intern_name(ctx.project, name)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	if entity, ok := scope_lookup_declaration(ctx.scope, .Routine, interned); ok && entity.kind == kind {
 		return entity
 	}
@@ -1497,7 +1496,7 @@ checker_collect_routine_decl :: proc(
 	decl_scope := scope if scope != nil else ctx.scope
 	entity := project_new_entity(ctx.project, kind)
 	entity.node = node
-	interned := checker_intern_name(ctx.project, name)
+	interned := project_intern_lower_ascii(ctx.project, name)
 	decl := project_new_decl_info(ctx.project, entity, decl_scope, interned, kind, header_range, node)
 	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
 	checker_initialize_routine_payload(ctx, entity, range, signature)
@@ -1636,7 +1635,7 @@ checker_collect_oop_signature :: proc(
 		if sig.kind == .Exceptions {
 			for value in sig.values {
 				if name, _, name_ok := checker_expr_name(value); name_ok {
-					append(&payload.exceptions, checker_intern_name(ctx.project, name))
+					append(&payload.exceptions, project_intern_lower_ascii(ctx.project, name))
 				}
 			}
 			continue
@@ -1655,7 +1654,7 @@ checker_collect_oop_raising_exception :: proc(
 	value: ^ast.Expr,
 ) {
 	type_ref := checker_type_ref_data_from_expr(ctx, value, .Type)
-	if !string_interner.is_valid(type_ref.base_name) {
+	if type_ref.base_name == "" {
 		return
 	}
 	append(&payload.exceptions, type_ref.base_name)
@@ -1910,8 +1909,8 @@ checker_check_event_block_header :: proc(ctx: ^Checker_Context, stmt: ^ast.Event
 	if !ok || target.text == "" {
 		return
 	}
-	interned := checker_intern_name(ctx.project, target.text)
-	if !string_interner.is_valid(interned) {
+	interned := project_intern_lower_ascii(ctx.project, target.text)
+	if interned == "" {
 		return
 	}
 	if _, entity, found := checker_lookup_reference(ctx, .Value, interned); found {

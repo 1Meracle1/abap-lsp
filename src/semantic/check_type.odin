@@ -1,7 +1,6 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 
 import "core:strings"
 
@@ -137,7 +136,7 @@ checker_type_from_ref_data :: proc(
 	current_decl_entity: ^Entity = nil,
 	preferred_external_kind: External_Candidate_Kind = .Global_Symbol,
 ) -> (^Type, ^Entity) {
-	if !string_interner.is_valid(type_ref.base_name) {
+	if type_ref.base_name == "" {
 		return project_type_unknown(ctx.project), nil
 	}
 	skip_current := checker_type_ref_should_skip_current_decl(type_ref, current_decl_entity)
@@ -267,10 +266,10 @@ checker_add_unresolved_type_diagnostic :: proc(
 	type_ref: Field_Type_Ref_Data,
 	entity: ^Entity,
 ) {
-	if entity == nil || type_ref.namespace != .Type || !string_interner.is_valid(type_ref.base_name) {
+	if entity == nil || type_ref.namespace != .Type || type_ref.base_name == "" {
 		return
 	}
-	name := string_interner.load(ctx.project.interner, type_ref.base_name)
+	name := type_ref.base_name
 	message := "unresolved type"
 	if name != "" {
 		builder := strings.builder_make(context.temp_allocator)
@@ -383,7 +382,7 @@ checker_type_ref_data_from_expr :: proc(
 	data := Field_Type_Ref_Data {
 		namespace       = namespace,
 		is_ref          = is_ref,
-		field_path      = make([dynamic]string_interner.String, 0, 2, ctx.project.allocator),
+		field_path      = make([dynamic]string, 0, 2, ctx.project.allocator),
 		field_ranges    = make([dynamic]Range, 0, 2, ctx.project.allocator),
 		field_derefs    = make([dynamic]bool, 0, 2, ctx.project.allocator),
 		field_selectors = make([dynamic]ast.Selector_Op, 0, 2, ctx.project.allocator),
@@ -398,7 +397,7 @@ checker_type_ref_data_from_expr :: proc(
 			base = n.name
 		}
 		if base.text != "" {
-			data.base_name = checker_intern_name(ctx.project, base.text)
+			data.base_name = project_intern_lower_ascii(ctx.project, base.text)
 			data.base_range = base.range if base.range.end > base.range.start else n.range
 		}
 		data.is_ref = data.is_ref || n.is_ref
@@ -406,16 +405,16 @@ checker_type_ref_data_from_expr :: proc(
 			data.namespace = .Type
 		}
 		for segment in n.path {
-			append(&data.field_path, checker_intern_name(ctx.project, segment.name.text))
+			append(&data.field_path, project_intern_lower_ascii(ctx.project, segment.name.text))
 			append(&data.field_ranges, segment.name.range)
 			append(&data.field_derefs, segment.selector == .Arrow && segment.name.text == "*")
 			append(&data.field_selectors, segment.selector)
 		}
 	case ^ast.Ident_Expr:
-		data.base_name = checker_intern_name(ctx.project, n.name)
+		data.base_name = project_intern_lower_ascii(ctx.project, n.name)
 		data.base_range = n.range
 	case ^ast.Literal_Expr:
-		data.base_name = checker_intern_name(ctx.project, n.value)
+		data.base_name = project_intern_lower_ascii(ctx.project, n.value)
 		data.base_range = n.range
 	}
 	return data
@@ -480,8 +479,8 @@ checker_record_type_ref_key_clause_uses :: proc(
 		if range.end <= range.start {
 			continue
 		}
-		name := checker_intern_name(ctx.project, component.text)
-		if !string_interner.is_valid(name) {
+		name := project_intern_lower_ascii(ctx.project, component.text)
+		if name == "" {
 			continue
 		}
 		if field, ok := checker_lookup_structure_field(row_structure, name); ok {
@@ -512,10 +511,10 @@ checker_validate_decl_type_ref :: proc(
 	if entity == nil ||
 	   type_ref.namespace != .Type ||
 	   len(type_ref.field_path) > 0 ||
-	   !string_interner.is_valid(type_ref.base_name) {
+	   type_ref.base_name == "" {
 		return
 	}
-	name := string_interner.load(ctx.project.interner, type_ref.base_name)
+	name := type_ref.base_name
 	if name == "object" && !type_ref.is_ref {
 		checker_add_diagnostic(
 			ctx,
@@ -595,7 +594,7 @@ checker_validate_generic_table_type_form :: proc(
 	)
 }
 
-checker_generic_builtin_type_name :: proc(name: string) -> bool {
+checker_generic_builtin_type_name :: #force_inline proc "contextless" (name: string) -> bool {
 	switch name {
 	case "xsequence",
 	     "data",
@@ -611,11 +610,11 @@ checker_generic_builtin_type_name :: proc(name: string) -> bool {
 	return false
 }
 
-checker_generic_builtin_ref_type_name :: #force_inline proc(name: string) -> bool {
+checker_generic_builtin_ref_type_name :: #force_inline proc "contextless" (name: string) -> bool {
 	return name == "data" || name == "object"
 }
 
-checker_type_clause_is_generic_table :: proc(clause: ^ast.Data_Type_Clause, form: ast.Data_Type_Form) -> bool {
+checker_type_clause_is_generic_table :: proc "contextless" (clause: ^ast.Data_Type_Clause, form: ast.Data_Type_Form) -> bool {
 	if clause == nil {
 		return false
 	}
@@ -632,7 +631,7 @@ checker_type_clause_is_generic_table :: proc(clause: ^ast.Data_Type_Clause, form
 	return false
 }
 
-checker_type_form_with_occurs :: proc(form: ast.Data_Type_Form, occurs: ^ast.Expr) -> ast.Data_Type_Form {
+checker_type_form_with_occurs :: proc "contextless" (form: ast.Data_Type_Form, occurs: ^ast.Expr) -> ast.Data_Type_Form {
 	if occurs == nil {
 		return form
 	}
@@ -645,7 +644,7 @@ checker_type_form_with_occurs :: proc(form: ast.Data_Type_Form, occurs: ^ast.Exp
 	return form
 }
 
-checker_type_form_is_table_category :: proc(form: ast.Data_Type_Form) -> bool {
+checker_type_form_is_table_category :: proc "contextless" (form: ast.Data_Type_Form) -> bool {
 	#partial switch form {
 	case .Any_Table,
 	     .Table,
@@ -770,7 +769,7 @@ checker_type_same :: proc(a, b: ^Type, depth := 0) -> bool {
 }
 
 checker_expand_structure_include :: proc(ctx: ^Checker_Context, include_entity: ^Entity) {
-	assert(include_entity != nil && include_entity.kind == .Field)
+	assert(include_entity.kind == .Field)
 	payload, ok := include_entity.payload.(^Entity_Field_Payload)
 	assert(ok && payload != nil)
 	owner := payload.owner_structure
@@ -819,7 +818,6 @@ checker_copy_included_structure_field :: proc(
 	include_entity: ^Entity,
 	included_field: ^Entity,
 ) -> ^Entity {
-	assert(owner_structure != nil && include_entity != nil && included_field != nil)
 	include_payload, include_ok := include_entity.payload.(^Entity_Field_Payload)
 	assert(include_ok && include_payload != nil)
 	included_payload, included_ok := included_field.payload.(^Entity_Field_Payload)
@@ -863,12 +861,11 @@ checker_copy_included_structure_field :: proc(
 
 checker_intern_suffix_name :: proc(
 	ctx: ^Checker_Context,
-	name: string_interner.String,
+	name: string,
 	suffix: string,
-) -> string_interner.String {
-	base := string_interner.load(ctx.project.interner, name)
+) -> string {
 	builder := strings.builder_make(context.temp_allocator)
-	strings.write_string(&builder, base)
+	strings.write_string(&builder, name)
 	strings.write_string(&builder, suffix)
-	return checker_intern_name(ctx.project, strings.to_string(builder))
+	return project_intern_lower_ascii(ctx.project, strings.to_string(builder))
 }

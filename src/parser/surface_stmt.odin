@@ -141,7 +141,7 @@ data_stmt_done :: proc(p: ^Parser, body_start: int) -> bool {
 }
 
 data_stmt_range :: proc(p: ^Parser, start: Token) -> tokenizer.Range {
-	period := expect_token(p, .Period)
+	period := expect_token_message(p, .Period, "syntax error: expected '.' to end statement")
 	return tokenizer.text_range(start.range.start, statement_end(p, period))
 }
 

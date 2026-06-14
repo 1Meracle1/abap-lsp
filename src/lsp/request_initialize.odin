@@ -89,7 +89,11 @@ initialize_result :: proc(allocator: mem.Allocator) -> Initialize_Result {
 
 	return Initialize_Result {
 		capabilities = Server_Capabilities {
-			text_document_sync = TEXT_DOCUMENT_SYNC_FULL,
+			text_document_sync = Text_Document_Sync_Options {
+				open_close = true,
+				change     = TEXT_DOCUMENT_SYNC_FULL,
+				save       = true,
+			},
 			hover_provider = true,
 			definition_provider = true,
 			implementation_provider = true,
@@ -147,7 +151,7 @@ Server_Info :: struct {
 }
 
 Server_Capabilities :: struct {
-	text_document_sync:       int `json:"textDocumentSync"`,
+	text_document_sync:       Text_Document_Sync_Options `json:"textDocumentSync"`,
 	hover_provider:           bool `json:"hoverProvider"`,
 	definition_provider:      bool `json:"definitionProvider"`,
 	implementation_provider:  bool `json:"implementationProvider"`,
@@ -157,6 +161,12 @@ Server_Capabilities :: struct {
 	semantic_tokens_provider: Semantic_Tokens_Options `json:"semanticTokensProvider"`,
 	folding_range_provider:   bool `json:"foldingRangeProvider"`,
 	workspace:                Workspace_Server_Capabilities `json:"workspace"`,
+}
+
+Text_Document_Sync_Options :: struct {
+	open_close: bool `json:"openClose"`,
+	change:     int  `json:"change"`,
+	save:       bool `json:"save"`,
 }
 
 Rename_Options :: struct {

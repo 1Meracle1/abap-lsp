@@ -232,7 +232,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		print_analyze_counts(&result)
 	}
 	diagnostic_path_filter := analyze_diagnostic_path_filter(target_path, context.temp_allocator)
-	had_error := print_analyze_diagnostics(&result, warnings_as_errors, diagnostic_path_filter)
+	count_errors := print_analyze_diagnostics(&result, warnings_as_errors, diagnostic_path_filter)
 	workspace.analysis_result_destroy(&result, context.allocator)
 	execution.pool_destroy(&pool)
 	when trace.ENABLED {
@@ -243,7 +243,12 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		print_analyze_memory_report(&tracker)
 		mem.tracking_allocator_destroy(&tracker)
 	}
-	if had_error {
+	if count_errors > 0 {
+		fmt.printf(
+			"run_analyze - finished with %d errors - elapsed_ms=%.3f\n",
+			count_errors,
+			time.duration_milliseconds(time.since(start_time)),
+		)
 		os.exit(1)
 	} else {
 		fmt.printf(
@@ -516,12 +521,13 @@ print_analyze_diagnostics :: proc(
 	result: ^workspace.Analysis_Result,
 	warnings_as_errors: bool,
 	path_filter: string = "",
-) -> bool {
-	had_error := false
+) -> (
+	count_errors: int,
+) {
 	use_color := terminal.color_enabled && terminal.is_terminal(os.stdout)
 	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
 	if analysis == nil {
-		return false
+		return
 	}
 	source_cache := make([dynamic]Source_Cache_Entry, 0, 16, context.temp_allocator)
 	diagnostics := make([dynamic]Analyze_Diagnostic_Output, 0, 16, context.temp_allocator)
@@ -556,10 +562,10 @@ print_analyze_diagnostics :: proc(
 			use_color,
 			&source_cache,
 		) {
-			had_error = true
+			count_errors += 1
 		}
 	}
-	return had_error
+	return
 }
 
 analyze_diagnostic_output_matches_filter :: proc(
@@ -570,8 +576,10 @@ analyze_diagnostic_output_matches_filter :: proc(
 		return true
 	}
 	path := analyze_diagnostic_output_path(item)
-	return workspace.normalized_uri_path_key(path, context.temp_allocator) ==
-	       workspace.normalized_uri_path_key(path_filter, context.temp_allocator)
+	return(
+		workspace.normalized_uri_path_key(path, context.temp_allocator) ==
+		workspace.normalized_uri_path_key(path_filter, context.temp_allocator) \
+	)
 }
 
 analyze_diagnostic_output_less :: proc(left, right: Analyze_Diagnostic_Output) -> bool {

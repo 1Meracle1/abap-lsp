@@ -1,7 +1,6 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 import "src:tokenizer"
 
 import "core:mem"
@@ -22,7 +21,7 @@ Type_Kind :: enum {
 
 Type :: struct {
 	kind:       Type_Kind,
-	name:       string_interner.String,
+	name:       string,
 	entity:     ^Entity,
 	structure:  ^Structure,
 	base:       ^Type,
@@ -34,11 +33,11 @@ Type_Routine_Info :: struct {
 	signature_scope: ^Scope,
 	parameters:      [dynamic]^Entity,
 	results:         [dynamic]^Entity,
-	exceptions:      [dynamic]string_interner.String,
+	exceptions:      [dynamic]string,
 }
 
 Structure :: struct {
-	name:             string_interner.String,
+	name:             string,
 	range:            Range,
 	source_file:      ^Project_File,
 	origin_structure: ^Structure,
@@ -78,7 +77,7 @@ Entity :: struct {
 	kind:         Entity_Kind,
 	state:        Entity_State,
 	flags:        Entity_Flags,
-	name:         string_interner.String,
+	name:         string,
 	name_range:   Range,
 	source_file:  ^Project_File,
 	scope:        ^Scope,
@@ -173,9 +172,9 @@ Field_Type_Ref_Data :: struct {
 	namespace:                Namespace,
 	is_ref:                   bool,
 	allow_type_lookup:        bool,
-	base_name:                string_interner.String,
+	base_name:                string,
 	base_range:               Range,
-	field_path:               [dynamic]string_interner.String,
+	field_path:               [dynamic]string,
 	field_ranges:             [dynamic]Range,
 	field_derefs:             [dynamic]bool,
 	field_selectors:          [dynamic]ast.Selector_Op,
@@ -236,10 +235,10 @@ Entity_Object_Payload :: struct {
 	kind:                   Entity_Object_Kind,
 	definition_scope:       ^Scope,
 	signature:              string,
-	superclass_name:        string_interner.String,
+	superclass_name:        string,
 	superclass_range:       Range,
-	implemented_interfaces: [dynamic]string_interner.String,
-	friends:                [dynamic]string_interner.String,
+	implemented_interfaces: [dynamic]string,
+	friends:                [dynamic]string,
 	create_visibility:        ast.Oop_Visibility,
 	test_risk_level:          ast.Class_Test_Risk_Level,
 	test_duration:            ast.Class_Test_Duration,
@@ -255,11 +254,11 @@ Entity_Routine_Payload :: struct {
 	body_scope:           ^Scope,
 	signature:            string,
 	parameters:           [dynamic]^Entity,
-	exceptions:           [dynamic]string_interner.String,
+	exceptions:           [dynamic]string,
 	exception_type_refs:  [dynamic]Field_Type_Ref_Data,
 	visibility:           Visibility,
 	member_kind:          Class_Member_Kind,
-	event_name:           string_interner.String,
+	event_name:           string,
 	event_range:          Range,
 	event_source_type:    Field_Type_Ref_Data,
 	is_static:            bool,
@@ -285,8 +284,8 @@ Entity_Field_Payload :: struct {
 }
 
 Entity_Alias_Payload :: struct {
-	target_interface_name: string_interner.String,
-	target_member_name:    string_interner.String,
+	target_interface_name: string,
+	target_member_name:    string,
 	visibility:            Visibility,
 }
 
@@ -297,7 +296,7 @@ Entity_Include_Payload :: struct {
 }
 
 Entity_Report_Payload :: struct {
-	provided_names: [dynamic]string_interner.String,
+	provided_names: [dynamic]string,
 }
 
 Constant_Value :: union #shared_nil {
@@ -347,15 +346,15 @@ Entity_Parameter_Passing :: enum {
 	Reference,
 }
 
-entity_kind_is_builtin :: #force_inline proc(kind: Entity_Kind) -> bool {
+entity_kind_is_builtin :: #force_inline proc "contextless" (kind: Entity_Kind) -> bool {
 	return kind == .Builtin
 }
 
-entity_is_builtin :: #force_inline proc(entity: ^Entity) -> bool {
+entity_is_builtin :: #force_inline proc "contextless" (entity: ^Entity) -> bool {
 	return entity != nil && .Builtin in entity.flags
 }
 
-entity_kind_occupies :: proc(kind: Entity_Kind, namespace: Namespace) -> bool {
+entity_kind_occupies :: proc "contextless" (kind: Entity_Kind, namespace: Namespace) -> bool {
 	switch kind {
 	case .Type_Def, .Class, .Interface:
 		return namespace == .Type
@@ -390,7 +389,7 @@ entity_set_kind :: proc(entity: ^Entity, kind: Entity_Kind, allocator: mem.Alloc
 	}
 }
 
-entity_parameter_value_invalid :: #force_inline proc() -> Entity_Parameter_Value {
+entity_parameter_value_invalid :: #force_inline proc "contextless" () -> Entity_Parameter_Value {
 	return Entity_Parameter_Value{value = ast.INVALID_EXACT_VALUE_ID}
 }
 
@@ -415,22 +414,22 @@ entity_default_payload :: proc(kind: Entity_Kind, allocator: mem.Allocator) -> E
 		payload := new(Entity_Object_Payload, allocator)
 		payload^ = Entity_Object_Payload {
 			kind = .Class,
-			implemented_interfaces = make([dynamic]string_interner.String, 0, 2, allocator),
-			friends = make([dynamic]string_interner.String, 0, 1, allocator),
+			implemented_interfaces = make([dynamic]string, 0, 2, allocator),
+			friends = make([dynamic]string, 0, 1, allocator),
 		}
 		return payload
 	case .Interface:
 		payload := new(Entity_Object_Payload, allocator)
 		payload^ = Entity_Object_Payload {
 			kind = .Interface,
-			implemented_interfaces = make([dynamic]string_interner.String, 0, 2, allocator),
-			friends = make([dynamic]string_interner.String, 0, 1, allocator),
+			implemented_interfaces = make([dynamic]string, 0, 2, allocator),
+			friends = make([dynamic]string, 0, 1, allocator),
 		}
 		return payload
 	case .Form, .Method, .Module, .Event:
 		payload := new(Entity_Routine_Payload, allocator)
 		payload.parameters = make([dynamic]^Entity, 0, 4, allocator)
-		payload.exceptions = make([dynamic]string_interner.String, 0, 1, allocator)
+		payload.exceptions = make([dynamic]string, 0, 1, allocator)
 		payload.exception_type_refs = make([dynamic]Field_Type_Ref_Data, 0, 1, allocator)
 		return payload
 	case .Field:
@@ -444,7 +443,7 @@ entity_default_payload :: proc(kind: Entity_Kind, allocator: mem.Allocator) -> E
 		return payload
 	case .Report:
 		payload := new(Entity_Report_Payload, allocator)
-		payload.provided_names = make([dynamic]string_interner.String, 0, 4, allocator)
+		payload.provided_names = make([dynamic]string, 0, 4, allocator)
 		return payload
 	case .Invalid:
 	}

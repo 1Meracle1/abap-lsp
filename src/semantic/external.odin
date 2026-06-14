@@ -1,8 +1,8 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 import trace "src:trace"
+import "src:utils"
 
 import "core:mem"
 import "core:strings"
@@ -42,7 +42,7 @@ External_Candidate_Reason :: enum {
 }
 
 Checker_Unresolved_Candidate :: struct {
-	name:      string_interner.String,
+	name:      string,
 	namespace: Namespace,
 	kind:      External_Candidate_Kind,
 	hint:      External_Candidate_Hint,
@@ -54,11 +54,19 @@ Checker_Unresolved_Candidate :: struct {
 	if_found:  bool,
 }
 
+Checker_Unresolved_Candidate_Key :: struct {
+	name:      string,
+	namespace: Namespace,
+	kind:      External_Candidate_Kind,
+	file:      ^Project_File,
+	range:     Range,
+}
+
 Semantic_Project_Id :: distinct u32
 
 Semantic_Object_Key :: struct {
 	kind: External_Candidate_Kind,
-	name: string_interner.String,
+	name: string,
 }
 
 Semantic_Project_Role :: enum {
@@ -105,47 +113,63 @@ Semantic_Dependency_Edge :: struct {
 	node:     ^ast.Node,
 }
 
+Semantic_Dependency_Edge_Key :: struct {
+	key:      Semantic_Object_Key,
+	resolved: bool,
+	range:    Range,
+	file:     ^Project_File,
+	node:     ^ast.Node,
+}
+
 Semantic_Project_Record :: struct {
-	id:                      Semantic_Project_Id,
-	role:                    Semantic_Project_Role,
-	root_key:                Semantic_Object_Key,
-	project:                 ^Project,
-	checker:                 ^Checker,
-	owns_lists:              bool,
-	provides:                [dynamic]Semantic_Object_Key,
-	provider_bindings:       [dynamic]Semantic_Provider_Binding,
-	resolved_dependencies:   [dynamic]Semantic_Dependency_Edge,
-	unresolved_dependencies: [dynamic]Semantic_Dependency_Edge,
-	unresolved:              [dynamic]Checker_Unresolved_Candidate,
-	generation:              u64,
+	id:                            Semantic_Project_Id,
+	role:                          Semantic_Project_Role,
+	root_key:                      Semantic_Object_Key,
+	project:                       ^Project,
+	checker:                       ^Checker,
+	owns_lists:                    bool,
+	provides:                      [dynamic]Semantic_Object_Key,
+	provider_bindings:             [dynamic]Semantic_Provider_Binding,
+	resolved_dependencies:         [dynamic]Semantic_Dependency_Edge,
+	unresolved_dependencies:       [dynamic]Semantic_Dependency_Edge,
+	resolved_dependency_indexes:   map[Semantic_Dependency_Edge_Key]int,
+	unresolved_dependency_indexes: map[Semantic_Dependency_Edge_Key]int,
+	unresolved:                    [dynamic]Checker_Unresolved_Candidate,
+	generation:                    u64,
 }
 
 External_Source_File :: struct {
-	path:           string,
-	root:           ^ast.File,
-	provided_names: [dynamic]string_interner.String,
+	path:               string,
+	root:               ^ast.File,
+	provided_names:     [dynamic]string,
+	syntax_diagnostics: [dynamic]Syntax_Diagnostic,
+	has_syntax_errors:  bool,
 }
 
 External_Source_Input :: struct {
-	path:           string,
-	root:           ^ast.File,
-	provided_names: []string,
-	source_hash:    u64,
-	generation:     u64,
+	path:               string,
+	root:               ^ast.File,
+	provided_names:     []string,
+	source_hash:        u64,
+	generation:         u64,
+	syntax_diagnostics: [dynamic]Syntax_Diagnostic,
+	has_syntax_errors:  bool,
 }
 
 External_Interface_Input :: struct {
-	key:         Semantic_Object_Key,
-	path:        string,
-	root:        ^ast.File,
-	source_hash: u64,
-	generation:  u64,
-	role:        External_Interface_Object_Role,
+	key:                Semantic_Object_Key,
+	path:               string,
+	root:               ^ast.File,
+	source_hash:        u64,
+	generation:         u64,
+	role:               External_Interface_Object_Role,
+	syntax_diagnostics: [dynamic]Syntax_Diagnostic,
+	has_syntax_errors:  bool,
 }
 
 External_Lookup_Key :: struct {
 	namespace: Namespace,
-	name:      string_interner.String,
+	name:      string,
 }
 
 External_Lookup_Contribution :: struct {
@@ -155,9 +179,9 @@ External_Lookup_Contribution :: struct {
 
 External_Semantic_Index :: struct {
 	allocator:                    mem.Allocator,
-	interner:                     ^string_interner.Interner,
 	next_project_id:              u32,
 	projects:                     [dynamic]Semantic_Project_Record,
+	project_record_indexes:       map[Semantic_Project_Id]int,
 	providers:                    map[Semantic_Object_Key]External_Binding,
 	provider_contributions:       map[Semantic_Object_Key][dynamic]External_Binding,
 	project_by_root_key:          map[Semantic_Object_Key]Semantic_Project_Id,
@@ -174,7 +198,6 @@ External_Field_Summary :: struct {
 
 External_Semantics :: struct {
 	allocator:          mem.Allocator,
-	interner:           ^string_interner.Interner,
 	index:              External_Semantic_Index,
 	source_files:       [dynamic]External_Source_File,
 	interface_projects: [dynamic]^Project,
@@ -188,14 +211,11 @@ External_Semantics :: struct {
 }
 
 external_semantics_make :: proc(
-	interner: ^string_interner.Interner,
 	allocator: mem.Allocator = context.allocator,
 ) -> External_Semantics {
-	assert(interner != nil)
 	return External_Semantics {
 		allocator = allocator,
-		interner = interner,
-		index = external_semantic_index_make(interner, allocator),
+		index = external_semantic_index_make(allocator),
 		source_files = make([dynamic]External_Source_File, 0, 4, allocator),
 		interface_projects = make([dynamic]^Project, 0, 4, allocator),
 		interface_checkers = make([dynamic]^Checker, 0, 4, allocator),
@@ -211,9 +231,15 @@ external_semantics_destroy :: proc(external: ^External_Semantics) {
 		if source.path != "" {
 			delete(source.path, external.allocator)
 		}
+		for name in source.provided_names {
+			if name != "" {
+				delete(name, external.allocator)
+			}
+		}
 		if source.provided_names.allocator.procedure != nil {
 			delete(source.provided_names)
 		}
+		syntax_diagnostic_list_destroy(&source.syntax_diagnostics, external.allocator)
 	}
 	if external.source_files.allocator.procedure != nil {
 		delete(external.source_files)
@@ -257,7 +283,7 @@ external_semantics_builtin_scope :: proc(external: ^External_Semantics) -> ^Scop
 	if external.builtin_checker == nil {
 		external.builtin_project = new(Project, external.allocator)
 		assert(external.builtin_project != nil)
-		external.builtin_project^ = project_make_with_interner(external.interner)
+		external.builtin_project^ = project_make()
 
 		external.builtin_checker = new(Checker, external.allocator)
 		assert(external.builtin_checker != nil)
@@ -268,15 +294,13 @@ external_semantics_builtin_scope :: proc(external: ^External_Semantics) -> ^Scop
 }
 
 external_semantic_index_make :: proc(
-	interner: ^string_interner.Interner,
 	allocator: mem.Allocator = context.allocator,
 ) -> External_Semantic_Index {
-	assert(interner != nil)
 	return External_Semantic_Index {
 		allocator = allocator,
-		interner = interner,
 		next_project_id = 1,
 		projects = make([dynamic]Semantic_Project_Record, 0, 4, allocator),
+		project_record_indexes = make(map[Semantic_Project_Id]int, 0, allocator),
 		providers = make(map[Semantic_Object_Key]External_Binding, 0, allocator),
 		provider_contributions = make(
 			map[Semantic_Object_Key][dynamic]External_Binding,
@@ -312,6 +336,9 @@ external_semantic_index_destroy :: proc(index: ^External_Semantic_Index) {
 	}
 	if index.projects.allocator.procedure != nil {
 		delete(index.projects)
+	}
+	if index.project_record_indexes != nil {
+		delete(index.project_record_indexes)
 	}
 	if index.providers != nil {
 		delete(index.providers)
@@ -361,9 +388,6 @@ external_semantic_index_import_providers :: proc(
 	index: ^External_Semantic_Index,
 	source: ^External_Semantic_Index,
 ) {
-	if index == nil || source == nil {
-		return
-	}
 	for key, binding in source.providers {
 		index.providers[key] = binding
 		if raw := u32(binding.project_id); raw >= index.next_project_id {
@@ -404,9 +428,6 @@ external_semantic_index_import_external_project_records :: proc(
 	index: ^External_Semantic_Index,
 	source: ^External_Semantic_Index,
 ) {
-	if index == nil || source == nil {
-		return
-	}
 	for record in source.projects {
 		if record.role != .External_Interface || !semantic_object_key_is_valid(record.root_key) {
 			continue
@@ -453,6 +474,10 @@ semantic_project_record_clone_lists :: proc(
 	for value in record.resolved_dependencies {
 		append(&cloned.resolved_dependencies, value)
 	}
+	cloned.resolved_dependency_indexes = semantic_dependency_edge_index_map_make(
+		cloned.resolved_dependencies[:],
+		allocator,
+	)
 	cloned.unresolved_dependencies = make(
 		[dynamic]Semantic_Dependency_Edge,
 		0,
@@ -462,6 +487,10 @@ semantic_project_record_clone_lists :: proc(
 	for value in record.unresolved_dependencies {
 		append(&cloned.unresolved_dependencies, value)
 	}
+	cloned.unresolved_dependency_indexes = semantic_dependency_edge_index_map_make(
+		cloned.unresolved_dependencies[:],
+		allocator,
+	)
 	cloned.unresolved = make(
 		[dynamic]Checker_Unresolved_Candidate,
 		0,
@@ -482,7 +511,6 @@ semantic_project_record_make :: proc(
 	root_key: Semantic_Object_Key = {},
 	generation: u64 = 0,
 ) -> Semantic_Project_Record {
-	assert(index != nil)
 	id := Semantic_Project_Id(index.next_project_id)
 	index.next_project_id += 1
 	return Semantic_Project_Record {
@@ -496,6 +524,16 @@ semantic_project_record_make :: proc(
 		provider_bindings = make([dynamic]Semantic_Provider_Binding, 0, 4, index.allocator),
 		resolved_dependencies = make([dynamic]Semantic_Dependency_Edge, 0, 8, index.allocator),
 		unresolved_dependencies = make([dynamic]Semantic_Dependency_Edge, 0, 8, index.allocator),
+		resolved_dependency_indexes = make(
+			map[Semantic_Dependency_Edge_Key]int,
+			8,
+			index.allocator,
+		),
+		unresolved_dependency_indexes = make(
+			map[Semantic_Dependency_Edge_Key]int,
+			8,
+			index.allocator,
+		),
 		unresolved = make([dynamic]Checker_Unresolved_Candidate, 0, 8, index.allocator),
 		generation = generation,
 	}
@@ -518,6 +556,12 @@ semantic_project_record_destroy :: proc(record: ^Semantic_Project_Record) {
 		if record.unresolved_dependencies.allocator.procedure != nil {
 			delete(record.unresolved_dependencies)
 		}
+		if record.resolved_dependency_indexes != nil {
+			delete(record.resolved_dependency_indexes)
+		}
+		if record.unresolved_dependency_indexes != nil {
+			delete(record.unresolved_dependency_indexes)
+		}
 		if record.unresolved.allocator.procedure != nil {
 			delete(record.unresolved)
 		}
@@ -529,9 +573,10 @@ external_semantic_index_add_project_record :: proc(
 	index: ^External_Semantic_Index,
 	record: Semantic_Project_Record,
 ) -> ^Semantic_Project_Record {
-	assert(index != nil)
 	append(&index.projects, record)
-	stored := &index.projects[len(index.projects) - 1]
+	position := len(index.projects) - 1
+	stored := &index.projects[position]
+	index.project_record_indexes[stored.id] = position
 	if semantic_object_key_is_valid(stored.root_key) {
 		index.project_by_root_key[stored.root_key] = stored.id
 	}
@@ -548,10 +593,9 @@ external_semantic_index_project_record :: proc(
 	^Semantic_Project_Record,
 	bool,
 ) {
-	for &record in index.projects {
-		if record.id == id {
-			return &record, true
-		}
+	if position, ok := index.project_record_indexes[id];
+	   ok && 0 <= position && position < len(index.projects) && index.projects[position].id == id {
+		return &index.projects[position], true
 	}
 	return nil, false
 }
@@ -564,8 +608,6 @@ external_semantic_index_publish_provider :: proc(
 	quality: External_Binding_Quality = .Complete,
 	generation: u64 = 0,
 ) -> External_Binding {
-	assert(index != nil && record != nil && entity != nil)
-	assert(semantic_object_key_is_valid(key))
 	binding := External_Binding {
 		project_id = record.id,
 		entity     = entity,
@@ -581,16 +623,13 @@ external_semantic_index_publish_provider :: proc(
 external_semantic_index_lookup :: proc(
 	index: ^External_Semantic_Index,
 	namespace: Namespace,
-	name: string_interner.String,
+	name: string,
 	preferred_kind: External_Candidate_Kind = .Global_Symbol,
 ) -> (
 	Semantic_Object_Key,
 	External_Binding,
 	bool,
 ) {
-	if index == nil || !string_interner.is_valid(name) {
-		return {}, {}, false
-	}
 	preferred_key := Semantic_Object_Key {
 		kind = preferred_kind,
 		name = name,
@@ -614,11 +653,6 @@ external_semantic_index_add_dependency :: proc(
 	project_id: Semantic_Project_Id,
 	edge: Semantic_Dependency_Edge,
 ) {
-	if index == nil ||
-	   !semantic_project_id_is_valid(project_id) ||
-	   !semantic_object_key_is_valid(edge.key) {
-		return
-	}
 	if edge.resolved {
 		external_semantic_index_add_project_id(
 			&index.dependents_by_object,
@@ -640,9 +674,6 @@ semantic_project_record_add_provide :: proc(
 	record: ^Semantic_Project_Record,
 	key: Semantic_Object_Key,
 ) {
-	if record == nil || !semantic_object_key_is_valid(key) {
-		return
-	}
 	for existing in record.provides {
 		if existing == key {
 			return
@@ -656,9 +687,6 @@ semantic_project_record_add_provider_binding :: proc(
 	key: Semantic_Object_Key,
 	binding: External_Binding,
 ) {
-	if record == nil || !semantic_object_key_is_valid(key) || binding.entity == nil {
-		return
-	}
 	for &existing in record.provider_bindings {
 		if existing.key == key {
 			existing.binding = binding
@@ -672,13 +700,18 @@ semantic_project_record_add_dependency :: proc(
 	record: ^Semantic_Project_Record,
 	edge: Semantic_Dependency_Edge,
 ) {
-	if record == nil || !semantic_object_key_is_valid(edge.key) {
-		return
-	}
 	if edge.resolved {
-		checker_add_external_dependency_edge_to_list(&record.resolved_dependencies, edge)
+		add_external_dependency_edge_to_list(
+			&record.resolved_dependencies,
+			&record.resolved_dependency_indexes,
+			edge,
+		)
 	} else {
-		checker_add_external_dependency_edge_to_list(&record.unresolved_dependencies, edge)
+		add_external_dependency_edge_to_list(
+			&record.unresolved_dependencies,
+			&record.unresolved_dependency_indexes,
+			edge,
+		)
 	}
 }
 
@@ -687,9 +720,6 @@ external_semantic_index_add_provider_contribution :: proc(
 	key: Semantic_Object_Key,
 	binding: External_Binding,
 ) {
-	if index == nil || !semantic_object_key_is_valid(key) || binding.entity == nil {
-		return
-	}
 	if contributions, ok := index.provider_contributions[key]; ok {
 		for &existing in contributions {
 			if existing.project_id == binding.project_id {
@@ -716,9 +746,6 @@ external_semantic_index_add_entity_lookup :: proc(
 	binding: External_Binding,
 ) {
 	entity := binding.entity
-	if index == nil || entity == nil {
-		return
-	}
 	namespaces := [?]Namespace{.Value, .Type, .Routine}
 	for namespace in namespaces {
 		if entity_kind_occupies(entity.kind, namespace) {
@@ -785,11 +812,6 @@ external_semantic_index_remove_project_id :: proc(
 	key: Semantic_Object_Key,
 	project_id: Semantic_Project_Id,
 ) {
-	if waiters == nil ||
-	   !semantic_object_key_is_valid(key) ||
-	   !semantic_project_id_is_valid(project_id) {
-		return
-	}
 	projects, ok := waiters^[key]
 	if !ok {
 		return
@@ -818,7 +840,6 @@ external_semantic_index_replace_project_record :: proc(
 	index: ^External_Semantic_Index,
 	record: Semantic_Project_Record,
 ) -> ^Semantic_Project_Record {
-	assert(index != nil)
 	if semantic_object_key_is_valid(record.root_key) {
 		_ = external_semantic_index_remove_project_record_by_root_key(index, record.root_key)
 	} else if semantic_project_id_is_valid(record.id) {
@@ -833,9 +854,6 @@ external_semantic_index_remove_project_record_by_root_key :: proc(
 	index: ^External_Semantic_Index,
 	root_key: Semantic_Object_Key,
 ) -> bool {
-	if index == nil || !semantic_object_key_is_valid(root_key) {
-		return false
-	}
 	if id, ok := index.project_by_root_key[root_key]; ok {
 		return external_semantic_index_remove_project_record(index, id)
 	}
@@ -846,33 +864,26 @@ external_semantic_index_remove_project_record :: proc(
 	index: ^External_Semantic_Index,
 	id: Semantic_Project_Id,
 ) -> bool {
-	if index == nil || !semantic_project_id_is_valid(id) {
+	position, ok := index.project_record_indexes[id]
+	if !ok ||
+	   position < 0 ||
+	   position >= len(index.projects) ||
+	   index.projects[position].id != id {
 		return false
 	}
-	removed := false
-	removed_record: Semantic_Project_Record
-	write := 0
-	for record in index.projects {
-		if record.id == id {
-			removed = true
-			removed_record = record
-			continue
-		}
-		index.projects[write] = record
-		write += 1
+	removed_record := index.projects[position]
+	for read := position + 1; read < len(index.projects); read += 1 {
+		index.projects[read - 1] = index.projects[read]
+		index.project_record_indexes[index.projects[read - 1].id] = read - 1
 	}
-	if removed {
-		resize(&index.projects, write)
-		external_semantic_index_remove_project_record_contributions(index, &removed_record)
-		semantic_project_record_destroy(&removed_record)
-	}
-	return removed
+	resize(&index.projects, len(index.projects) - 1)
+	delete_key(&index.project_record_indexes, id)
+	external_semantic_index_remove_project_record_contributions(index, &removed_record)
+	semantic_project_record_destroy(&removed_record)
+	return true
 }
 
 external_semantic_index_rebuild_maps :: proc(index: ^External_Semantic_Index) {
-	if index == nil {
-		return
-	}
 	when trace.ENABLED {
 		trace_start := trace.now()
 		project_count := len(index.projects)
@@ -881,11 +892,12 @@ external_semantic_index_rebuild_maps :: proc(index: ^External_Semantic_Index) {
 	}
 	next_project_id := index.next_project_id
 	external_semantic_index_reset_maps(index)
-	for &record in index.projects {
+	for &record, position in index.projects {
 		when trace.ENABLED {
 			resolved_count += len(record.resolved_dependencies)
 			unresolved_count += len(record.unresolved_dependencies)
 		}
+		index.project_record_indexes[record.id] = position
 		if semantic_object_key_is_valid(record.root_key) {
 			index.project_by_root_key[record.root_key] = record.id
 		}
@@ -893,7 +905,11 @@ external_semantic_index_rebuild_maps :: proc(index: ^External_Semantic_Index) {
 			next_project_id = raw + 1
 		}
 		for provided in record.provider_bindings {
-			external_semantic_index_add_provider_contribution(index, provided.key, provided.binding)
+			external_semantic_index_add_provider_contribution(
+				index,
+				provided.key,
+				provided.binding,
+			)
 		}
 		for edge in record.resolved_dependencies {
 			external_semantic_index_add_dependency(index, record.id, edge)
@@ -918,7 +934,6 @@ external_semantic_index_add_project_record_contributions :: proc(
 	index: ^External_Semantic_Index,
 	record: ^Semantic_Project_Record,
 ) {
-	assert(index != nil && record != nil)
 	for provided in record.provider_bindings {
 		external_semantic_index_add_provider_contribution(index, provided.key, provided.binding)
 	}
@@ -934,16 +949,11 @@ external_semantic_index_remove_project_record_contributions :: proc(
 	index: ^External_Semantic_Index,
 	record: ^Semantic_Project_Record,
 ) {
-	assert(index != nil && record != nil)
 	if semantic_object_key_is_valid(record.root_key) {
 		external_semantic_index_remove_root_key(index, record.root_key, record.id)
 	}
 	for edge in record.resolved_dependencies {
-		external_semantic_index_remove_project_id(
-			&index.dependents_by_object,
-			edge.key,
-			record.id,
-		)
+		external_semantic_index_remove_project_id(&index.dependents_by_object, edge.key, record.id)
 	}
 	for edge in record.unresolved_dependencies {
 		external_semantic_index_remove_project_id(
@@ -963,10 +973,6 @@ external_semantic_index_remove_root_key :: proc(
 	root_key: Semantic_Object_Key,
 	project_id: Semantic_Project_Id,
 ) {
-	assert(index != nil)
-	if !semantic_object_key_is_valid(root_key) {
-		return
-	}
 	if current, ok := index.project_by_root_key[root_key]; ok && current == project_id {
 		delete_key(&index.project_by_root_key, root_key)
 	}
@@ -977,10 +983,6 @@ external_semantic_index_remove_provider_contribution :: proc(
 	key: Semantic_Object_Key,
 	binding: External_Binding,
 ) {
-	assert(index != nil)
-	if !semantic_object_key_is_valid(key) {
-		return
-	}
 	contributions, ok := index.provider_contributions[key]
 	if !ok {
 		return
@@ -999,16 +1001,16 @@ external_semantic_index_remove_provider_contribution :: proc(
 	if write == 0 {
 		clear(&contributions)
 		index.provider_contributions[key] = contributions
-		if current, current_ok := index.providers[key]; current_ok &&
-		   current.project_id == binding.project_id {
+		if current, current_ok := index.providers[key];
+		   current_ok && current.project_id == binding.project_id {
 			delete_key(&index.providers, key)
 		}
 		return
 	}
 	resize(&contributions, write)
 	index.provider_contributions[key] = contributions
-	if current, current_ok := index.providers[key]; current_ok &&
-	   current.project_id == binding.project_id {
+	if current, current_ok := index.providers[key];
+	   current_ok && current.project_id == binding.project_id {
 		index.providers[key] = contributions[write - 1]
 	}
 }
@@ -1018,11 +1020,7 @@ external_semantic_index_remove_entity_lookup :: proc(
 	key: Semantic_Object_Key,
 	binding: External_Binding,
 ) {
-	assert(index != nil)
 	entity := binding.entity
-	if entity == nil {
-		return
-	}
 	namespaces := [?]Namespace{.Value, .Type, .Routine}
 	for namespace in namespaces {
 		if entity_kind_occupies(entity.kind, namespace) {
@@ -1040,7 +1038,6 @@ external_semantic_index_remove_lookup_contribution :: proc(
 	lookup_key: External_Lookup_Key,
 	contribution: External_Lookup_Contribution,
 ) {
-	assert(index != nil)
 	contributions, ok := index.lookup_contributions[lookup_key]
 	if !ok {
 		return
@@ -1059,8 +1056,8 @@ external_semantic_index_remove_lookup_contribution :: proc(
 	if write == 0 {
 		clear(&contributions)
 		index.lookup_contributions[lookup_key] = contributions
-		if current, current_ok := index.lookup[lookup_key]; current_ok &&
-		   current == contribution.key {
+		if current, current_ok := index.lookup[lookup_key];
+		   current_ok && current == contribution.key {
 			delete_key(&index.lookup, lookup_key)
 		}
 		return
@@ -1073,7 +1070,7 @@ external_semantic_index_remove_lookup_contribution :: proc(
 }
 
 external_semantic_index_reset_maps :: proc(index: ^External_Semantic_Index) {
-	assert(index != nil)
+	clear(&index.project_record_indexes)
 	clear(&index.providers)
 	for _, &contributions in index.provider_contributions {
 		clear(&contributions)
@@ -1091,19 +1088,26 @@ external_semantic_index_reset_maps :: proc(index: ^External_Semantic_Index) {
 	}
 }
 
-external_binding_occupies_namespace :: proc(
+external_binding_occupies_namespace :: #force_inline proc(
 	binding: External_Binding,
 	namespace: Namespace,
 ) -> bool {
 	return binding.entity != nil && entity_kind_occupies(binding.entity.kind, namespace)
 }
 
-semantic_project_id_is_valid :: #force_inline proc(id: Semantic_Project_Id) -> bool {
+semantic_project_id_is_valid :: #force_inline proc "contextless" (id: Semantic_Project_Id) -> bool {
 	return u32(id) != 0
 }
 
-semantic_object_key_is_valid :: #force_inline proc(key: Semantic_Object_Key) -> bool {
-	return string_interner.is_valid(key.name)
+semantic_object_key_is_valid :: #force_inline proc "contextless" (key: Semantic_Object_Key) -> bool {
+	return key.name != ""
+}
+
+semantic_object_key_clone :: #force_inline proc(
+	key: Semantic_Object_Key,
+	allocator: mem.Allocator,
+) -> Semantic_Object_Key {
+	return Semantic_Object_Key{kind = key.kind, name = strings.clone(key.name, allocator)}
 }
 
 external_semantics_analyze_interface_input :: proc(
@@ -1111,21 +1115,34 @@ external_semantics_analyze_interface_input :: proc(
 	input: External_Interface_Input,
 ) -> ^Semantic_Project_Record {
 	assert(external != nil && input.root != nil)
-	root_key := external_interface_input_key(input)
-	assert(semantic_object_key_is_valid(root_key))
+	input_key := external_interface_input_key(input)
+	assert(semantic_object_key_is_valid(input_key))
 
 	project := new(Project, external.allocator)
 	assert(project != nil)
-	project^ = project_make_with_interner(external.interner)
+	project^ = project_make()
 	append(&external.interface_projects, project)
+	root_key := semantic_object_key_clone(input_key, project.allocator)
 
 	checker := new(Checker, external.allocator)
 	assert(checker != nil)
-	checker_init_with_builtins(checker, project, external, external_semantics_builtin_scope(external))
+	checker_init_with_builtins(
+		checker,
+		project,
+		external,
+		external_semantics_builtin_scope(external),
+	)
 	append(&external.interface_checkers, checker)
 
-	file := checker_add_file(checker, input.path, input.root)
+	file := checker_add_file(
+		checker,
+		input.path,
+		input.root,
+		input.syntax_diagnostics[:],
+		input.has_syntax_errors,
+	)
 	checker_check_file(checker, file)
+	has_syntax_errors := project_file_has_syntax_errors(file)
 
 	record := semantic_project_record_make(
 		&external.index,
@@ -1145,11 +1162,13 @@ external_semantics_analyze_interface_input :: proc(
 	for edge in checker.info.resolved_external_dependencies {
 		semantic_project_record_add_dependency(&record, edge)
 	}
-	for edge in checker.info.unresolved_external_dependencies {
-		semantic_project_record_add_dependency(&record, edge)
-	}
-	for candidate in checker.info.unresolved {
-		checker_add_unresolved_candidate_to_list(&record.unresolved, candidate)
+	if !has_syntax_errors {
+		for edge in checker.info.unresolved_external_dependencies {
+			semantic_project_record_add_dependency(&record, edge)
+		}
+		for candidate in checker.info.unresolved {
+			checker_add_unresolved_candidate_to_list(&record.unresolved, candidate)
+		}
 	}
 
 	stored := external_semantic_index_add_project_record(&external.index, record)
@@ -1168,7 +1187,6 @@ external_semantics_reanalyze_interface_input :: proc(
 ) -> ^Semantic_Project_Record {
 	assert(external != nil)
 	root_key := external_interface_input_key(input)
-	assert(semantic_object_key_is_valid(root_key))
 	_ = external_semantic_index_remove_project_record_by_root_key(&external.index, root_key)
 	return external_semantics_analyze_interface_input(external, input)
 }
@@ -1208,12 +1226,14 @@ external_semantics_add_source_file :: proc(
 	path: string,
 	root: ^ast.File,
 	provided_names: []string,
+	syntax_diagnostics: []Syntax_Diagnostic = nil,
+	has_syntax_errors: bool = false,
 ) -> ^External_Source_File {
 	assert(external != nil)
-	names := make([dynamic]string_interner.String, 0, len(provided_names), external.allocator)
+	names := make([dynamic]string, 0, len(provided_names), external.allocator)
 	for name in provided_names {
-		interned := external_intern_name(external, name)
-		if string_interner.is_valid(interned) {
+		interned := utils.to_lower_ascii(name, external.allocator)
+		if interned != "" {
 			append(&names, interned)
 		}
 	}
@@ -1223,6 +1243,11 @@ external_semantics_add_source_file :: proc(
 			path = strings.clone(path, external.allocator),
 			root = root,
 			provided_names = names,
+			syntax_diagnostics = syntax_diagnostic_list_clone(
+				syntax_diagnostics,
+				external.allocator,
+			),
+			has_syntax_errors = has_syntax_errors || len(syntax_diagnostics) > 0,
 		},
 	)
 	return &external.source_files[len(external.source_files) - 1]
@@ -1238,10 +1263,21 @@ external_semantics_upsert_source_input :: proc(
 			continue
 		}
 		source.root = input.root
+		for name in source.provided_names {
+			if name != "" {
+				delete(name, external.allocator)
+			}
+		}
 		if source.provided_names.allocator.procedure != nil {
 			delete(source.provided_names)
 		}
+		syntax_diagnostic_list_destroy(&source.syntax_diagnostics, external.allocator)
 		source.provided_names = external_source_input_intern_names(external, input.provided_names)
+		source.syntax_diagnostics = syntax_diagnostic_list_clone(
+			input.syntax_diagnostics[:],
+			external.allocator,
+		)
+		source.has_syntax_errors = input.has_syntax_errors || len(input.syntax_diagnostics) > 0
 		return &source
 	}
 	return external_semantics_add_source_file(
@@ -1249,41 +1285,23 @@ external_semantics_upsert_source_input :: proc(
 		input.path,
 		input.root,
 		input.provided_names,
+		input.syntax_diagnostics[:],
+		input.has_syntax_errors,
 	)
 }
 
 external_source_input_intern_names :: proc(
 	external: ^External_Semantics,
 	provided_names: []string,
-) -> [dynamic]string_interner.String {
-	names := make([dynamic]string_interner.String, 0, len(provided_names), external.allocator)
+) -> [dynamic]string {
+	names := make([dynamic]string, 0, len(provided_names), external.allocator)
 	for name in provided_names {
-		interned := external_intern_name(external, name)
-		if string_interner.is_valid(interned) {
+		interned := utils.to_lower_ascii(name, external.allocator)
+		if interned != "" {
 			append(&names, interned)
 		}
 	}
 	return names
-}
-
-external_semantics_lookup :: proc(
-	external: ^External_Semantics,
-	namespace: Namespace,
-	name: string_interner.String,
-	preferred_kind: External_Candidate_Kind = .Global_Symbol,
-) -> (
-	^Entity,
-	bool,
-) {
-	if _, binding, ok := external_semantic_index_lookup(
-		&external.index,
-		namespace,
-		name,
-		preferred_kind,
-	); ok {
-		return binding.entity, true
-	}
-	return nil, false
 }
 
 external_semantics_add_entity :: proc(
@@ -1293,9 +1311,9 @@ external_semantics_add_entity :: proc(
 	kind: Entity_Kind,
 ) -> ^Entity {
 	assert(external != nil)
-	_, _, _, root_scope, record := external_semantics_ensure_compat_project(external)
+	project, _, _, root_scope, record := external_semantics_ensure_compat_project(external)
 	entity := external_new_entity(external, kind)
-	entity.name = external_intern_name(external, name)
+	entity.name = project_intern_lower_ascii(project, name)
 	entity.state = .Resolved
 	entity.scope = root_scope
 	entity.source_file = external.compat_root_file
@@ -1335,6 +1353,7 @@ external_semantics_add_structure_summary :: proc(
 	name: string,
 	fields: []External_Field_Summary,
 ) -> ^Entity {
+	project, _, _, _, _ := external_semantics_ensure_compat_project(external)
 	entity := external_semantics_add_entity(external, .Type, name, .Type_Def)
 	structure_scope := external_new_scope(external, entity.scope, .Structure, entity)
 	structure := external_new_structure(external, entity.name, structure_scope)
@@ -1353,7 +1372,7 @@ external_semantics_add_structure_summary :: proc(
 	}
 	for field, index in fields {
 		field_entity := external_new_entity(external, .Field)
-		field_entity.name = external_intern_name(external, field.name)
+		field_entity.name = project_intern_lower_ascii(project, field.name)
 		field_entity.state = .Resolved
 		field_entity.scope = structure_scope
 		field_entity.owner = entity
@@ -1412,11 +1431,10 @@ external_semantics_ensure_compat_project :: proc(
 	^Scope,
 	^Semantic_Project_Record,
 ) {
-	assert(external != nil)
 	if external.compat_project == nil {
 		external.compat_project = new(Project, external.allocator)
 		assert(external.compat_project != nil)
-		external.compat_project^ = project_make_with_interner(external.interner)
+		external.compat_project^ = project_make()
 
 		external.compat_checker = new(Checker, external.allocator)
 		assert(external.compat_checker != nil)
@@ -1496,9 +1514,6 @@ external_interface_entity_for_key :: proc(
 	^Entity,
 	bool,
 ) {
-	if scope == nil || !semantic_object_key_is_valid(key) {
-		return nil, false
-	}
 	namespace := external_object_key_namespace(key)
 	if entity, ok := scope_lookup_declaration(scope, namespace, key.name); ok {
 		return entity, true
@@ -1518,7 +1533,7 @@ external_object_key_namespace :: proc(key: Semantic_Object_Key) -> Namespace {
 }
 
 external_object_key_for_provider_entity :: proc(entity: ^Entity) -> (Semantic_Object_Key, bool) {
-	if entity == nil || !string_interner.is_valid(entity.name) {
+	if entity == nil || entity.name == "" {
 		return {}, false
 	}
 	#partial switch entity.kind {
@@ -1541,7 +1556,6 @@ external_object_key_for_entity :: proc(
 	entity: ^Entity,
 	namespace: Namespace,
 ) -> Semantic_Object_Key {
-	assert(entity != nil)
 	kind := External_Candidate_Kind.Global_Symbol
 	#partial switch entity.kind {
 	case .Class:
@@ -1564,7 +1578,7 @@ external_object_key_for_entity :: proc(
 
 checker_add_unresolved_candidate :: proc(
 	ctx: ^Checker_Context,
-	name: string_interner.String,
+	name: string,
 	namespace: Namespace,
 	kind: External_Candidate_Kind,
 	hint: External_Candidate_Hint,
@@ -1573,9 +1587,6 @@ checker_add_unresolved_candidate :: proc(
 	node: ^ast.Node = nil,
 	if_found := false,
 ) {
-	if ctx == nil || !string_interner.is_valid(name) {
-		return
-	}
 	candidate := Checker_Unresolved_Candidate {
 		name      = name,
 		namespace = namespace,
@@ -1610,6 +1621,42 @@ checker_add_unresolved_candidate_to_list :: proc(
 	append(list, candidate)
 }
 
+checker_unresolved_candidate_key :: #force_inline proc(
+	candidate: Checker_Unresolved_Candidate,
+) -> Checker_Unresolved_Candidate_Key {
+	return Checker_Unresolved_Candidate_Key {
+		name = candidate.name,
+		namespace = candidate.namespace,
+		kind = candidate.kind,
+		file = candidate.file,
+		range = candidate.range,
+	}
+}
+
+checker_unresolved_candidate_set_make :: proc(
+	candidates: []Checker_Unresolved_Candidate,
+	allocator: mem.Allocator,
+) -> map[Checker_Unresolved_Candidate_Key]bool {
+	seen := make(map[Checker_Unresolved_Candidate_Key]bool, len(candidates), allocator)
+	for candidate in candidates {
+		seen[checker_unresolved_candidate_key(candidate)] = true
+	}
+	return seen
+}
+
+checker_add_unresolved_candidate_to_list_with_set :: proc(
+	list: ^[dynamic]Checker_Unresolved_Candidate,
+	seen: ^map[Checker_Unresolved_Candidate_Key]bool,
+	candidate: Checker_Unresolved_Candidate,
+) {
+	key := checker_unresolved_candidate_key(candidate)
+	if seen^[key] {
+		return
+	}
+	seen^[key] = true
+	append(list, candidate)
+}
+
 checker_unresolved_candidate_list_contains :: proc(
 	list: []Checker_Unresolved_Candidate,
 	candidate: Checker_Unresolved_Candidate,
@@ -1633,9 +1680,6 @@ checker_add_resolved_external_dependency :: proc(
 	range: Range = {},
 	node: ^ast.Node = nil,
 ) {
-	if ctx == nil || !semantic_object_key_is_valid(key) || binding.entity == nil {
-		return
-	}
 	edge := Semantic_Dependency_Edge {
 		key      = key,
 		binding  = binding,
@@ -1644,16 +1688,17 @@ checker_add_resolved_external_dependency :: proc(
 		file     = ctx.file,
 		node     = node,
 	}
-	checker_add_external_dependency_edge_to_list(&ctx.info.resolved_external_dependencies, edge)
+	add_external_dependency_edge_to_list(
+		&ctx.info.resolved_external_dependencies,
+		&ctx.info.resolved_external_dependency_indexes,
+		edge,
+	)
 }
 
 checker_add_unresolved_dependency_edge :: proc(
 	ctx: ^Checker_Context,
 	candidate: Checker_Unresolved_Candidate,
 ) {
-	if ctx == nil || !string_interner.is_valid(candidate.name) {
-		return
-	}
 	edge := Semantic_Dependency_Edge {
 		key = Semantic_Object_Key{kind = candidate.kind, name = candidate.name},
 		resolved = false,
@@ -1661,31 +1706,49 @@ checker_add_unresolved_dependency_edge :: proc(
 		file = candidate.file,
 		node = candidate.node,
 	}
-	checker_add_external_dependency_edge_to_list(&ctx.info.unresolved_external_dependencies, edge)
+	add_external_dependency_edge_to_list(
+		&ctx.info.unresolved_external_dependencies,
+		&ctx.info.unresolved_external_dependency_indexes,
+		edge,
+	)
 }
 
-checker_add_external_dependency_edge_to_list :: proc(
+semantic_dependency_edge_key :: #force_inline proc(
+	edge: Semantic_Dependency_Edge,
+) -> Semantic_Dependency_Edge_Key {
+	return Semantic_Dependency_Edge_Key {
+		key = edge.key,
+		resolved = edge.resolved,
+		range = edge.range,
+		file = edge.file,
+		node = edge.node,
+	}
+}
+
+semantic_dependency_edge_index_map_make :: proc(
+	edges: []Semantic_Dependency_Edge,
+	allocator: mem.Allocator,
+) -> map[Semantic_Dependency_Edge_Key]int {
+	indexes := make(map[Semantic_Dependency_Edge_Key]int, len(edges), allocator)
+	for edge, index in edges {
+		indexes[semantic_dependency_edge_key(edge)] = index
+	}
+	return indexes
+}
+
+add_external_dependency_edge_to_list :: proc(
 	list: ^[dynamic]Semantic_Dependency_Edge,
+	indexes: ^map[Semantic_Dependency_Edge_Key]int,
 	edge: Semantic_Dependency_Edge,
 ) {
-	for existing in list^ {
-		if existing.key == edge.key &&
-		   existing.resolved == edge.resolved &&
-		   existing.file == edge.file &&
-		   existing.range == edge.range &&
-		   existing.node == edge.node {
-			return
-		}
+	key := semantic_dependency_edge_key(edge)
+	if index, ok := indexes^[key]; ok {
+		assert(0 <= index && index < len(list^))
+		list^[index] = edge
+		return
 	}
+	indexes^[key] = len(list^)
 	append(list, edge)
-}
-
-external_intern_name :: proc(
-	external: ^External_Semantics,
-	name: string,
-) -> string_interner.String {
-	canonical := strings.to_lower(name, context.temp_allocator)
-	return string_interner.insert(external.interner, canonical)
 }
 
 external_new_entity :: proc(external: ^External_Semantics, kind: Entity_Kind) -> ^Entity {
@@ -1726,7 +1789,7 @@ external_new_type :: proc(external: ^External_Semantics, kind: Type_Kind) -> ^Ty
 
 external_new_structure :: proc(
 	external: ^External_Semantics,
-	name: string_interner.String,
+	name: string,
 	scope: ^Scope,
 ) -> ^Structure {
 	project, _, file, _, _ := external_semantics_ensure_compat_project(external)
@@ -1761,7 +1824,8 @@ external_type_class_or_interface :: proc(
 }
 
 external_builtin_type :: proc(external: ^External_Semantics, name: string) -> ^Type {
-	typ := external_new_type(external, .Builtin)
-	typ.name = external_intern_name(external, name)
+	project, _, _, _, _ := external_semantics_ensure_compat_project(external)
+	typ := project_new_type(project, .Builtin)
+	typ.name = project_intern_lower_ascii(project, name)
 	return typ
 }

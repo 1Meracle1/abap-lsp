@@ -5,7 +5,6 @@ import dep_store "src:dependency_store"
 import remote_deps "src:remote_dependencies"
 import "src:semantic"
 import workspace "src:workspace"
-import string_interner "src:string_interner"
 
 import json "core:encoding/json"
 import "core:fmt"
@@ -59,7 +58,10 @@ handle_implementation :: proc(ctx: ^Request_Context, params: json.Value) {
 implementation_location_for_params :: proc(
 	state: ^Server_State,
 	params: json.Value,
-) -> (Location, bool) {
+) -> (
+	Location,
+	bool,
+) {
 	found := entity_at_position(state, params)
 	if !found.ok {
 		return {}, false
@@ -106,9 +108,8 @@ append_entity_reference_locations :: proc(
 	}
 	append_reference_location(state, locations, snapshot, entity.source_file, entity.name_range)
 
-	if payload, ok := entity.payload.(^semantic.Entity_Routine_Payload); ok &&
-	   payload != nil &&
-	   payload.implementation_unit != nil {
+	if payload, ok := entity.payload.(^semantic.Entity_Routine_Payload);
+	   ok && payload != nil && payload.implementation_unit != nil {
 		append_reference_location(
 			state,
 			locations,
@@ -156,8 +157,7 @@ entity_label :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> st
 	if entity == nil {
 		return ""
 	}
-	name := string_interner.load(project.interner, entity.name)
-	return fmt.tprintf("`%s` %s", name, entity_kind_label(entity.kind))
+	return fmt.tprintf("`%s` %s", entity.name, entity_kind_label(entity.kind))
 }
 
 entity_detail :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
@@ -205,9 +205,8 @@ entity_hover_signature :: proc(entity: ^semantic.Entity) -> string {
 	if entity.kind == .Method {
 		return method_hover_signature(entity)
 	}
-	if payload, ok := entity.payload.(^semantic.Entity_Routine_Payload); ok &&
-	   payload != nil &&
-	   payload.signature != "" {
+	if payload, ok := entity.payload.(^semantic.Entity_Routine_Payload);
+	   ok && payload != nil && payload.signature != "" {
 		return payload.signature
 	}
 	return ""
@@ -218,13 +217,17 @@ method_hover_signature :: proc(entity: ^semantic.Entity) -> string {
 	if !ok || payload == nil || payload.signature_scope == nil {
 		return ""
 	}
-	if signature := method_hover_signature_from_decl(entity, payload.signature_scope.decl_info); signature != "" {
+	if signature := method_hover_signature_from_decl(entity, payload.signature_scope.decl_info);
+	   signature != "" {
 		return signature
 	}
 	return method_hover_signature_from_decl(entity, entity.decl_info)
 }
 
-method_hover_signature_from_decl :: proc(entity: ^semantic.Entity, info: ^semantic.Decl_Info) -> string {
+method_hover_signature_from_decl :: proc(
+	entity: ^semantic.Entity,
+	info: ^semantic.Decl_Info,
+) -> string {
 	if entity == nil || info == nil || info.decl_node == nil {
 		return ""
 	}
@@ -261,17 +264,20 @@ entity_documentation :: proc(project: ^semantic.Project, entity: ^semantic.Entit
 		return ""
 	}
 	if .Builtin in entity.flags {
-		if payload, ok := entity.payload.(^semantic.Entity_Builtin_Payload); ok && payload != nil && payload.docs != "" {
+		if payload, ok := entity.payload.(^semantic.Entity_Builtin_Payload);
+		   ok && payload != nil && payload.docs != "" {
 			return payload.docs
 		}
-		name := string_interner.load(project.interner, entity.name)
 		if entity.kind == .Field && entity.owner != nil {
-			owner_name := string_interner.load(project.interner, entity.owner.name)
-			if docs := semantic.checker_builtin_structure_field_description(owner_name, name); docs != "" {
+			if docs := semantic.checker_builtin_structure_field_description(
+				entity.owner.name,
+				entity.name,
+			); docs != "" {
 				return docs
 			}
 		}
-		if docs := semantic.checker_builtin_symbol_description(name, entity.kind); docs != "" {
+		if docs := semantic.checker_builtin_symbol_description(entity.name, entity.kind);
+		   docs != "" {
 			return docs
 		}
 	}
@@ -361,8 +367,7 @@ declared_type_clause_label :: proc(clause: ^ast.Data_Type_Clause) -> string {
 	     .Like_Sorted_Table,
 	     .Like_Hashed_Table:
 		return fmt.tprintf("table of %s", base) if base != "" else "table"
-	case .Like_Line_Of,
-	     .Type_Line_Of:
+	case .Like_Line_Of, .Type_Line_Of:
 		return fmt.tprintf("line of %s", base) if base != "" else ""
 	case .Range_Of:
 		return fmt.tprintf("range of %s", base) if base != "" else "range"
@@ -394,12 +399,12 @@ type_label :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
 	}
 	switch typ.kind {
 	case .Builtin, .Named, .Class, .Interface:
-		if string_interner.is_valid(typ.name) {
-			return string_interner.load(project.interner, typ.name)
+		if typ.name != "" {
+			return typ.name
 		}
 	case .Structure:
-		if typ.structure != nil && string_interner.is_valid(typ.structure.name) {
-			return string_interner.load(project.interner, typ.structure.name)
+		if typ.structure != nil && typ.structure.name != "" {
+			return typ.structure.name
 		}
 		return "structure"
 	case .Table:
@@ -428,27 +433,22 @@ table_type_form_label :: proc(form: ast.Data_Type_Form) -> string {
 		return "ANY TABLE"
 	case .Index_Table:
 		return "INDEX TABLE"
-	case .Sorted_Table,
-	     .Like_Sorted_Table:
+	case .Sorted_Table, .Like_Sorted_Table:
 		return "SORTED TABLE"
-	case .Hashed_Table,
-	     .Like_Hashed_Table:
+	case .Hashed_Table, .Like_Hashed_Table:
 		return "HASHED TABLE"
-	case .Standard_Table,
-	     .Like_Standard_Table:
+	case .Standard_Table, .Like_Standard_Table:
 		return "STANDARD TABLE"
 	case .Range_Of:
 		return "RANGE"
-	case .Table,
-	     .Like_Table:
+	case .Table, .Like_Table:
 	}
 	return "TABLE"
 }
 
 table_type_form_has_row_type :: proc(form: ast.Data_Type_Form) -> bool {
 	#partial switch form {
-	case .Any_Table,
-	     .Index_Table:
+	case .Any_Table, .Index_Table:
 		return false
 	}
 	return true
@@ -459,7 +459,10 @@ location_for_project_file_range :: proc(
 	snapshot: Snapshot_Lookup,
 	file: ^semantic.Project_File,
 	range: semantic.Range,
-) -> (Location, bool) {
+) -> (
+	Location,
+	bool,
+) {
 	if file == nil || range.start >= range.end {
 		return {}, false
 	}
@@ -481,11 +484,7 @@ location_for_project_file_range :: proc(
 			uri = materialized_uri
 		}
 	}
-	return Location {
-			uri   = uri,
-			range = range_from_offsets(source, range.start, range.end),
-		},
-		true
+	return Location{uri = uri, range = range_from_offsets(source, range.start, range.end)}, true
 }
 
 source_for_project_file :: proc(state: ^Server_State, file: ^semantic.Project_File) -> string {
@@ -555,7 +554,10 @@ read_dependency_document_source :: proc(
 	state: ^Server_State,
 	uri: string,
 	allocator: mem.Allocator,
-) -> (string, bool) {
+) -> (
+	string,
+	bool,
+) {
 	if doc, ok := state.documents[uri]; ok {
 		return strings.clone(doc.text, allocator), true
 	}
@@ -569,7 +571,10 @@ dependency_source_for_uri :: proc(
 	state: ^Server_State,
 	uri: string,
 	allocator: mem.Allocator,
-) -> (string, bool) {
+) -> (
+	string,
+	bool,
+) {
 	object_kind, object_name, ok := dependency_object_from_virtual_uri(uri, allocator)
 	if !ok {
 		return "", false
@@ -593,7 +598,10 @@ dependency_ast_source_for_uri :: proc(
 	state: ^Server_State,
 	uri: string,
 	allocator: mem.Allocator,
-) -> (string, bool) {
+) -> (
+	string,
+	bool,
+) {
 	for &slot in state.workspaces {
 		if !slot.has_analysis {
 			continue
@@ -617,7 +625,10 @@ materialize_dependency_document_uri :: proc(
 	uri: string,
 	source: string,
 	allocator: mem.Allocator,
-) -> (string, bool) {
+) -> (
+	string,
+	bool,
+) {
 	if source == "" {
 		return "", false
 	}
@@ -641,7 +652,10 @@ materialized_dependency_document_path :: proc(
 	state: ^Server_State,
 	uri: string,
 	allocator: mem.Allocator,
-) -> (string, bool) {
+) -> (
+	string,
+	bool,
+) {
 	object_kind, object_name, ok := dependency_object_from_virtual_uri(uri, context.temp_allocator)
 	if !ok {
 		return "", false
@@ -677,10 +691,7 @@ dependency_document_path_segment :: proc(
 	wrote := false
 	last_separator := false
 	for ch in lower {
-		if (ch >= 'a' && ch <= 'z') ||
-		   (ch >= '0' && ch <= '9') ||
-		   ch == '_' ||
-		   ch == '-' {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' {
 			strings.write_rune(&out, ch)
 			wrote = true
 			last_separator = false
@@ -704,7 +715,10 @@ dependency_document_path_segment :: proc(
 dependency_object_from_virtual_uri :: proc(
 	uri: string,
 	allocator: mem.Allocator,
-) -> (object_kind, object_name: string, ok: bool) {
+) -> (
+	object_kind, object_name: string,
+	ok: bool,
+) {
 	lower := strings.to_lower(uri, context.temp_allocator)
 	if strings.has_prefix(lower, "abapls-cache:") {
 		return dependency_object_from_cache_uri(uri[len("abapls-cache:"):], allocator)
@@ -715,7 +729,10 @@ dependency_object_from_virtual_uri :: proc(
 dependency_object_from_cache_uri :: proc(
 	raw_uri: string,
 	allocator: mem.Allocator,
-) -> (object_kind, object_name: string, ok: bool) {
+) -> (
+	object_kind, object_name: string,
+	ok: bool,
+) {
 	path := raw_uri
 	if query_start := strings.index_byte(path, '?'); query_start >= 0 {
 		path = path[:query_start]

@@ -3,7 +3,7 @@ package abap_frontend_remote_dependencies
 
 import "src:adt"
 import dep_store "src:dependency_store"
-import uri_key "src:uri_key"
+import "src:utils"
 
 import net_url "core:net"
 import "core:mem"
@@ -154,7 +154,7 @@ remote_dependency_cache_uri :: proc(
 	if name == "" {
 		name = artifact.request.name
 	}
-	strings.write_string(&out, strings.to_lower(name, allocator))
+	strings.write_string(&out, utils.to_lower_ascii(name, allocator))
 	strings.write_string(&out, ".abap")
 	return strings.to_string(out)
 }
@@ -181,7 +181,7 @@ result_uri_add_if_missing :: proc(
 	if state == nil || state.seen_result_uris == nil {
 		return true
 	}
-	key := uri_key.normalized_uri_path_key(uri, state.seen_result_uris.allocator)
+	key := utils.normalized_uri_path_key(uri, state.seen_result_uris.allocator)
 	if key in state.seen_result_uris {
 		return false
 	}

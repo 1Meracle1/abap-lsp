@@ -1,7 +1,5 @@
 package abap_frontend_semantic2
 
-import string_interner "src:string_interner"
-
 Scope_Kind :: enum {
 	Builtin,
 	File,
@@ -37,23 +35,23 @@ Namespace :: enum {
 
 Scope_Declaration_Key :: struct {
 	namespace: Namespace,
-	name:      string_interner.String,
+	name:      string,
 }
 
 scope_insert_declaration :: proc(scope: ^Scope, entity: ^Entity) -> ^Entity {
-	assert(scope != nil && entity != nil)
-
 	namespaces := [?]Namespace{.Value, .Type, .Routine}
 	for namespace in namespaces {
 		if !entity_kind_occupies(entity.kind, namespace) {
 			continue
 		}
-		key := Scope_Declaration_Key{namespace = namespace, name = entity.name}
+		key := Scope_Declaration_Key {
+			namespace = namespace,
+			name      = entity.name,
+		}
 		if existing, ok := scope.elements[key]; ok {
 			return existing
 		}
 	}
-
 	if entity.scope == nil {
 		entity.scope = scope
 	}
@@ -62,7 +60,10 @@ scope_insert_declaration :: proc(scope: ^Scope, entity: ^Entity) -> ^Entity {
 		if !entity_kind_occupies(entity.kind, namespace) {
 			continue
 		}
-		key := Scope_Declaration_Key{namespace = namespace, name = entity.name}
+		key := Scope_Declaration_Key {
+			namespace = namespace,
+			name      = entity.name,
+		}
 		scope.elements[key] = entity
 	}
 	return nil
@@ -71,11 +72,15 @@ scope_insert_declaration :: proc(scope: ^Scope, entity: ^Entity) -> ^Entity {
 scope_lookup_declaration :: proc(
 	scope: ^Scope,
 	namespace: Namespace,
-	name: string_interner.String,
-) -> (^Entity, bool) {
-	assert(scope != nil)
-	if entity, ok := scope.elements[Scope_Declaration_Key{namespace = namespace, name = name}]; ok {
-		return entity, true
+	name: string,
+) -> (
+	entity: ^Entity,
+	found: bool,
+) {
+	key := Scope_Declaration_Key {
+		namespace = namespace,
+		name      = name,
 	}
-	return nil, false
+	entity, found = scope.elements[key]
+	return
 }

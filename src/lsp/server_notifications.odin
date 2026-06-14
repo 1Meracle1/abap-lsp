@@ -29,6 +29,11 @@ handle_notification :: proc(
 			server_reanalyze(state)
 			publish_all_diagnostics(state, output)
 		}
+	case METHOD_DID_SAVE:
+		if update_document_from_save(state, params) {
+			server_reanalyze(state)
+			publish_all_diagnostics(state, output)
+		}
 	case METHOD_DID_CLOSE:
 		if close_document(state, params) {
 			server_reanalyze(state)
@@ -312,7 +317,7 @@ update_document_from_open :: proc(state: ^Server_State, params: json.Value) -> b
 	uri := object_string(text_document, "uri") or_return
 	text := object_string(text_document, "text") or_return
 	version := object_integer(text_document, "version") or_return
-	return upsert_document_text(state, uri, text, version)
+	return upsert_document_text(state, uri, text, version, false)
 }
 
 update_document_from_change :: proc(state: ^Server_State, params: json.Value) -> bool {
@@ -323,7 +328,29 @@ update_document_from_change :: proc(state: ^Server_State, params: json.Value) ->
 	version := object_integer(text_document, "version") or_return
 	last_change := changes[len(changes) - 1].(json.Object) or_return
 	text := object_string(last_change, "text") or_return
-	return upsert_document_text(state, uri, text, version)
+	return upsert_document_text(state, uri, text, version, true)
+}
+
+update_document_from_save :: proc(state: ^Server_State, params: json.Value) -> bool {
+	object := params.(json.Object) or_return
+	text_document := object_object(object, "textDocument") or_return
+	raw_uri := object_string(text_document, "uri") or_return
+	uri := normalize_lsp_uri(raw_uri, context.temp_allocator)
+	if doc, ok := state.documents[uri]; ok {
+		if text, text_ok := object_string(object, "text"); text_ok {
+			if doc.owns_text && doc.text != "" {
+				delete(doc.text, state.allocator)
+			}
+			doc.text = strings.clone(text, state.allocator)
+			doc.owns_text = true
+		}
+		doc.dirty = true
+		doc.has_unsaved_changes = false
+		state.documents[doc.uri] = doc
+		return true
+	}
+	queue_disk_refresh_or_remove(state, uri)
+	return true
 }
 
 close_document :: proc(state: ^Server_State, params: json.Value) -> bool {
@@ -350,6 +377,7 @@ server_reanalyze :: proc(state: ^Server_State) {
 			context.temp_allocator,
 		)
 		removed_paths := make([dynamic]string, 0, 4, context.temp_allocator)
+		suspend_external_dependency_acquisition := false
 		if !slot.has_analysis {
 			append_workspace_disk_inputs(state, &slot.root, &inputs)
 		}
@@ -357,6 +385,9 @@ server_reanalyze :: proc(state: ^Server_State) {
 			doc_workspace_index, doc_workspace_ok := workspace_index_for_uri(state, workspace_doc.uri)
 			if !doc_workspace_ok || doc_workspace_index != workspace_index {
 				continue
+			}
+			if workspace_doc.has_unsaved_changes {
+				suspend_external_dependency_acquisition = true
 			}
 			if workspace_doc.dirty || !workspace_doc.has_parse {
 				if retired := document_reparse(&workspace_doc, state.allocator); retired != nil {
@@ -373,6 +404,7 @@ server_reanalyze :: proc(state: ^Server_State) {
 					path = strings.clone(workspace_doc.uri, context.temp_allocator),
 					root = workspace_doc.parse_root,
 					kind = .Unknown,
+					has_syntax_errors = len(workspace_doc.parse_errors) > 0,
 				},
 			)
 		}
@@ -413,6 +445,9 @@ server_reanalyze :: proc(state: ^Server_State) {
 			removed_paths[:],
 			&state.pool,
 			state.allocator,
+			workspace.Analysis_Update_Options {
+				suspend_external_dependency_acquisition = suspend_external_dependency_acquisition,
+			},
 		)
 	}
 	for _, &doc in state.documents {
@@ -434,6 +469,7 @@ upsert_document_text :: proc(
 	raw_uri: string,
 	text: string,
 	version: int,
+	has_unsaved_changes: bool,
 ) -> bool {
 	uri := normalize_lsp_uri(raw_uri, context.temp_allocator)
 	ensure_workspace_for_document(state, uri)
@@ -445,6 +481,7 @@ upsert_document_text :: proc(
 		doc.owns_text = true
 		doc.version = version
 		doc.dirty = true
+		doc.has_unsaved_changes = has_unsaved_changes
 		state.documents[doc.uri] = doc
 		return true
 	}
@@ -456,6 +493,7 @@ upsert_document_text :: proc(
 		owns_text = true,
 		version   = version,
 		dirty     = true,
+		has_unsaved_changes = has_unsaved_changes,
 	}
 	return true
 }
@@ -596,6 +634,7 @@ append_disk_input_for_path :: proc(
 			path = uri,
 			root = parsed.root,
 			kind = .Unknown,
+			has_syntax_errors = len(parsed.errors) > 0,
 		},
 	)
 }

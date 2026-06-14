@@ -1,7 +1,6 @@
 package abap_frontend_semantic2
 
 import "src:ast"
-import string_interner "src:string_interner"
 
 import "core:mem"
 import "core:slice"
@@ -67,7 +66,7 @@ Semantic_Completion_Item_Source :: enum {
 }
 
 Semantic_Completion_Item :: struct {
-	name:      string_interner.String,
+	name:      string,
 	namespace: Namespace,
 	entity:    ^Entity,
 	source:    Semantic_Completion_Item_Source,
@@ -75,7 +74,7 @@ Semantic_Completion_Item :: struct {
 }
 
 Semantic_Completion_Item_Key :: struct {
-	name:      string_interner.String,
+	name:      string,
 	namespace: Namespace,
 	source:    Semantic_Completion_Item_Source,
 }
@@ -201,8 +200,8 @@ semantic_decl_class_member :: proc(
 	if !ok || payload == nil || payload.definition_scope == nil {
 		return nil
 	}
-	interned := semantic_query_intern_name(q.project, name)
-	if !string_interner.is_valid(interned) {
+	interned := project_intern_lower_ascii(q.project, name)
+	if interned == "" {
 		return nil
 	}
 	entity, found := scope_lookup_declaration(payload.definition_scope, namespace, interned)
@@ -217,8 +216,8 @@ semantic_decl_structure_field :: proc(
 	if structure == nil {
 		return nil
 	}
-	interned := semantic_query_intern_name(q.project, name)
-	if !string_interner.is_valid(interned) {
+	interned := project_intern_lower_ascii(q.project, name)
+	if interned == "" {
 		return nil
 	}
 	field, ok := checker_lookup_structure_field(structure, interned)
@@ -408,7 +407,7 @@ semantic_completion_items_at_offset :: proc(
 ) -> [dynamic]Semantic_Completion_Item {
 	out := make([dynamic]Semantic_Completion_Item, 0, 32, allocator)
 	seen := make(map[Semantic_Completion_Item_Key]bool, 64, allocator)
-	canonical_prefix := strings.to_lower(prefix, context.temp_allocator)
+	canonical_prefix := project_intern_lower_ascii(q.project, prefix)
 
 	scope := semantic_query_scope_at_offset(q.project, q.file, offset)
 	if selector, selector_ok := semantic_completion_selector_context_at_offset(source, offset);
@@ -629,8 +628,8 @@ semantic_completion_resolve_structure :: proc(
 	if selector.base_name == "" || scope == nil {
 		return nil
 	}
-	interned := checker_intern_name(q.project, selector.base_name)
-	if !string_interner.is_valid(interned) {
+	interned := project_intern_lower_ascii(q.project, selector.base_name)
+	if interned == "" {
 		return nil
 	}
 	_, entity, ok := checker_lookup_declaration_from_scope(scope, .Value, interned)
@@ -690,8 +689,8 @@ semantic_completion_resolve_type_owner :: proc(
 	scope: ^Scope,
 	name: string,
 ) -> ^Entity {
-	interned := checker_intern_name(q.project, name)
-	if !string_interner.is_valid(interned) {
+	interned := project_intern_lower_ascii(q.project, name)
+	if interned == "" {
 		return nil
 	}
 	if scope != nil {
@@ -711,7 +710,7 @@ semantic_completion_resolve_type_owner :: proc(
 
 semantic_completion_lookup_provider_type :: proc(
 	index: ^External_Semantic_Index,
-	name: string_interner.String,
+	name: string,
 ) -> ^Entity {
 	if index == nil {
 		return nil
@@ -752,10 +751,10 @@ semantic_completion_append_object_members :: proc(
 		semantic_completion_append_entity(q.project, member, .Selector_Member, prefix, seen, out)
 	}
 	for interface_name in payload.implemented_interfaces {
-		if !string_interner.is_valid(interface_name) {
+		if interface_name == "" {
 			continue
 		}
-		if iface := semantic_completion_resolve_type_owner(q, owner.scope, string_interner.load(q.project.interner, interface_name));
+		if iface := semantic_completion_resolve_type_owner(q, owner.scope, interface_name);
 		   iface != nil && iface.kind == .Interface {
 			semantic_completion_append_object_members(
 				q,
@@ -769,8 +768,8 @@ semantic_completion_append_object_members :: proc(
 			)
 		}
 	}
-	if owner.kind == .Class && string_interner.is_valid(payload.superclass_name) {
-		if super := semantic_completion_resolve_type_owner(q, owner.scope, string_interner.load(q.project.interner, payload.superclass_name));
+	if owner.kind == .Class && payload.superclass_name != "" {
+		if super := semantic_completion_resolve_type_owner(q, owner.scope, payload.superclass_name);
 		   super != nil && super.kind == .Class {
 			semantic_completion_append_object_members(
 				q,
@@ -1006,11 +1005,6 @@ semantic_range_width :: #force_inline proc(range: Range) -> int {
 	return range.end - range.start
 }
 
-semantic_query_intern_name :: proc(project: ^Project, name: string) -> string_interner.String {
-	assert(project != nil)
-	return checker_intern_name(project, name)
-}
-
 semantic_completion_append_entity :: proc(
 	project: ^Project,
 	entity: ^Entity,
@@ -1019,14 +1013,11 @@ semantic_completion_append_entity :: proc(
 	seen: ^map[Semantic_Completion_Item_Key]bool,
 	out: ^[dynamic]Semantic_Completion_Item,
 ) {
-	if entity == nil || !string_interner.is_valid(entity.name) {
+	if entity == nil || entity.name == "" {
 		return
 	}
 	if prefix != "" {
-		name := strings.to_lower(
-			string_interner.load(project.interner, entity.name),
-			context.temp_allocator,
-		)
+		name := project_intern_lower_ascii(project, entity.name)
 		if !strings.has_prefix(name, prefix) {
 			return
 		}

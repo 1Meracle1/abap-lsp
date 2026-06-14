@@ -3,6 +3,7 @@ package abap_frontend_remote_dependencies
 import "src:adt"
 import "src:ast"
 import "src:parser"
+import "src:utils"
 
 import "core:mem"
 import "core:strings"
@@ -76,7 +77,7 @@ append_expanded_typepool_source :: proc(
 		write_typepool_source_part(out, source[last:stmt.range.start], wrote)
 		failed := false
 		for name in include.names {
-			key := strings.to_lower(name.name.text, context.temp_allocator)
+			key := utils.to_lower_ascii(name.name.text, context.temp_allocator)
 			if key in seen^ {
 				continue
 			}
@@ -187,10 +188,7 @@ insert_unique_typepool_symbol :: proc(
 	name: string,
 	allocator: mem.Allocator,
 ) {
-	if name == "" {
-		return
-	}
-	key := strings.to_lower(name, allocator)
+	key := utils.to_lower_ascii(name, allocator)
 	if key in analysis.symbol_set {
 		return
 	}
@@ -217,7 +215,7 @@ starts_with_ignore_case :: proc(source, prefix: string) -> bool {
 typepool_dependency_uri :: proc(pool: string, allocator: mem.Allocator) -> string {
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, TYPEPOOL_DEPENDENCY_URI_PREFIX)
-	strings.write_string(&out, strings.to_lower(pool, allocator))
+	strings.write_string(&out, utils.to_lower_ascii(pool, allocator))
 	strings.write_string(&out, ".abap")
 	return strings.to_string(out)
 }

@@ -1,7 +1,7 @@
 package abap_frontend_semantic2
 
 import "src:parser"
-import string_interner "src:string_interner"
+import "src:utils"
 
 import "core:testing"
 
@@ -22,6 +22,16 @@ workspace_test_file :: proc(
 	}
 }
 
+workspace_test_syntax_diagnostics_from_parse_errors :: proc(
+	errors: []parser.Parse_Error,
+) -> [dynamic]Syntax_Diagnostic {
+	out := make([dynamic]Syntax_Diagnostic, 0, len(errors), context.allocator)
+	for err in errors {
+		append(&out, Syntax_Diagnostic{message = err.message, range = err.range})
+	}
+	return out
+}
+
 workspace_test_lookup :: proc(
 	t: ^testing.T,
 	analysis: ^Workspace_Analysis,
@@ -30,7 +40,7 @@ workspace_test_lookup :: proc(
 	name: string,
 	kind: Entity_Kind,
 ) -> ^Entity {
-	interned := string_interner.insert(analysis.interner, name)
+	interned := utils.to_lower_ascii(name, context.temp_allocator)
 	_, entity, ok := checker_lookup_declaration_from_scope(scope, namespace, interned)
 	testing.expect(t, ok)
 	if ok {
@@ -53,7 +63,7 @@ workspace_test_candidate_count :: proc(
 	kind: External_Candidate_Kind,
 	name: string,
 ) -> int {
-	interned := string_interner.insert(analysis.interner, name)
+	interned := utils.to_lower_ascii(name, context.temp_allocator)
 	count := 0
 	for candidate in analysis.unresolved {
 		if candidate.kind == kind && candidate.name == interned {
@@ -64,12 +74,11 @@ workspace_test_candidate_count :: proc(
 }
 
 workspace_test_candidate_count_in :: proc(
-	interner: ^string_interner.Interner,
 	candidates: []Checker_Unresolved_Candidate,
 	kind: External_Candidate_Kind,
 	name: string,
 ) -> int {
-	interned := string_interner.insert(interner, name)
+	interned := utils.to_lower_ascii(name, context.temp_allocator)
 	count := 0
 	for candidate in candidates {
 		if candidate.kind == kind && candidate.name == interned {
@@ -81,7 +90,6 @@ workspace_test_candidate_count_in :: proc(
 
 workspace_test_external_interface_input :: proc(
 	t: ^testing.T,
-	interner: ^string_interner.Interner,
 	kind: External_Candidate_Kind,
 	role: External_Interface_Object_Role,
 	name: string,
@@ -92,7 +100,7 @@ workspace_test_external_interface_input :: proc(
 	parsed := parser.parse(source, path, context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
 	return External_Interface_Input {
-		key        = Semantic_Object_Key{kind = kind, name = string_interner.insert(interner, name)},
+		key        = Semantic_Object_Key{kind = kind, name = utils.to_lower_ascii(name, context.temp_allocator)},
 		path       = path,
 		root       = parsed.root,
 		generation = generation,
@@ -138,12 +146,11 @@ workspace_test_record_for_project :: proc(
 }
 
 workspace_test_dependency_edge_count :: proc(
-	interner: ^string_interner.Interner,
 	edges: []Semantic_Dependency_Edge,
 	kind: External_Candidate_Kind,
 	name: string,
 ) -> int {
-	key := Semantic_Object_Key{kind = kind, name = string_interner.insert(interner, name)}
+	key := Semantic_Object_Key{kind = kind, name = utils.to_lower_ascii(name, context.temp_allocator)}
 	count := 0
 	for edge in edges {
 		if edge.key == key {
@@ -154,13 +161,12 @@ workspace_test_dependency_edge_count :: proc(
 }
 
 workspace_test_reverse_project_count :: proc(
-	interner: ^string_interner.Interner,
 	waiters: map[Semantic_Object_Key][dynamic]Semantic_Project_Id,
 	kind: External_Candidate_Kind,
 	name: string,
 	project_id: Semantic_Project_Id,
 ) -> int {
-	key := Semantic_Object_Key{kind = kind, name = string_interner.insert(interner, name)}
+	key := Semantic_Object_Key{kind = kind, name = utils.to_lower_ascii(name, context.temp_allocator)}
 	count := 0
 	if projects, ok := waiters[key]; ok {
 		for id in projects {
@@ -173,12 +179,11 @@ workspace_test_reverse_project_count :: proc(
 }
 
 workspace_test_reverse_total_count :: proc(
-	interner: ^string_interner.Interner,
 	waiters: map[Semantic_Object_Key][dynamic]Semantic_Project_Id,
 	kind: External_Candidate_Kind,
 	name: string,
 ) -> int {
-	key := Semantic_Object_Key{kind = kind, name = string_interner.insert(interner, name)}
+	key := Semantic_Object_Key{kind = kind, name = utils.to_lower_ascii(name, context.temp_allocator)}
 	if projects, ok := waiters[key]; ok {
 		return len(projects)
 	}
@@ -186,12 +191,11 @@ workspace_test_reverse_total_count :: proc(
 }
 
 workspace_test_graph_result_candidate_count :: proc(
-	interner: ^string_interner.Interner,
 	candidates: []Checker_Unresolved_Candidate,
 	kind: External_Candidate_Kind,
 	name: string,
 ) -> int {
-	interned := string_interner.insert(interner, name)
+	interned := utils.to_lower_ascii(name, context.temp_allocator)
 	count := 0
 	for candidate in candidates {
 		if candidate.kind == kind && candidate.name == interned {
@@ -215,12 +219,11 @@ workspace_test_graph_project_path_count :: proc(
 }
 
 workspace_test_graph_external_key_count :: proc(
-	interner: ^string_interner.Interner,
 	keys: []Semantic_Object_Key,
 	kind: External_Candidate_Kind,
 	name: string,
 ) -> int {
-	key := Semantic_Object_Key{kind = kind, name = string_interner.insert(interner, name)}
+	key := Semantic_Object_Key{kind = kind, name = utils.to_lower_ascii(name, context.temp_allocator)}
 	count := 0
 	for existing in keys {
 		if existing == key {
@@ -241,6 +244,43 @@ workspace_test_diagnostic_count :: proc(
 		}
 	}
 	return count
+}
+
+@(test)
+semantic_workspace_reports_parse_errors_without_external_requests :: proc(t: ^testing.T) {
+	source := `REPORT zmain.
+DATA lv TYPE zmissing.
+APPEND VALUE #( field = 'hello'`
+	parsed := parser.parse(source, "mem://zmain.report.abap", context.allocator)
+	testing.expect(t, len(parsed.errors) > 0)
+
+	files := [?]Workspace_File_Input {
+		{
+			path = parsed.path,
+			root = parsed.root,
+			syntax_diagnostics = workspace_test_syntax_diagnostics_from_parse_errors(
+				parsed.errors,
+			),
+			has_syntax_errors = true,
+		},
+	}
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:]})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	testing.expect_value(t, workspace_test_candidate_count(&analysis, .Global_Symbol, "zmissing"), 1)
+	testing.expect_value(t, len(analysis.external_requests), 0)
+	testing.expect_value(t, len(analysis.project_results), 1)
+	if len(analysis.project_results) == 0 || analysis.project_results[0].checker == nil {
+		return
+	}
+	syntax_count := 0
+	for diagnostic in analysis.project_results[0].checker.info.diagnostics {
+		if diagnostic.kind == .Syntax_Error && diagnostic.file != nil &&
+		   diagnostic.file.path == parsed.path {
+			syntax_count += 1
+		}
+	}
+	testing.expect_value(t, syntax_count, len(parsed.errors))
 }
 
 @(test)
@@ -336,7 +376,7 @@ ENDCLASS.`,
 
 		found := false
 		for item in items {
-			name := string_interner.load(analysis.interner, item.name)
+			name := item.name
 			if name == "zcl_repo" &&
 			   item.namespace == .Type &&
 			   item.source == .Provider_Index &&
@@ -417,7 +457,7 @@ ENDCLASS.`,
 		get_instance_found := false
 		unrelated_found := false
 		for item in items {
-			name := string_interner.load(analysis.interner, item.name)
+			name := item.name
 			if name == "get_instance" &&
 			   item.namespace == .Routine &&
 			   item.source == .Selector_Member &&
@@ -508,7 +548,7 @@ ENDCLASS.`,
 		mv_public_found := false
 		unrelated_found := false
 		for item in items {
-			name := string_interner.load(analysis.interner, item.name)
+			name := item.name
 			if name == "run" &&
 			   item.namespace == .Routine &&
 			   item.source == .Selector_Member &&
@@ -540,10 +580,8 @@ ENDCLASS.`,
 
 @(test)
 semantic_graph_does_not_fetch_editable_root_class_provider :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	session := semantic_graph_session_make(interner)
+	session := semantic_graph_session_make()
 	defer semantic_graph_session_destroy(&session)
 
 	files := [?]Workspace_File_Input {
@@ -571,14 +609,55 @@ ENDCLASS.`,
 	)
 	defer semantic_graph_update_result_destroy(&result)
 
-	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, result.new_fetch_requests[:], .Global_Symbol, "zcl_repo"), 0)
-	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, result.new_fetch_requests[:], .Class, "zcl_repo"), 0)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(result.new_fetch_requests[:], .Global_Symbol, "zcl_repo"), 0)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(result.new_fetch_requests[:], .Class, "zcl_repo"), 0)
 	analysis := semantic_graph_session_current_analysis(&session)
 	testing.expect(t, analysis != nil)
 	if analysis != nil {
 		testing.expect_value(t, workspace_test_candidate_count(analysis, .Global_Symbol, "zcl_repo"), 0)
 		testing.expect_value(t, workspace_test_candidate_count(analysis, .Class, "zcl_repo"), 0)
 	}
+}
+
+@(test)
+semantic_graph_update_can_suspend_external_dependency_acquisition :: proc(t: ^testing.T) {
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. DATA lo_remote TYPE REF TO zcl_remote."),
+	}
+
+	suspended_session := semantic_graph_session_make()
+	defer semantic_graph_session_destroy(&suspended_session)
+	suspended := semantic_graph_session_apply_update(
+		&suspended_session,
+		Semantic_Graph_Update {
+			changed_files                           = files[:],
+			external_frontier_stable                = false,
+			suspend_external_dependency_acquisition = true,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&suspended)
+
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(suspended.new_fetch_requests[:], .Global_Symbol, "zcl_remote"), 0)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(suspended.blocked_unresolved_dependencies[:], .Global_Symbol, "zcl_remote"), 1)
+	analysis := semantic_graph_session_current_analysis(&suspended_session)
+	testing.expect(t, analysis != nil)
+	if analysis != nil {
+		testing.expect_value(t, workspace_test_candidate_count(analysis, .Global_Symbol, "zcl_remote"), 1)
+	}
+
+	allowed_session := semantic_graph_session_make()
+	defer semantic_graph_session_destroy(&allowed_session)
+	allowed := semantic_graph_session_apply_update(
+		&allowed_session,
+		Semantic_Graph_Update {
+			changed_files            = files[:],
+			external_frontier_stable = false,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&allowed)
+
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(allowed.new_fetch_requests[:], .Global_Symbol, "zcl_remote"), 1)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(allowed.blocked_unresolved_dependencies[:], .Global_Symbol, "zcl_remote"), 0)
 }
 
 workspace_test_add_external_class_method_with_param :: proc(
@@ -589,11 +668,12 @@ workspace_test_add_external_class_method_with_param :: proc(
 	param_type_name: string,
 ) -> ^Entity {
 	assert(external != nil && class != nil && class.kind == .Class)
+	project, _, _, _, _ := external_semantics_ensure_compat_project(external)
 	class_payload, class_ok := class.payload.(^Entity_Object_Payload)
 	assert(class_ok && class_payload != nil && class_payload.definition_scope != nil)
 
 	method := external_new_entity(external, .Method)
-	method.name = external_intern_name(external, method_name)
+	method.name = project_intern_lower_ascii(project, method_name)
 	method.state = .Resolved
 	method.scope = class_payload.definition_scope
 	method.owner = class
@@ -612,7 +692,7 @@ workspace_test_add_external_class_method_with_param :: proc(
 	_ = scope_insert_declaration(class_payload.definition_scope, method)
 
 	param := external_new_entity(external, .Parameter)
-	param.name = external_intern_name(external, param_name)
+	param.name = project_intern_lower_ascii(project, param_name)
 	param.state = .Resolved
 	param.scope = signature_scope
 	param.owner = method
@@ -636,12 +716,12 @@ workspace_test_add_external_class_attribute :: proc(
 	visibility: Visibility = .Protected,
 ) -> ^Entity {
 	assert(external != nil && class != nil && class.kind == .Class)
-	_, _, file, _, _ := external_semantics_ensure_compat_project(external)
+	project, _, file, _, _ := external_semantics_ensure_compat_project(external)
 	class_payload, class_ok := class.payload.(^Entity_Object_Payload)
 	assert(class_ok && class_payload != nil && class_payload.definition_scope != nil)
 
 	attr := external_new_entity(external, .Variable)
-	attr.name = external_intern_name(external, name)
+	attr.name = project_intern_lower_ascii(project, name)
 	attr.state = .Resolved
 	attr.scope = class_payload.definition_scope
 	attr.owner = class
@@ -656,10 +736,8 @@ workspace_test_add_external_class_attribute :: proc(
 
 @(test)
 semantic_graph_fetches_external_chain_before_rebuilding_editable_waiters :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	session := semantic_graph_session_make(interner)
+	session := semantic_graph_session_make()
 	defer semantic_graph_session_destroy(&session)
 
 	files := [?]Workspace_File_Input {
@@ -675,11 +753,10 @@ semantic_graph_fetches_external_chain_before_rebuilding_editable_waiters :: proc
 	defer semantic_graph_update_result_destroy(&initial)
 
 	testing.expect_value(t, len(initial.rebuilt_editable_projects), 1)
-	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, initial.new_fetch_requests[:], .Global_Symbol, "zcl_a"), 1)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(initial.new_fetch_requests[:], .Global_Symbol, "zcl_a"), 1)
 
 	external_a := workspace_test_external_interface_input(
 		t,
-		interner,
 		.Class,
 		.Class,
 		"zcl_a",
@@ -703,20 +780,19 @@ ENDCLASS.`,
 	analysis := semantic_graph_session_current_analysis(&session)
 	testing.expect(t, analysis != nil)
 	if analysis != nil {
-		key_a := Semantic_Object_Key{kind = .Class, name = string_interner.insert(interner, "zcl_a")}
+		key_a := Semantic_Object_Key{kind = .Class, name = "zcl_a"}
 		_, provider_ok := analysis.external_index.providers[key_a]
 		testing.expect(t, provider_ok)
-		testing.expect_value(t, workspace_test_reverse_total_count(interner, analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_a"), 0)
+		testing.expect_value(t, workspace_test_reverse_total_count(analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_a"), 0)
 	}
-	testing.expect_value(t, workspace_test_graph_external_key_count(interner, fetched_a.rebuilt_external_projects[:], .Class, "zcl_a"), 1)
-	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, fetched_a.new_fetch_requests[:], .Global_Symbol, "zcl_b"), 1)
+	testing.expect_value(t, workspace_test_graph_external_key_count(fetched_a.rebuilt_external_projects[:], .Class, "zcl_a"), 1)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(fetched_a.new_fetch_requests[:], .Global_Symbol, "zcl_b"), 1)
 	testing.expect_value(t, workspace_test_graph_project_path_count(fetched_a.dirty_editable_projects[:], "mem://zmain.report.abap"), 1)
 	testing.expect_value(t, workspace_test_graph_project_path_count(fetched_a.deferred_editable_projects[:], "mem://zmain.report.abap"), 1)
 	testing.expect_value(t, len(fetched_a.rebuilt_editable_projects), 0)
 
 	external_b := workspace_test_external_interface_input(
 		t,
-		interner,
 		.Class,
 		.Class,
 		"zcl_b",
@@ -734,11 +810,11 @@ ENDCLASS.`,
 	)
 	defer semantic_graph_update_result_destroy(&fetched_b)
 
-	testing.expect_value(t, workspace_test_graph_external_key_count(interner, fetched_b.rebuilt_external_projects[:], .Class, "zcl_b"), 1)
-	testing.expect_value(t, workspace_test_graph_external_key_count(interner, fetched_b.rebuilt_external_projects[:], .Class, "zcl_a"), 1)
+	testing.expect_value(t, workspace_test_graph_external_key_count(fetched_b.rebuilt_external_projects[:], .Class, "zcl_b"), 1)
+	testing.expect_value(t, workspace_test_graph_external_key_count(fetched_b.rebuilt_external_projects[:], .Class, "zcl_a"), 1)
 	testing.expect_value(t, workspace_test_graph_project_path_count(fetched_b.rebuilt_editable_projects[:], "mem://zmain.report.abap"), 1)
 	testing.expect_value(t, len(fetched_b.deferred_editable_projects), 0)
-	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, fetched_b.new_fetch_requests[:], .Global_Symbol, "zcl_b"), 0)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(fetched_b.new_fetch_requests[:], .Global_Symbol, "zcl_b"), 0)
 
 	analysis = semantic_graph_session_current_analysis(&session)
 	testing.expect(t, analysis != nil)
@@ -748,17 +824,15 @@ ENDCLASS.`,
 		record := workspace_test_record_for_project(t, analysis, analysis.project_results[0].project)
 		testing.expect(t, record != nil)
 		if record != nil {
-			testing.expect_value(t, workspace_test_dependency_edge_count(interner, record.resolved_dependencies[:], .Class, "zcl_a"), 1)
+			testing.expect_value(t, workspace_test_dependency_edge_count(record.resolved_dependencies[:], .Class, "zcl_a"), 1)
 		}
 	}
 }
 
 @(test)
 semantic_graph_external_update_dirties_only_reverse_dependents :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	session := semantic_graph_session_make(interner)
+	session := semantic_graph_session_make()
 	defer semantic_graph_session_destroy(&session)
 
 	files := [?]Workspace_File_Input {
@@ -775,12 +849,11 @@ semantic_graph_external_update_dirties_only_reverse_dependents :: proc(t: ^testi
 	defer semantic_graph_update_result_destroy(&initial)
 
 	testing.expect_value(t, len(initial.rebuilt_editable_projects), 2)
-	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, initial.new_fetch_requests[:], .Global_Symbol, "zcl_a"), 1)
-	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, initial.new_fetch_requests[:], .Global_Symbol, "zcl_other"), 1)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(initial.new_fetch_requests[:], .Global_Symbol, "zcl_a"), 1)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(initial.new_fetch_requests[:], .Global_Symbol, "zcl_other"), 1)
 
 	external_a := workspace_test_external_interface_input(
 		t,
-		interner,
 		.Class,
 		.Class,
 		"zcl_a",
@@ -813,10 +886,8 @@ semantic_graph_external_update_dirties_only_reverse_dependents :: proc(t: ^testi
 
 @(test)
 semantic_graph_replaces_external_record_reverse_index_entries :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	session := semantic_graph_session_make(interner)
+	session := semantic_graph_session_make()
 	defer semantic_graph_session_destroy(&session)
 
 	files := [?]Workspace_File_Input {
@@ -833,7 +904,6 @@ semantic_graph_replaces_external_record_reverse_index_entries :: proc(t: ^testin
 
 	first := workspace_test_external_interface_input(
 		t,
-		interner,
 		.Class,
 		.Class,
 		"zcl_dep",
@@ -858,12 +928,11 @@ ENDCLASS.`,
 	testing.expect(t, analysis != nil)
 	if analysis != nil {
 		testing.expect_value(t, len(analysis.external_index.projects), 2)
-		testing.expect_value(t, workspace_test_reverse_total_count(interner, analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_old_dep"), 1)
+		testing.expect_value(t, workspace_test_reverse_total_count(analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_old_dep"), 1)
 	}
 
 	second := workspace_test_external_interface_input(
 		t,
-		interner,
 		.Class,
 		.Class,
 		"zcl_dep",
@@ -887,7 +956,7 @@ ENDCLASS.`,
 	analysis = semantic_graph_session_current_analysis(&session)
 	testing.expect(t, analysis != nil)
 	if analysis != nil {
-		key := Semantic_Object_Key{kind = .Class, name = string_interner.insert(interner, "zcl_dep")}
+		key := Semantic_Object_Key{kind = .Class, name = "zcl_dep"}
 		binding, provider_ok := analysis.external_index.providers[key]
 		testing.expect(t, provider_ok)
 		if provider_ok {
@@ -902,17 +971,68 @@ ENDCLASS.`,
 			}
 		}
 		testing.expect_value(t, len(analysis.external_index.projects), 2)
-		testing.expect_value(t, workspace_test_reverse_total_count(interner, analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_old_dep"), 0)
-		testing.expect_value(t, workspace_test_reverse_total_count(interner, analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_new_dep"), 1)
+		testing.expect_value(t, workspace_test_reverse_total_count(analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_old_dep"), 0)
+		testing.expect_value(t, workspace_test_reverse_total_count(analysis.external_index.unresolved_waiters_by_object, .Global_Symbol, "zcl_new_dep"), 1)
 	}
 }
 
 @(test)
-semantic_graph_fetched_external_source_expands_include_and_unblocks_frontier :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
+semantic_graph_skips_unchanged_external_interface_update :: proc(t: ^testing.T) {
 
-	session := semantic_graph_session_make(interner)
+	session := semantic_graph_session_make()
+	defer semantic_graph_session_destroy(&session)
+
+	first := workspace_test_external_interface_input(
+		t,
+		.Class,
+		.Class,
+		"zcl_dep",
+		"adt://zcl_dep.class.abap",
+		"CLASS zcl_dep DEFINITION. ENDCLASS.",
+		1,
+	)
+	first.source_hash = 42
+	first_inputs := [?]External_Interface_Input{first}
+	first_result := semantic_graph_session_apply_update(
+		&session,
+		Semantic_Graph_Update {
+			fetched_external_objects = first_inputs[:],
+			external_frontier_stable = false,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&first_result)
+
+	testing.expect_value(t, workspace_test_graph_external_key_count(first_result.rebuilt_external_projects[:], .Class, "zcl_dep"), 1)
+	testing.expect_value(t, len(session.external.index.projects), 1)
+
+	second := workspace_test_external_interface_input(
+		t,
+		.Class,
+		.Class,
+		"zcl_dep",
+		"adt://zcl_dep.class.abap",
+		"CLASS zcl_dep DEFINITION. ENDCLASS.",
+		1,
+	)
+	second.source_hash = first.source_hash
+	second_inputs := [?]External_Interface_Input{second}
+	second_result := semantic_graph_session_apply_update(
+		&session,
+		Semantic_Graph_Update {
+			fetched_external_objects = second_inputs[:],
+			external_frontier_stable = false,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&second_result)
+
+	testing.expect_value(t, workspace_test_graph_external_key_count(second_result.rebuilt_external_projects[:], .Class, "zcl_dep"), 0)
+	testing.expect_value(t, len(session.external.index.projects), 1)
+}
+
+@(test)
+semantic_graph_fetched_external_source_expands_include_and_unblocks_frontier :: proc(t: ^testing.T) {
+
+	session := semantic_graph_session_make()
 	defer semantic_graph_session_destroy(&session)
 
 	files := [?]Workspace_File_Input {
@@ -931,7 +1051,7 @@ semantic_graph_fetched_external_source_expands_include_and_unblocks_frontier :: 
 	)
 	defer semantic_graph_update_result_destroy(&initial)
 
-	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, initial.new_fetch_requests[:], .Include_Source, "zinc_ext"), 1)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(initial.new_fetch_requests[:], .Include_Source, "zinc_ext"), 1)
 
 	source := workspace_test_external_source_input(
 		t,
@@ -951,7 +1071,7 @@ semantic_graph_fetched_external_source_expands_include_and_unblocks_frontier :: 
 	defer semantic_graph_update_result_destroy(&fetched)
 
 	testing.expect_value(t, workspace_test_graph_project_path_count(fetched.rebuilt_editable_projects[:], "mem://zmain.report.abap"), 1)
-	testing.expect_value(t, workspace_test_graph_result_candidate_count(interner, fetched.new_fetch_requests[:], .Include_Source, "zinc_ext"), 0)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(fetched.new_fetch_requests[:], .Include_Source, "zinc_ext"), 0)
 
 	analysis := semantic_graph_session_current_analysis(&session)
 	testing.expect(t, analysis != nil)
@@ -962,10 +1082,8 @@ semantic_graph_fetched_external_source_expands_include_and_unblocks_frontier :: 
 
 @(test)
 semantic_external_summaries_publish_project_backed_provider_bindings :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	external := external_semantics_make(interner)
+	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
 	class := external_semantics_add_class_summary(&external, "zcl_dep")
 
@@ -981,15 +1099,12 @@ semantic_external_summaries_publish_project_backed_provider_bindings :: proc(t: 
 
 @(test)
 semantic_external_interface_checkers_share_imported_builtin_scope :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	external := external_semantics_make(interner)
+	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
 
 	first := workspace_test_external_interface_input(
 		t,
-		interner,
 		.Class,
 		.Class,
 		"zcl_first",
@@ -999,7 +1114,6 @@ semantic_external_interface_checkers_share_imported_builtin_scope :: proc(t: ^te
 	)
 	second := workspace_test_external_interface_input(
 		t,
-		interner,
 		.Class,
 		.Class,
 		"zcl_second",
@@ -1035,15 +1149,12 @@ semantic_external_interface_checkers_share_imported_builtin_scope :: proc(t: ^te
 
 @(test)
 semantic_external_index_remove_project_promotes_lookup_contribution :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	external := external_semantics_make(interner)
+	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
 
 	class_input := workspace_test_external_interface_input(
 		t,
-		interner,
 		.Class,
 		.Class,
 		"zdup",
@@ -1053,7 +1164,6 @@ semantic_external_index_remove_project_promotes_lookup_contribution :: proc(t: ^
 	)
 	type_input := workspace_test_external_interface_input(
 		t,
-		interner,
 		.DDIC_Type,
 		.DDIC_Type,
 		"zdup",
@@ -1068,8 +1178,10 @@ semantic_external_index_remove_project_promotes_lookup_contribution :: proc(t: ^
 	if class_record == nil || type_record == nil {
 		return
 	}
+	class_record_id := class_record.id
+	type_record_id := type_record.id
 
-	name := string_interner.insert(interner, "zdup")
+	name := "zdup"
 	key, _, ok := external_semantic_index_lookup(
 		&external.index,
 		.Type,
@@ -1079,8 +1191,19 @@ semantic_external_index_remove_project_promotes_lookup_contribution :: proc(t: ^
 	testing.expect(t, ok)
 	testing.expect_value(t, key.kind, External_Candidate_Kind.Class)
 
-	removed := external_semantic_index_remove_project_record(&external.index, class_record.id)
+	removed := external_semantic_index_remove_project_record(&external.index, class_record_id)
 	testing.expect(t, removed)
+	_, removed_record_ok := external_semantic_index_project_record(&external.index, class_record_id)
+	testing.expect(t, !removed_record_ok)
+
+	shifted_record, shifted_record_ok := external_semantic_index_project_record(
+		&external.index,
+		type_record_id,
+	)
+	testing.expect(t, shifted_record_ok)
+	if shifted_record_ok {
+		testing.expect_value(t, shifted_record.id, type_record_id)
+	}
 
 	next_key, binding, next_ok := external_semantic_index_lookup(
 		&external.index,
@@ -1090,18 +1213,84 @@ semantic_external_index_remove_project_promotes_lookup_contribution :: proc(t: ^
 	)
 	testing.expect(t, next_ok)
 	testing.expect_value(t, next_key.kind, External_Candidate_Kind.DDIC_Type)
-	testing.expect_value(t, binding.project_id, type_record.id)
+	testing.expect_value(t, binding.project_id, type_record_id)
+}
+
+@(test)
+semantic_graph_suppresses_transitive_fetches_from_malformed_external_interface :: proc(
+	t: ^testing.T,
+) {
+	session := semantic_graph_session_make()
+	defer semantic_graph_session_destroy(&session)
+
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. DATA lo_a TYPE REF TO zcl_a."),
+	}
+	initial := semantic_graph_session_apply_update(
+		&session,
+		Semantic_Graph_Update {
+			changed_files            = files[:],
+			external_frontier_stable = false,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&initial)
+
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(initial.new_fetch_requests[:], .Global_Symbol, "zcl_a"), 1)
+
+	external_source := `CLASS zcl_a DEFINITION.
+  PUBLIC SECTION.
+    DATA child TYPE REF TO zcl_b.
+ENDCLASS.
+APPEND VALUE #( field = 'hello'`
+	parsed := parser.parse(external_source, "adt://zcl_a.class.abap", context.allocator)
+	testing.expect(t, len(parsed.errors) > 0)
+	external_a := External_Interface_Input {
+		key = Semantic_Object_Key{kind = .Class, name = "zcl_a"},
+		path = parsed.path,
+		root = parsed.root,
+		generation = 2,
+		role = .Class,
+		syntax_diagnostics = workspace_test_syntax_diagnostics_from_parse_errors(
+			parsed.errors,
+		),
+		has_syntax_errors = true,
+	}
+	fetched_a_inputs := [?]External_Interface_Input{external_a}
+	fetched_a := semantic_graph_session_apply_update(
+		&session,
+		Semantic_Graph_Update {
+			fetched_external_objects = fetched_a_inputs[:],
+			external_frontier_stable = false,
+		},
+	)
+	defer semantic_graph_update_result_destroy(&fetched_a)
+
+	testing.expect_value(t, workspace_test_graph_external_key_count(fetched_a.rebuilt_external_projects[:], .Class, "zcl_a"), 1)
+	testing.expect_value(t, workspace_test_graph_result_candidate_count(fetched_a.new_fetch_requests[:], .Global_Symbol, "zcl_b"), 0)
+
+	analysis := semantic_graph_session_current_analysis(&session)
+	testing.expect(t, analysis != nil)
+	if analysis == nil {
+		return
+	}
+	key_a := Semantic_Object_Key{kind = .Class, name = "zcl_a"}
+	for &record in analysis.external_index.projects {
+		if record.root_key != key_a {
+			continue
+		}
+		testing.expect_value(t, workspace_test_candidate_count_in(record.unresolved[:], .Global_Symbol, "zcl_b"), 0)
+		testing.expect_value(t, workspace_test_candidate_count_in(record.checker.info.unresolved[:], .Global_Symbol, "zcl_b"), 1)
+		return
+	}
+	testing.expect(t, false)
 }
 
 @(test)
 semantic_workspace_analyzes_external_class_interface_for_transitive_type_candidates :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
 	external_inputs := [?]External_Interface_Input {
 		workspace_test_external_interface_input(
 			t,
-			interner,
 			.Class,
 			.Class,
 			"zcl_dep",
@@ -1117,14 +1306,14 @@ ENDCLASS.`,
 		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. DATA lo_dep TYPE REF TO zcl_dep."),
 	}
 
-	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external_interfaces = external_inputs[:], interner = interner})
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external_interfaces = external_inputs[:]})
 	defer semantic_workspace_analysis_destroy(&analysis)
 
 	testing.expect_value(t, workspace_test_candidate_count(&analysis, .Global_Symbol, "zcl_dep"), 0)
 	testing.expect(t, workspace_test_candidate_count(&analysis, .Global_Symbol, "zif_base") > 0)
 	testing.expect(t, workspace_test_candidate_count(&analysis, .Global_Symbol, "zmissing_domain") > 0)
 
-	key := Semantic_Object_Key{kind = .Class, name = string_interner.insert(interner, "zcl_dep")}
+	key := Semantic_Object_Key{kind = .Class, name = "zcl_dep"}
 	binding, provider_ok := analysis.external_index.providers[key]
 	testing.expect(t, provider_ok)
 	if provider_ok {
@@ -1136,21 +1325,18 @@ ENDCLASS.`,
 			testing.expect_value(t, record.role, Semantic_Project_Role.External_Interface)
 			testing.expect_value(t, record.root_key, key)
 			testing.expect(t, record.project != nil && record.checker != nil)
-			testing.expect(t, workspace_test_candidate_count_in(interner, record.unresolved[:], .Global_Symbol, "zif_base") > 0)
-			testing.expect(t, workspace_test_dependency_edge_count(interner, record.unresolved_dependencies[:], .Global_Symbol, "zmissing_domain") > 0)
+			testing.expect(t, workspace_test_candidate_count_in(record.unresolved[:], .Global_Symbol, "zif_base") > 0)
+			testing.expect(t, workspace_test_dependency_edge_count(record.unresolved_dependencies[:], .Global_Symbol, "zmissing_domain") > 0)
 		}
 	}
 }
 
 @(test)
 semantic_workspace_analyzes_external_ddic_table_for_field_backing_candidates :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
 	external_inputs := [?]External_Interface_Input {
 		workspace_test_external_interface_input(
 			t,
-			interner,
 			.DDIC_Table,
 			.DDIC_Table,
 			"zunknown",
@@ -1166,7 +1352,7 @@ semantic_workspace_analyzes_external_ddic_table_for_field_backing_candidates :: 
 SELECT SINGLE raw_value FROM zunknown INTO @DATA(lv_raw).`),
 	}
 
-	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external_interfaces = external_inputs[:], interner = interner})
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external_interfaces = external_inputs[:]})
 	defer semantic_workspace_analysis_destroy(&analysis)
 
 	checker := analysis.project_results[0].checker
@@ -1174,7 +1360,7 @@ SELECT SINGLE raw_value FROM zunknown INTO @DATA(lv_raw).`),
 	testing.expect(t, workspace_test_candidate_count(&analysis, .Global_Symbol, "zmissing_domain") > 0)
 	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Unresolved_Open_Sql_Source), 0)
 
-	key := Semantic_Object_Key{kind = .DDIC_Table, name = string_interner.insert(interner, "zunknown")}
+	key := Semantic_Object_Key{kind = .DDIC_Table, name = "zunknown"}
 	binding, provider_ok := analysis.external_index.providers[key]
 	testing.expect(t, provider_ok)
 	if provider_ok {
@@ -1185,20 +1371,17 @@ SELECT SINGLE raw_value FROM zunknown INTO @DATA(lv_raw).`),
 		if record_ok {
 			testing.expect_value(t, record.role, Semantic_Project_Role.External_Interface)
 			testing.expect_value(t, record.root_key, key)
-			testing.expect(t, workspace_test_dependency_edge_count(interner, record.unresolved_dependencies[:], .Global_Symbol, "zmissing_domain") > 0)
+			testing.expect(t, workspace_test_dependency_edge_count(record.unresolved_dependencies[:], .Global_Symbol, "zmissing_domain") > 0)
 		}
 	}
 }
 
 @(test)
 semantic_workspace_resolves_like_clause_against_external_ddic_table :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
 	external_inputs := [?]External_Interface_Input {
 		workspace_test_external_interface_input(
 			t,
-			interner,
 			.DDIC_Table,
 			.DDIC_Table,
 			"ztab",
@@ -1213,14 +1396,14 @@ semantic_workspace_resolves_like_clause_against_external_ddic_table :: proc(t: ^
 		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. DATA lv_field LIKE ztab-field."),
 	}
 
-	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external_interfaces = external_inputs[:], interner = interner})
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external_interfaces = external_inputs[:]})
 	defer semantic_workspace_analysis_destroy(&analysis)
 
 	testing.expect_value(t, workspace_test_candidate_count(&analysis, .Global_Symbol, "ztab"), 0)
 	lv_field := workspace_test_lookup(t, &analysis, analysis.project_results[0].files[0].root_scope, .Value, "lv_field", .Variable)
 	testing.expect(t, lv_field != nil && lv_field.type != nil)
 	if lv_field != nil && lv_field.type != nil {
-		testing.expect_value(t, string_interner.load(analysis.interner, lv_field.type.name), "string")
+		testing.expect_value(t, lv_field.type.name, "string")
 	}
 }
 
@@ -1251,10 +1434,8 @@ semantic_workspace_builds_per_root_projects_and_indexes_shared_include :: proc(t
 
 @(test)
 semantic_workspace_keeps_external_ddic_fields_with_unresolved_types_soft :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	external := external_semantics_make(interner)
+	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
 	fields := [?]External_Field_Summary {
 		{name = "raw_value", type_name = "zmissing_domain"},
@@ -1267,7 +1448,7 @@ DATA lv_time TYPE t.
 SELECT SINGLE raw_value FROM zunknown INTO @lv_time.`),
 	}
 
-	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external, interner = interner})
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external})
 	defer semantic_workspace_analysis_destroy(&analysis)
 
 	checker := analysis.project_results[0].checker
@@ -1280,10 +1461,8 @@ SELECT SINGLE raw_value FROM zunknown INTO @lv_time.`),
 
 @(test)
 semantic_workspace_keeps_external_class_parameters_with_unresolved_types_soft :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	external := external_semantics_make(interner)
+	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
 	class := external_semantics_add_class_summary(&external, "zcl_dep")
 	_ = workspace_test_add_external_class_method_with_param(&external, class, "run", "iv_value", "zmissing_domain")
@@ -1294,7 +1473,7 @@ DATA lv_num TYPE i.
 zcl_dep=>run( EXPORTING iv_value = lv_num ).`),
 	}
 
-	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external, interner = interner})
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external})
 	defer semantic_workspace_analysis_destroy(&analysis)
 
 	checker := analysis.project_results[0].checker
@@ -1309,17 +1488,16 @@ zcl_dep=>run( EXPORTING iv_value = lv_num ).`),
 
 @(test)
 semantic_workspace_resolves_writable_inherited_external_attributes :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	external := external_semantics_make(interner)
+	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
 	grand := external_semantics_add_class_summary(&external, "zcl_grand")
 	object_attr := workspace_test_add_external_class_attribute(&external, grand, "inherited_object", "string")
 	document_attr := workspace_test_add_external_class_attribute(&external, grand, "inherited_document", "string")
 	parent := external_semantics_add_class_summary(&external, "zcl_parent")
+	project, _, _, _, _ := external_semantics_ensure_compat_project(&external)
 	parent_payload := parent.payload.(^Entity_Object_Payload)
-	parent_payload.superclass_name = external_intern_name(&external, "zcl_grand")
+	parent_payload.superclass_name = project_intern_lower_ascii(project, "zcl_grand")
 
 	files := [?]Workspace_File_Input {
 		workspace_test_file(t, "mem://zmain.report.abap", `REPORT zmain.
@@ -1346,7 +1524,7 @@ CLASS lcl_child IMPLEMENTATION.
 ENDCLASS.`),
 	}
 
-	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external, interner = interner})
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external})
 	defer semantic_workspace_analysis_destroy(&analysis)
 
 	checker := analysis.project_results[0].checker
@@ -1358,10 +1536,8 @@ ENDCLASS.`),
 
 @(test)
 semantic_workspace_expands_external_include_source_in_lexical_order :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	external := external_semantics_make(interner)
+	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
 	parsed_external := parser.parse("DATA gv_ext TYPE i.", "adt://zext.include.abap", context.allocator)
 	testing.expect_value(t, len(parsed_external.errors), 0)
@@ -1371,7 +1547,7 @@ semantic_workspace_expands_external_include_source_in_lexical_order :: proc(t: ^
 		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. DATA gv_before TYPE i. INCLUDE zext. DATA gv_after TYPE i."),
 	}
 
-	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external, interner = interner})
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external})
 	defer semantic_workspace_analysis_destroy(&analysis)
 
 	testing.expect_value(t, len(analysis.projects), 1)
@@ -1429,21 +1605,19 @@ SELECT SINGLE carrid FROM ztab INTO @DATA(lv_carrid).`),
 	record := workspace_test_record_for_project(t, &analysis, analysis.project_results[0].project)
 	testing.expect(t, record != nil)
 	if record != nil {
-		testing.expect_value(t, workspace_test_dependency_edge_count(analysis.interner, record.unresolved_dependencies[:], .Global_Symbol, "zcl_remote"), 1)
-		testing.expect_value(t, workspace_test_dependency_edge_count(analysis.interner, record.unresolved_dependencies[:], .Class, "zcl_remote_parent"), 1)
-		testing.expect_value(t, workspace_test_dependency_edge_count(analysis.interner, record.unresolved_dependencies[:], .Interface, "zif_remote"), 1)
-		testing.expect_value(t, workspace_test_dependency_edge_count(analysis.interner, record.unresolved_dependencies[:], .Function_Module, "z_remote_fm"), 1)
-		testing.expect_value(t, workspace_test_dependency_edge_count(analysis.interner, record.unresolved_dependencies[:], .DDIC_Table, "ztab"), 1)
-		testing.expect_value(t, workspace_test_reverse_project_count(analysis.interner, analysis.external_index.unresolved_waiters_by_object, .DDIC_Table, "ztab", record.id), 1)
+		testing.expect_value(t, workspace_test_dependency_edge_count(record.unresolved_dependencies[:], .Global_Symbol, "zcl_remote"), 1)
+		testing.expect_value(t, workspace_test_dependency_edge_count(record.unresolved_dependencies[:], .Class, "zcl_remote_parent"), 1)
+		testing.expect_value(t, workspace_test_dependency_edge_count(record.unresolved_dependencies[:], .Interface, "zif_remote"), 1)
+		testing.expect_value(t, workspace_test_dependency_edge_count(record.unresolved_dependencies[:], .Function_Module, "z_remote_fm"), 1)
+		testing.expect_value(t, workspace_test_dependency_edge_count(record.unresolved_dependencies[:], .DDIC_Table, "ztab"), 1)
+		testing.expect_value(t, workspace_test_reverse_project_count(analysis.external_index.unresolved_waiters_by_object, .DDIC_Table, "ztab", record.id), 1)
 	}
 }
 
 @(test)
 semantic_workspace_resolves_external_type_and_sql_summaries_without_candidates :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	external := external_semantics_make(interner)
+	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
 	_ = external_semantics_add_class_summary(&external, "zcl_remote")
 	scarr_fields := [?]External_Field_Summary {
@@ -1457,7 +1631,7 @@ DATA lr_remote TYPE REF TO zcl_remote.
 SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).`),
 	}
 
-	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external, interner = interner})
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external})
 	defer semantic_workspace_analysis_destroy(&analysis)
 
 	checker := analysis.project_results[0].checker
@@ -1469,11 +1643,11 @@ SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).`),
 	record := workspace_test_record_for_project(t, &analysis, analysis.project_results[0].project)
 	testing.expect(t, record != nil)
 	if record != nil {
-		testing.expect_value(t, workspace_test_dependency_edge_count(analysis.interner, record.resolved_dependencies[:], .Class, "zcl_remote"), 1)
-		testing.expect_value(t, workspace_test_dependency_edge_count(analysis.interner, record.resolved_dependencies[:], .DDIC_Table, "scarr"), 1)
+		testing.expect_value(t, workspace_test_dependency_edge_count(record.resolved_dependencies[:], .Class, "zcl_remote"), 1)
+		testing.expect_value(t, workspace_test_dependency_edge_count(record.resolved_dependencies[:], .DDIC_Table, "scarr"), 1)
 		testing.expect_value(t, len(record.unresolved_dependencies), 0)
-		testing.expect_value(t, workspace_test_reverse_project_count(analysis.interner, analysis.external_index.dependents_by_object, .Class, "zcl_remote", record.id), 1)
-		testing.expect_value(t, workspace_test_reverse_project_count(analysis.interner, analysis.external_index.dependents_by_object, .DDIC_Table, "scarr", record.id), 1)
+		testing.expect_value(t, workspace_test_reverse_project_count(analysis.external_index.dependents_by_object, .Class, "zcl_remote", record.id), 1)
+		testing.expect_value(t, workspace_test_reverse_project_count(analysis.external_index.dependents_by_object, .DDIC_Table, "scarr", record.id), 1)
 	}
 
 	lr_remote := workspace_test_lookup(t, &analysis, analysis.project_results[0].files[0].root_scope, .Value, "lr_remote", .Variable)
@@ -1489,10 +1663,8 @@ SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).`),
 
 @(test)
 semantic_workspace_resolves_external_function_modules_without_candidates :: proc(t: ^testing.T) {
-	interner := string_interner.create()
-	defer string_interner.destroy(interner)
 
-	external := external_semantics_make(interner)
+	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
 	_ = external_semantics_add_routine_summary(&external, "z_remote_fm", .Module)
 
@@ -1500,15 +1672,15 @@ semantic_workspace_resolves_external_function_modules_without_candidates :: proc
 		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. CALL FUNCTION 'Z_REMOTE_FM'."),
 	}
 
-	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external, interner = interner})
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external = &external})
 	defer semantic_workspace_analysis_destroy(&analysis)
 
 	testing.expect_value(t, workspace_test_candidate_count(&analysis, .Function_Module, "z_remote_fm"), 0)
 	record := workspace_test_record_for_project(t, &analysis, analysis.project_results[0].project)
 	testing.expect(t, record != nil)
 	if record != nil {
-		testing.expect_value(t, workspace_test_dependency_edge_count(analysis.interner, record.resolved_dependencies[:], .Function_Module, "z_remote_fm"), 1)
-		testing.expect_value(t, workspace_test_reverse_project_count(analysis.interner, analysis.external_index.dependents_by_object, .Function_Module, "z_remote_fm", record.id), 1)
+		testing.expect_value(t, workspace_test_dependency_edge_count(record.resolved_dependencies[:], .Function_Module, "z_remote_fm"), 1)
+		testing.expect_value(t, workspace_test_reverse_project_count(analysis.external_index.dependents_by_object, .Function_Module, "z_remote_fm", record.id), 1)
 	}
 }
 

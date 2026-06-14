@@ -3,6 +3,7 @@ package abap_frontend_remote_dependencies
 import "src:adt"
 import dep_store "src:dependency_store"
 import execution "src:execution"
+import "src:utils"
 
 import base_runtime "base:runtime"
 import "core:mem"
@@ -934,7 +935,7 @@ typepool_cache_record_result :: proc(
 		result.status = .Needs_Expansion
 		return result
 	}
-	pool := strings.to_lower(record_copy.object_name, context.temp_allocator)
+	pool := utils.to_lower_ascii(record_copy.object_name, context.temp_allocator)
 	for request in requests {
 		if !(request.kind == .Type || request.kind == .Symbol) {
 			continue
@@ -1832,7 +1833,7 @@ fetch_adt_objects :: proc(
 				out,
 				artifact_from_adt_fetch(
 					Request {
-						name = strings.to_lower(shared.object_ref.name, context.temp_allocator),
+						name = utils.to_lower_ascii(shared.object_ref.name, context.temp_allocator),
 						kind = .Include,
 					},
 					&shared.object_ref,
@@ -1906,7 +1907,7 @@ typepool_artifacts :: proc(
 			}
 			continue
 		}
-		pool = strings.to_lower(strings.trim_space(pool), context.temp_allocator)
+		pool = utils.to_lower_ascii(strings.trim_space(pool), context.temp_allocator)
 		if pool == "" {
 			when TRACE {
 				trace_eprintf(
