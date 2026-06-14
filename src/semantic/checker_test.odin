@@ -2012,6 +2012,26 @@ CONSTANTS: BEGIN OF gc_pair,
 }
 
 @(test)
+root_semantic_constant_payload_records_integer_literal_values :: proc(t: ^testing.T) {
+	source := `CONSTANTS gc_limit TYPE i VALUE 42.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	_, file := checker_test_check_source(t, &project, source, "mem://constant_integer_value.abap")
+	gc_limit := checker_test_lookup(t, &project, file.root_scope, .Value, "gc_limit", .Constant)
+	payload, payload_ok := gc_limit.payload.(^Entity_Constant_Payload)
+	testing.expect(t, payload_ok)
+	if payload_ok {
+		value, value_ok := payload.constant_value.(^Constant_Integer_Value)
+		testing.expect(t, value_ok)
+		if value_ok {
+			testing.expect_value(t, value.value, 42)
+		}
+	}
+}
+
+@(test)
 root_semantic_collects_declarations_inside_enhancement_blocks :: proc(t: ^testing.T) {
 	source := `ENHANCEMENT enh.
   DATA lv_inside TYPE i.

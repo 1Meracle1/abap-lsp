@@ -5412,6 +5412,79 @@ APPEND VALUE #( ) TO lr_str.`
 }
 
 @(test)
+lsp_hover_reports_constant_type_and_value_as_abap_syntax :: proc(t: ^testing.T) {
+	source := `CONSTANTS:
+  BEGIN OF c_shipping_status,
+    found_ok          TYPE c VALUE '1',
+    not_found         TYPE c VALUE '2',
+    fetch_started_aif TYPE c VALUE '3',
+  END OF c_shipping_status,
+  c_other_constant TYPE c VALUE 'A'.
+
+DATA(lv_val) = c_shipping_status-fetch_started_aif.
+DATA(lv_val1) = c_other_constant.`
+
+	member_text := lsp_test_hover_text(
+		t,
+		source,
+		"c_shipping_status-fetch_started_aif",
+		"fetch_started_aif",
+	)
+	plain_text := lsp_test_hover_text(
+		t,
+		source,
+		"DATA(lv_val1) = c_other_constant",
+		"c_other_constant",
+	)
+
+	testing.expect(t, strings.contains(member_text, "```abap"))
+	testing.expect(
+		t,
+		strings.contains(
+			member_text,
+			`CONSTANTS:
+  BEGIN OF c_shipping_status,
+    fetch_started_aif TYPE c VALUE '3',
+  END OF c_shipping_status.`,
+		),
+	)
+	testing.expect(t, strings.contains(plain_text, "```abap"))
+	testing.expect(t, strings.contains(plain_text, "CONSTANTS c_other_constant TYPE c VALUE 'A'."))
+}
+
+@(test)
+lsp_hover_reports_constant_group_values_as_abap_syntax :: proc(t: ^testing.T) {
+	source := `CONSTANTS:
+  BEGIN OF c_shipping_status,
+    found_ok          TYPE c VALUE '1',
+    not_found         TYPE c VALUE '2',
+    fetch_started_aif TYPE c VALUE '3',
+  END OF c_shipping_status.
+
+DATA(lv_val) = c_shipping_status-fetch_started_aif.`
+
+	text := lsp_test_hover_text(
+		t,
+		source,
+		"c_shipping_status-fetch_started_aif",
+		"c_shipping_status",
+	)
+
+	testing.expect(
+		t,
+		strings.contains(
+			text,
+			`CONSTANTS:
+  BEGIN OF c_shipping_status,
+    found_ok TYPE c VALUE '1',
+    not_found TYPE c VALUE '2',
+    fetch_started_aif TYPE c VALUE '3',
+  END OF c_shipping_status.`,
+		),
+	)
+}
+
+@(test)
 lsp_hover_reports_cursor_inline_handle_and_fetch_table_types :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF e070,
          trstatus TYPE string,

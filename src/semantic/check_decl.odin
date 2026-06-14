@@ -3,6 +3,7 @@ package abap_frontend_semantic2
 import "src:ast"
 
 import "core:mem"
+import "core:strconv"
 import "core:strings"
 
 Decl_Structure_Frame :: struct {
@@ -1923,6 +1924,14 @@ checker_record_constant_value :: proc(
 			value.value = strings.clone(text, ctx.project.allocator)
 			payload.constant_value = value
 			return
+		}
+		if checker_literal_is_integer(lit.value) {
+			if parsed, parse_ok := strconv.parse_int(lit.value, 10); parse_ok {
+				value := new(Constant_Integer_Value, ctx.project.allocator)
+				value.value = i64(parsed)
+				payload.constant_value = value
+				return
+			}
 		}
 	}
 }

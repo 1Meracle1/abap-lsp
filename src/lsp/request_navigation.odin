@@ -177,7 +177,7 @@ entity_detail :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> s
 }
 
 entity_hover_text :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
-	signature := entity_hover_signature(entity)
+	signature := entity_hover_signature(project, entity)
 	documentation := entity_documentation(project, entity)
 	out := strings.builder_make(context.temp_allocator)
 	if signature != "" {
@@ -198,9 +198,12 @@ entity_hover_text :: proc(project: ^semantic.Project, entity: ^semantic.Entity) 
 	return strings.to_string(out)
 }
 
-entity_hover_signature :: proc(entity: ^semantic.Entity) -> string {
+entity_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
 	if entity == nil {
 		return ""
+	}
+	if signature := constant_hover_signature(project, entity); signature != "" {
+		return signature
 	}
 	if entity.kind == .Method {
 		return method_hover_signature(entity)
@@ -210,6 +213,272 @@ entity_hover_signature :: proc(entity: ^semantic.Entity) -> string {
 		return payload.signature
 	}
 	return ""
+}
+
+constant_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
+	if entity == nil {
+		return ""
+	}
+	if entity.kind == .Constant {
+		if constant_structure := entity_constant_structure(entity); constant_structure != nil {
+			return constant_structure_hover_signature(project, entity, nil)
+		}
+		return constant_entity_hover_signature(project, entity)
+	}
+	if entity.kind == .Field {
+		if root := constant_field_root(entity); root != nil {
+			return constant_structure_hover_signature(project, root, entity)
+		}
+	}
+	return ""
+}
+
+constant_entity_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
+	if entity == nil || entity.kind != .Constant {
+		return ""
+	}
+	type_text := constant_entity_type_syntax(project, entity)
+	value_text := constant_entity_value_syntax(entity)
+	if type_text == "" && value_text == "" {
+		return ""
+	}
+	out := strings.builder_make(context.temp_allocator)
+	strings.write_string(&out, "CONSTANTS ")
+	strings.write_string(&out, entity.name)
+	constant_write_type_and_value(&out, type_text, value_text)
+	strings.write_byte(&out, '.')
+	return strings.to_string(out)
+}
+
+constant_structure_hover_signature :: proc(
+	project: ^semantic.Project,
+	root: ^semantic.Entity,
+	selected_field: ^semantic.Entity,
+) -> string {
+	structure := entity_constant_structure(root)
+	if structure == nil {
+		return ""
+	}
+	out := strings.builder_make(context.temp_allocator)
+	strings.write_string(&out, "CONSTANTS:\n")
+	strings.write_string(&out, "  BEGIN OF ")
+	strings.write_string(&out, root.name)
+	strings.write_string(&out, ",\n")
+	if selected_field != nil {
+		constant_write_structure_field_line(&out, project, selected_field)
+	} else {
+		for field in structure.fields {
+			constant_write_structure_field_line(&out, project, field)
+		}
+	}
+	strings.write_string(&out, "  END OF ")
+	strings.write_string(&out, root.name)
+	strings.write_byte(&out, '.')
+	return strings.to_string(out)
+}
+
+constant_write_structure_field_line :: proc(
+	out: ^strings.Builder,
+	project: ^semantic.Project,
+	field: ^semantic.Entity,
+) {
+	if field == nil {
+		return
+	}
+	strings.write_string(out, "    ")
+	strings.write_string(out, field.name)
+	type_text := constant_entity_type_syntax(project, field)
+	value_text := constant_entity_value_syntax(field)
+	constant_write_type_and_value(out, type_text, value_text)
+	strings.write_string(out, ",\n")
+}
+
+constant_write_type_and_value :: proc(out: ^strings.Builder, type_text, value_text: string) {
+	if type_text != "" {
+		strings.write_byte(out, ' ')
+		strings.write_string(out, type_text)
+	}
+	if value_text != "" {
+		strings.write_string(out, " VALUE ")
+		strings.write_string(out, value_text)
+	}
+}
+
+entity_constant_structure :: proc(entity: ^semantic.Entity) -> ^semantic.Structure {
+	if entity == nil || entity.kind != .Constant || entity.type == nil {
+		return nil
+	}
+	if entity.type.kind == .Structure {
+		return entity.type.structure
+	}
+	return nil
+}
+
+constant_field_root :: proc(entity: ^semantic.Entity) -> ^semantic.Entity {
+	if entity == nil || entity.kind != .Field {
+		return nil
+	}
+	for owner := entity.owner; owner != nil; owner = owner.owner {
+		if owner.kind == .Constant {
+			return owner
+		}
+	}
+	return nil
+}
+
+constant_entity_type_syntax :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
+	if entity == nil {
+		return ""
+	}
+	if entity.decl_info != nil && entity.decl_info.type_clause != nil {
+		return data_type_clause_syntax(entity.decl_info.type_clause)
+	}
+	type_text := type_label(project, entity.type)
+	if type_text == "" || type_text == "unknown" {
+		return ""
+	}
+	return fmt.tprintf("TYPE %s", type_text)
+}
+
+constant_entity_value_syntax :: proc(entity: ^semantic.Entity) -> string {
+	if entity == nil {
+		return ""
+	}
+	if entity.decl_info != nil {
+		if text := value_clause_syntax(entity.decl_info.value_clause); text != "" {
+			return text
+		}
+	}
+	if field_payload, field_ok := entity.payload.(^semantic.Entity_Field_Payload);
+	   field_ok && field_payload != nil {
+		if text := value_clause_syntax(field_payload.value_clause); text != "" {
+			return text
+		}
+	}
+	if payload, ok := entity.payload.(^semantic.Entity_Constant_Payload); ok && payload != nil {
+		return constant_value_syntax(payload.constant_value)
+	}
+	return ""
+}
+
+constant_value_syntax :: proc(value: semantic.Constant_Value) -> string {
+	#partial switch v in value {
+	case ^semantic.Constant_Integer_Value:
+		if v != nil {
+			return fmt.tprintf("%d", v.value)
+		}
+	case ^semantic.Constant_Text_Value:
+		if v != nil {
+			return quoted_abap_text_literal(v.value)
+		}
+	}
+	return ""
+}
+
+value_clause_syntax :: proc(clause: ^ast.Value_Clause) -> string {
+	if clause == nil {
+		return ""
+	}
+	if clause.is_initial {
+		return "IS INITIAL"
+	}
+	if clause.expr == nil {
+		return ""
+	}
+	return ast.print_node(&clause.expr.expr_base, context.temp_allocator)
+}
+
+quoted_abap_text_literal :: proc(text: string) -> string {
+	out := strings.builder_make(context.temp_allocator)
+	strings.write_byte(&out, '\'')
+	for ch in text {
+		if ch == '\'' {
+			strings.write_byte(&out, '\'')
+		}
+		strings.write_rune(&out, ch)
+	}
+	strings.write_byte(&out, '\'')
+	return strings.to_string(out)
+}
+
+data_type_clause_syntax :: proc(clause: ^ast.Data_Type_Clause) -> string {
+	if clause == nil {
+		return ""
+	}
+	out := strings.builder_make(context.temp_allocator)
+	strings.write_string(&out, data_type_clause_prefix(clause.form))
+	if data_type_clause_needs_of(clause) {
+		strings.write_string(&out, " OF")
+	}
+	if clause.type_ref != nil {
+		strings.write_byte(&out, ' ')
+		strings.write_string(&out, ast.print_node(&clause.type_ref.expr_base, context.temp_allocator))
+	}
+	if clause.initial_size != nil {
+		strings.write_string(&out, " INITIAL SIZE ")
+		strings.write_string(&out, ast.print_node(&clause.initial_size.expr_base, context.temp_allocator))
+	}
+	return strings.to_string(out)
+}
+
+data_type_clause_prefix :: proc(form: ast.Data_Type_Form) -> string {
+	#partial switch form {
+	case .Type:
+		return "TYPE"
+	case .Like:
+		return "LIKE"
+	case .Structure:
+		return "STRUCTURE"
+	case .Ref_To:
+		return "TYPE REF TO"
+	case .Like_Line_Of:
+		return "LIKE LINE OF"
+	case .Type_Line_Of:
+		return "TYPE LINE OF"
+	case .Any_Table:
+		return "TYPE ANY TABLE"
+	case .Table:
+		return "TYPE TABLE"
+	case .Like_Table:
+		return "LIKE TABLE"
+	case .Index_Table:
+		return "TYPE INDEX TABLE"
+	case .Standard_Table:
+		return "TYPE STANDARD TABLE"
+	case .Sorted_Table:
+		return "TYPE SORTED TABLE"
+	case .Hashed_Table:
+		return "TYPE HASHED TABLE"
+	case .Like_Standard_Table:
+		return "LIKE STANDARD TABLE"
+	case .Like_Sorted_Table:
+		return "LIKE SORTED TABLE"
+	case .Like_Hashed_Table:
+		return "LIKE HASHED TABLE"
+	case .Range_Of:
+		return "TYPE RANGE OF"
+	}
+	return "TYPE"
+}
+
+data_type_clause_needs_of :: proc(clause: ^ast.Data_Type_Clause) -> bool {
+	if clause == nil || (clause.type_ref == nil && !clause.table_has_of) {
+		return false
+	}
+	#partial switch clause.form {
+	case .Any_Table,
+	     .Table,
+	     .Like_Table,
+	     .Index_Table,
+	     .Standard_Table,
+	     .Sorted_Table,
+	     .Hashed_Table,
+	     .Like_Standard_Table,
+	     .Like_Sorted_Table,
+	     .Like_Hashed_Table:
+		return true
+	}
+	return false
 }
 
 method_hover_signature :: proc(entity: ^semantic.Entity) -> string {
