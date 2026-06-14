@@ -47,6 +47,167 @@ checker_check_object_semantics :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 	}
 }
 
+checker_check_oop_alias_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
+	assert(entity != nil && entity.kind == .Alias)
+	payload, ok := entity.payload.(^Entity_Alias_Payload)
+	assert(ok && payload != nil)
+	if entity.owner == nil || (entity.owner.kind != .Class && entity.owner.kind != .Interface) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Context,
+			entity.name_range,
+			"ALIASES statement must be declared in a class or interface",
+			entity,
+			decl,
+		)
+		entity.type = project_type_unknown(ctx.project)
+		return
+	}
+	if payload.target_interface_name == "" || payload.target_member_name == "" {
+		entity.type = project_type_unknown(ctx.project)
+		return
+	}
+	target_interface, interface_ok := checker_lookup_object_type_from_scope(
+		ctx,
+		entity.owner.scope,
+		payload.target_interface_name,
+		.Interface,
+	)
+	if !interface_ok {
+		checker_add_unresolved_oop_type_candidate(
+			ctx,
+			entity.owner,
+			payload.target_interface_name,
+			.Interface,
+			payload.target_interface_range,
+		)
+		entity.type = project_type_unknown(ctx.project)
+		return
+	}
+	checker_add_entity_use_at_range(ctx, entity.node, target_interface, payload.target_interface_range)
+	if !checker_object_exposes_interface(ctx, entity.owner, target_interface.name) {
+		checker_add_diagnostic(
+			ctx,
+			.Inaccessible_Member,
+			payload.target_interface_range,
+			"alias target interface is not exposed by the owning object",
+			target_interface,
+			target_interface.decl_info,
+		)
+	}
+	target_member, member_ok := checker_lookup_oop_alias_target_member(
+		target_interface,
+		payload.target_member_name,
+	)
+	if !member_ok {
+		checker_add_diagnostic(
+			ctx,
+			.Unresolved_Reference,
+			payload.target_member_range,
+			"unknown interface member",
+			target_interface,
+			target_interface.decl_info,
+		)
+		entity.type = project_type_unknown(ctx.project)
+		return
+	}
+	checker_add_entity_use_at_range(ctx, entity.node, target_member, payload.target_member_range)
+	checker_check_entity_for_operand(ctx, target_member)
+	entity.type = target_member.type if target_member.type != nil else project_type_unknown(ctx.project)
+}
+
+checker_lookup_oop_alias_target_member :: proc(target_interface: ^Entity, name: string) -> (
+	^Entity,
+	bool,
+) {
+	if target_interface == nil || target_interface.kind != .Interface || name == "" {
+		return nil, false
+	}
+	namespaces := [?]Namespace{.Routine, .Value, .Type}
+	for namespace in namespaces {
+		if member, ok := checker_lookup_object_member(target_interface, namespace, name); ok {
+			return member, true
+		}
+	}
+	return nil, false
+}
+
+checker_object_exposes_interface :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	interface_name: string,
+	depth := 0,
+) -> bool {
+	if ctx != nil {
+		return checker_type_exposes_interface(ctx, entity, interface_name)
+	}
+	if depth > 32 || entity == nil || interface_name == "" {
+		return false
+	}
+	if entity.kind == .Interface && entity.name == interface_name {
+		return true
+	}
+	payload, ok := entity.payload.(^Entity_Object_Payload)
+	if !ok || payload == nil {
+		return false
+	}
+	for implemented_name in payload.implemented_interfaces {
+		if implemented_name == interface_name {
+			return true
+		}
+		if implemented, implemented_ok := checker_lookup_object_type_from_scope(
+			nil,
+			entity.scope,
+			implemented_name,
+			.Interface,
+		); implemented_ok && checker_object_exposes_interface(nil, implemented, interface_name, depth + 1) {
+			return true
+		}
+	}
+	if entity.kind == .Class && payload.superclass_name != "" {
+		if super, super_ok := checker_lookup_object_type_from_scope(
+			nil,
+			entity.scope,
+			payload.superclass_name,
+			.Class,
+		); super_ok && checker_object_exposes_interface(nil, super, interface_name, depth + 1) {
+			return true
+		}
+	}
+	return false
+}
+
+checker_diagnose_unaliased_interface_member_access :: proc(
+	ctx: ^Checker_Context,
+	owner: ^Entity,
+	namespace: Namespace,
+	name: string,
+	range: Range,
+) -> bool {
+	if owner == nil || owner.kind != .Class {
+		return false
+	}
+	if member, ok := checker_lookup_implemented_interface_member(
+		owner,
+		namespace,
+		name,
+		0,
+		nil,
+		ctx,
+	); ok {
+		checker_add_diagnostic(
+			ctx,
+			.Inaccessible_Member,
+			range,
+			"interface member requires interface-qualified access or an ALIASES declaration",
+			member,
+			member.decl_info,
+		)
+		return true
+	}
+	return false
+}
+
 checker_check_method_implementation_consistency :: proc(ctx: ^Checker_Context) {
 	assert(ctx != nil && ctx.info != nil)
 	for entity in ctx.info.definitions {

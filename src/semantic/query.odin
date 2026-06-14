@@ -81,9 +81,11 @@ Semantic_Completion_Item_Key :: struct {
 }
 
 Semantic_Completion_Selector_Context :: struct {
-	op:        ast.Selector_Op,
-	base_name: string,
-	base_end:  int,
+	op:             ast.Selector_Op,
+	receiver_op:    ast.Selector_Op,
+	base_name:      string,
+	base_end:       int,
+	interface_name: string,
 }
 
 semantic_query :: proc(
@@ -461,6 +463,46 @@ semantic_completion_selector_context_at_offset :: proc(
 	if i < 2 {
 		return {}, false
 	}
+	if source[i - 1] == '~' {
+		interface_end := i - 1
+		interface_start := interface_end
+		for interface_start > 0 && semantic_completion_name_char(source[interface_start - 1]) {
+			interface_start -= 1
+		}
+		if interface_start == interface_end {
+			return {}, false
+		}
+		op_end := semantic_completion_skip_space_backward(source, interface_start)
+		if op_end < 2 {
+			return {}, false
+		}
+		receiver_op := ast.Selector_Op{}
+		if source[op_end - 2:op_end] == "=>" {
+			receiver_op = .Fat_Arrow
+		} else if source[op_end - 2:op_end] == "->" {
+			receiver_op = .Arrow
+		} else {
+			return {}, false
+		}
+		op_start := op_end - 2
+		base_end := semantic_completion_skip_space_backward(source, op_start)
+		base_name_end := base_end
+		base_start := base_name_end
+		for base_start > 0 && semantic_completion_name_char(source[base_start - 1]) {
+			base_start -= 1
+		}
+		if receiver_op == .Fat_Arrow && base_start == base_name_end {
+			return {}, false
+		}
+		return Semantic_Completion_Selector_Context {
+				op             = .Tilde,
+				receiver_op    = receiver_op,
+				base_name      = source[base_start:base_name_end],
+				base_end       = base_end,
+				interface_name = source[interface_start:interface_end],
+			},
+			true
+	}
 	op := ast.Selector_Op{}
 	if source[i - 2:i] == "=>" {
 		op = .Fat_Arrow
@@ -492,9 +534,10 @@ semantic_completion_selector_context_at_offset :: proc(
 		return {}, false
 	}
 	return Semantic_Completion_Selector_Context {
-			op        = op,
-			base_name = source[base_start:base_name_end],
-			base_end  = base_end,
+			op          = op,
+			receiver_op = op,
+			base_name   = source[base_start:base_name_end],
+			base_end    = base_end,
 		},
 		true
 }
@@ -589,6 +632,34 @@ semantic_completion_append_selector_entities :: proc(
 			return
 		}
 		semantic_completion_append_object_members(q, owner, scope, prefix, seen, out, .Arrow)
+		return
+	}
+	if selector.op == .Tilde {
+		owner: ^Entity
+		if selector.receiver_op == .Fat_Arrow {
+			owner = semantic_completion_resolve_type_owner(q, scope, selector.base_name)
+		} else {
+			owner = semantic_completion_resolve_instance_owner(q, scope, selector)
+		}
+		if owner == nil || (owner.kind != .Class && owner.kind != .Interface) {
+			return
+		}
+		iface := semantic_completion_resolve_type_owner(q, owner.scope, selector.interface_name)
+		if iface == nil || iface.kind != .Interface {
+			return
+		}
+		if q.checker != nil && !checker_type_exposes_interface(&q.checker.builtin_context, owner, iface.name) {
+			return
+		}
+		semantic_completion_append_object_members(
+			q,
+			iface,
+			scope,
+			prefix,
+			seen,
+			out,
+			selector.receiver_op,
+		)
 		return
 	}
 	if selector.op == .Dash {
@@ -768,6 +839,19 @@ semantic_completion_append_object_members :: proc(
 		return
 	}
 	for member in payload.definition_scope.declarations {
+		if member.kind == .Alias {
+			semantic_completion_append_object_alias_member(
+				q,
+				owner,
+				member,
+				access_scope,
+				prefix,
+				seen,
+				out,
+				op,
+			)
+			continue
+		}
 		if !semantic_completion_object_member_accessible(member, access_scope, op) {
 			continue
 		}
@@ -779,16 +863,20 @@ semantic_completion_append_object_members :: proc(
 		}
 		if iface := semantic_completion_resolve_type_owner(q, owner.scope, interface_name);
 		   iface != nil && iface.kind == .Interface {
-			semantic_completion_append_object_members(
-				q,
-				iface,
-				access_scope,
-				prefix,
-				seen,
-				out,
-				op,
-				depth + 1,
-			)
+			if owner.kind == .Interface {
+				semantic_completion_append_object_members(
+					q,
+					iface,
+					access_scope,
+					prefix,
+					seen,
+					out,
+					op,
+					depth + 1,
+				)
+			} else {
+				semantic_completion_append_entity(q.project, iface, .Selector_Member, prefix, seen, out, op)
+			}
 		}
 	}
 	if owner.kind == .Class && payload.superclass_name != "" {
@@ -806,6 +894,73 @@ semantic_completion_append_object_members :: proc(
 			)
 		}
 	}
+}
+
+semantic_completion_append_object_alias_member :: proc(
+	q: Semantic_Completion_Query,
+	owner: ^Entity,
+	alias: ^Entity,
+	access_scope: ^Scope,
+	prefix: string,
+	seen: ^map[Semantic_Completion_Item_Key]bool,
+	out: ^[dynamic]Semantic_Completion_Item,
+	op: ast.Selector_Op,
+) {
+	if owner == nil || alias == nil || alias.kind != .Alias {
+		return
+	}
+	if checker_member_visibility(alias) != .Public &&
+	   (access_scope == nil || !checker_member_visible_from_scope(access_scope, alias)) {
+		return
+	}
+	payload, ok := alias.payload.(^Entity_Alias_Payload)
+	if !ok || payload == nil || payload.target_interface_name == "" {
+		return
+	}
+	iface := semantic_completion_resolve_type_owner(q, owner.scope, payload.target_interface_name)
+	if iface == nil || iface.kind != .Interface {
+		return
+	}
+	if q.checker != nil && !checker_type_exposes_interface(&q.checker.builtin_context, owner, iface.name) {
+		return
+	}
+	target_name := payload.target_member_name
+	if target_name == "" {
+		target_name = alias.name
+	}
+	if target := semantic_completion_alias_target_member(iface, target_name, access_scope, op); target != nil {
+		semantic_completion_append_named_entity(
+			q.project,
+			alias.name,
+			target,
+			.Selector_Member,
+			prefix,
+			seen,
+			out,
+			op,
+			alias.name_range,
+		)
+	}
+}
+
+semantic_completion_alias_target_member :: proc(
+	iface: ^Entity,
+	name: string,
+	access_scope: ^Scope,
+	op: ast.Selector_Op,
+) -> ^Entity {
+	if iface == nil || iface.kind != .Interface || name == "" {
+		return nil
+	}
+	namespaces := [?]Namespace{.Routine, .Value, .Type}
+	for namespace in namespaces {
+		member, ok := checker_lookup_object_member(iface, namespace, name)
+		if !ok || !semantic_completion_object_member_accessible(member, access_scope, op) {
+			continue
+		}
+		return member
+	}
+	return nil
 }
 
 semantic_completion_append_structure_fields :: proc(
@@ -1090,12 +1245,39 @@ semantic_completion_append_entity :: proc(
 	out: ^[dynamic]Semantic_Completion_Item,
 	selector_op: ast.Selector_Op = .Dash,
 ) {
-	if entity == nil || entity.name == "" {
+	if entity == nil {
+		return
+	}
+	semantic_completion_append_named_entity(
+		project,
+		entity.name,
+		entity,
+		source,
+		prefix,
+		seen,
+		out,
+		selector_op,
+		entity.name_range,
+	)
+}
+
+semantic_completion_append_named_entity :: proc(
+	project: ^Project,
+	name: string,
+	entity: ^Entity,
+	source: Semantic_Completion_Item_Source,
+	prefix: string,
+	seen: ^map[Semantic_Completion_Item_Key]bool,
+	out: ^[dynamic]Semantic_Completion_Item,
+	selector_op: ast.Selector_Op = .Dash,
+	range: Range = {},
+) {
+	if entity == nil || name == "" {
 		return
 	}
 	if prefix != "" {
-		name := project_intern_lower_ascii(project, entity.name)
-		if !strings.has_prefix(name, prefix) {
+		canonical_name := project_intern_lower_ascii(project, name)
+		if !strings.has_prefix(canonical_name, prefix) {
 			return
 		}
 	}
@@ -1105,7 +1287,7 @@ semantic_completion_append_entity :: proc(
 			continue
 		}
 		key := Semantic_Completion_Item_Key {
-			name      = entity.name,
+			name      = name,
 			namespace = namespace,
 			source    = source,
 		}
@@ -1116,12 +1298,12 @@ semantic_completion_append_entity :: proc(
 		append(
 			out,
 			Semantic_Completion_Item {
-				name = entity.name,
+				name = name,
 				namespace = namespace,
 				entity = entity,
 				source = source,
 				selector_op = selector_op,
-				range = entity.name_range,
+				range = range,
 			},
 		)
 	}

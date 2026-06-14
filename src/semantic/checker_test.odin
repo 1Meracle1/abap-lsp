@@ -1293,12 +1293,92 @@ ENDCLASS.`
 	}
 
 	rename_name := project_intern_lower_ascii(&project, "rename")
-	rename, rename_ok := checker_lookup_object_member(class, .Routine, rename_name)
-	testing.expect(t, rename_ok)
-	if rename_ok {
-		testing.expect(t, rename.owner == iface)
-		testing.expect_value(t, rename.kind, Entity_Kind.Method)
+	_, rename_ok := checker_lookup_object_member(class, .Routine, rename_name)
+	testing.expect(t, !rename_ok)
+}
+
+@(test)
+root_semantic_requires_alias_or_qualified_access_for_interface_methods :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_interface.
+  METHODS method_name
+    IMPORTING
+      iv_value TYPE string.
+ENDINTERFACE.
+
+CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_interface.
+    ALIASES short_name FOR lif_interface~method_name.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+ENDCLASS.
+
+DATA(lo_inst) = NEW lcl_class( ).
+lo_inst->method_name(
+  iv_value = 'hello'
+).
+lo_inst->lif_interface~method_name(
+  iv_value = 'hello'
+).
+lo_inst->short_name(
+  iv_value = 'hello'
+).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://oop_interface_alias_access.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Inaccessible_Member), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Named_Parameter), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Missing_Required_Parameter), 0)
+
+	method_offset := checker_test_find_text(source, "lo_inst->method_name") + len("lo_inst->")
+	method_range := tokenizer.text_range(method_offset, method_offset + len("method_name"))
+	diagnostic_found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Inaccessible_Member && diagnostic.range == method_range {
+			diagnostic_found = strings.contains(diagnostic.message, "ALIASES")
+			break
+		}
 	}
+	testing.expect(t, diagnostic_found)
+
+	iface := checker_test_lookup(t, &project, file.root_scope, .Type, "lif_interface", .Interface)
+	query := semantic_query(&project, &checker, file)
+	short_offset := checker_test_find_text_last(source, "short_name")
+	short_range := tokenizer.text_range(short_offset, short_offset + len("short_name"))
+	short_use := semantic_ref_use_at_range(semantic_query_refs(query), short_range)
+	testing.expect(t, short_use != nil)
+	if short_use != nil {
+		testing.expect(t, short_use.entity.owner == iface)
+		testing.expect_value(t, short_use.entity.name, "method_name")
+	}
+}
+
+@(test)
+root_semantic_checks_oop_alias_targets :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_demo.
+  METHODS run.
+ENDINTERFACE.
+INTERFACE lif_other.
+  METHODS run.
+ENDINTERFACE.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_demo.
+    ALIASES missing_member FOR lif_demo~missing.
+    ALIASES other_run FOR lif_other~run.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://oop_alias_target_checks.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Inaccessible_Member), 1)
 }
 
 @(test)
@@ -5405,6 +5485,100 @@ lcl_repo=>get_instance( )->scan( ).`
 	testing.expect(t, scan_found)
 	testing.expect(t, mv_public_found)
 	testing.expect(t, !unrelated_found)
+}
+
+@(test)
+root_semantic_query_completion_after_instance_selector_uses_aliases_and_interface_names :: proc(
+	t: ^testing.T,
+) {
+	source := `INTERFACE lif_interface.
+  METHODS method_name
+    IMPORTING
+      iv_value TYPE string.
+ENDINTERFACE.
+CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_interface.
+    ALIASES short_name FOR lif_interface~method_name.
+    METHODS local_method.
+ENDCLASS.
+CLASS lcl_class IMPLEMENTATION.
+  METHOD local_method.
+  ENDMETHOD.
+ENDCLASS.
+DATA(lo_inst) = NEW lcl_class( ).
+lo_inst->
+lo_inst->lif_interface~`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	parsed := parser.parse(source, "mem://query_interface_alias_completion.abap", context.allocator)
+	checker := checker_make(&project)
+	file := checker_add_file(&checker, parsed.path, parsed.root)
+	checker_check_file(&checker, file)
+
+	query := semantic_query(&project, &checker, file)
+	arrow_offset := checker_test_find_text(source, "lo_inst->\n") + len("lo_inst->")
+	testing.expect(t, arrow_offset >= len("lo_inst->"))
+
+	arrow_items := semantic_completion_items_at_offset(
+		semantic_query_completion(query),
+		arrow_offset,
+		"",
+		context.allocator,
+		source,
+	)
+
+	local_method_found := false
+	short_name_found := false
+	interface_found := false
+	method_name_found := false
+	for item in arrow_items {
+		if item.name == "local_method" && item.namespace == .Routine && item.source == .Selector_Member {
+			local_method_found = true
+		}
+		if item.name == "short_name" &&
+		   item.namespace == .Routine &&
+		   item.source == .Selector_Member &&
+		   item.entity != nil &&
+		   item.entity.kind == .Method {
+			short_name_found = true
+		}
+		if item.name == "lif_interface" &&
+		   item.namespace == .Type &&
+		   item.source == .Selector_Member &&
+		   item.entity != nil &&
+		   item.entity.kind == .Interface {
+			interface_found = true
+		}
+		if item.name == "method_name" && item.namespace == .Routine && item.source == .Selector_Member {
+			method_name_found = true
+		}
+	}
+	testing.expect(t, local_method_found)
+	testing.expect(t, short_name_found)
+	testing.expect(t, interface_found)
+	testing.expect(t, !method_name_found)
+
+	tilde_offset := checker_test_find_text(source, "lo_inst->lif_interface~") + len("lo_inst->lif_interface~")
+	testing.expect(t, tilde_offset >= len("lo_inst->lif_interface~"))
+	tilde_items := semantic_completion_items_at_offset(
+		semantic_query_completion(query),
+		tilde_offset,
+		"",
+		context.allocator,
+		source,
+	)
+
+	qualified_method_found := false
+	for item in tilde_items {
+		if item.name == "method_name" && item.namespace == .Routine && item.source == .Selector_Member {
+			qualified_method_found = true
+			break
+		}
+	}
+	testing.expect(t, qualified_method_found)
 }
 
 @(test)

@@ -285,7 +285,9 @@ Entity_Field_Payload :: struct {
 
 Entity_Alias_Payload :: struct {
 	target_interface_name: string,
+	target_interface_range: Range,
 	target_member_name:    string,
+	target_member_range:   Range,
 	visibility:            Visibility,
 }
 

@@ -1432,8 +1432,12 @@ checker_collect_oop_alias :: proc(
 	if payload, ok := entity.payload.(^Entity_Alias_Payload); ok && payload != nil {
 		target_ref := checker_type_ref_data_from_expr(ctx, target, .Type)
 		payload.target_interface_name = target_ref.base_name
+		payload.target_interface_range = target_ref.base_range
 		if len(target_ref.field_path) > 0 {
 			payload.target_member_name = target_ref.field_path[0]
+			if len(target_ref.field_ranges) > 0 {
+				payload.target_member_range = target_ref.field_ranges[0]
+			}
 		}
 		payload.visibility = visibility
 	}
@@ -2106,6 +2110,10 @@ checker_check_object_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: 
 }
 
 checker_check_metadata_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
+	if entity.kind == .Alias {
+		checker_check_oop_alias_decl(ctx, entity, decl)
+		return
+	}
 	if entity.kind == .Field {
 		if typ := checker_check_field_type(ctx, entity, decl); typ != nil {
 			entity.type = typ

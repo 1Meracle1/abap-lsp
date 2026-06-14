@@ -634,15 +634,17 @@ checker_lookup_object_member_internal :: proc(
 	); found {
 		return entity, true
 	}
-	if entity, found := checker_lookup_implemented_interface_member(
-		owner,
-		namespace,
-		name,
-		depth + 1,
-		excluded,
-		ctx,
-	); found {
-		return entity, true
+	if owner.kind == .Interface {
+		if entity, found := checker_lookup_implemented_interface_member(
+			owner,
+			namespace,
+			name,
+			depth + 1,
+			excluded,
+			ctx,
+		); found {
+			return entity, true
+		}
 	}
 	if payload.superclass_name != "" {
 		if super, super_ok := checker_lookup_object_type_from_scope(
@@ -698,6 +700,9 @@ checker_lookup_object_alias_member :: proc(
 			.Interface,
 		)
 		if !interface_ok {
+			continue
+		}
+		if !checker_object_exposes_interface(ctx, owner, target_interface.name) {
 			continue
 		}
 		target_name := alias_payload.target_member_name

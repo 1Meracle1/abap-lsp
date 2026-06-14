@@ -545,6 +545,13 @@ checker_lookup_selector_member :: proc(
 			if member, ok := checker_lookup_object_member_visible(ctx, owner, namespace, interned, checker_use_range(node, use_range)); ok {
 				return checker_record_entity_operand(ctx, node, member, lhs, use_range = use_range)
 			}
+			_ = checker_diagnose_unaliased_interface_member_access(
+				ctx,
+				owner,
+				namespace,
+				interned,
+				checker_use_range(node, use_range),
+			)
 		}
 		return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
 	}
@@ -556,6 +563,15 @@ checker_lookup_selector_member :: proc(
 		if owner != nil && (owner.kind == .Class || owner.kind == .Interface) {
 			if member, ok := checker_lookup_object_member_visible(ctx, owner, namespace, interned, checker_use_range(node, use_range)); ok {
 				return checker_record_entity_operand(ctx, node, member, lhs, use_range = use_range)
+			}
+			if op == .Fat_Arrow {
+				_ = checker_diagnose_unaliased_interface_member_access(
+					ctx,
+					owner,
+					namespace,
+					interned,
+					checker_use_range(node, use_range),
+				)
 			}
 		}
 	}

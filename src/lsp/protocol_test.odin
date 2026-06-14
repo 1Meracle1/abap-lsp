@@ -534,6 +534,104 @@ lo_inst-`
 }
 
 @(test)
+lsp_completion_after_instance_arrow_uses_aliases_and_interface_names :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_interface_alias_selector.abap"
+	prefix := `INTERFACE lif_interface.
+  METHODS method_name
+    IMPORTING
+      iv_value TYPE string.
+ENDINTERFACE.
+
+CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_interface.
+    ALIASES short_name FOR lif_interface~method_name.
+    METHODS local_method.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD lif_interface~method_name.
+  ENDMETHOD.
+  METHOD local_method.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA(lo_inst) = NEW lcl_class( ).
+`
+	source := strings.concatenate({prefix, "lo_inst->"}, context.allocator)
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, method_name_ok := lsp_test_find_completion_item(items, "method_name")
+	testing.expect(t, !method_name_ok)
+
+	short_name, short_name_ok := lsp_test_find_completion_item(items, "short_name")
+	testing.expect(t, short_name_ok)
+	if short_name_ok {
+		testing.expect_value(t, short_name.kind, COMPLETION_METHOD)
+		testing.expect(t, strings.contains(short_name.insert_text, "short_name("))
+	}
+
+	interface_item, interface_ok := lsp_test_find_completion_item(items, "lif_interface")
+	testing.expect(t, interface_ok)
+	if interface_ok {
+		testing.expect_value(t, interface_item.kind, COMPLETION_INTERFACE)
+		filter_text, filter_text_ok := interface_item.filter_text.?
+		testing.expect(t, filter_text_ok)
+		if filter_text_ok {
+			testing.expect_value(t, filter_text, "lo_inst->lif_interface")
+		}
+	}
+
+	qualified_source := strings.concatenate({prefix, "lo_inst->lif_interface~"}, context.allocator)
+	qualified_state := lsp_test_state_with_open_document(
+		"file:///D:/repo/completion_interface_qualified_selector.abap",
+		qualified_source,
+	)
+	defer lsp_test_state_destroy(&qualified_state)
+
+	qualified_offset := len(qualified_source)
+	qualified_params := lsp_test_rename_position_params(
+		"file:///D:/repo/completion_interface_qualified_selector.abap",
+		offset_to_position(qualified_source, qualified_offset),
+		"",
+	)
+	qualified_snapshot, qualified_completion_offset, qualified_snapshot_ok := snapshot_for_position(
+		&qualified_state,
+		qualified_params,
+	)
+	testing.expect(t, qualified_snapshot_ok)
+	if !qualified_snapshot_ok {
+		return
+	}
+	qualified_items := completion_items_for_snapshot(
+		qualified_snapshot,
+		qualified_completion_offset,
+		true,
+		context.allocator,
+	)
+	method_name, qualified_method_ok := lsp_test_find_completion_item(qualified_items, "method_name")
+	testing.expect(t, qualified_method_ok)
+	if qualified_method_ok {
+		filter_text, filter_text_ok := method_name.filter_text.?
+		testing.expect(t, filter_text_ok)
+		if filter_text_ok {
+			testing.expect_value(t, filter_text, "lo_inst->lif_interface~method_name")
+		}
+		testing.expect(t, strings.contains(method_name.insert_text, "method_name("))
+	}
+}
+
+@(test)
 lsp_completion_selector_method_uses_full_call_snippet :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/completion_method_snippet.abap"
 	source := `CLASS lcl_repo DEFINITION.
