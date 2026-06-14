@@ -718,6 +718,8 @@ checker_check_constructor_expr :: proc(
 	#partial switch expr.kind {
 	case .New:
 		checker_check_new_constructor_expr(ctx, expr, typ)
+	case .Cond:
+		typ = checker_check_cond_constructor_expr(ctx, expr, typ)
 	case .Filter:
 		checker_check_filter_constructor_expr(ctx, expr, typ)
 	case .Reduce:
@@ -728,6 +730,177 @@ checker_check_constructor_expr :: proc(
 		}
 	}
 	return checker_record_operand(ctx, node, .Value, typ, lhs = lhs)
+}
+
+Checker_Cond_Validation_State :: struct {
+	when_seen:   bool,
+	else_seen:   bool,
+	result_type: ^Type,
+	inferred:    ^Type,
+}
+
+checker_check_cond_constructor_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Constructor_Expr,
+	result_type: ^Type,
+) -> ^Type {
+	state := Checker_Cond_Validation_State{result_type = result_type}
+	checker_check_cond_sequence(ctx, expr.args[:], &state)
+	if !state.when_seen {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"COND requires at least one WHEN clause",
+		)
+	}
+	if !checker_type_is_unknown(state.result_type) {
+		return state.result_type
+	}
+	return state.inferred if state.inferred != nil else project_type_unknown(ctx.project)
+}
+
+checker_check_cond_sequence :: proc(
+	ctx: ^Checker_Context,
+	args: []^ast.Expr,
+	state: ^Checker_Cond_Validation_State,
+) {
+	for arg in args {
+		#partial switch n in arg.derived_expr {
+		case ^ast.Let_Expr:
+			if state.when_seen || state.else_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"COND LET must precede WHEN and ELSE",
+				)
+			}
+			checker_check_cond_let_expr(ctx, &arg.expr_base, n, state)
+		case ^ast.Constructor_When_Clause_Expr:
+			if state.else_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"COND WHEN must precede ELSE",
+				)
+			}
+			state.when_seen = true
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, n.condition)
+			result := checker_check_cond_result_expr(ctx, n.result, state)
+			checker_record_operand(ctx, &arg.expr_base, .Value, result.type)
+		case ^ast.Constructor_Else_Clause_Expr:
+			if state.else_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"COND allows only one ELSE clause",
+				)
+			}
+			if !state.when_seen {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"COND ELSE requires a preceding WHEN clause",
+				)
+			}
+			state.else_seen = true
+			result := checker_check_cond_result_expr(ctx, n.result, state)
+			checker_record_operand(ctx, &arg.expr_base, .Value, result.type)
+		case:
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				arg.range,
+				"COND allows only LET, WHEN, and ELSE clauses",
+			)
+			checker_check_expr(ctx, arg)
+		}
+	}
+}
+
+checker_check_cond_let_expr :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Let_Expr,
+	state: ^Checker_Cond_Validation_State,
+) -> Operand {
+	checker_open_scope(ctx, .Constructor_For, expr.range)
+	defer checker_close_scope(ctx)
+
+	for binding in expr.bindings {
+		checker_check_expr(ctx, binding)
+	}
+	checker_check_cond_sequence(ctx, expr.body[:], state)
+	return checker_record_operand(
+		ctx,
+		node,
+		.Value,
+		state.result_type if !checker_type_is_unknown(state.result_type) else state.inferred,
+	)
+}
+
+checker_check_cond_result_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	state: ^Checker_Cond_Validation_State,
+) -> Operand {
+	local := ctx^
+	if !checker_type_is_unknown(state.result_type) {
+		local.type_hint = state.result_type
+		local.type_hint_expr = expr
+	}
+	local.diagnose_unresolved_value_refs = true
+	result := checker_check_expr(&local, expr)
+	if checker_type_is_unknown(state.result_type) {
+		if state.inferred == nil || checker_type_is_unknown(state.inferred) {
+			state.inferred = result.type
+		}
+		return result
+	}
+	checker_check_cond_result_compatibility(ctx, result.type, state.result_type, checker_expr_range(expr))
+	return result
+}
+
+checker_check_cond_result_compatibility :: proc(
+	ctx: ^Checker_Context,
+	actual: ^Type,
+	expected: ^Type,
+	range: Range,
+) {
+	if checker_type_is_unknown(actual) || checker_type_is_unknown(expected) {
+		return
+	}
+	if ok, known := checker_type_assignment_compatible(ctx, actual, expected); known {
+		if !ok {
+			checker_add_diagnostic(
+				ctx,
+				.Incompatible_Assignment_Type,
+				range,
+				checker_type_mismatch_message(ctx, "COND branch result is not compatible", actual, expected),
+			)
+		}
+		return
+	}
+	actual_table := checker_type_is_table_like(ctx, actual)
+	expected_table := checker_type_is_table_like(ctx, expected)
+	actual_struct := checker_type_structure(actual) != nil
+	expected_struct := checker_type_structure(expected) != nil
+	actual_ref := checker_type_is_ref(actual)
+	expected_ref := checker_type_is_ref(expected)
+	if actual_table != expected_table ||
+	   actual_struct != expected_struct ||
+	   actual_ref != expected_ref {
+		checker_add_diagnostic(
+			ctx,
+			.Incompatible_Assignment_Type,
+			range,
+			checker_type_mismatch_message(ctx, "COND branch result is not compatible", actual, expected),
+		)
+	}
 }
 
 checker_check_new_constructor_expr :: proc(

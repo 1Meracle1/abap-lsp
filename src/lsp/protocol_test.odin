@@ -1472,6 +1472,51 @@ lsp_completion_case_template_expands_from_case_prefix :: proc(t: ^testing.T) {
 lsp_completion_expression_templates_expand_from_keyword_prefixes :: proc(t: ^testing.T) {
 	cases := [?]Completion_Template_Prefix_Test_Case {
 		{
+			prefix = "con",
+			label = "COND #( WHEN ... THEN ... ELSE ... )",
+			insert_text = "COND #( WHEN ${1:condition} THEN ${2:value} ELSE ${3:default} )$0",
+		},
+		{
+			prefix = "con",
+			label = "COND ...",
+			insert_text = "COND ${1:string}( WHEN ${2:condition} THEN ${3:value} ELSE ${4:default} )$0",
+		},
+		{
+			prefix = "con",
+			label = "COND ... LET ... IN",
+			insert_text = "COND ${1:string}( LET ${2:lv_value} = ${3:value} IN WHEN ${4:condition} THEN ${2:lv_value} ELSE ${5:default} )$0",
+		},
+		{
+			prefix = "conde",
+			label = "condense( val = ... )",
+			insert_text = "condense( val = ${1:lv_text} )$0",
+		},
+		{
+			prefix = "conde",
+			label = "condense( val = ... del = ... )",
+			insert_text = "condense( val = ${1:lv_text} del = ${2:space} )$0",
+		},
+		{
+			prefix = "conde",
+			label = "condense( val = ... from = ... to = ... )",
+			insert_text = "condense( val = ${1:lv_text} from = ${2:'_'} to = ${3:space} )$0",
+		},
+		{
+			prefix = "fin",
+			label = "find( val = ... sub = ... )",
+			insert_text = "find( val = ${1:lv_text} sub = ${2:'text'} )$0",
+		},
+		{
+			prefix = "fin",
+			label = "find( val = ... regex = ... )",
+			insert_text = "find( val = ${1:lv_text} regex = ${2:'pattern'} )$0",
+		},
+		{
+			prefix = "fin",
+			label = "find( val = ... sub = ... occ = ... )",
+			insert_text = "find( val = ${1:lv_text} sub = ${2:'text'} occ = ${3:1} )$0",
+		},
+		{
 			prefix = "fi",
 			label = "FILTER #( ... WHERE ... )",
 			insert_text = "FILTER #( ${1:itab} WHERE ${2:field} = ${3:lv_value} )$0",
@@ -1613,6 +1658,61 @@ lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t
 			prefix = "up",
 			label = "UPDATE ... SET ... WHERE",
 			insert_text = "UPDATE ${1:dbtab} SET ${2:field} = @${3:lv_value} WHERE ${4:key_field} = @${5:lv_key}.$0",
+		},
+		{
+			prefix = "cond",
+			label = "CONDENSE ...",
+			insert_text = "CONDENSE ${1:lv_text}.$0",
+		},
+		{
+			prefix = "cond",
+			label = "CONDENSE ... NO-GAPS",
+			insert_text = "CONDENSE ${1:lv_text} NO-GAPS.$0",
+		},
+		{
+			prefix = "find",
+			label = "FIND ... IN",
+			insert_text = "FIND ${1:'text'} IN ${2:lv_text}.$0",
+		},
+		{
+			prefix = "find",
+			label = "FIND FIRST OCCURRENCE OF ... IN",
+			insert_text = "FIND FIRST OCCURRENCE OF ${1:'text'} IN ${2:lv_text} MATCH OFFSET ${3:lv_offset} MATCH LENGTH ${4:lv_length}.$0",
+		},
+		{
+			prefix = "find",
+			label = "FIND ALL OCCURRENCES OF ... IN",
+			insert_text = "FIND ALL OCCURRENCES OF ${1:'text'} IN ${2:lv_text} MATCH COUNT ${3:lv_count}.$0",
+		},
+		{
+			prefix = "find",
+			label = "FIND REGEX ... IN",
+			insert_text = "FIND REGEX ${1:'pattern'} IN ${2:lv_text} MATCH OFFSET ${3:lv_offset} MATCH LENGTH ${4:lv_length}.$0",
+		},
+		{
+			prefix = "find",
+			label = "FIND REGEX ... IN TABLE",
+			insert_text = "FIND REGEX ${1:'pattern'} IN TABLE ${2:lt_text} MATCH LINE ${3:lv_line} MATCH OFFSET ${4:lv_offset} SUBMATCHES ${5:lv_match}.$0",
+		},
+		{
+			prefix = "find",
+			label = "FIND ALL OCCURRENCES OF REGEX ... IN TABLE ... RESULTS",
+			insert_text = "FIND ALL OCCURRENCES OF REGEX ${1:'pattern'} IN TABLE ${2:lt_text} RESULTS ${3:lt_results}.$0",
+		},
+		{
+			prefix = "find",
+			label = "FIND ... IN SECTION OFFSET ... LENGTH ... OF",
+			insert_text = "FIND ${1:'text'} IN SECTION OFFSET ${2:lv_offset} LENGTH ${3:lv_length} OF ${4:lv_text} MATCH OFFSET ${5:lv_match_offset}.$0",
+		},
+		{
+			prefix = "type-",
+			label = "TYPE-POOLS ...",
+			insert_text = "TYPE-POOLS ${1:abap}.$0",
+		},
+		{
+			prefix = "type-",
+			label = "TYPE-POOLS: ...",
+			insert_text = "TYPE-POOLS: ${1:abap}, ${2:icon}.$0",
 		},
 		{
 			prefix = "fi",
@@ -1895,6 +1995,51 @@ lsp_completion_begin_end_statement_templates_expand_from_keyword_prefixes :: pro
 			prefix = "ty",
 			label = "TYPES: BEGIN OF ... END OF",
 			insert_text = "TYPES: BEGIN OF ${1:ty_line},\n         ${2:field} TYPE ${3:string},\n       END OF ${1:ty_line}.$0",
+		},
+		{
+			prefix = "ty",
+			label = "TYPES ... TYPE",
+			insert_text = "TYPES ${1:ty_value} TYPE ${2:string}.$0",
+		},
+		{
+			prefix = "ty",
+			label = "TYPES ... LIKE",
+			insert_text = "TYPES ${1:ty_value} LIKE ${2:sy-datum}.$0",
+		},
+		{
+			prefix = "ty",
+			label = "TYPES ... TYPE c LENGTH",
+			insert_text = "TYPES ${1:ty_text} TYPE c LENGTH ${2:10}.$0",
+		},
+		{
+			prefix = "ty",
+			label = "TYPES ... TYPE p LENGTH DECIMALS",
+			insert_text = "TYPES ${1:ty_amount} TYPE p LENGTH ${2:8} DECIMALS ${3:2}.$0",
+		},
+		{
+			prefix = "ty",
+			label = "TYPES ... TYPE REF TO",
+			insert_text = "TYPES ${1:ty_ref} TYPE REF TO ${2:object}.$0",
+		},
+		{
+			prefix = "ty",
+			label = "TYPES ... TYPE STANDARD TABLE OF",
+			insert_text = "TYPES ${1:ty_table} TYPE STANDARD TABLE OF ${2:string} WITH EMPTY KEY.$0",
+		},
+		{
+			prefix = "ty",
+			label = "TYPES ... TYPE SORTED TABLE OF",
+			insert_text = "TYPES ${1:ty_table} TYPE SORTED TABLE OF ${2:string} WITH UNIQUE KEY ${3:table_line}.$0",
+		},
+		{
+			prefix = "ty",
+			label = "TYPES ... TYPE HASHED TABLE OF",
+			insert_text = "TYPES ${1:ty_table} TYPE HASHED TABLE OF ${2:string} WITH UNIQUE KEY ${3:table_line}.$0",
+		},
+		{
+			prefix = "ty",
+			label = "TYPES ... TYPE RANGE OF",
+			insert_text = "TYPES ${1:ty_range} TYPE RANGE OF ${2:sy-datum}.$0",
 		},
 		{
 			prefix = "da",
@@ -2900,6 +3045,27 @@ lsp_completion_case_and_expression_templates_sort_after_matching_symbols :: proc
 			template_sort = "2:case ... when ... when others",
 		},
 		{
+			source = "DATA cond_candidate TYPE i.\nWRITE con",
+			symbol_label = "cond_candidate",
+			template_label = "COND #( WHEN ... THEN ... ELSE ... )",
+			symbol_sort = "1:cond_candidate",
+			template_sort = "2:cond #( when ... then ... else ... )",
+		},
+		{
+			source = "DATA condense_candidate TYPE i.\nWRITE conde",
+			symbol_label = "condense_candidate",
+			template_label = "condense( val = ... )",
+			symbol_sort = "1:condense_candidate",
+			template_sort = "2:condense( val = ... )",
+		},
+		{
+			source = "DATA find_candidate TYPE i.\nWRITE fin",
+			symbol_label = "find_candidate",
+			template_label = "find( val = ... sub = ... )",
+			symbol_sort = "1:find_candidate",
+			template_sort = "2:find( val = ... sub = ... )",
+		},
+		{
 			source = "DATA filter_candidate TYPE i.\nWRITE fi",
 			symbol_label = "filter_candidate",
 			template_label = "FILTER #( ... WHERE ... )",
@@ -2992,11 +3158,32 @@ lsp_completion_common_statement_templates_sort_after_matching_symbols :: proc(t:
 			template_sort = "2:update ... set ... where",
 		},
 		{
+			source = "DATA condense_candidate TYPE i.\ncond",
+			symbol_label = "condense_candidate",
+			template_label = "CONDENSE ...",
+			symbol_sort = "1:condense_candidate",
+			template_sort = "2:condense ...",
+		},
+		{
+			source = "DATA find_candidate TYPE i.\nfind",
+			symbol_label = "find_candidate",
+			template_label = "FIND ... IN",
+			symbol_sort = "1:find_candidate",
+			template_sort = "2:find ... in",
+		},
+		{
 			source = "DATA types_candidate TYPE i.\nty",
 			symbol_label = "types_candidate",
 			template_label = "TYPES: BEGIN OF ... END OF",
 			symbol_sort = "1:types_candidate",
 			template_sort = "2:types: begin of ... end of",
+		},
+		{
+			source = "DATA type_candidate TYPE i.\ntype",
+			symbol_label = "type_candidate",
+			template_label = "TYPE-POOLS ...",
+			symbol_sort = "1:type_candidate",
+			template_sort = "2:type-pools ...",
 		},
 		{
 			source = "DATA data_candidate TYPE i.\nda",
@@ -3227,26 +3414,39 @@ WRITE ca`
 
 @(test)
 lsp_completion_common_statement_templates_do_not_match_expression_prefixes :: proc(t: ^testing.T) {
-	uri := "file:///D:/repo/completion_common_template_expression.abap"
-	source := `DATA message_value TYPE i.
-WRITE me`
-	state := lsp_test_state_with_open_document(uri, source)
-	defer lsp_test_state_destroy(&state)
-
-	offset := len(source)
-	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
-	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
-	testing.expect(t, snapshot_ok)
-	if !snapshot_ok {
-		return
+	cases := [?]Completion_Template_Prefix_Test_Case {
+		{prefix = "me", label = "MESSAGE ... TYPE"},
+		{prefix = "me", label = "METHODS ..."},
+		{prefix = "cond", label = "CONDENSE ..."},
+		{prefix = "find", label = "FIND ... IN"},
+		{prefix = "type", label = "TYPE-POOLS ..."},
+		{prefix = "type", label = "TYPES ... TYPE"},
 	}
 
-	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
-	_, item_ok := lsp_test_find_completion_item(items, "MESSAGE ... TYPE")
-	_, methods_ok := lsp_test_find_completion_item(items, "METHODS ...")
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_common_template_expression_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		source := strings.concatenate(
+			{"DATA message_value TYPE i.\nWRITE ", test_case.prefix},
+			context.temp_allocator,
+		)
+		state := lsp_test_state_with_open_document(uri, source)
+		defer lsp_test_state_destroy(&state)
 
-	testing.expect(t, !item_ok)
-	testing.expect(t, !methods_ok)
+		offset := len(source)
+		params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		_, item_ok := lsp_test_find_completion_item(items, test_case.label)
+		testing.expect(t, !item_ok)
+	}
 }
 
 @(test)
@@ -3279,6 +3479,21 @@ WRITE da`
 @(test)
 lsp_completion_expression_templates_do_not_match_selector_prefixes :: proc(t: ^testing.T) {
 	cases := [?]Completion_Template_Prefix_Test_Case {
+		{
+			prefix = "cond",
+			label = "COND #( WHEN ... THEN ... ELSE ... )",
+			insert_text = "",
+		},
+		{
+			prefix = "conde",
+			label = "condense( val = ... )",
+			insert_text = "",
+		},
+		{
+			prefix = "find",
+			label = "find( val = ... sub = ... )",
+			insert_text = "",
+		},
 		{
 			prefix = "fi",
 			label = "FILTER #( ... WHERE ... )",

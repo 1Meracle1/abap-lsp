@@ -88,6 +88,12 @@ BUILTIN_PROC_DEC_FLOAT_ROUNDING_PARAMS :: []Builtin_Proc_Param {
 	{"prec", "i"},
 	{"mode", "data"},
 }
+BUILTIN_PROC_CONDENSE_PARAMS :: []Builtin_Proc_Param {
+	{"val", "string"},
+	{"del", "string"},
+	{"from", "string"},
+	{"to", "string"},
+}
 BUILTIN_PROC_SUBSTRING_MATCH_PARAMS :: []Builtin_Proc_Param {
 	{"val", "string"},
 	{"sub", "string"},
@@ -141,10 +147,10 @@ BUILTIN_PROCS :: []Builtin_Proc_Metadata {
 	{id = .Substring_Before, name = "substring_before", params = BUILTIN_PROC_SUBSTRING_MATCH_PARAMS, return_type = "string", docs = "Returns the text before a substring or regular-expression match.", supports_named_args = true},
 	{id = .Substring_After, name = "substring_after", params = BUILTIN_PROC_SUBSTRING_MATCH_PARAMS, return_type = "string", docs = "Returns the text after a substring or regular-expression match.", supports_named_args = true},
 	{id = .Shift_Left, name = "shift_left", params = []Builtin_Proc_Param{{"val", "string"}, {"places", "i"}, {"circular", "abap_bool"}, {"sub", "string"}}, return_type = "string", docs = "Returns a text value shifted left.", supports_named_args = true},
-	{id = .Condense, name = "condense", params = []Builtin_Proc_Param{{"val", "string"}, {"del", "string"}, {"from", "string"}, {"to", "string"}}, return_type = "string", docs = "Returns a condensed character string.", supports_named_args = true},
+	{id = .Condense, name = "condense", params = BUILTIN_PROC_CONDENSE_PARAMS, return_type = "string", docs = "Returns a condensed character string.", supports_named_args = true},
 	{id = .Replace, name = "replace", params = []Builtin_Proc_Param{{"val", "string"}, {"sub", "string"}, {"regex", "string"}, {"with", "string"}, {"occ", "i"}, {"case", "abap_bool"}}, return_type = "string", docs = "Returns a character string with matching occurrences replaced.", supports_named_args = true},
 	{id = .Matches, name = "matches", params = []Builtin_Proc_Param{{"val", "string"}, {"regex", "string"}, {"case", "abap_bool"}}, return_type = "abap_bool", docs = "Predicate function: returns whether a text value matches a regular expression.", supports_named_args = true},
-	{id = .Find, name = "find", params = []Builtin_Proc_Param{{"val", "string"}, {"sub", "string"}, {"regex", "string"}, {"occ", "i"}, {"case", "abap_bool"}}, return_type = "i", docs = "Returns the offset of a substring or regular-expression match in a text value.", supports_named_args = true},
+	{id = .Find, name = "find", params = BUILTIN_PROC_SUBSTRING_MATCH_PARAMS, return_type = "i", docs = "Returns the offset of a substring or regular-expression match in a text value.", supports_named_args = true},
 	{id = .Repeat, name = "repeat", params = []Builtin_Proc_Param{{"val", "string"}, {"occ", "i"}}, return_type = "string", docs = "Returns a string containing `val` repeated `occ` times.", supports_named_args = true},
 	{id = .Escape, name = "escape", params = []Builtin_Proc_Param{{"val", "string"}, {"format", "data"}}, return_type = "string", docs = "Returns a character string escaped for the requested target format.", supports_named_args = true},
 	{id = .Reverse, name = "reverse", params = []Builtin_Proc_Param{{"val", "string"}}, return_type = "string", docs = "Returns a character string with its characters in reverse order.", supports_named_args = true},
@@ -159,20 +165,20 @@ BUILTIN_PROCS :: []Builtin_Proc_Metadata {
 	{id = .Concat_Lines_Of, name = "concat_lines_of", params = []Builtin_Proc_Param{{"table", "data"}, {"sep", "string"}}, return_type = "string", docs = "Concatenates the rows of an internal table into one character string.", supports_named_args = true},
 }
 
-checker_builtin_proc_metadata :: proc(id: Builtin_Proc_Id) -> (^Builtin_Proc_Metadata, bool) {
-	for &metadata in BUILTIN_PROCS {
+checker_builtin_proc_metadata :: proc(id: Builtin_Proc_Id) -> (Builtin_Proc_Metadata, bool) {
+	for metadata in BUILTIN_PROCS {
 		if metadata.id == id {
-			return &metadata, true
+			return metadata, true
 		}
 	}
-	return nil, false
+	return {}, false
 }
 
-checker_builtin_proc_metadata_by_name :: proc(name: string) -> (^Builtin_Proc_Metadata, bool) {
-	for &metadata in BUILTIN_PROCS {
+checker_builtin_proc_metadata_by_name :: proc(name: string) -> (Builtin_Proc_Metadata, bool) {
+	for metadata in BUILTIN_PROCS {
 		if strings.equal_fold(metadata.name, name) {
-			return &metadata, true
+			return metadata, true
 		}
 	}
-	return nil, false
+	return {}, false
 }

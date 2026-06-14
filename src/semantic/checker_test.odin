@@ -307,12 +307,40 @@ root_semantic_builtin_registry_registers_project_owned_entities :: proc(t: ^test
 		testing.expect_value(t, strlen.type.base.name, "i")
 	}
 
+	find_builtin, find_builtin_ok := checker_lookup_builtin_entity(&checker, .Routine, "find")
+	testing.expect(t, find_builtin_ok)
+	if find_builtin_ok {
+		payload, payload_ok := find_builtin.payload.(^Entity_Builtin_Payload)
+		testing.expect(t, payload_ok)
+		if payload_ok {
+			testing.expect_value(t, Builtin_Proc_Id(payload.id), Builtin_Proc_Id.Find)
+		}
+		testing.expect(t, find_builtin.type != nil)
+		testing.expect(t, find_builtin.type.base != nil)
+		testing.expect_value(t, find_builtin.type.base.name, "i")
+	}
+
 	nmin, nmin_ok := checker_builtin_proc_metadata_by_name("nmin")
 	testing.expect(t, nmin_ok)
 	if nmin_ok {
 		testing.expect_value(t, len(nmin.params), 9)
 		testing.expect_value(t, nmin.params[0].name, "val1")
 		testing.expect(t, nmin.supports_named_args)
+	}
+
+	find, find_ok := checker_builtin_proc_metadata_by_name("find")
+	testing.expect(t, find_ok)
+	if find_ok {
+		testing.expect_value(t, len(find.params), 5)
+		testing.expect_value(t, find.params[3].name, "occ")
+		testing.expect_value(t, find.return_type, "i")
+	}
+	find_by_id, find_by_id_ok := checker_builtin_proc_metadata(.Find)
+	testing.expect(t, find_by_id_ok)
+	if find_by_id_ok {
+		testing.expect_value(t, find_by_id.name, "find")
+		testing.expect_value(t, len(find_by_id.params), 5)
+		testing.expect_value(t, find_by_id.params[3].name, "occ")
 	}
 }
 
@@ -2599,6 +2627,146 @@ SPLIT 'a,b' AT ',' INTO gc_text.`
 	testing.expect(t, seen_scalar_target)
 	testing.expect(t, seen_missing_source)
 	testing.expect(t, seen_missing_target)
+}
+
+@(test)
+root_semantic_checker_accepts_find_condense_cond_and_type_forms :: proc(t: ^testing.T) {
+	source := `TYPE-POOLS abap.
+TYPES ty_text TYPE string.
+TYPES ty_ref TYPE REF TO object.
+TYPES ty_char TYPE c LENGTH 10.
+TYPES ty_amount TYPE p LENGTH 8 DECIMALS 2.
+TYPES ty_table TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+TYPES ty_sorted TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line.
+TYPES ty_hashed TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line.
+TYPES ty_range TYPE RANGE OF string.
+DATA lv_text TYPE ty_text.
+DATA lv_condensed TYPE string.
+DATA lv_offset TYPE i.
+DATA lv_length TYPE i.
+DATA lv_count TYPE i.
+DATA lr_ref TYPE ty_ref.
+DATA lv_code TYPE ty_char.
+DATA lv_amount TYPE ty_amount.
+DATA lt_text TYPE ty_table.
+DATA lt_results TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lt_range TYPE ty_range.
+CONDENSE lv_text.
+CONDENSE lv_text NO-GAPS.
+FIND FIRST OCCURRENCE OF 'A' IN lv_text MATCH OFFSET lv_offset MATCH LENGTH lv_length.
+FIND ALL OCCURRENCES OF REGEX 'A' IN TABLE lt_text MATCH COUNT lv_count RESULTS lt_results.
+lv_condensed = condense( val = lv_text del = ' ' ).
+lv_offset = find( val = lv_text sub = 'A' occ = 1 ).
+lv_condensed = COND #( WHEN lv_offset = 0 THEN lv_text ELSE lv_condensed ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://find_condense_cond_types_valid.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	type_names := [?]string{"ty_text", "ty_ref", "ty_char", "ty_amount", "ty_table", "ty_sorted", "ty_hashed", "ty_range"}
+	for name in type_names {
+		testing.expect(t, checker_test_lookup(t, &project, file.root_scope, .Type, name, .Type_Def) != nil)
+	}
+	value_names := [?]string{"lv_text", "lv_condensed", "lv_offset", "lv_length", "lv_count", "lt_text", "lt_results"}
+	for name in value_names {
+		entity := checker_test_lookup(t, &project, file.root_scope, .Value, name, .Variable)
+		testing.expect(t, entity != nil && .Used in entity.flags)
+	}
+	testing.expect(t, checker_test_lookup(t, &project, file.root_scope, .Value, "lr_ref", .Variable) != nil)
+	testing.expect(t, checker_test_lookup(t, &project, file.root_scope, .Value, "lv_code", .Variable) != nil)
+	testing.expect(t, checker_test_lookup(t, &project, file.root_scope, .Value, "lv_amount", .Variable) != nil)
+	testing.expect(t, checker_test_lookup(t, &project, file.root_scope, .Value, "lt_range", .Variable) != nil)
+}
+
+@(test)
+root_semantic_checker_diagnoses_invalid_find_condense_cond_and_builtin_forms :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lv_num TYPE i.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+CONSTANTS gc_text TYPE string VALUE ''.
+CONSTANTS gc_index TYPE i VALUE 0.
+CONDENSE lt_text.
+CONDENSE gc_text.
+FIND lv_num IN lv_text.
+FIND 'A' IN lt_text.
+FIND 'A' IN TABLE lv_text.
+FIND 'A' IN lv_text MATCH OFFSET gc_index.
+FIND 'A' IN lv_text MATCH COUNT lv_text.
+lv_num = COND i( ELSE 1 ).
+lv_num = COND i( ELSE 1 WHEN lv_num = 1 THEN lv_num ).
+lv_num = COND i( WHEN lv_num = 1 THEN lt_text ELSE lv_num ).
+lv_text = condense( val = lt_text ).
+lv_num = find( val = lv_text bogus = lv_text ).
+lv_num = find( val = lv_text occ = lv_text ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://find_condense_cond_types_invalid.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "CONDENSE target is not character-like"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "CONDENSE target is not writable"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "FIND pattern is not character-like or byte-like"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "FIND target is not character-like or byte-like"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "FIND IN TABLE target is not an internal table"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "FIND MATCH target is not writable"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "FIND numeric operand is not integer-compatible"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "COND requires at least one WHEN clause"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "COND ELSE requires a preceding WHEN clause"),
+		2,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "COND WHEN must precede ELSE"),
+		1,
+	)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Named_Parameter), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Argument_Type), 2)
+
+	seen_cond_result := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Incompatible_Assignment_Type &&
+		   strings.contains(diagnostic.message, "COND branch result is not compatible") {
+			seen_cond_result = true
+		}
+	}
+	testing.expect(t, seen_cond_result)
 }
 
 @(test)

@@ -173,7 +173,7 @@ checker_check_stmt :: proc(
 	case ^ast.Split_Stmt:
 		checker_check_split_stmt(ctx, n)
 	case ^ast.Condense_Stmt:
-		checker_check_expr(ctx, n.target, .Value, true)
+		checker_check_condense_stmt(ctx, n)
 	case ^ast.Replace_Stmt:
 		checker_check_expr(ctx, n.pattern)
 		checker_check_expr(ctx, n.target, .Value, true)
@@ -188,16 +188,7 @@ checker_check_stmt :: proc(
 		checker_check_expr(ctx, n.places)
 		checker_check_expr(ctx, n.delete_pattern)
 	case ^ast.Find_Stmt:
-		checker_check_expr(ctx, n.pattern)
-		checker_check_expr(ctx, n.target)
-		checker_check_expr(ctx, n.section_offset)
-		checker_check_expr(ctx, n.section_length)
-		checker_check_expr(ctx, n.match_offset, .Value, true)
-		checker_check_expr(ctx, n.match_length, .Value, true)
-		checker_check_expr(ctx, n.match_line, .Value, true)
-		checker_check_expr(ctx, n.match_count, .Value, true)
-		checker_check_expr(ctx, n.results, .Value, true)
-		checker_check_expr_list(ctx, n.submatches[:], .Value, true)
+		checker_check_find_stmt(ctx, n)
 	case ^ast.Search_Stmt:
 		checker_check_expr(ctx, n.target)
 		checker_check_expr(ctx, n.pattern)
@@ -497,6 +488,10 @@ checker_check_split_source :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) -> Op
 }
 
 checker_split_source_type_supported :: proc(ctx: ^Checker_Context, typ: ^Type) -> (bool, bool) {
+	return checker_text_or_byte_type_supported(ctx, typ)
+}
+
+checker_text_or_byte_type_supported :: proc(ctx: ^Checker_Context, typ: ^Type) -> (bool, bool) {
 	if checker_type_is_unknown(typ) {
 		return false, false
 	}
@@ -510,6 +505,27 @@ checker_split_source_type_supported :: proc(ctx: ^Checker_Context, typ: ^Type) -
 	switch name {
 	case "c", "n", "d", "t", "string", "abap_bool", "x", "xstring", "clike", "csequence", "xsequence":
 		return true, true
+	case "any", "data", "simple":
+		return false, false
+	}
+	return false, true
+}
+
+checker_character_like_type_supported :: proc(ctx: ^Checker_Context, typ: ^Type) -> (bool, bool) {
+	if checker_type_is_unknown(typ) {
+		return false, false
+	}
+	if checker_type_structure(typ) != nil || checker_type_is_table_like(ctx, typ) || checker_type_is_ref(typ) {
+		return false, true
+	}
+	name, ok := checker_type_builtin_name(ctx, typ)
+	if !ok {
+		return false, false
+	}
+	if checker_builtin_clike_name(name) || name == "clike" || name == "csequence" {
+		return true, true
+	}
+	switch name {
 	case "any", "data", "simple":
 		return false, false
 	}
@@ -550,6 +566,148 @@ checker_check_split_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, targe
 			checker_expr_range(expr),
 			"SPLIT INTO target is not writable",
 		)
+	}
+}
+
+checker_check_condense_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Condense_Stmt) {
+	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	checker_check_condense_target(ctx, stmt.target, target)
+}
+
+checker_check_condense_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"CONDENSE target is not writable",
+		)
+		return
+	}
+	if ok, known := checker_character_like_type_supported(ctx, target.type); known && !ok {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"CONDENSE target is not character-like",
+		)
+	}
+}
+
+checker_check_find_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Find_Stmt) {
+	checker_check_find_text_operand(ctx, stmt.pattern, "FIND pattern is not character-like or byte-like")
+	target := checker_check_expr(ctx, stmt.target)
+	checker_check_find_target(ctx, stmt.target, target, stmt.in_table)
+	checker_check_find_integer_value(ctx, stmt.section_offset)
+	checker_check_find_integer_value(ctx, stmt.section_length)
+	checker_check_find_integer_target(ctx, stmt.match_offset)
+	checker_check_find_integer_target(ctx, stmt.match_length)
+	checker_check_find_integer_target(ctx, stmt.match_line)
+	checker_check_find_integer_target(ctx, stmt.match_count)
+	checker_check_find_write_target(ctx, stmt.results, nil, "FIND RESULTS target is not writable")
+	for submatch in stmt.submatches {
+		checker_check_find_write_target(ctx, submatch, nil, "FIND SUBMATCHES target is not writable")
+	}
+}
+
+checker_check_find_target :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	target: Operand,
+	in_table: bool,
+) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if in_table {
+		if !checker_type_is_table_like(ctx, target.type) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(expr),
+				"FIND IN TABLE target is not an internal table",
+			)
+		}
+		return
+	}
+	if ok, known := checker_text_or_byte_type_supported(ctx, target.type); known && !ok {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"FIND target is not character-like or byte-like",
+		)
+	}
+}
+
+checker_check_find_text_operand :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, message: string) {
+	operand := checker_check_expr(ctx, expr)
+	if checker_check_unresolved_variable_operand(ctx, expr, operand) || checker_type_is_unknown(operand.type) {
+		return
+	}
+	if ok, known := checker_text_or_byte_type_supported(ctx, operand.type); known && !ok {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(expr), message)
+	}
+}
+
+checker_check_find_integer_value :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) {
+	if expr == nil {
+		return
+	}
+	int_type := checker_builtin_type_from_name(ctx.checker, "i")
+	local := ctx^
+	local.type_hint = int_type
+	local.type_hint_expr = expr
+	operand := checker_check_expr(&local, expr)
+	checker_check_find_integer_type(ctx, operand.type, checker_expr_range(expr))
+}
+
+checker_check_find_integer_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) {
+	int_type := checker_builtin_type_from_name(ctx.checker, "i")
+	target := checker_check_find_write_target(ctx, expr, int_type, "FIND MATCH target is not writable")
+	checker_check_find_integer_type(ctx, target.type, checker_expr_range(expr))
+}
+
+checker_check_find_write_target :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	type_hint: ^Type,
+	message: string,
+) -> Operand {
+	if expr == nil {
+		return checker_invalid_operand()
+	}
+	local := ctx^
+	local.type_hint = type_hint
+	local.type_hint_expr = expr
+	target := checker_check_expr(&local, expr, .Value, true)
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return target
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(expr), message)
+	}
+	return target
+}
+
+checker_check_find_integer_type :: proc(ctx: ^Checker_Context, typ: ^Type, range: Range) {
+	if checker_type_is_unknown(typ) {
+		return
+	}
+	if checker_type_structure(typ) != nil || checker_type_is_table_like(ctx, typ) || checker_type_is_ref(typ) {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, range, "FIND numeric operand is not integer-compatible")
+		return
+	}
+	name, ok := checker_type_builtin_name(ctx, typ)
+	if !ok {
+		return
+	}
+	group := checker_scalar_group(name)
+	if group != .Numeric && name != "n" {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, range, "FIND numeric operand is not integer-compatible")
 	}
 }
 
@@ -1325,12 +1483,218 @@ checker_check_call_expr_arguments :: proc(
 		return
 	}
 	if callee.entity == nil || callee.entity.kind == .Builtin {
+		if checker_check_builtin_call_expr_arguments(ctx, callee.entity, args[:], call.range) {
+			return
+		}
 		for arg in args {
 			checker_check_call_argument_value(ctx, arg, nil, false)
 		}
 		return
 	}
 	checker_check_routine_call_arguments(ctx, callee.entity, args[:], call.range)
+}
+
+checker_check_builtin_call_expr_arguments :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	args: []Checker_Call_Argument,
+	call_range: Range,
+) -> bool {
+	_ = call_range
+	if entity == nil || entity.kind != .Builtin {
+		return false
+	}
+	payload, ok := entity.payload.(^Entity_Builtin_Payload)
+	if !ok || payload == nil {
+		return false
+	}
+	id := Builtin_Proc_Id(payload.id)
+	if id != .Condense && id != .Find {
+		return false
+	}
+	checker_check_builtin_id_arguments(ctx, id, args)
+	return true
+}
+
+checker_check_builtin_id_arguments :: proc(
+	ctx: ^Checker_Context,
+	id: Builtin_Proc_Id,
+	args: []Checker_Call_Argument,
+) {
+	seen := make(map[string]bool, len(args), context.temp_allocator)
+	positional_index := 0
+	for arg in args {
+		param: Builtin_Proc_Param
+		param_ok := false
+		if arg.name != "" {
+			param, param_ok = checker_builtin_find_named_parameter(id, arg.name)
+			if !param_ok {
+				checker_check_call_argument_value(ctx, arg, nil, false)
+				checker_add_diagnostic(
+					ctx,
+					.Unknown_Named_Parameter,
+					arg.name_range,
+					checker_unknown_named_parameter_message(ctx, nil, arg, .Unknown),
+				)
+				continue
+			}
+		} else {
+			param, param_ok = checker_builtin_positional_parameter(id, positional_index)
+			positional_index += 1
+			if !param_ok {
+				checker_check_call_argument_value(ctx, arg, nil, false)
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.value_range,
+					"builtin function has too many arguments",
+				)
+				continue
+			}
+		}
+
+		if seen[param.name] {
+			checker_check_builtin_parameter_argument(ctx, arg, param)
+			duplicate_range := arg.name_range
+			if duplicate_range.end <= duplicate_range.start {
+				duplicate_range = arg.value_range
+			}
+			checker_add_diagnostic(ctx, .Duplicate_Named_Parameter, duplicate_range, "duplicate named parameter")
+			continue
+		}
+		seen[param.name] = true
+		checker_check_builtin_parameter_argument(ctx, arg, param)
+	}
+}
+
+checker_builtin_find_named_parameter :: proc(
+	id: Builtin_Proc_Id,
+	name: string,
+) -> (Builtin_Proc_Param, bool) {
+	#partial switch id {
+	case .Condense:
+		if strings.equal_fold(name, "val") {
+			return Builtin_Proc_Param{name = "val", type_name = "string"}, true
+		}
+		if strings.equal_fold(name, "del") {
+			return Builtin_Proc_Param{name = "del", type_name = "string"}, true
+		}
+		if strings.equal_fold(name, "from") {
+			return Builtin_Proc_Param{name = "from", type_name = "string"}, true
+		}
+		if strings.equal_fold(name, "to") {
+			return Builtin_Proc_Param{name = "to", type_name = "string"}, true
+		}
+	case .Find:
+		if strings.equal_fold(name, "val") {
+			return Builtin_Proc_Param{name = "val", type_name = "string"}, true
+		}
+		if strings.equal_fold(name, "sub") {
+			return Builtin_Proc_Param{name = "sub", type_name = "string"}, true
+		}
+		if strings.equal_fold(name, "regex") {
+			return Builtin_Proc_Param{name = "regex", type_name = "string"}, true
+		}
+		if strings.equal_fold(name, "occ") {
+			return Builtin_Proc_Param{name = "occ", type_name = "i"}, true
+		}
+		if strings.equal_fold(name, "case") {
+			return Builtin_Proc_Param{name = "case", type_name = "abap_bool"}, true
+		}
+	case:
+	}
+	return {}, false
+}
+
+checker_builtin_positional_parameter :: proc(
+	id: Builtin_Proc_Id,
+	index: int,
+) -> (Builtin_Proc_Param, bool) {
+	#partial switch id {
+	case .Condense:
+		switch index {
+		case 0:
+			return Builtin_Proc_Param{name = "val", type_name = "string"}, true
+		case 1:
+			return Builtin_Proc_Param{name = "del", type_name = "string"}, true
+		case 2:
+			return Builtin_Proc_Param{name = "from", type_name = "string"}, true
+		case 3:
+			return Builtin_Proc_Param{name = "to", type_name = "string"}, true
+		}
+	case .Find:
+		switch index {
+		case 0:
+			return Builtin_Proc_Param{name = "val", type_name = "string"}, true
+		case 1:
+			return Builtin_Proc_Param{name = "sub", type_name = "string"}, true
+		case 2:
+			return Builtin_Proc_Param{name = "regex", type_name = "string"}, true
+		case 3:
+			return Builtin_Proc_Param{name = "occ", type_name = "i"}, true
+		case 4:
+			return Builtin_Proc_Param{name = "case", type_name = "abap_bool"}, true
+		}
+	case:
+	}
+	return {}, false
+}
+
+checker_check_builtin_parameter_argument :: proc(
+	ctx: ^Checker_Context,
+	arg: Checker_Call_Argument,
+	param: Builtin_Proc_Param,
+) {
+	formal_type := checker_builtin_type_from_name(ctx.checker, param.type_name)
+	actual := checker_check_call_argument_value(ctx, arg, formal_type, false)
+	if checker_literal_argument_compatible(ctx, arg.value, formal_type) {
+		return
+	}
+	checker_check_builtin_argument_compatibility(ctx, actual.type, formal_type, arg.value_range)
+}
+
+checker_check_builtin_argument_compatibility :: proc(
+	ctx: ^Checker_Context,
+	actual: ^Type,
+	expected: ^Type,
+	range: Range,
+) {
+	if ok, known := checker_type_argument_compatible(ctx, actual, expected); known {
+		if !ok {
+			checker_add_diagnostic(
+				ctx,
+				.Incompatible_Argument_Type,
+				range,
+				checker_type_mismatch_message(ctx, "incompatible argument", actual, expected),
+			)
+		}
+		return
+	}
+	if checker_builtin_scalar_argument_category_mismatch(ctx, actual, expected) {
+		checker_add_diagnostic(
+			ctx,
+			.Incompatible_Argument_Type,
+			range,
+			checker_type_mismatch_message(ctx, "incompatible argument", actual, expected),
+		)
+	}
+}
+
+checker_builtin_scalar_argument_category_mismatch :: proc(
+	ctx: ^Checker_Context,
+	actual: ^Type,
+	expected: ^Type,
+) -> bool {
+	if checker_type_is_unknown(actual) || checker_type_is_unknown(expected) {
+		return false
+	}
+	expected_name, expected_ok := checker_type_builtin_name(ctx, expected)
+	if !expected_ok || checker_generic_builtin_type_name(expected_name) {
+		return false
+	}
+	return checker_type_structure(actual) != nil ||
+	       checker_type_is_table_like(ctx, actual) ||
+	       checker_type_is_ref(actual)
 }
 
 checker_collect_call_expr_argument :: proc(
