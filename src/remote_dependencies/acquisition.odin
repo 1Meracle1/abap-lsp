@@ -149,29 +149,33 @@ resolve_requests :: proc(
 		)
 
 		remaining = remaining_requests(normalized[:], resolved, context.temp_allocator)
-		resolve_source_phase(
-			&result,
-			remaining[:],
-			config,
-			state,
-			.ADT,
-			pool,
-			&resolved,
-			allocator,
-		)
+		if !config.disable_adt_candidate_fetch {
+			resolve_source_phase(
+				&result,
+				remaining[:],
+				config,
+				state,
+				.ADT,
+				pool,
+				&resolved,
+				allocator,
+			)
+		}
 	} else {
-		resolve_source_phase(
-			&result,
-			remaining[:],
-			config,
-			state,
-			.ADT,
-			pool,
-			&resolved,
-			allocator,
-		)
+		if !config.disable_adt_candidate_fetch {
+			resolve_source_phase(
+				&result,
+				remaining[:],
+				config,
+				state,
+				.ADT,
+				pool,
+				&resolved,
+				allocator,
+			)
 
-		remaining = remaining_requests(normalized[:], resolved, context.temp_allocator)
+			remaining = remaining_requests(normalized[:], resolved, context.temp_allocator)
+		}
 		resolve_source_phase(
 			&result,
 			remaining[:],
@@ -1575,7 +1579,7 @@ adt_artifacts :: proc(
 	allocator: mem.Allocator,
 ) -> [dynamic]Artifact {
 	out := make([dynamic]Artifact, 0, len(requests), allocator)
-	if config.adt_client == nil {
+	if config.adt_client == nil || config.disable_adt_candidate_fetch {
 		return out
 	}
 	candidates := unseen_requests(
@@ -1860,7 +1864,9 @@ typepool_artifacts :: proc(
 	allocator: mem.Allocator,
 ) -> [dynamic]Artifact {
 	out := make([dynamic]Artifact, 0, 2, allocator)
-	if config.adt_client == nil || !adt.typepool_resolver_enabled(config.adt_client) {
+	if config.disable_adt_candidate_fetch ||
+	   config.adt_client == nil ||
+	   !adt.typepool_resolver_enabled(config.adt_client) {
 		return out
 	}
 	candidates := unseen_requests(

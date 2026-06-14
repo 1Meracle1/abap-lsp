@@ -209,6 +209,19 @@ lsp_default_workspace_options_enable_dependency_resolution_diagnostics :: proc(t
 
 	testing.expect(t, .Enable_ADT in options.flags)
 	testing.expect(t, .Enable_Dependency_Diagnostics in options.flags)
+	testing.expect(t, !(.Disable_ADT_Dependency_Fetch in options.flags))
+}
+
+@(test)
+server_init_accepts_custom_workspace_options :: proc(t: ^testing.T) {
+	options := server_default_workspace_options()
+	options.flags += {.Disable_ADT_Dependency_Fetch}
+
+	state: Server_State
+	server_init_with_options(&state, context.allocator, options)
+	defer server_destroy(&state)
+
+	testing.expect(t, .Disable_ADT_Dependency_Fetch in state.options.flags)
 }
 
 @(test)

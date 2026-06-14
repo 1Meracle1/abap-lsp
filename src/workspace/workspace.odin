@@ -11,6 +11,7 @@ import "core:strings"
 Option_Flag :: enum {
 	Enable_ADT,
 	Enable_Dependency_Diagnostics,
+	Disable_ADT_Dependency_Fetch,
 }
 Option_Flags :: bit_set[Option_Flag]
 

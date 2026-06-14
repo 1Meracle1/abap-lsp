@@ -377,9 +377,10 @@ syntax_diagnostics_from_parse_errors :: proc(
 
 remote_dependency_config_from_workspace :: proc(workspace: ^Workspace) -> remote_deps.Config {
 	config := remote_deps.Config {
-		local_export_roots = workspace.local_export_roots[:],
-		cache_any_profile  = !workspace.has_manifest,
-		source_order       = .Local_First,
+		local_export_roots          = workspace.local_export_roots[:],
+		cache_any_profile           = !workspace.has_manifest,
+		source_order                = .Local_First,
+		disable_adt_candidate_fetch = .Disable_ADT_Dependency_Fetch in workspace.flags,
 	}
 	if strings.equal_fold(workspace.manifest.dependency_source, "adt-first") {
 		config.source_order = .ADT_First

@@ -60,8 +60,12 @@ Request_Context :: struct {
 }
 
 serve_stdio :: proc(allocator: mem.Allocator) -> int {
+	return serve_stdio_with_options(allocator, server_default_workspace_options())
+}
+
+serve_stdio_with_options :: proc(allocator: mem.Allocator, workspace_options: workspace.Options) -> int {
 	state: Server_State
-	server_init(&state, allocator)
+	server_init_with_options(&state, allocator, workspace_options)
 	defer server_destroy(&state)
 
 	for {
@@ -85,9 +89,17 @@ serve_stdio :: proc(allocator: mem.Allocator) -> int {
 }
 
 server_init :: proc(state: ^Server_State, allocator: mem.Allocator) {
+	server_init_with_options(state, allocator, server_default_workspace_options())
+}
+
+server_init_with_options :: proc(
+	state: ^Server_State,
+	allocator: mem.Allocator,
+	workspace_options: workspace.Options,
+) {
 	state^ = Server_State {
 		allocator                     = allocator,
-		options                       = server_default_workspace_options(),
+		options                       = workspace_options,
 		documents                     = make(map[string]Document, 16, allocator),
 		parse_diagnostics             = make([dynamic]Parse_Diagnostic_Bucket, 0, 16, allocator),
 		workspaces                    = make([dynamic]Server_Workspace, 0, 4, allocator),

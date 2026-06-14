@@ -66,13 +66,14 @@ Remote_Dependency_Key :: struct {
 }
 
 Config :: struct {
-	cache:              ^dep_store.Dependency_Store,
-	profile:            ^dep_store.Dependency_Profile,
-	cache_any_profile:  bool,
-	local_export_roots: []string,
-	adt_client:         ^adt.Client,
-	adt_availability:   ^ADT_Availability,
-	source_order:       Source_Order,
+	cache:                       ^dep_store.Dependency_Store,
+	profile:                     ^dep_store.Dependency_Profile,
+	cache_any_profile:           bool,
+	local_export_roots:          []string,
+	adt_client:                  ^adt.Client,
+	adt_availability:            ^ADT_Availability,
+	source_order:                Source_Order,
+	disable_adt_candidate_fetch: bool,
 }
 
 State :: struct {

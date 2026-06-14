@@ -210,6 +210,18 @@ workspace_update_options_suspend_external_dependency_acquisition :: proc(t: ^tes
 }
 
 @(test)
+workspace_option_disables_adt_candidate_fetch_in_remote_config :: proc(t: ^testing.T) {
+	opened := Workspace {
+		root_path = "mem://",
+		flags     = Option_Flags{.Disable_ADT_Dependency_Fetch},
+	}
+
+	config := remote_dependency_config_from_workspace(&opened)
+
+	testing.expect(t, config.disable_adt_candidate_fetch)
+}
+
+@(test)
 analyze_path_uses_standalone_sibling_abap_files :: proc(t: ^testing.T) {
 	root := `tmp\workspace_standalone_sibling`
 	os.remove_all(root)

@@ -111,7 +111,7 @@ print_usage :: proc() {
 	fmt.println("       abap_frontend parse <file>")
 	fmt.println("       abap_frontend tree <file>")
 	fmt.println(
-		"       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors] [--enable-dependency-diagnostics]",
+		"       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors] [--enable-dependency-diagnostics] [--disable-adt-dependency-fetch]",
 	)
 }
 
@@ -192,6 +192,9 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 			i += 1
 		} else if args[i] == "--enable-dependency-diagnostics" {
 			workspace_flags += {.Enable_Dependency_Diagnostics}
+			i += 1
+		} else if args[i] == "--disable-adt-dependency-fetch" {
+			workspace_flags += {.Disable_ADT_Dependency_Fetch}
 			i += 1
 		} else if args[i] == "--include" && i + 1 < len(args) {
 			append(&include_paths, args[i + 1])

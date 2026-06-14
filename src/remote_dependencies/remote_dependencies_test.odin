@@ -479,6 +479,45 @@ remote_dependency_local_export_hit_does_not_probe_adt :: proc(t: ^testing.T) {
 }
 
 @(test)
+remote_dependency_disabled_adt_candidate_fetch_does_not_probe_adt :: proc(t: ^testing.T) {
+	bad_session := remote_test_http_response_status("503 Service Unavailable", "down", "", context.allocator)
+	source_response := remote_test_http_response_status(
+		"200 OK",
+		"CLASS zcl_no_fetch DEFINITION. ENDCLASS.",
+		"",
+		context.allocator,
+	)
+	defer delete(bad_session, context.allocator)
+	defer delete(source_response, context.allocator)
+	server := Remote_ADT_Test_Server {
+		session_response = bad_session,
+		source_response  = source_response,
+	}
+	client, worker := remote_adt_test_client(t, &server)
+	defer remote_adt_test_client_destroy(&client, context.allocator)
+	defer remote_adt_test_server_stop(&server, worker)
+
+	availability: ADT_Availability
+	config := Config {
+		adt_client                  = &client,
+		adt_availability            = &availability,
+		source_order                = .ADT_First,
+		disable_adt_candidate_fetch = true,
+	}
+	state := state_make(context.allocator)
+	request := Request{name = "zcl_no_fetch", kind = .Class}
+
+	result := resolve_requests({request}, &config, &state, nil, context.allocator)
+
+	testing.expect_value(t, len(result.interfaces), 0)
+	testing.expect_value(t, len(result.misses), 1)
+	testing.expect_value(t, len(result.blocked_requests), 0)
+	testing.expect_value(t, server.session_count, 0)
+	testing.expect_value(t, server.source_count, 0)
+	testing.expect_value(t, availability.status, ADT_Availability_Status.Unknown)
+}
+
+@(test)
 remote_dependency_failed_adt_probe_disables_session :: proc(t: ^testing.T) {
 	bad_session := remote_test_http_response_status("503 Service Unavailable", "down", "", context.allocator)
 	good_session := remote_test_http_response_status("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator)
