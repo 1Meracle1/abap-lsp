@@ -1092,7 +1092,7 @@ open_sql_mixed_host_escape_styles_are_diagnosed :: proc(t: ^testing.T) {
   FOR ALL ENTRIES IN @mt_trn
   WHERE w~trnid = @mt_trn-trnid
     AND e~bizstep = /sttp/cl_dm_constants=>gcs_bizstep-shipping
-  ORDER BY w~trnid e~evttime DESCENDING e~creation_time DESCENDING
+  ORDER BY trnid evttime DESCENDING creation_time DESCENDING
   INTO TABLE @mt_event.`
 	parsed := parse(source, "sql_mixed_host_escapes.abap", context.allocator)
 
@@ -1103,6 +1103,71 @@ open_sql_mixed_host_escape_styles_are_diagnosed :: proc(t: ^testing.T) {
 		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
 		"/sttp/cl_dm_constants=>gcs_bizstep-shipping",
 	)
+}
+
+@(test)
+open_sql_order_by_rejects_table_alias_field_access :: proc(t: ^testing.T) {
+	source := `SELECT q~trnid, MAX( w~creation_time ) AS creation_time
+  FROM /sttp/dm_trn_evt AS q
+  JOIN /sttp/dm_evt AS w ON w~evtid = q~evtid AND w~bizstep = '013'
+  INTO TABLE @DATA(lt_dm_trn_evt)
+  WHERE q~trnid = @lv_trnid
+  ORDER BY w~creation_time DESCENDING.`
+	parsed := parse(source, "sql_order_by_alias.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 1)
+	testing.expect_value(t, parsed.errors[0].message, OPEN_SQL_ORDER_BY_ALIAS_MESSAGE)
+	testing.expect_value(
+		t,
+		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
+		"w~creation_time",
+	)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(
+		t,
+		source[stmt.query.order_by_clause.start:stmt.query.order_by_clause.end],
+		"ORDER BY w~creation_time DESCENDING",
+	)
+}
+
+@(test)
+open_sql_select_rejects_unexpected_tail_tokens :: proc(t: ^testing.T) {
+	source := `SELECT q~trnid, MAX( w~creation_time ) AS creation_time, COUNT( * ) AS count
+  FROM /sttp/dm_trn_evt AS q
+  JOIN /sttp/dm_evt AS w ON w~evtid = q~evtid AND w~bizstep = '013'
+  INTO TABLE @DATA(lt_dm_trn_evt)
+  FOR ALL ENTRIES IN @lt_dm_trn
+  WHERE trnid = @lt_dm_trn-trnid
+  ORDE BY creation_time DESCENDIN.`
+	parsed := parse(source, "sql_unexpected_tail.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 1)
+	testing.expect_value(t, parsed.errors[0].message, OPEN_SQL_UNEXPECTED_TOKEN_MESSAGE)
+	testing.expect_value(
+		t,
+		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
+		"ORDE BY creation_time DESCENDIN",
+	)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, stmt.query.where_cond != nil)
+	testing.expect_value(t, stmt.query.order_by_clause.end, 0)
+}
+
+@(test)
+open_sql_order_by_rejects_misspelled_direction :: proc(t: ^testing.T) {
+	source := `SELECT trnid FROM /sttp/dm_trn_evt ORDER BY creation_time DESCENDIN INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_order_by_direction_typo.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 1)
+	testing.expect_value(t, parsed.errors[0].message, OPEN_SQL_ORDER_BY_DIRECTION_MESSAGE)
+	testing.expect_value(
+		t,
+		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
+		"DESCENDIN",
+	)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(t, len(stmt.query.order_by_fields), 1)
+	testing.expect_value(t, stmt.query.order_by_fields[0].text, "creation_time")
 }
 
 @(test)
@@ -1159,7 +1224,7 @@ open_sql_ctes_and_dynamic_sources_keep_formatter_fields :: proc(t: ^testing.T) {
 
 @(test)
 open_sql_clause_ranges_and_order_facts_are_parser_modeled :: proc(t: ^testing.T) {
-	source := `SELECT a~* FROM mara AS a INTO TABLE @lt_rows WHERE a~matnr = @lv_matnr GROUP BY a~matnr HAVING COUNT( * ) > 0 ORDER BY a~matnr, a~ersda UP TO 10 ROWS PACKAGE SIZE lv_size OFFSET 2 BYPASSING BUFFER CONNECTION con CLIENT SPECIFIED.`
+	source := `SELECT a~* FROM mara AS a INTO TABLE @lt_rows WHERE a~matnr = @lv_matnr GROUP BY a~matnr HAVING COUNT( * ) > 0 ORDER BY matnr, ersda UP TO 10 ROWS PACKAGE SIZE lv_size OFFSET 2 BYPASSING BUFFER CONNECTION con CLIENT SPECIFIED.`
 	parsed := parse(source, "sql_clause_facts.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -1172,7 +1237,7 @@ open_sql_clause_ranges_and_order_facts_are_parser_modeled :: proc(t: ^testing.T)
 	testing.expect_value(t, source[query.where_clause.start:query.where_clause.end], "WHERE a~matnr = @lv_matnr")
 	testing.expect_value(t, source[query.group_by_clause.start:query.group_by_clause.end], "GROUP BY a~matnr")
 	testing.expect_value(t, source[query.having_clause.start:query.having_clause.end], "HAVING COUNT( * ) > 0")
-	testing.expect_value(t, source[query.order_by_clause.start:query.order_by_clause.end], "ORDER BY a~matnr, a~ersda")
+	testing.expect_value(t, source[query.order_by_clause.start:query.order_by_clause.end], "ORDER BY matnr, ersda")
 	testing.expect_value(t, len(query.order_by_fields), 2)
 	testing.expect_value(t, query.order_by_fields[0].text, "matnr")
 	testing.expect_value(t, query.order_by_fields[1].text, "ersda")

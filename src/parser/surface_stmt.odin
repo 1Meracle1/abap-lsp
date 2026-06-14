@@ -758,6 +758,9 @@ OPEN_SQL_INLINE_DATA_TARGET_MESSAGE :: "syntax error: Open SQL inline DATA targe
 OPEN_SQL_RESULT_TARGET_MESSAGE :: "syntax error: invalid SELECT result target"
 OPEN_SQL_MISSING_ENDSELECT_MESSAGE :: "syntax error: SELECT without SINGLE or INTO TABLE requires ENDSELECT"
 OPEN_SQL_FOR_ALL_ENTRIES_GROUP_BY_MESSAGE :: "syntax error: GROUP BY cannot be used with FOR ALL ENTRIES"
+OPEN_SQL_ORDER_BY_ALIAS_MESSAGE :: "syntax error: Open SQL ORDER BY fields cannot be qualified with a table alias"
+OPEN_SQL_UNEXPECTED_TOKEN_MESSAGE :: "syntax error: unexpected token in Open SQL SELECT statement"
+OPEN_SQL_ORDER_BY_DIRECTION_MESSAGE :: "syntax error: expected ASCENDING or DESCENDING in ORDER BY"
 
 SELECT_RESULT_TARGET_STOP_KEYWORDS :: []string {
 	"PACKAGE",
@@ -1313,10 +1316,22 @@ parse_select_query_clause :: proc(
 			)
 			continue
 		}
-		bump_token(p)
+		select_reject_unexpected_tail(p, body_start, stop_at_rparen)
 	}
 	validate_select_query_host_escapes(p, &query)
 	return query
+}
+
+select_reject_unexpected_tail :: proc(p: ^Parser, body_start: int, stop_at_rparen: bool) {
+	start := current_token(p)
+	for !select_query_done(p, body_start, stop_at_rparen) && !select_clause_starts(p) {
+		bump_token(p)
+	}
+	error(
+		p,
+		tokenizer.text_range(start.range.start, previous_token(p).range.end),
+		OPEN_SQL_UNEXPECTED_TOKEN_MESSAGE,
+	)
 }
 
 validate_select_query_host_escapes :: proc(p: ^Parser, query: ^ast.Select_Query_Clause) {
@@ -1576,10 +1591,20 @@ parse_select_order_by_clause :: proc(
 			descending = true
 			continue
 		}
+		if select_order_by_direction_typo(p, current_token(p)) {
+			error_current(p, OPEN_SQL_ORDER_BY_DIRECTION_MESSAGE)
+			bump_token(p)
+			continue
+		}
 		if current_token(p).kind == .Ident {
 			if p.index + 2 < len(p.tokens) &&
 			   p.tokens[p.index + 1].kind == .Tilde &&
 			   p.tokens[p.index + 2].kind == .Ident {
+				error(
+					p,
+					tokenizer.text_range(current_token(p).range.start, p.tokens[p.index + 2].range.end),
+					OPEN_SQL_ORDER_BY_ALIAS_MESSAGE,
+				)
 				if !descending {
 					append(
 						&query.order_by_fields,
@@ -1606,6 +1631,14 @@ parse_select_order_by_clause :: proc(
 		query.order_by_fields = make([dynamic]ast.Token_Text, 0, 0, p.allocator)
 	}
 	query.order_by_clause = tokenizer.text_range(start.range.start, previous_token(p).range.end)
+}
+
+select_order_by_direction_typo :: proc(p: ^Parser, tok: Token) -> bool {
+	if tok.kind != .Ident {
+		return false
+	}
+	text := tokenizer.token_lexeme(tok, p.source)
+	return strings.equal_fold(text, "ASCENDIN") || strings.equal_fold(text, "DESCENDIN")
 }
 
 select_merge_range :: proc(a, b: tokenizer.Range) -> tokenizer.Range {

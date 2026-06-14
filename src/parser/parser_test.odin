@@ -1051,7 +1051,7 @@ parsed_sql_and_surface_names_survive_source_overwrite :: proc(t: ^testing.T) {
 	source := `SELECT a~matnr AS mat_alias, count( DISTINCT a~matnr ) AS cnt_alias
   FROM mara AS a
   INNER JOIN makt AS b ON b~matnr = a~matnr
-  ORDER BY a~matnr
+  ORDER BY matnr
   INTO TABLE @lt_rows.
 MODIFY lt_rows FROM ls_row TRANSPORTING comp sub-comp.
 SORT lt_rows BY comp sub-comp DESCENDING.
@@ -1108,7 +1108,7 @@ END-OF-DEFINITION.
 EXEC SQL.
   SELECT * FROM mara
 ENDEXEC.
-SELECT a~matnr AS mat_alias FROM mara AS a INTO TABLE @lt_rows ORDER BY a~matnr.
+SELECT a~matnr AS mat_alias FROM mara AS a INTO TABLE @lt_rows ORDER BY matnr.
 READ TABLE lt_rows INTO ls_row WITH KEY item-obj_type = 'A'.
 MODIFY lt_rows FROM ls_row TRANSPORTING comp sub-comp.
 SORT lt_rows BY comp sub-comp DESCENDING.
