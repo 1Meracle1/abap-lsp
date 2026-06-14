@@ -1072,6 +1072,7 @@ checker_check_transporting_field :: proc(
 checker_check_read_table_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Read_Table_Stmt) {
 	for entry in stmt.entries {
 		table := checker_check_expr(ctx, entry.table)
+		checker_check_read_table_source(ctx, entry.table, table)
 		row_type := checker_type_row(ctx, table.type)
 		row_structure := checker_type_structure(row_type)
 		checker_check_table_line_target(ctx, entry.into, row_type, .Into)
@@ -1079,13 +1080,72 @@ checker_check_read_table_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Read_Tab
 		checker_check_table_line_target(ctx, entry.reference_into, row_type, .Reference_Into)
 		checker_check_expr(ctx, entry.index)
 		checker_check_table_key_selector(ctx, entry.using_key)
-		checker_check_expr_list(ctx, entry.comparing[:])
+		checker_check_read_table_comparing(ctx, entry.comparing[:], row_type, row_structure)
 		for key in entry.key_values {
-			checker_check_expr(ctx, key.dynamic_name)
-			checker_check_read_table_key_name(ctx, row_type, row_structure, key)
-			checker_check_expr(ctx, key.value)
+			checker_check_read_table_key_value(ctx, row_type, row_structure, key)
 		}
 	}
+}
+
+checker_check_read_table_source :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, source: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, source) || checker_type_is_unknown(source.type) {
+		return
+	}
+	if !checker_type_is_table_like(ctx, source.type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"READ TABLE source is not an internal table",
+		)
+	}
+}
+
+checker_check_read_table_comparing :: proc(
+	ctx: ^Checker_Context,
+	comparing: []^ast.Expr,
+	row_type: ^Type,
+	row_structure: ^Structure,
+) {
+	if checker_read_table_comparing_all_fields(comparing) {
+		return
+	}
+	for expr in comparing {
+		if _, ok := checker_check_table_component_expr(ctx, expr, row_type, row_structure, false); ok {
+			continue
+		}
+		checker_check_expr(ctx, expr)
+	}
+}
+
+checker_read_table_comparing_all_fields :: proc(comparing: []^ast.Expr) -> bool {
+	if len(comparing) != 2 {
+		return false
+	}
+	first, _, first_ok := checker_expr_simple_name(comparing[0])
+	second, _, second_ok := checker_expr_simple_name(comparing[1])
+	return first_ok &&
+	       second_ok &&
+	       strings.equal_fold(first, "all") &&
+	       strings.equal_fold(second, "fields")
+}
+
+checker_check_read_table_key_value :: proc(
+	ctx: ^Checker_Context,
+	row_type: ^Type,
+	row_structure: ^Structure,
+	key: ast.Read_Table_Key_Value_Clause,
+) {
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, key.dynamic_name)
+	expected := checker_check_read_table_key_name(ctx, row_type, row_structure, key).type
+	value_ctx := ctx^
+	value_ctx.diagnose_unresolved_value_refs = true
+	if !checker_type_is_unknown(expected) {
+		value_ctx.type_hint = expected
+		value_ctx.type_hint_expr = key.value
+	}
+	value := checker_check_expr(&value_ctx, key.value)
+	checker_check_assignment_compatibility(ctx, value.type, expected, checker_expr_range(key.value))
 }
 
 checker_check_read_table_key_name :: proc(
@@ -1093,28 +1153,45 @@ checker_check_read_table_key_name :: proc(
 	row_type: ^Type,
 	row_structure: ^Structure,
 	key: ast.Read_Table_Key_Value_Clause,
-) {
-	if key.is_dynamic || key.table_line || len(key.path) == 0 {
-		return
+) -> Operand {
+	if key.is_dynamic || len(key.path) == 0 {
+		return Operand{mode = .Value, type = project_type_unknown(ctx.project)}
 	}
 	structure := row_structure
 	current_type := row_type
-	for segment in key.path {
-		if segment.name.text == "table_line" {
+	final_field: ^Entity
+	for segment, i in key.path {
+		if i == 0 && checker_table_component_is_table_line(segment.name.text) {
 			continue
 		}
+		if segment.selector == .Arrow {
+			current_type = checker_type_ref_target(ctx, current_type)
+			structure = checker_type_structure(current_type)
+		}
 		if structure == nil {
-			return
+			return Operand{mode = .Value, type = project_type_unknown(ctx.project)}
 		}
 		name := project_intern_lower_ascii(ctx.project, segment.name.text)
+		if name == "" {
+			return Operand{mode = .Value, type = project_type_unknown(ctx.project)}
+		}
 		field, ok := checker_lookup_structure_field(structure, name)
 		if !ok {
-			return
+			checker_add_diagnostic(ctx, .Unknown_Field, segment.name.range, checker_table_component_message(ctx, "unknown internal table field ", name))
+			return Operand{mode = .Value, type = project_type_unknown(ctx.project)}
 		}
-		checker_add_entity_use(ctx, nil, field)
+		checker_add_entity_use_at_range(ctx, nil, field, segment.name.range)
+		final_field = field
 		current_type = field.type
 		structure = checker_type_structure(current_type)
 	}
+	if final_field != nil {
+		return Operand{mode = .Field, type = current_type, entity = final_field}
+	}
+	if len(key.path) == 1 && checker_table_component_is_table_line(key.path[0].name.text) {
+		return Operand{mode = .Table_Line, type = row_type}
+	}
+	return Operand{mode = .Value, type = project_type_unknown(ctx.project)}
 }
 
 checker_check_append_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Append_Stmt) {

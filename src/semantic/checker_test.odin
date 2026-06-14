@@ -4980,6 +4980,123 @@ DELETE ADJACENT DUPLICATES FROM mt_event COMPARING docnum nested-part.`
 }
 
 @(test)
+root_semantic_read_table_forms_validate_row_components :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_nested,
+         part TYPE string,
+       END OF ty_nested.
+TYPES: BEGIN OF ty_row,
+         id TYPE i,
+         docnum TYPE string,
+         trnid TYPE string,
+         docpos TYPE string,
+         nested TYPE ty_nested,
+       END OF ty_row.
+TYPES ty_ref_rows TYPE STANDARD TABLE OF REF TO ty_nested WITH EMPTY KEY.
+DATA mt_event TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA mt_refs TYPE ty_ref_rows.
+DATA lv_id TYPE i.
+DATA lv_trnid TYPE string.
+DATA lv_docnum TYPE string.
+DATA lv_part TYPE string.
+DATA lv_index TYPE i.
+DATA lv_key TYPE string.
+DATA lv_component TYPE string.
+DATA lr_event TYPE REF TO ty_row.
+FIELD-SYMBOLS <ls_event> LIKE LINE OF mt_event.
+
+READ TABLE mt_event WITH KEY id = lv_id INTO DATA(ls_by_key).
+READ TABLE mt_event INTO DATA(ls_by_index) INDEX lv_index USING KEY (lv_key).
+READ TABLE mt_event WITH TABLE KEY primary_key COMPONENTS docnum = lv_docnum REFERENCE INTO lr_event.
+READ TABLE mt_event WITH KEY nested-part = lv_part ASSIGNING <ls_event> BINARY SEARCH COMPARING docpos.
+READ TABLE mt_event WITH KEY (lv_component) = lv_trnid TRANSPORTING NO FIELDS.
+READ TABLE mt_refs WITH KEY table_line->part = lv_part TRANSPORTING NO FIELDS.
+READ TABLE mt_event WITH KEY trnid = lv_trnid INTO DATA(ls_all) COMPARING ALL FIELDS.
+DATA lv_text TYPE string.
+lv_text = ls_by_key-docnum.
+lv_text = ls_by_index-trnid.
+lv_text = ls_all-docpos.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://read_table_forms.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	component_names := [?]string{"id", "docnum", "trnid", "docpos", "nested", "part"}
+	for name in component_names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+	mt_event := checker_test_lookup(t, &project, file.root_scope, .Value, "mt_event", .Variable)
+	lv_id := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_id", .Variable)
+	lv_component := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_component", .Variable)
+	testing.expect(t, mt_event != nil && .Used in mt_event.flags)
+	testing.expect(t, lv_id != nil && .Used in lv_id.flags)
+	testing.expect(t, lv_component != nil && .Used in lv_component.flags)
+}
+
+@(test)
+root_semantic_read_table_reports_invalid_source :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+READ TABLE lv_text INTO DATA(ls_row) INDEX 1.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://read_table_source.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"READ TABLE source is not an internal table",
+		),
+		1,
+	)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Syntax_Form {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "lv_text")
+	}
+}
+
+@(test)
+root_semantic_read_table_reports_key_component_errors :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_nested,
+         part TYPE string,
+       END OF ty_nested.
+TYPES: BEGIN OF ty_row,
+         id TYPE i,
+         date TYPE d,
+         nested TYPE ty_nested,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lv_id TYPE i.
+DATA lv_time TYPE t.
+
+READ TABLE lt_rows WITH KEY missing = lv_id INTO DATA(ls_missing).
+READ TABLE lt_rows WITH KEY date = lv_time TRANSPORTING NO FIELDS.
+READ TABLE lt_rows WITH KEY nested-missing = lv_id TRANSPORTING NO FIELDS.
+READ TABLE lt_rows WITH KEY id = lv_missing TRANSPORTING NO FIELDS.
+READ TABLE lt_rows INTO DATA(ls_cmp) INDEX 1 COMPARING gone.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://read_table_key_errors.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 3)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+	missing_names := [?]string{"missing", "gone"}
+	for name in missing_names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "lv_missing"), 1)
+}
+
+@(test)
 root_semantic_internal_table_where_rhs_uses_value_resolution :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_component,
          cmptype TYPE string,
