@@ -37,6 +37,15 @@ code_actions_for_params :: proc(
 	}
 
 	query := semantic.semantic_query(snapshot.project, snapshot.checker, snapshot.file)
+	if action, action_ok := code_action_fill_value_constructor_fields(
+		state,
+		snapshot,
+		query,
+		request_range,
+		allocator,
+	); action_ok {
+		append(&out, action)
+	}
 	diagnostics := semantic.semantic_diagnostic_copies(
 		semantic.semantic_query_diagnostics(query),
 		context.temp_allocator,
@@ -132,6 +141,167 @@ code_action_range_applies :: proc(request, diagnostic: semantic.Range) -> bool {
 		return diagnostic.start <= request.start && request.start <= diagnostic.end
 	}
 	return request.start < diagnostic.end && diagnostic.start < request.end
+}
+
+code_action_fill_value_constructor_fields :: proc(
+	state: ^Server_State,
+	snapshot: Snapshot_Lookup,
+	query: semantic.Semantic_Query,
+	request_range: semantic.Range,
+	allocator: mem.Allocator,
+) -> (
+	Code_Action,
+	bool,
+) {
+	info, info_ok := semantic.semantic_fact_value_constructor_structure_at_range(
+		semantic.semantic_query_facts(query),
+		request_range,
+	)
+	if !info_ok || info.expr == nil || info.structure == nil {
+		return {}, false
+	}
+	body_start, body_end, body_ok := code_action_constructor_body_range(
+		snapshot.source,
+		info.expr,
+	)
+	if !body_ok || !code_action_source_range_is_blank(snapshot.source, body_start, body_end) {
+		return {}, false
+	}
+	field_names := code_action_structure_field_names(state, info.structure, allocator)
+	if len(field_names) == 0 {
+		return {}, false
+	}
+	new_text := code_action_value_constructor_fields_text(
+		snapshot.source,
+		info.range.start,
+		field_names[:],
+		allocator,
+	)
+	if new_text == "" {
+		return {}, false
+	}
+
+	changes := make(map[string][]Text_Edit, 1, allocator)
+	edits := make([]Text_Edit, 1, allocator)
+	edits[0] = Text_Edit {
+		range = range_from_offsets(snapshot.source, body_start, body_end),
+		new_text = new_text,
+	}
+	changes[strings.clone(snapshot.file.path, allocator)] = edits
+
+	return Code_Action {
+			title = "Fill VALUE with structure fields",
+			kind = "quickfix",
+			edit = Workspace_Edit{changes = changes},
+			is_preferred = false,
+		},
+		true
+}
+
+code_action_constructor_body_range :: proc(
+	source: string,
+	expr: ^ast.Constructor_Expr,
+) -> (
+	start: int,
+	end: int,
+	ok: bool,
+) {
+	if expr == nil || expr.type_ref == nil {
+		return
+	}
+	range_start := clamp(expr.type_ref.range.end, 0, len(source))
+	range_end := clamp(expr.range.end, range_start, len(source))
+	open := -1
+	for i := range_start; i < range_end; i += 1 {
+		if source[i] == '(' {
+			open = i
+			break
+		}
+	}
+	if open < 0 {
+		return
+	}
+	close := range_end - 1
+	for close > open && source[close] != ')' {
+		close -= 1
+	}
+	if close <= open {
+		return
+	}
+	return open + 1, close, true
+}
+
+code_action_source_range_is_blank :: proc(source: string, start, end: int) -> bool {
+	lo := clamp(start, 0, len(source))
+	hi := clamp(end, lo, len(source))
+	for i := lo; i < hi; i += 1 {
+		if !code_action_space_char(source[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+code_action_space_char :: proc "contextless" (ch: u8) -> bool {
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
+}
+
+code_action_structure_field_names :: proc(
+	state: ^Server_State,
+	structure: ^semantic.Structure,
+	allocator: mem.Allocator,
+) -> [dynamic]string {
+	out := make([dynamic]string, 0, len(structure.fields), allocator)
+	for field in structure.fields {
+		if field == nil || field.kind != .Field || field.name == "" {
+			continue
+		}
+		if payload, payload_ok := field.payload.(^semantic.Entity_Field_Payload);
+		   payload_ok && payload != nil && .Is_Include in payload.flags {
+			continue
+		}
+		source := source_for_project_file(state, field.source_file)
+		name := code_action_source_text_or_name(source, field.name_range, field.name, allocator)
+		append(&out, name)
+	}
+	return out
+}
+
+code_action_value_constructor_fields_text :: proc(
+	source: string,
+	constructor_start: int,
+	field_names: []string,
+	allocator: mem.Allocator,
+) -> string {
+	if len(field_names) == 0 {
+		return ""
+	}
+	out := strings.builder_make(allocator)
+	newline := code_action_newline(source)
+	indent := code_action_line_indent_at_offset(source, constructor_start, allocator)
+	for field_name in field_names {
+		strings.write_string(&out, newline)
+		strings.write_string(&out, indent)
+		strings.write_string(&out, "  ")
+		strings.write_string(&out, field_name)
+		strings.write_string(&out, " = VALUE #( )")
+	}
+	strings.write_string(&out, newline)
+	strings.write_string(&out, indent)
+	return strings.to_string(out)
+}
+
+code_action_line_indent_at_offset :: proc(
+	source: string,
+	offset: int,
+	allocator: mem.Allocator,
+) -> string {
+	line_start := code_action_line_start(source, offset)
+	indent_end := line_start
+	for indent_end < len(source) && (source[indent_end] == ' ' || source[indent_end] == '\t') {
+		indent_end += 1
+	}
+	return strings.clone(source[line_start:indent_end], allocator)
 }
 
 code_action_add_method_implementation :: proc(

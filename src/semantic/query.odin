@@ -58,6 +58,14 @@ Semantic_Expression_Info :: struct {
 	info:  Checker_Expr_Info,
 }
 
+Semantic_Value_Constructor_Info :: struct {
+	node:      ^ast.Node,
+	expr:      ^ast.Constructor_Expr,
+	range:     Range,
+	info:      Checker_Expr_Info,
+	structure: ^Structure,
+}
+
 Semantic_Completion_Item_Source :: enum {
 	Lexical_Scope,
 	Builtin_Scope,
@@ -336,6 +344,54 @@ semantic_fact_type_at_offset :: proc(q: Semantic_Fact_Query, offset: int) -> (^T
 		return info.type, true
 	}
 	return nil, false
+}
+
+semantic_fact_value_constructor_structure_at_range :: proc(
+	q: Semantic_Fact_Query,
+	request: Range,
+) -> (
+	Semantic_Value_Constructor_Info,
+	bool,
+) {
+	best := -1
+	best_width := 0
+	for record, i in q.checker.info.expr_infos {
+		if record.node == nil || !semantic_query_record_matches_file(record, q.file) {
+			continue
+		}
+		constructor, constructor_ok := record.node.derived.(^ast.Constructor_Expr)
+		if !constructor_ok || constructor.kind != .Value {
+			continue
+		}
+		if !semantic_range_applies_to_query(request, record.node.range) {
+			continue
+		}
+		if checker_type_structure(record.info.type) == nil {
+			continue
+		}
+		width := semantic_range_width(record.node.range)
+		if best < 0 || width < best_width {
+			best = i
+			best_width = width
+		}
+	}
+	if best < 0 {
+		return {}, false
+	}
+	record := q.checker.info.expr_infos[best]
+	constructor := record.node.derived.(^ast.Constructor_Expr)
+	structure := checker_type_structure(record.info.type)
+	if structure == nil {
+		return {}, false
+	}
+	return Semantic_Value_Constructor_Info {
+			node = record.node,
+			expr = constructor,
+			range = record.node.range,
+			info = record.info,
+			structure = structure,
+		},
+		true
 }
 
 semantic_diagnostic_copies :: proc(
@@ -1230,6 +1286,13 @@ semantic_query_record_matches_file :: proc(
 
 semantic_range_contains_offset :: #force_inline proc(range: Range, offset: int) -> bool {
 	return range.start <= offset && offset < range.end
+}
+
+semantic_range_applies_to_query :: proc(request, candidate: Range) -> bool {
+	if request.start == request.end {
+		return candidate.start <= request.start && request.start <= candidate.end
+	}
+	return request.start < candidate.end && candidate.start < request.end
 }
 
 semantic_range_width :: #force_inline proc(range: Range) -> int {
