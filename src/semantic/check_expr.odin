@@ -338,6 +338,14 @@ checker_check_ident_name :: proc(
 	}
 	_, entity, ok := checker_lookup_reference(ctx, namespace, interned)
 	if !ok {
+		if namespace == .Value &&
+		   checker_diagnose_constructor_for_iterator_reference(
+			ctx,
+			name,
+			checker_use_range(node, use_range),
+		   ) {
+			return nil, false
+		}
 		kind := External_Candidate_Kind.Global_Symbol
 		reason := External_Candidate_Reason.Unresolved_Reference
 		if namespace == .Type {
@@ -1626,6 +1634,7 @@ checker_check_constructor_for_in_clause :: proc(
 		)
 	}
 	row_type := project_type_unknown(ctx.project)
+	source_table_type := project_type_unknown(ctx.project)
 	row_structure: ^Structure
 	if expr.source == nil && expr.group_source.text == "" {
 		checker_add_diagnostic(
@@ -1639,6 +1648,7 @@ checker_check_constructor_for_in_clause :: proc(
 		source := checker_check_expr(ctx, expr.source)
 		if !checker_check_unresolved_variable_operand(ctx, expr.source, source) && !checker_type_is_unknown(source.type) {
 			if checker_type_is_table_like(ctx, source.type) {
+				source_table_type = source.type
 				row_type = checker_type_row(ctx, source.type)
 				row_structure = checker_type_structure(row_type)
 			} else {
@@ -1653,10 +1663,21 @@ checker_check_constructor_for_in_clause :: proc(
 	}
 	if expr.group_source.text != "" {
 		group := checker_check_ident_expr(ctx, node, expr.group_source.text, .Value, false, expr.group_source.range)
+		if checker_type_is_table_like(ctx, group.type) {
+			source_table_type = group.type
+		}
 		row_type = checker_type_row(ctx, group.type)
 		row_structure = checker_type_structure(row_type)
 	}
 	if expr.variable.text != "" {
+		parent_scope := ctx.scope.parent if ctx.scope != nil && ctx.scope.parent != nil else ctx.scope
+		checker_record_constructor_for_iterator_binding(
+			ctx,
+			parent_scope,
+			expr.variable.text,
+			expr.variable.range,
+			source_table_type,
+		)
 		checker_collect_inferred_expr_decl(ctx, expr.variable.text, .Variable, expr.variable.range, node, row_type)
 	}
 	if expr.where_clause != nil {

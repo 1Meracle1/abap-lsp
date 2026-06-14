@@ -4018,6 +4018,114 @@ lv_sum = REDUCE i( INIT total = 0 FOR idx = 1 UNTIL idx > 3 NEXT total = total +
 }
 
 @(test)
+root_semantic_checker_accepts_constructor_for_iterator_reuse_with_same_table_type :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE string,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_more_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_ids TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+lt_ids = VALUE #( FOR row IN lt_rows ( row-id ) ).
+lt_ids = VALUE #( FOR row IN lt_more_rows ( row-id ) ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://constructor_for_iterator_reuse_valid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Constructor_For_Iterator_Reuse), 0)
+}
+
+@(test)
+root_semantic_checker_rejects_constructor_for_iterator_reuse_with_different_table_type :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE string,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_sorted_rows TYPE SORTED TABLE OF ty_row WITH UNIQUE KEY id.
+DATA lt_ids TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+lt_ids = VALUE #( FOR row IN lt_rows ( row-id ) ).
+lt_ids = VALUE #( FOR row IN lt_sorted_rows ( row-id ) ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://constructor_for_iterator_reuse_different_table.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Constructor_For_Iterator_Reuse), 1)
+}
+
+@(test)
+root_semantic_checker_rejects_constructor_for_iterator_loop_target_reuse :: proc(t: ^testing.T) {
+	source := `TYPES:
+  tr_docnum TYPE RANGE OF string,
+  BEGIN OF ty_delivery_header,
+         vbeln TYPE string,
+       END OF ty_delivery_header.
+DATA lt_delivery_header TYPE STANDARD TABLE OF ty_delivery_header.
+
+DATA(lr_docnum) = VALUE tr_docnum(
+  FOR ls_del_hdr IN lt_delivery_header
+  ( sign = 'I' option = 'EQ' low = CONV #( ls_del_hdr-vbeln ) )
+).
+DATA(lr_docnum_2) = VALUE tr_docnum(
+  FOR ls_plain IN lt_delivery_header
+  ( sign = 'I' option = 'EQ' low = CONV #( ls_plain-vbeln ) )
+).
+
+LOOP AT lt_delivery_header INTO DATA(ls_del_hdr).
+ENDLOOP.
+
+LOOP AT lt_delivery_header INTO ls_plain.
+ENDLOOP.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://constructor_for_iterator_loop_target_reuse.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Constructor_For_Iterator_Reuse), 2)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Duplicate_Declaration), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 0)
+	inline_target_offset := checker_test_find_text(source, "DATA(ls_del_hdr)") + len("DATA(")
+	testing.expect(t, inline_target_offset >= len("DATA(") - 1)
+	inline_target_seen := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Invalid_Constructor_For_Iterator_Reuse &&
+		   diagnostic.range.start == inline_target_offset {
+			inline_target_seen = true
+			testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "ls_del_hdr")
+		}
+	}
+	testing.expect(t, inline_target_seen)
+}
+
+@(test)
+root_semantic_checker_rejects_constructor_for_iterator_reuse_with_different_row_type :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row_a,
+         id TYPE string,
+       END OF ty_row_a,
+       BEGIN OF ty_row_b,
+         id TYPE string,
+       END OF ty_row_b.
+DATA lt_rows_a TYPE STANDARD TABLE OF ty_row_a WITH EMPTY KEY.
+DATA lt_rows_b TYPE STANDARD TABLE OF ty_row_b WITH EMPTY KEY.
+DATA lt_ids TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+lt_ids = VALUE #( FOR row IN lt_rows_a ( row-id ) ).
+lt_ids = VALUE #( FOR row IN lt_rows_b ( row-id ) ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://constructor_for_iterator_reuse_different_row.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Constructor_For_Iterator_Reuse), 1)
+}
+
+@(test)
 root_semantic_checker_diagnoses_case_filter_reduce_and_constructor_for_forms :: proc(t: ^testing.T) {
 	source := `DATA lv_scalar TYPE i.
 DATA lv_result TYPE i.

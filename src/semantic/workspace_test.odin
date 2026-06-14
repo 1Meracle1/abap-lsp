@@ -284,6 +284,49 @@ APPEND VALUE #( field = 'hello'`
 }
 
 @(test)
+semantic_workspace_reports_constructor_for_iterator_reuse :: proc(t: ^testing.T) {
+	source := `REPORT zmain.
+TYPES:
+  tr_docnum TYPE RANGE OF string,
+  BEGIN OF ty_delivery_header,
+    vbeln TYPE string,
+  END OF ty_delivery_header.
+DATA lt_delivery_header TYPE STANDARD TABLE OF ty_delivery_header.
+
+DATA(lr_docnum) = VALUE tr_docnum(
+  FOR ls_del_hdr IN lt_delivery_header
+  ( sign = 'I' option = 'EQ' low = CONV #( ls_del_hdr-vbeln ) )
+).
+LOOP AT lt_delivery_header INTO DATA(ls_del_hdr).
+ENDLOOP.`
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", source),
+	}
+
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:]})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	checker := analysis.project_results[0].checker
+	testing.expect_value(
+		t,
+		workspace_test_diagnostic_count(checker, .Invalid_Constructor_For_Iterator_Reuse),
+		1,
+	)
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Constructor_For_Iterator_Reuse {
+			continue
+		}
+		found = true
+		testing.expect(t, diagnostic.range.start < diagnostic.range.end)
+		if diagnostic.range.start < diagnostic.range.end {
+			testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "ls_del_hdr")
+		}
+	}
+	testing.expect(t, found)
+}
+
+@(test)
 semantic_workspace_resolves_editable_root_class_provider :: proc(t: ^testing.T) {
 	files := [?]Workspace_File_Input {
 		workspace_test_file(

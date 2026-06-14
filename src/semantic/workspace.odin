@@ -682,6 +682,7 @@ workspace_check_expanded_file_stmts :: proc(
 		}
 		checker_check_stmt(ctx, stmt, collect_declarations = false)
 	}
+	checker_validate_constructor_for_iterator_reuse(ctx)
 }
 
 workspace_check_include_targets :: proc(
@@ -748,6 +749,7 @@ workspace_check_external_source_stmts :: proc(
 		}
 		checker_check_stmt(ctx, stmt, collect_declarations = false)
 	}
+	checker_validate_constructor_for_iterator_reuse(ctx)
 }
 
 workspace_collect_type_pool_candidates :: proc(

@@ -28,6 +28,7 @@ Checker_Diagnostic_Kind :: enum {
 	Invalid_Open_Sql_Where_Operand,
 	Invalid_Open_Sql_Group_By,
 	Invalid_Loop_Source,
+	Invalid_Constructor_For_Iterator_Reuse,
 	Invalid_Append_Operand,
 	Invalid_Sort_Operand,
 	Invalid_Concatenate_Operand,
@@ -92,6 +93,28 @@ Checker_Entity_Use :: struct {
 	range:  Range,
 }
 
+Checker_Constructor_For_Iterator_Binding :: struct {
+	file:       ^Project_File,
+	scope:      ^Scope,
+	name:       string,
+	range:      Range,
+	table_type: ^Type,
+}
+
+Checker_Constructor_For_Iterator_Usage_Kind :: enum {
+	For_Binding,
+	Other,
+}
+
+Checker_Constructor_For_Iterator_Usage :: struct {
+	kind:       Checker_Constructor_For_Iterator_Usage_Kind,
+	file:       ^Project_File,
+	scope:      ^Scope,
+	name:       string,
+	range:      Range,
+	table_type: ^Type,
+}
+
 Checker_Info :: struct {
 	checker:                                ^Checker,
 	project:                                ^Project,
@@ -101,6 +124,7 @@ Checker_Info :: struct {
 	entity_queue:                           [dynamic]^Entity,
 	checked_entities:                       [dynamic]^Entity,
 	uses:                                   [dynamic]Checker_Entity_Use,
+	constructor_for_iterators:              [dynamic]Checker_Constructor_For_Iterator_Binding,
 	expr_infos:                             [dynamic]Checker_Expr_Record,
 	diagnostics:                            [dynamic]Checker_Diagnostic,
 	unresolved:                             [dynamic]Checker_Unresolved_Candidate,
@@ -186,6 +210,12 @@ checker_info_make :: proc(
 		entity_queue = make([dynamic]^Entity, 0, 16, project.allocator),
 		checked_entities = make([dynamic]^Entity, 0, 16, project.allocator),
 		uses = make([dynamic]Checker_Entity_Use, 0, 32, project.allocator),
+		constructor_for_iterators = make(
+			[dynamic]Checker_Constructor_For_Iterator_Binding,
+			0,
+			8,
+			project.allocator,
+		),
 		expr_infos = make([dynamic]Checker_Expr_Record, 0, 32, project.allocator),
 		diagnostics = make([dynamic]Checker_Diagnostic, 0, 8, project.allocator),
 		unresolved = make([dynamic]Checker_Unresolved_Candidate, 0, 8, project.allocator),
@@ -944,9 +974,298 @@ checker_check_file :: proc(
 	if file.root != nil {
 		checker_check_stmt_list(&ctx, file.root.stmts, collect_declarations = false)
 	}
+	checker_validate_constructor_for_iterator_reuse(&ctx)
 	if check_method_implementations && !project_file_has_syntax_errors(file) {
 		checker_check_method_implementation_consistency(&ctx)
 	}
+}
+
+checker_record_constructor_for_iterator_binding :: proc(
+	ctx: ^Checker_Context,
+	scope: ^Scope,
+	name: string,
+	range: Range,
+	table_type: ^Type,
+) {
+	if ctx == nil || scope == nil || name == "" {
+		return
+	}
+	interned := project_intern_lower_ascii(ctx.project, name)
+	if interned == "" {
+		return
+	}
+	append(
+		&ctx.info.constructor_for_iterators,
+		Checker_Constructor_For_Iterator_Binding {
+			file       = ctx.file,
+			scope      = scope,
+			name       = interned,
+			range      = range,
+			table_type = table_type if table_type != nil else project_type_unknown(ctx.project),
+		},
+	)
+}
+
+checker_validate_constructor_for_iterator_reuse :: proc(ctx: ^Checker_Context) {
+	if ctx == nil || ctx.file == nil || len(ctx.info.constructor_for_iterators) == 0 {
+		return
+	}
+	usages := make(
+		[dynamic]Checker_Constructor_For_Iterator_Usage,
+		0,
+		len(ctx.info.constructor_for_iterators),
+		context.temp_allocator,
+	)
+	for binding in ctx.info.constructor_for_iterators {
+		if binding.file != ctx.file {
+			continue
+		}
+		append(
+			&usages,
+			Checker_Constructor_For_Iterator_Usage {
+				kind       = .For_Binding,
+				file       = binding.file,
+				scope      = binding.scope,
+				name       = binding.name,
+				range      = binding.range,
+				table_type = binding.table_type,
+			},
+		)
+	}
+	if len(usages) == 0 {
+		return
+	}
+	for entity in ctx.info.definitions {
+		if !checker_constructor_for_iterator_entity_is_restricted_usage(ctx, entity) {
+			continue
+		}
+		append(
+			&usages,
+			Checker_Constructor_For_Iterator_Usage {
+				kind  = .Other,
+				file  = entity.source_file,
+				scope = entity.scope,
+				name  = entity.name,
+				range = entity.name_range,
+			},
+		)
+	}
+	for candidate in ctx.info.unresolved {
+		if candidate.file != ctx.file ||
+		   candidate.namespace != .Value ||
+		   candidate.reason != .Unresolved_Reference ||
+		   candidate.name == "" ||
+		   candidate.scope == nil ||
+		   !checker_constructor_for_iterator_name_seen(ctx, candidate.scope, candidate.name) {
+			continue
+		}
+		append(
+			&usages,
+			Checker_Constructor_For_Iterator_Usage {
+				kind  = .Other,
+				file  = candidate.file,
+				scope = candidate.scope,
+				name  = candidate.name,
+				range = candidate.range,
+			},
+		)
+	}
+	if len(usages) <= 1 {
+		return
+	}
+	checker_sort_constructor_for_iterator_usages(usages[:])
+
+	first_usages := make(
+		[dynamic]Checker_Constructor_For_Iterator_Usage,
+		0,
+		len(usages),
+		context.temp_allocator,
+	)
+	for usage in usages {
+		if usage.scope == nil || usage.name == "" {
+			continue
+		}
+		first_index := checker_constructor_for_iterator_first_usage_index(first_usages[:], usage)
+		if first_index < 0 {
+			append(&first_usages, usage)
+			continue
+		}
+		checker_validate_constructor_for_iterator_usage_pair(ctx, first_usages[first_index], usage)
+	}
+}
+
+checker_sort_constructor_for_iterator_usages :: proc(usages: []Checker_Constructor_For_Iterator_Usage) {
+	for i := 1; i < len(usages); i += 1 {
+		value := usages[i]
+		j := i
+		for j > 0 && checker_constructor_for_iterator_usage_less(value, usages[j - 1]) {
+			usages[j] = usages[j - 1]
+			j -= 1
+		}
+		usages[j] = value
+	}
+}
+
+checker_constructor_for_iterator_usage_less :: proc(
+	left, right: Checker_Constructor_For_Iterator_Usage,
+) -> bool {
+	if left.range.start != right.range.start {
+		return left.range.start < right.range.start
+	}
+	if left.range.end != right.range.end {
+		return left.range.end < right.range.end
+	}
+	return int(left.kind) < int(right.kind)
+}
+
+checker_constructor_for_iterator_entity_is_restricted_usage :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+) -> bool {
+	if ctx == nil || entity == nil || entity.source_file != ctx.file || entity.scope == nil {
+		return false
+	}
+	if entity.scope.kind == .Constructor_For {
+		return false
+	}
+	if !entity_kind_occupies(entity.kind, .Value) {
+		return false
+	}
+	if entity.name == "" || entity.name_range.end <= entity.name_range.start {
+		return false
+	}
+	return checker_constructor_for_iterator_name_seen(ctx, entity.scope, entity.name)
+}
+
+checker_constructor_for_iterator_name_seen :: proc(
+	ctx: ^Checker_Context,
+	scope: ^Scope,
+	name: string,
+) -> bool {
+	for binding in ctx.info.constructor_for_iterators {
+		if binding.file == ctx.file && binding.scope == scope && binding.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+checker_constructor_for_iterator_first_usage_index :: proc(
+	usages: []Checker_Constructor_For_Iterator_Usage,
+	usage: Checker_Constructor_For_Iterator_Usage,
+) -> int {
+	for existing, index in usages {
+		if existing.file == usage.file &&
+		   existing.scope == usage.scope &&
+		   existing.name == usage.name {
+			return index
+		}
+	}
+	return -1
+}
+
+checker_validate_constructor_for_iterator_usage_pair :: proc(
+	ctx: ^Checker_Context,
+	first: Checker_Constructor_For_Iterator_Usage,
+	current: Checker_Constructor_For_Iterator_Usage,
+) {
+	if current.range.end <= current.range.start {
+		return
+	}
+	if first.kind == .For_Binding && current.kind == .For_Binding {
+		if checker_constructor_for_iterator_table_types_compatible(ctx, first.table_type, current.table_type) {
+			return
+		}
+		checker_add_constructor_for_iterator_reuse_diagnostic(
+			ctx,
+			current.range,
+			current.name,
+			" can only be reused with the same internal table type",
+		)
+		return
+	}
+	if first.kind == .For_Binding {
+		checker_add_constructor_for_iterator_reuse_diagnostic(
+			ctx,
+			current.range,
+			current.name,
+			" can only be reused in FOR ... IN expressions in the same scope",
+		)
+		return
+	}
+	if current.kind == .For_Binding {
+		checker_add_constructor_for_iterator_reuse_diagnostic(
+			ctx,
+			current.range,
+			current.name,
+			" conflicts with an earlier same-scope usage; it can only be reused by another FOR ... IN expression with the same internal table type",
+		)
+	}
+}
+
+checker_constructor_for_iterator_table_types_compatible :: proc(
+	ctx: ^Checker_Context,
+	first: ^Type,
+	current: ^Type,
+) -> bool {
+	if checker_type_is_unknown(first) || checker_type_is_unknown(current) {
+		return true
+	}
+	return checker_type_same(first, current)
+}
+
+checker_add_constructor_for_iterator_reuse_diagnostic :: proc(
+	ctx: ^Checker_Context,
+	range: Range,
+	name: string,
+	suffix: string,
+) {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "constructor FOR iterator '")
+	strings.write_string(&builder, name)
+	strings.write_string(&builder, "'")
+	strings.write_string(&builder, suffix)
+	message := strings.to_string(builder)
+	if checker_diagnostic_present(
+		ctx.info.diagnostics[:],
+		.Invalid_Constructor_For_Iterator_Reuse,
+		range,
+		ctx.file,
+		message,
+	) {
+		return
+	}
+	checker_add_diagnostic(ctx, .Invalid_Constructor_For_Iterator_Reuse, range, message)
+}
+
+checker_diagnose_constructor_for_iterator_reference :: proc(
+	ctx: ^Checker_Context,
+	name: string,
+	range: Range,
+) -> bool {
+	if ctx == nil || ctx.scope == nil || ctx.file == nil || name == "" {
+		return false
+	}
+	interned := project_intern_lower_ascii(ctx.project, name)
+	if interned == "" {
+		return false
+	}
+	for binding in ctx.info.constructor_for_iterators {
+		if binding.file != ctx.file ||
+		   binding.scope != ctx.scope ||
+		   binding.name != interned ||
+		   binding.range.start >= range.start {
+			continue
+		}
+		checker_add_constructor_for_iterator_reuse_diagnostic(
+			ctx,
+			range,
+			interned,
+			" can only be reused in FOR ... IN expressions in the same scope",
+		)
+		return true
+	}
+	return false
 }
 
 checker_add_diagnostic :: proc(
