@@ -4307,6 +4307,48 @@ lv_sum = REDUCE i( INIT total = 0 FOR idx = 1 UNTIL idx > 3 NEXT total = total +
 }
 
 @(test)
+root_semantic_checker_rejects_value_constructor_for_in_with_non_table_result_type :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_line,
+    docnum TYPE string,
+  END OF ty_line,
+  tt_lines TYPE STANDARD TABLE OF ty_line WITH EMPTY KEY.
+
+DATA lt_other_lines TYPE tt_lines.
+
+DATA(lt_lines) = VALUE ty_line(
+  FOR ls_line IN lt_other_lines
+  ( )
+).
+DATA(lt_valid_lines) = VALUE tt_lines(
+  FOR ls_other IN lt_other_lines
+  ( docnum = ls_other-docnum )
+).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://value_for_in_result_type.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 1)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"VALUE constructor with FOR IN requires an internal table result type",
+		),
+		1,
+	)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Syntax_Form {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "ty_line")
+	}
+}
+
+@(test)
 root_semantic_checker_reports_unresolved_reduce_for_in_where_values :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_line,
          docnum TYPE string,

@@ -832,6 +832,17 @@ checker_check_value_constructor_expr :: proc(
 	expr: ^ast.Constructor_Expr,
 	typ: ^Type,
 ) {
+	if checker_value_constructor_has_for_in_clause(expr) &&
+	   !checker_type_is_unknown(typ) &&
+	   !checker_type_is_table_like(ctx, typ) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.type_ref.range if expr.type_ref != nil else expr.range,
+			"VALUE constructor with FOR IN requires an internal table result type",
+		)
+	}
+
 	if checker_type_is_table_like(ctx, typ) {
 		row_type := checker_type_row(ctx, typ)
 		for arg in expr.args {
@@ -850,6 +861,37 @@ checker_check_value_constructor_expr :: proc(
 	for arg in expr.args {
 		checker_check_expr_with_unresolved_value_diagnostics(ctx, arg)
 	}
+}
+
+checker_value_constructor_has_for_in_clause :: proc(expr: ^ast.Constructor_Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	return checker_constructor_body_has_for_in_clause(expr.args[:])
+}
+
+checker_constructor_body_has_for_in_clause :: proc(args: []^ast.Expr) -> bool {
+	for arg in args {
+		if checker_constructor_arg_has_for_in_clause(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+checker_constructor_arg_has_for_in_clause :: proc(arg: ^ast.Expr) -> bool {
+	if arg == nil {
+		return false
+	}
+	#partial switch n in arg.derived_expr {
+	case ^ast.Constructor_For_Clause_Expr:
+		return n.kind == .For_In || checker_constructor_body_has_for_in_clause(n.body[:])
+	case ^ast.Let_Expr:
+		return checker_constructor_body_has_for_in_clause(n.body[:])
+	case ^ast.Call_Arg_List_Expr:
+		return checker_constructor_body_has_for_in_clause(n.args[:])
+	}
+	return false
 }
 
 checker_check_value_constructor_table_arg :: proc(
