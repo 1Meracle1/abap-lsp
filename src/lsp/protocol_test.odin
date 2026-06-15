@@ -1826,6 +1826,11 @@ lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t
 			insert_text = "INSERT ${1:wa} INTO TABLE ${2:itab}.$0",
 		},
 		{
+			prefix = "in",
+			label = "INSERT ... FROM VALUE #( ... )",
+			insert_text = "INSERT ${1:dbtab} FROM VALUE #( ${2} ).$0",
+		},
+		{
 			prefix = "del",
 			label = "DELETE ... INDEX",
 			insert_text = "DELETE ${1:itab} INDEX ${2:lv_index}.$0",

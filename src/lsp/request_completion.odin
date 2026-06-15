@@ -1251,6 +1251,12 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		plain = "INSERT dbtab FROM TABLE itab.",
 	},
 	{
+		keyword = "INSERT",
+		label = "INSERT ... FROM VALUE #( ... )",
+		snippet = "INSERT ${1:dbtab} FROM VALUE #( ${2} ).$0",
+		plain = "INSERT dbtab FROM VALUE #( ).",
+	},
+	{
 		keyword = "DELETE",
 		label = "DELETE ... INDEX",
 		snippet = "DELETE ${1:itab} INDEX ${2:lv_index}.$0",
