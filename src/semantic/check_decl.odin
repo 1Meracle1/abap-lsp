@@ -325,8 +325,6 @@ checker_collect_stmt_entities :: proc(ctx: ^Checker_Context, stmt: ^ast.Stmt) {
 	#partial switch n in stmt.derived_stmt {
 	case ^ast.Data_Chained_Decl:
 		checker_collect_data_chained_decl(ctx, n)
-	case ^ast.Data_Inline_Decl:
-		_ = checker_collect_variable_decl(ctx, ctx.scope, n.name.text, .Variable, n.name.range, &n.node.decl_base.stmt_base, nil, nil)
 	case ^ast.Types_Decl:
 		checker_collect_types_decl(ctx, n)
 	case ^ast.Constants_Decl:

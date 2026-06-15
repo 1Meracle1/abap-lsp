@@ -102,11 +102,15 @@ checker_check_stmt :: proc(
 	case ^ast.Oop_Load_Stmt:
 		checker_check_oop_load_stmt(ctx, n)
 	case ^ast.Data_Inline_Decl:
-		if collect_declarations {
-			checker_collect_stmt_entities(ctx, stmt)
-		}
-		rhs := checker_check_expr(ctx, n.expr)
-		checker_apply_inline_decl_type(ctx, n.name.text, rhs.type)
+		rhs := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.expr)
+		checker_collect_inferred_expr_decl(
+			ctx,
+			n.name.text,
+			.Variable,
+			n.name.range,
+			&n.node.decl_base.stmt_base,
+			rhs.type,
+		)
 	case ^ast.Assign_Stmt:
 		checker_check_assignment_stmt(ctx, n.lhs, n.rhs)
 	case ^ast.Downcast_Assign_Stmt:

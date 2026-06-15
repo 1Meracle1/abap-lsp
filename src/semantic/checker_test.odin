@@ -2569,6 +2569,34 @@ ENDFORM.`
 }
 
 @(test)
+root_semantic_stmt_checker_reports_forward_inline_data_initializer_reference :: proc(t: ^testing.T) {
+	source := `DATA(lv_val) = lv_val1.
+DATA(lv_val1) = 1.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_inline_forward_ref.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "lv_val", .Variable)
+	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "lv_val1", .Variable)
+
+	seen_forward_ref := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Reference {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		testing.expect_value(t, diagnostic.message, checker_unresolved_variable_message(text))
+		if text == "lv_val1" {
+			seen_forward_ref = true
+		}
+	}
+	testing.expect(t, seen_forward_ref)
+}
+
+@(test)
 root_semantic_stmt_checker_resolves_describe_operands :: proc(t: ^testing.T) {
 	source := `DATA lv_value TYPE string.
 DATA lv_lines TYPE i.
