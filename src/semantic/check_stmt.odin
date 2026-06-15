@@ -1400,15 +1400,71 @@ checker_check_modify_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt)
 		return
 	}
 	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	if checker_modify_stmt_is_screen(ctx, stmt) {
+		checker_check_unresolved_variable_operand(ctx, stmt.target, target)
+		return
+	}
+	checker_check_modify_target(ctx, stmt.target, target)
 	row_type := checker_type_row(ctx, target.type)
 	row_structure := checker_type_structure(row_type)
 	if stmt.source != nil {
-		source := checker_check_expr(ctx, stmt.source)
-		expected := row_type if !checker_type_is_unknown(row_type) else target.type
-		checker_check_assignment_compatibility(ctx, source.type, expected, checker_expr_range(stmt.source))
+		expected := target.type if stmt.from_table else row_type
+		if checker_type_is_unknown(expected) && !checker_type_is_unknown(target.type) {
+			expected = target.type
+		}
+		source_ctx := ctx^
+		source_ctx.type_hint = expected
+		source_ctx.type_hint_expr = stmt.source
+		source_ctx.diagnose_unresolved_value_refs = true
+		source := checker_check_expr(&source_ctx, stmt.source)
+		if !checker_check_unresolved_variable_operand(ctx, stmt.source, source) {
+			checker_check_assignment_compatibility(
+				ctx,
+				source.type,
+				expected,
+				checker_expr_range(stmt.source),
+			)
+		}
 	}
 	checker_check_expr(ctx, stmt.index)
+	checker_check_loop_transporting_fields(ctx, stmt.transporting[:], row_type, row_structure)
 	checker_check_internal_table_where_expr(ctx, stmt.where_cond, row_type, row_structure)
+}
+
+checker_modify_stmt_is_screen :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt) -> bool {
+	if stmt == nil ||
+	   stmt.table_keyword ||
+	   stmt.source != nil ||
+	   stmt.index != nil ||
+	   stmt.where_cond != nil ||
+	   len(stmt.transporting) > 0 {
+		return false
+	}
+	name := checker_sql_simple_expr_name(ctx, stmt.target)
+	return name == project_intern_lower_ascii(ctx.project, "screen")
+}
+
+checker_check_modify_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Modify_Operand,
+			checker_expr_range(expr),
+			"MODIFY target is not writable",
+		)
+		return
+	}
+	if !checker_type_is_table_like(ctx, target.type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Modify_Operand,
+			checker_expr_range(expr),
+			"MODIFY target is not an internal table",
+		)
+	}
 }
 
 checker_modify_stmt_uses_db_source :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt) -> bool {

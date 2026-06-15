@@ -2917,7 +2917,7 @@ lsp_completion_type_addition_templates_do_not_repeat_typed_declaration_clause ::
 }
 
 @(test)
-lsp_completion_delete_update_statement_templates_expand_from_keyword_prefixes :: proc(
+lsp_completion_dml_statement_templates_expand_from_keyword_prefixes :: proc(
 	t: ^testing.T,
 ) {
 	cases := [?]Completion_Template_Prefix_Test_Case {
@@ -2952,6 +2952,56 @@ lsp_completion_delete_update_statement_templates_expand_from_keyword_prefixes ::
 			insert_text = "DELETE ${1:dbtab} FROM TABLE ${2:itab}.$0",
 		},
 		{
+			prefix = "mo",
+			label = "MODIFY ... FROM",
+			insert_text = "MODIFY ${1:itab} FROM ${2:wa}.$0",
+		},
+		{
+			prefix = "mo",
+			label = "MODIFY ... FROM ... INDEX",
+			insert_text = "MODIFY ${1:itab} FROM ${2:wa} INDEX ${3:lv_index}.$0",
+		},
+		{
+			prefix = "mo",
+			label = "MODIFY TABLE ... FROM",
+			insert_text = "MODIFY TABLE ${1:itab} FROM ${2:wa}.$0",
+		},
+		{
+			prefix = "mo",
+			label = "MODIFY ... FROM ... TRANSPORTING ... WHERE",
+			insert_text = "MODIFY ${1:itab} FROM ${2:wa} TRANSPORTING ${3:field} WHERE ${4:key_field} = ${5:lv_key}.$0",
+		},
+		{
+			prefix = "mo",
+			label = "MODIFY ... FROM TABLE",
+			insert_text = "MODIFY ${1:dbtab} FROM TABLE ${2:itab}.$0",
+		},
+		{
+			prefix = "mo",
+			label = "MODIFY ... FROM VALUE #( ... )",
+			insert_text = "MODIFY ${1:dbtab} FROM VALUE #( ${2} ).$0",
+		},
+		{
+			prefix = "mo",
+			label = "MODIFY SCREEN",
+			insert_text = "MODIFY SCREEN.$0",
+		},
+		{
+			prefix = "mo",
+			label = "MODIFY CURRENT LINE",
+			insert_text = "MODIFY CURRENT LINE.$0",
+		},
+		{
+			prefix = "mo",
+			label = "MODIFY CURRENT LINE FIELD VALUE ... INTO",
+			insert_text = "MODIFY CURRENT LINE FIELD VALUE ${1:field_name} INTO ${2:lv_value}.$0",
+		},
+		{
+			prefix = "mo",
+			label = "MODIFY LINE ... INDEX",
+			insert_text = "MODIFY LINE ${1:lv_line} INDEX ${2:lv_index}.$0",
+		},
+		{
 			prefix = "u",
 			label = "UPDATE ... SET ... WHERE",
 			insert_text = "UPDATE ${1:dbtab} SET ${2:field} = @${3:lv_value} WHERE ${4:key_field} = @${5:lv_key}.$0",
@@ -2970,7 +3020,7 @@ lsp_completion_delete_update_statement_templates_expand_from_keyword_prefixes ::
 
 	for test_case, i in cases {
 		uri := strings.concatenate(
-			{"file:///D:/repo/completion_delete_update_template_", fmt.tprintf("%d", i), ".abap"},
+			{"file:///D:/repo/completion_dml_template_", fmt.tprintf("%d", i), ".abap"},
 			context.temp_allocator,
 		)
 		source := strings.concatenate({"REPORT zmain.\nFORM run.\n  ", test_case.prefix}, context.temp_allocator)

@@ -5467,6 +5467,121 @@ READ TABLE lt_rows INTO DATA(ls_cmp) INDEX 1 COMPARING gone.`
 }
 
 @(test)
+root_semantic_modify_forms_validate_row_components :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_nested,
+         part TYPE string,
+       END OF ty_nested.
+TYPES: BEGIN OF ty_row,
+         id TYPE string,
+         status TYPE string,
+         nested TYPE ty_nested,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_more TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA ls_row TYPE ty_row.
+DATA lv_id TYPE string.
+DATA lv_index TYPE i.
+
+MODIFY lt_rows FROM ls_row INDEX lv_index TRANSPORTING id nested-part.
+MODIFY TABLE lt_rows FROM ls_row TRANSPORTING status.
+MODIFY lt_rows FROM TABLE lt_more.
+MODIFY lt_rows FROM ls_row TRANSPORTING status WHERE id = lv_id AND nested-part IS NOT INITIAL.
+MODIFY SCREEN.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://modify_forms.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	component_names := [?]string{"id", "status", "nested", "part"}
+	for name in component_names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+	lt_rows := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_rows", .Variable)
+	lt_more := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_more", .Variable)
+	ls_row := checker_test_lookup(t, &project, file.root_scope, .Value, "ls_row", .Variable)
+	lv_id := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_id", .Variable)
+	testing.expect(t, lt_rows != nil && .Used in lt_rows.flags)
+	testing.expect(t, lt_more != nil && .Used in lt_more.flags)
+	testing.expect(t, ls_row != nil && .Used in ls_row.flags)
+	testing.expect(t, lv_id != nil && .Used in lv_id.flags)
+}
+
+@(test)
+root_semantic_modify_reports_invalid_targets_and_unresolved_operands :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE string,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA ls_row TYPE ty_row.
+DATA lv_text TYPE string.
+CONSTANTS gc_text TYPE string VALUE ''.
+
+MODIFY lv_text FROM ls_row.
+MODIFY gc_text FROM ls_row.
+MODIFY TABLE lt_missing FROM ls_row.
+MODIFY lt_rows FROM ls_missing.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://modify_invalid_targets.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Modify_Operand), 2)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+
+	seen_not_table := false
+	seen_not_writable := false
+	seen_missing_target := false
+	seen_missing_source := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Invalid_Modify_Operand && text == "lv_text" {
+			seen_not_table = true
+			testing.expect_value(t, diagnostic.message, "MODIFY target is not an internal table")
+		} else if diagnostic.kind == .Invalid_Modify_Operand && text == "gc_text" {
+			seen_not_writable = true
+			testing.expect_value(t, diagnostic.message, "MODIFY target is not writable")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "lt_missing" {
+			seen_missing_target = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable lt_missing")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "ls_missing" {
+			seen_missing_source = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable ls_missing")
+		}
+	}
+	testing.expect(t, seen_not_table)
+	testing.expect(t, seen_not_writable)
+	testing.expect(t, seen_missing_target)
+	testing.expect(t, seen_missing_source)
+}
+
+@(test)
+root_semantic_modify_reports_unknown_row_components :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE string,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA ls_row TYPE ty_row.
+DATA lv_id TYPE string.
+
+MODIFY lt_rows FROM ls_row TRANSPORTING lost WHERE missing = lv_id.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://modify_components.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 2)
+	missing_names := [?]string{"lost", "missing"}
+	for name in missing_names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "lv_id"), 0)
+}
+
+@(test)
 root_semantic_internal_table_where_rhs_uses_value_resolution :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_component,
          cmptype TYPE string,
