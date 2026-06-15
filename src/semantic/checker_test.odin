@@ -2513,6 +2513,42 @@ ENDFORM.`
 }
 
 @(test)
+root_semantic_stmt_checker_rejects_inferred_value_constructor_inline_data :: proc(t: ^testing.T) {
+	source := `FORM run.
+  DATA(lv_bad) = VALUE #( ).
+  DATA(lv_parenthesized) = ( VALUE #( ) ).
+  DATA(lv_typed) = VALUE i( ).
+  DATA lv_num TYPE i.
+  lv_num = VALUE #( ).
+ENDFORM.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://inline_value_constructor.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 2)
+	direct_diagnostic_found := false
+	paren_diagnostic_found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Syntax_Form {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if text == "VALUE #( )" {
+			direct_diagnostic_found = true
+		} else if text == "( VALUE #( ) )" {
+			paren_diagnostic_found = true
+		} else {
+			testing.expect(t, false)
+		}
+		testing.expect_value(t, diagnostic.message, "inline DATA declaration cannot use VALUE #(...)")
+	}
+	testing.expect(t, direct_diagnostic_found)
+	testing.expect(t, paren_diagnostic_found)
+}
+
+@(test)
 root_semantic_expr_checker_accepts_template_format_literals :: proc(t: ^testing.T) {
 	source := `FORM run.
   DATA lv_docnum TYPE string.

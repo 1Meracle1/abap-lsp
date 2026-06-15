@@ -103,6 +103,14 @@ checker_check_stmt :: proc(
 		checker_check_oop_load_stmt(ctx, n)
 	case ^ast.Data_Inline_Decl:
 		rhs := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.expr)
+		if checker_data_inline_decl_has_inferred_value_constructor(n) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(n.expr),
+				"inline DATA declaration cannot use VALUE #(...)",
+			)
+		}
 		checker_collect_inferred_expr_decl(
 			ctx,
 			n.name.text,
@@ -380,6 +388,26 @@ checker_check_stmt :: proc(
 		checker_check_expr(ctx, n.word, .Value, true)
 		checker_check_expr(ctx, n.offset, .Value, true)
 	}
+}
+
+checker_data_inline_decl_has_inferred_value_constructor :: proc(stmt: ^ast.Data_Inline_Decl) -> bool {
+	if stmt == nil || stmt.expr == nil {
+		return false
+	}
+	return checker_expr_is_inferred_value_constructor(stmt.expr)
+}
+
+checker_expr_is_inferred_value_constructor :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Paren_Expr:
+		return checker_expr_is_inferred_value_constructor(n.expr)
+	case ^ast.Constructor_Expr:
+		return n.kind == .Value && checker_expr_is_inferred_type_ref(n.type_ref)
+	}
+	return false
 }
 
 checker_check_convert_time_stamp_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Convert_Time_Stamp_Stmt) {
