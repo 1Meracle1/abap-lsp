@@ -294,10 +294,10 @@ checker_check_stmt :: proc(
 	case ^ast.Selection_Screen_Stmt:
 		checker_check_selection_screen_stmt(ctx, n)
 	case ^ast.If_Stmt:
-		checker_check_expr(ctx, n.condition)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.condition)
 		checker_check_stmt_list(ctx, n.body)
 		for clause in n.elseif_clauses {
-			checker_check_expr(ctx, clause.condition)
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, clause.condition)
 			checker_check_stmt_list(ctx, clause.body)
 		}
 		if n.else_clause != nil {
