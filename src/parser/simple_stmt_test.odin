@@ -916,6 +916,44 @@ CONVERT DATE lv_date TIME lv_time INTO TIME STAMP lv_ts TIME ZONE lc_utc.`
 	testing.expect(t, inverse.time_zone != nil)
 	testing.expect(t, inverse.date != nil)
 	testing.expect(t, inverse.time != nil)
+	testing.expect(t, stmt.daylight_saving_time == nil)
+	testing.expect(t, inverse.daylight_saving_time == nil)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+convert_time_stamp_accepts_common_optional_forms :: proc(t: ^testing.T) {
+	source := `CONVERT DATE lv_date INTO TIME STAMP lv_ts TIME ZONE lc_utc.
+CONVERT DATE lv_date TIME lv_time DAYLIGHT SAVING TIME lv_dst INTO TIME STAMP DATA(lv_ts) TIME ZONE lc_utc.
+CONVERT TIME STAMP lv_ts TIME ZONE lc_utc INTO DATE DATA(lv_date).
+CONVERT TIME STAMP lv_ts TIME ZONE lc_utc INTO TIME DATA(lv_time).
+CONVERT TIME STAMP lv_ts TIME ZONE lc_utc INTO DATE lv_date TIME lv_time DAYLIGHT SAVING TIME DATA(lv_dst).`
+	parsed := parse(source, "convert_time_stamp_optional.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.convert_time_stamp, 5)
+	testing.expect_value(t, counts.text_transform, 0)
+
+	date_only := parsed.root.stmts[0].derived_stmt.(^ast.Convert_Time_Stamp_Stmt)
+	date_with_dst := parsed.root.stmts[1].derived_stmt.(^ast.Convert_Time_Stamp_Stmt)
+	date_target_only := parsed.root.stmts[2].derived_stmt.(^ast.Convert_Time_Stamp_Stmt)
+	time_target_only := parsed.root.stmts[3].derived_stmt.(^ast.Convert_Time_Stamp_Stmt)
+	all_targets := parsed.root.stmts[4].derived_stmt.(^ast.Convert_Time_Stamp_Stmt)
+
+	testing.expect(t, date_only.date != nil)
+	testing.expect(t, date_only.time == nil)
+	testing.expect(t, date_only.daylight_saving_time == nil)
+	testing.expect(t, date_with_dst.time != nil)
+	testing.expect(t, date_with_dst.daylight_saving_time != nil)
+	testing.expect(t, date_with_dst.time_stamp != nil)
+	testing.expect(t, date_target_only.date != nil)
+	testing.expect(t, date_target_only.time == nil)
+	testing.expect(t, time_target_only.date == nil)
+	testing.expect(t, time_target_only.time != nil)
+	testing.expect(t, all_targets.date != nil)
+	testing.expect(t, all_targets.time != nil)
+	testing.expect(t, all_targets.daylight_saving_time != nil)
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 

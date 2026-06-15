@@ -1846,6 +1846,11 @@ lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t
 			insert_text = "CONDENSE ${1:lv_text} NO-GAPS.$0",
 		},
 		{
+			prefix = "conv",
+			label = "CONVERT DATE ... TIME ... INTO TIME STAMP",
+			insert_text = "CONVERT DATE ${1:lv_date}\n        TIME ${2:lv_time}\n        INTO TIME STAMP DATA(${3:lv_timestamp})\n        TIME ZONE ${4:lv_time_zone}.$0",
+		},
+		{
 			prefix = "find",
 			label = "FIND ... IN",
 			insert_text = "FIND ${1:'text'} IN ${2:lv_text}.$0",
@@ -1975,6 +1980,47 @@ lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t
 				testing.expect(t, strings.contains(string(payload), `"newText"`))
 			}
 		}
+	}
+}
+
+@(test)
+lsp_completion_convert_time_stamp_templates_expand_from_convert_prefix :: proc(t: ^testing.T) {
+	uri := "file:///D:/repo/completion_convert_template.abap"
+	source := "REPORT zmain.\nFORM run.\n  conv"
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	offset := len(source)
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	labels := [?]string {
+		"CONVERT DATE ... TIME ... INTO TIME STAMP",
+		"CONVERT DATE ... TIME ... DAYLIGHT SAVING TIME ... INTO TIME STAMP",
+		"CONVERT TIME STAMP ... INTO DATE ... TIME",
+	}
+	for label in labels {
+		item, item_ok := lsp_test_find_completion_item(items, label)
+		testing.expect(t, item_ok)
+		if item_ok {
+			testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+			testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		}
+	}
+
+	with_dst, with_dst_ok := lsp_test_find_completion_item(
+		items,
+		"CONVERT DATE ... TIME ... DAYLIGHT SAVING TIME ... INTO TIME STAMP",
+	)
+	testing.expect(t, with_dst_ok)
+	if with_dst_ok {
+		testing.expect(t, strings.contains(with_dst.insert_text, "DAYLIGHT SAVING TIME ${3:lv_dst}"))
+		testing.expect(t, strings.contains(with_dst.insert_text, "INTO TIME STAMP DATA(${4:lv_timestamp})"))
 	}
 }
 

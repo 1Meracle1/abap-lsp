@@ -474,6 +474,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.time_zone)
 		walk(next, n.date)
 		walk(next, n.time)
+		walk(next, n.daylight_saving_time)
 	case ^List_Control_Stmt:
 		walk_expr_list(next, n.operands)
 	case ^Line_Stmt:

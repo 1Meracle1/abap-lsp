@@ -1339,6 +1339,24 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		plain = "CONDENSE lv_text NO-GAPS.",
 	},
 	{
+		keyword = "CONVERT",
+		label = "CONVERT DATE ... TIME ... INTO TIME STAMP",
+		snippet = "CONVERT DATE ${1:lv_date}\n        TIME ${2:lv_time}\n        INTO TIME STAMP DATA(${3:lv_timestamp})\n        TIME ZONE ${4:lv_time_zone}.$0",
+		plain = "CONVERT DATE lv_date\n        TIME lv_time\n        INTO TIME STAMP DATA(lv_timestamp)\n        TIME ZONE lv_time_zone.",
+	},
+	{
+		keyword = "CONVERT",
+		label = "CONVERT DATE ... TIME ... DAYLIGHT SAVING TIME ... INTO TIME STAMP",
+		snippet = "CONVERT DATE ${1:lv_date}\n        TIME ${2:lv_time}\n        DAYLIGHT SAVING TIME ${3:lv_dst}\n        INTO TIME STAMP DATA(${4:lv_timestamp})\n        TIME ZONE ${5:lv_time_zone}.$0",
+		plain = "CONVERT DATE lv_date\n        TIME lv_time\n        DAYLIGHT SAVING TIME lv_dst\n        INTO TIME STAMP DATA(lv_timestamp)\n        TIME ZONE lv_time_zone.",
+	},
+	{
+		keyword = "CONVERT",
+		label = "CONVERT TIME STAMP ... INTO DATE ... TIME",
+		snippet = "CONVERT TIME STAMP ${1:lv_timestamp}\n        TIME ZONE ${2:lv_time_zone}\n        INTO DATE DATA(${3:lv_date})\n             TIME DATA(${4:lv_time}).$0",
+		plain = "CONVERT TIME STAMP lv_timestamp\n        TIME ZONE lv_time_zone\n        INTO DATE DATA(lv_date)\n             TIME DATA(lv_time).",
+	},
+	{
 		keyword = "CONCATENATE",
 		label = "CONCATENATE ... INTO",
 		snippet = "CONCATENATE ${1:lv_a} ${2:lv_b} INTO ${3:lv_text}.$0",

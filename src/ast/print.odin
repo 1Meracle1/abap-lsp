@@ -4311,15 +4311,30 @@ emit_convert_time_stamp_stmt :: proc(p: ^Printer, stmt: ^Convert_Time_Stamp_Stmt
 		emit_node(p, stmt.time_stamp)
 		emit(p, " TIME ZONE ")
 		emit_node(p, stmt.time_zone)
-		emit(p, " INTO DATE ")
-		emit_node(p, stmt.date)
-		emit(p, " TIME ")
-		emit_node(p, stmt.time)
+		emit(p, " INTO")
+		if stmt.date != nil {
+			emit(p, " DATE ")
+			emit_node(p, stmt.date)
+		}
+		if stmt.time != nil {
+			emit(p, " TIME ")
+			emit_node(p, stmt.time)
+		}
+		if stmt.daylight_saving_time != nil {
+			emit(p, " DAYLIGHT SAVING TIME ")
+			emit_node(p, stmt.daylight_saving_time)
+		}
 	case .Date_Time_To_Time_Stamp:
 		emit(p, "CONVERT DATE ")
 		emit_node(p, stmt.date)
-		emit(p, " TIME ")
-		emit_node(p, stmt.time)
+		if stmt.time != nil {
+			emit(p, " TIME ")
+			emit_node(p, stmt.time)
+		}
+		if stmt.daylight_saving_time != nil {
+			emit(p, " DAYLIGHT SAVING TIME ")
+			emit_node(p, stmt.daylight_saving_time)
+		}
 		emit(p, " INTO TIME STAMP ")
 		emit_node(p, stmt.time_stamp)
 		emit(p, " TIME ZONE ")

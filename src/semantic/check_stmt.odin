@@ -280,10 +280,7 @@ checker_check_stmt :: proc(
 		checker_check_expr(ctx, n.condition)
 		checker_check_expr(ctx, n.duration)
 	case ^ast.Convert_Time_Stamp_Stmt:
-		checker_check_expr(ctx, n.time_stamp, .Value, n.kind == .Date_Time_To_Time_Stamp)
-		checker_check_expr(ctx, n.time_zone)
-		checker_check_expr(ctx, n.date, .Value, n.kind == .Time_Stamp_To_Date_Time)
-		checker_check_expr(ctx, n.time, .Value, n.kind == .Time_Stamp_To_Date_Time)
+		checker_check_convert_time_stamp_stmt(ctx, n)
 	case ^ast.List_Control_Stmt:
 		checker_check_expr_list(ctx, n.operands[:])
 	case ^ast.Line_Stmt:
@@ -379,6 +376,42 @@ checker_check_stmt :: proc(
 		checker_check_expr(ctx, n.word, .Value, true)
 		checker_check_expr(ctx, n.offset, .Value, true)
 	}
+}
+
+checker_check_convert_time_stamp_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Convert_Time_Stamp_Stmt) {
+	timestamp_type := checker_builtin_type_from_name(ctx.checker, "timestamp")
+	date_type := checker_builtin_type_from_name(ctx.checker, "d")
+	time_type := checker_builtin_type_from_name(ctx.checker, "t")
+	dst_type := checker_builtin_type_from_name(ctx.checker, "c")
+
+	switch stmt.kind {
+	case .Date_Time_To_Time_Stamp:
+		checker_check_expr(ctx, stmt.date)
+		checker_check_expr(ctx, stmt.time)
+		checker_check_expr(ctx, stmt.daylight_saving_time)
+		checker_check_convert_target(ctx, stmt.time_stamp, timestamp_type)
+		checker_check_expr(ctx, stmt.time_zone)
+	case .Time_Stamp_To_Date_Time:
+		checker_check_expr(ctx, stmt.time_stamp)
+		checker_check_expr(ctx, stmt.time_zone)
+		checker_check_convert_target(ctx, stmt.date, date_type)
+		checker_check_convert_target(ctx, stmt.time, time_type)
+		checker_check_convert_target(ctx, stmt.daylight_saving_time, dst_type)
+	}
+}
+
+checker_check_convert_target :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	type_hint: ^Type,
+) -> Operand {
+	if expr == nil {
+		return checker_invalid_operand()
+	}
+	local := ctx^
+	local.type_hint = type_hint
+	local.type_hint_expr = expr
+	return checker_check_expr(&local, expr, .Value, true)
 }
 
 checker_check_describe_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Describe_Stmt) {

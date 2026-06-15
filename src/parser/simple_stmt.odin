@@ -1825,35 +1825,70 @@ parse_convert_time_stamp_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "CONVERT")
 	stmt := ast.new(ast.Convert_Time_Stamp_Stmt, start.range, p.allocator)
 	if allow_keyword(p, "TIME") {
-		expect_keyword(p, "STAMP")
-		body_start := p.index
-		stmt.kind = .Time_Stamp_To_Date_Time
-		stmt.time_stamp = required_simple_expr(p, body_start, []string{"TIME"})
-		expect_keyword(p, "TIME")
-		expect_keyword(p, "ZONE")
-		stmt.time_zone = required_simple_expr(p, body_start, []string{"INTO"})
-		expect_keyword(p, "INTO")
-		expect_keyword(p, "DATE")
-		stmt.date = required_simple_expr(p, body_start, []string{"TIME"})
-		expect_keyword(p, "TIME")
-		stmt.time = required_simple_expr(p, body_start, []string{})
+		parse_convert_time_stamp_to_date_time_stmt(p, stmt)
 	} else {
-		expect_keyword(p, "DATE")
-		body_start := p.index
-		stmt.kind = .Date_Time_To_Time_Stamp
-		stmt.date = required_simple_expr(p, body_start, []string{"TIME"})
-		expect_keyword(p, "TIME")
-		stmt.time = required_simple_expr(p, body_start, []string{"INTO"})
-		expect_keyword(p, "INTO")
-		expect_keyword(p, "TIME")
-		expect_keyword(p, "STAMP")
-		stmt.time_stamp = required_simple_expr(p, body_start, []string{"TIME"})
-		expect_keyword(p, "TIME")
-		expect_keyword(p, "ZONE")
-		stmt.time_zone = required_simple_expr(p, body_start, []string{})
+		parse_convert_date_time_to_time_stamp_stmt(p, stmt)
 	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
+}
+
+parse_convert_time_stamp_to_date_time_stmt :: proc(
+	p: ^Parser,
+	stmt: ^ast.Convert_Time_Stamp_Stmt,
+) {
+	expect_keyword(p, "STAMP")
+	body_start := p.index
+	stmt.kind = .Time_Stamp_To_Date_Time
+	stmt.time_stamp = required_simple_expr(p, body_start, []string{"TIME"})
+	expect_keyword(p, "TIME")
+	expect_keyword(p, "ZONE")
+	stmt.time_zone = required_simple_expr(p, body_start, []string{"INTO"})
+	expect_keyword(p, "INTO")
+	if allow_keyword(p, "DATE") {
+		stmt.date = required_simple_expr(p, body_start, []string{"TIME", "DAYLIGHT"})
+	}
+	if allow_keyword(p, "TIME") {
+		stmt.time = required_simple_expr(p, body_start, []string{"DAYLIGHT"})
+	}
+	parse_convert_daylight_saving_time(p, stmt, body_start)
+	if stmt.date == nil && stmt.time == nil {
+		error_current(p, "syntax error: expected DATE or TIME after INTO")
+	}
+}
+
+parse_convert_date_time_to_time_stamp_stmt :: proc(
+	p: ^Parser,
+	stmt: ^ast.Convert_Time_Stamp_Stmt,
+) {
+	expect_keyword(p, "DATE")
+	body_start := p.index
+	stmt.kind = .Date_Time_To_Time_Stamp
+	stmt.date = required_simple_expr(p, body_start, []string{"TIME", "INTO"})
+	if allow_keyword(p, "TIME") {
+		stmt.time = required_simple_expr(p, body_start, []string{"DAYLIGHT", "INTO"})
+		parse_convert_daylight_saving_time(p, stmt, body_start)
+	}
+	expect_keyword(p, "INTO")
+	expect_keyword(p, "TIME")
+	expect_keyword(p, "STAMP")
+	stmt.time_stamp = required_simple_expr(p, body_start, []string{"TIME"})
+	expect_keyword(p, "TIME")
+	expect_keyword(p, "ZONE")
+	stmt.time_zone = required_simple_expr(p, body_start, []string{})
+}
+
+parse_convert_daylight_saving_time :: proc(
+	p: ^Parser,
+	stmt: ^ast.Convert_Time_Stamp_Stmt,
+	body_start: int,
+) {
+	if !allow_keyword(p, "DAYLIGHT") {
+		return
+	}
+	expect_keyword(p, "SAVING")
+	expect_keyword(p, "TIME")
+	stmt.daylight_saving_time = required_simple_expr(p, body_start, []string{"INTO"})
 }
 
 text_transform_stmt_starts :: proc(p: ^Parser) -> bool {

@@ -2604,6 +2604,60 @@ DESCRIBE TABLE itab LINES DATA(lv_inline).`
 }
 
 @(test)
+root_semantic_stmt_checker_infers_convert_time_stamp_inline_targets :: proc(t: ^testing.T) {
+	source := `DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+DATA lv_dst TYPE c.
+DATA lv_ts TYPE timestamp.
+DATA lv_zone TYPE string.
+CONVERT DATE lv_date
+        TIME lv_time
+        INTO TIME STAMP DATA(lv_inline_ts)
+        TIME ZONE lv_zone.
+CONVERT DATE lv_date
+        TIME lv_time
+        DAYLIGHT SAVING TIME lv_dst
+        INTO TIME STAMP DATA(lv_inline_ts_dst)
+        TIME ZONE lv_zone.
+CONVERT TIME STAMP lv_ts TIME ZONE lv_zone INTO DATE DATA(lv_inline_date).
+CONVERT TIME STAMP lv_ts TIME ZONE lv_zone INTO TIME DATA(lv_inline_time).
+CONVERT TIME STAMP lv_ts TIME ZONE lv_zone INTO DATE lv_date TIME lv_time DAYLIGHT SAVING TIME DATA(lv_inline_dst).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_convert_timestamp_inline.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lv_inline_ts := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_inline_ts", .Variable)
+	lv_inline_ts_dst := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_inline_ts_dst", .Variable)
+	lv_inline_date := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_inline_date", .Variable)
+	lv_inline_time := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_inline_time", .Variable)
+	lv_inline_dst := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_inline_dst", .Variable)
+	testing.expect(
+		t,
+		lv_inline_ts != nil &&
+		lv_inline_ts_dst != nil &&
+		lv_inline_date != nil &&
+		lv_inline_time != nil &&
+		lv_inline_dst != nil,
+	)
+	if lv_inline_ts == nil ||
+	   lv_inline_ts_dst == nil ||
+	   lv_inline_date == nil ||
+	   lv_inline_time == nil ||
+	   lv_inline_dst == nil {
+		return
+	}
+
+	testing.expect_value(t, checker_test_type_name(&project, lv_inline_ts.type), "timestamp")
+	testing.expect_value(t, checker_test_type_name(&project, lv_inline_ts_dst.type), "timestamp")
+	testing.expect_value(t, checker_test_type_name(&project, lv_inline_date.type), "d")
+	testing.expect_value(t, checker_test_type_name(&project, lv_inline_time.type), "t")
+	testing.expect_value(t, checker_test_type_name(&project, lv_inline_dst.type), "c")
+}
+
+@(test)
 root_semantic_stmt_checker_infers_catch_inline_exception_ref_type :: proc(t: ^testing.T) {
 	source := `TRY.
 CATCH cx_root INTO DATA(lx_error).

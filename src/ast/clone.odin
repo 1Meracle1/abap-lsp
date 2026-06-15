@@ -621,6 +621,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.time_zone = clone(n.time_zone, allocator)
 		r.date = clone(n.date, allocator)
 		r.time = clone(n.time, allocator)
+		r.daylight_saving_time = clone(n.daylight_saving_time, allocator)
 		return r
 	case ^List_Control_Stmt:
 		r := clone_shallow(n, allocator)

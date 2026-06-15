@@ -1878,11 +1878,12 @@ Convert_Time_Stamp_Kind :: enum {
 // ABAP syntax: `CONVERT TIME STAMP ...` or `CONVERT DATE ... TIME ... INTO TIME STAMP ...`.
 Convert_Time_Stamp_Stmt :: struct {
 	using node: Stmt,
-	kind:       Convert_Time_Stamp_Kind,
-	time_stamp: ^Expr,
-	time_zone:  ^Expr,
-	date:       ^Expr,
-	time:       ^Expr,
+	kind:                 Convert_Time_Stamp_Kind,
+	time_stamp:           ^Expr,
+	time_zone:            ^Expr,
+	date:                 ^Expr,
+	time:                 ^Expr,
+	daylight_saving_time: ^Expr,
 }
 
 List_Control_Kind :: enum {
