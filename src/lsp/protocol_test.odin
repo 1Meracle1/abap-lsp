@@ -1898,7 +1898,7 @@ lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t
 		{
 			prefix = "type-",
 			label = "TYPE-POOLS: ...",
-			insert_text = "TYPE-POOLS: ${1:abap}, ${2:icon}.$0",
+			insert_text = "TYPE-POOLS:\n  ${1:abap},\n  ${2:icon}.$0",
 		},
 		{
 			prefix = "fi",
@@ -2337,7 +2337,7 @@ lsp_completion_begin_end_statement_templates_expand_from_keyword_prefixes :: pro
 		{
 			prefix = "ty",
 			label = "TYPES: BEGIN OF ... END OF",
-			insert_text = "TYPES: BEGIN OF ${1:ty_line},\n         ${2:field} TYPE ${3:string},\n       END OF ${1:ty_line}.$0",
+			insert_text = "TYPES:\n  BEGIN OF ${1:ty_line},\n    ${2:field} TYPE ${3:string},\n  END OF ${1:ty_line}.$0",
 		},
 		{
 			prefix = "ty",
@@ -2387,27 +2387,27 @@ lsp_completion_begin_end_statement_templates_expand_from_keyword_prefixes :: pro
 		{
 			prefix = "da",
 			label = "DATA: BEGIN OF ... END OF",
-			insert_text = "DATA: BEGIN OF ${1:ls_row},\n        ${2:field} TYPE ${3:string},\n      END OF ${1:ls_row}.$0",
+			insert_text = "DATA:\n  BEGIN OF ${1:ls_row},\n    ${2:field} TYPE ${3:string},\n  END OF ${1:ls_row}.$0",
 		},
 		{
 			prefix = "da",
 			label = "DATA: BEGIN OF COMMON PART ... END OF COMMON PART",
-			insert_text = "DATA: BEGIN OF COMMON PART ${1:common_part}.\nDATA: END OF COMMON PART.$0",
+			insert_text = "DATA:\n  BEGIN OF COMMON PART ${1:common_part}.\nDATA:\n  END OF COMMON PART.$0",
 		},
 		{
 			prefix = "const",
 			label = "CONSTANTS: BEGIN OF ... END OF",
-			insert_text = "CONSTANTS: BEGIN OF ${1:c_values},\n             ${2:name} TYPE ${3:string} VALUE ${4:''},\n           END OF ${1:c_values}.$0",
+			insert_text = "CONSTANTS:\n  BEGIN OF ${1:c_values},\n    ${2:name} TYPE ${3:string} VALUE ${4:''},\n  END OF ${1:c_values}.$0",
 		},
 		{
 			prefix = "sta",
 			label = "STATICS: BEGIN OF ... END OF",
-			insert_text = "STATICS: BEGIN OF ${1:s_state},\n           ${2:field} TYPE ${3:string},\n         END OF ${1:s_state}.$0",
+			insert_text = "STATICS:\n  BEGIN OF ${1:s_state},\n    ${2:field} TYPE ${3:string},\n  END OF ${1:s_state}.$0",
 		},
 		{
 			prefix = "class-da",
 			label = "CLASS-DATA: BEGIN OF ... END OF",
-			insert_text = "CLASS-DATA: BEGIN OF ${1:gs_row},\n              ${2:field} TYPE ${3:string},\n            END OF ${1:gs_row}.$0",
+			insert_text = "CLASS-DATA:\n  BEGIN OF ${1:gs_row},\n    ${2:field} TYPE ${3:string},\n  END OF ${1:gs_row}.$0",
 		},
 		{
 			prefix = "se",
@@ -3259,7 +3259,7 @@ lsp_completion_begin_end_statement_template_falls_back_to_plain_text_without_sni
 	testing.expect_value(
 		t,
 		item.insert_text,
-		"TYPES: BEGIN OF ty_line,\n           field TYPE string,\n         END OF ty_line.",
+		"TYPES:\n    BEGIN OF ty_line,\n      field TYPE string,\n    END OF ty_line.",
 	)
 }
 

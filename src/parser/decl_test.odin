@@ -369,22 +369,20 @@ structured_type_keyword_head_requires_of_when_not_component :: proc(t: ^testing.
 }
 
 @(test)
-types_structured_declaration_allows_end_without_component_comma :: proc(t: ^testing.T) {
-	source := `TYPES: BEGIN OF dd03p,
-  decimals TYPE decimals,
-  fieldname TYPE fieldname, " Field Name
-  valexi TYPE valexi " Existence of fixed values
-END OF dd03p.`
-	parsed := parse(source, "dd03p.abap", context.allocator)
+types_structured_declaration_reports_missing_comma_before_end :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_line,
+    field TYPE string
+  END OF ty_line.`
+	parsed := parse(source, "types_missing_comma_before_end.abap", context.allocator)
 
-	testing.expect_value(t, len(parsed.errors), 0)
+	expect_error_contains(t, parsed, "expected ',' between TYPES clauses")
 	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
-	testing.expect_value(t, len(types.types), 5)
+	testing.expect_value(t, len(types.types), 3)
 	testing.expect_value(t, types.types[0].kind, ast.Decl_Clause_Kind.Begin_Group)
+	testing.expect_value(t, types.types[1].name.text, "field")
 	testing.expect_value(t, types.types[1].depth, 1)
-	testing.expect_value(t, types.types[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name.text, "decimals")
-	testing.expect_value(t, types.types[3].name.text, "valexi")
-	testing.expect_value(t, types.types[4].kind, ast.Decl_Clause_Kind.End_Group)
+	testing.expect_value(t, types.types[2].kind, ast.Decl_Clause_Kind.End_Group)
 }
 
 @(test)
@@ -415,6 +413,20 @@ TYPES:
 	testing.expect_value(t, types.types[5].depth, 0)
 	table_ref := types.types[5].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, table_ref.name.text, "ty_bus_msg")
+}
+
+@(test)
+types_chained_declaration_reports_clause_after_period :: proc(t: ^testing.T) {
+	source := `TYPES:
+  ty_type TYPE c.
+
+  ty_another_type TYPE c.`
+	parsed := parse(source, "types_clause_after_period.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected ',' between TYPES clauses")
+	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	testing.expect_value(t, len(types.types), 1)
+	testing.expect_value(t, types.types[0].name.text, "ty_type")
 }
 
 @(test)

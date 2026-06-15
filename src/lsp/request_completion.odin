@@ -672,8 +672,8 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 	{
 		keyword = "TYPES",
 		label = "TYPES: BEGIN OF ... END OF",
-		snippet = "TYPES: BEGIN OF ${1:ty_line},\n         ${2:field} TYPE ${3:string},\n       END OF ${1:ty_line}.$0",
-		plain = "TYPES: BEGIN OF ty_line,\n         field TYPE string,\n       END OF ty_line.",
+		snippet = "TYPES:\n  BEGIN OF ${1:ty_line},\n    ${2:field} TYPE ${3:string},\n  END OF ${1:ty_line}.$0",
+		plain = "TYPES:\n  BEGIN OF ty_line,\n    field TYPE string,\n  END OF ty_line.",
 	},
 	{
 		keyword = "TYPES",
@@ -738,8 +738,8 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 	{
 		keyword = "TYPE-POOLS",
 		label = "TYPE-POOLS: ...",
-		snippet = "TYPE-POOLS: ${1:abap}, ${2:icon}.$0",
-		plain = "TYPE-POOLS: abap, icon.",
+		snippet = "TYPE-POOLS:\n  ${1:abap},\n  ${2:icon}.$0",
+		plain = "TYPE-POOLS:\n  abap,\n  icon.",
 	},
 	{
 		keyword = "BEGIN",
@@ -863,32 +863,32 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 	{
 		keyword = "DATA",
 		label = "DATA: BEGIN OF ... END OF",
-		snippet = "DATA: BEGIN OF ${1:ls_row},\n        ${2:field} TYPE ${3:string},\n      END OF ${1:ls_row}.$0",
-		plain = "DATA: BEGIN OF ls_row,\n        field TYPE string,\n      END OF ls_row.",
+		snippet = "DATA:\n  BEGIN OF ${1:ls_row},\n    ${2:field} TYPE ${3:string},\n  END OF ${1:ls_row}.$0",
+		plain = "DATA:\n  BEGIN OF ls_row,\n    field TYPE string,\n  END OF ls_row.",
 	},
 	{
 		keyword = "DATA",
 		label = "DATA: BEGIN OF COMMON PART ... END OF COMMON PART",
-		snippet = "DATA: BEGIN OF COMMON PART ${1:common_part}.\nDATA: END OF COMMON PART.$0",
-		plain = "DATA: BEGIN OF COMMON PART common_part.\nDATA: END OF COMMON PART.",
+		snippet = "DATA:\n  BEGIN OF COMMON PART ${1:common_part}.\nDATA:\n  END OF COMMON PART.$0",
+		plain = "DATA:\n  BEGIN OF COMMON PART common_part.\nDATA:\n  END OF COMMON PART.",
 	},
 	{
 		keyword = "CONSTANTS",
 		label = "CONSTANTS: BEGIN OF ... END OF",
-		snippet = "CONSTANTS: BEGIN OF ${1:c_values},\n             ${2:name} TYPE ${3:string} VALUE ${4:''},\n           END OF ${1:c_values}.$0",
-		plain = "CONSTANTS: BEGIN OF c_values,\n             name TYPE string VALUE '',\n           END OF c_values.",
+		snippet = "CONSTANTS:\n  BEGIN OF ${1:c_values},\n    ${2:name} TYPE ${3:string} VALUE ${4:''},\n  END OF ${1:c_values}.$0",
+		plain = "CONSTANTS:\n  BEGIN OF c_values,\n    name TYPE string VALUE '',\n  END OF c_values.",
 	},
 	{
 		keyword = "STATICS",
 		label = "STATICS: BEGIN OF ... END OF",
-		snippet = "STATICS: BEGIN OF ${1:s_state},\n           ${2:field} TYPE ${3:string},\n         END OF ${1:s_state}.$0",
-		plain = "STATICS: BEGIN OF s_state,\n           field TYPE string,\n         END OF s_state.",
+		snippet = "STATICS:\n  BEGIN OF ${1:s_state},\n    ${2:field} TYPE ${3:string},\n  END OF ${1:s_state}.$0",
+		plain = "STATICS:\n  BEGIN OF s_state,\n    field TYPE string,\n  END OF s_state.",
 	},
 	{
 		keyword = "CLASS-DATA",
 		label = "CLASS-DATA: BEGIN OF ... END OF",
-		snippet = "CLASS-DATA: BEGIN OF ${1:gs_row},\n              ${2:field} TYPE ${3:string},\n            END OF ${1:gs_row}.$0",
-		plain = "CLASS-DATA: BEGIN OF gs_row,\n              field TYPE string,\n            END OF gs_row.",
+		snippet = "CLASS-DATA:\n  BEGIN OF ${1:gs_row},\n    ${2:field} TYPE ${3:string},\n  END OF ${1:gs_row}.$0",
+		plain = "CLASS-DATA:\n  BEGIN OF gs_row,\n    field TYPE string,\n  END OF gs_row.",
 	},
 	{
 		keyword = "INTERFACES",

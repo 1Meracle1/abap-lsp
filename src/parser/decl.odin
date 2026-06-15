@@ -162,7 +162,7 @@ parse_data_inline_decl_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 
 parse_types_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "TYPES")
-	allow_token(p, .Colon)
+	chained := allow_token(p, .Colon)
 	stmt := ast.new(ast.Types_Decl, start.range, p.allocator)
 	stmt.types = make([dynamic]ast.Types_Clause, 0, 2, p.allocator)
 	open_groups := 0
@@ -179,9 +179,6 @@ parse_types_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			open_groups += 1
 		}
 		if !allow_token(p, .Comma) {
-			if open_groups > 0 && at_keyword(p, "END") && at_keyword_index(p, p.index + 1, "OF") {
-				continue
-			}
 			if open_groups > 0 && types_structured_period_continues(p) {
 				expect_token(p, .Period)
 				if allow_keyword(p, "TYPES") {
@@ -197,6 +194,9 @@ parse_types_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 	}
 	period := expect_token_message(p, .Period, "syntax error: expected '.' after TYPES declaration")
+	if chained && period.kind == .Period && types_clause_after_statement_period(p) {
+		error_current(p, "syntax error: expected ',' between TYPES clauses")
+	}
 	assign_decl_depths(&stmt.types)
 	stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
 	return stmt
@@ -213,6 +213,26 @@ types_structured_period_continues :: proc(p: ^Parser) -> bool {
 				(at_keyword_index(p, index + 1, "TYPE") ||
 				 at_keyword_index(p, index + 1, "STRUCTURE"))) ||
 		(at_keyword_index(p, index, "END") && at_keyword_index(p, index + 1, "OF")) \
+	)
+}
+
+types_clause_after_statement_period :: proc(p: ^Parser) -> bool {
+	if p.index >= len(p.tokens) || known_stmt_lead_at(p, p.index) {
+		return false
+	}
+	if at_keyword(p, "BEGIN") || at_keyword(p, "END") {
+		return at_keyword_index(p, p.index + 1, "OF")
+	}
+	tok := current_token(p)
+	if tok.kind != .Ident && tok.kind != .Number && tok.kind != .Star {
+		return false
+	}
+	return(
+		at_keyword_index(p, p.index + 1, "TYPE") ||
+		at_keyword_index(p, p.index + 1, "LIKE") ||
+		at_keyword_index(p, p.index + 1, "LENGTH") ||
+		at_keyword_index(p, p.index + 1, "DECIMALS") ||
+		at_keyword_index(p, p.index + 1, "OCCURS") \
 	)
 }
 
