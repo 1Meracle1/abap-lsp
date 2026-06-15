@@ -1215,6 +1215,7 @@ module.exports = grammar({
     _call_tail_token: ($) =>
       choice(
         $.call_parameter_assignment,
+        keyword($, "TABLES"),
         $._sql_tail_token,
       ),
 

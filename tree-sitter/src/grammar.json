@@ -21451,6 +21451,22 @@
           "name": "call_parameter_assignment"
         },
         {
+          "type": "ALIAS",
+          "content": {
+            "type": "TOKEN",
+            "content": {
+              "type": "PREC",
+              "value": 2,
+              "content": {
+                "type": "PATTERN",
+                "value": "[tT][aA][bB][lL][eE][sS]"
+              }
+            }
+          },
+          "named": true,
+          "value": "keyword"
+        },
+        {
           "type": "SYMBOL",
           "name": "_sql_tail_token"
         }

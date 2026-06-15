@@ -445,8 +445,7 @@ CALL FUNCTION 'BAPI_DELIVERY_GETLIST' DESTINATION c_s4_dest
     (keyword)
     (qualified_name
       (identifier))
-    (qualified_name
-      (identifier))
+    (keyword)
     (call_parameter_assignment
       (identifier)
       (equals)
