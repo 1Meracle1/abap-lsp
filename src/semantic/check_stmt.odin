@@ -119,8 +119,8 @@ checker_check_stmt :: proc(
 		checker_check_expr(ctx, n.expr)
 	case ^ast.Clear_Stmt:
 		for operand in n.operands {
-			checker_check_expr(ctx, operand.target, .Value, true)
-			checker_check_expr(ctx, operand.value)
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.target, .Value, true)
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.value)
 		}
 	case ^ast.Refresh_Stmt:
 		for operand in n.operands {

@@ -2608,6 +2608,47 @@ ENDFORM.`
 }
 
 @(test)
+root_semantic_stmt_checker_reports_unresolved_clear_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+CLEAR missing_target.
+CLEAR lv_text WITH missing_value.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_clear_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "missing_target"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "missing_value"),
+		1,
+	)
+
+	seen_target := false
+	seen_value := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unresolved_Reference {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		testing.expect_value(t, diagnostic.message, checker_unresolved_variable_message(text))
+		if text == "missing_target" {
+			seen_target = true
+		} else if text == "missing_value" {
+			seen_value = true
+		}
+	}
+	testing.expect(t, seen_target)
+	testing.expect(t, seen_value)
+}
+
+@(test)
 root_semantic_stmt_checker_reports_unresolved_if_condition_operands :: proc(t: ^testing.T) {
 	source := `IF sdfsdf IS NOT INITIAL.
 ENDIF.
