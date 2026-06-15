@@ -157,12 +157,12 @@ code_action_fill_value_constructor_fields :: proc(
 		semantic.semantic_query_facts(query),
 		request_range,
 	)
-	if !info_ok || info.expr == nil || info.structure == nil {
+	if !info_ok || info.node == nil || info.structure == nil {
 		return {}, false
 	}
-	body_start, body_end, body_ok := code_action_constructor_body_range(
+	body_start, body_end, body_ok := code_action_value_constructor_body_range(
 		snapshot.source,
-		info.expr,
+		info,
 	)
 	if !body_ok || !code_action_source_range_is_blank(snapshot.source, body_start, body_end) {
 		return {}, false
@@ -198,6 +198,26 @@ code_action_fill_value_constructor_fields :: proc(
 		true
 }
 
+code_action_value_constructor_body_range :: proc(
+	source: string,
+	info: semantic.Semantic_Value_Constructor_Info,
+) -> (
+	start: int,
+	end: int,
+	ok: bool,
+) {
+	if info.expr != nil {
+		return code_action_constructor_body_range(source, info.expr)
+	}
+	if info.node == nil {
+		return
+	}
+	if _, row_ok := info.node.derived.(^ast.Call_Arg_List_Expr); row_ok {
+		return code_action_parenthesized_body_range(source, info.node.range.start, info.node.range.end)
+	}
+	return
+}
+
 code_action_constructor_body_range :: proc(
 	source: string,
 	expr: ^ast.Constructor_Expr,
@@ -211,8 +231,22 @@ code_action_constructor_body_range :: proc(
 	}
 	range_start := clamp(expr.type_ref.range.end, 0, len(source))
 	range_end := clamp(expr.range.end, range_start, len(source))
+	return code_action_parenthesized_body_range(source, range_start, range_end)
+}
+
+code_action_parenthesized_body_range :: proc(
+	source: string,
+	range_start: int,
+	range_end: int,
+) -> (
+	start: int,
+	end: int,
+	ok: bool,
+) {
+	start_bound := clamp(range_start, 0, len(source))
+	end_bound := clamp(range_end, start_bound, len(source))
 	open := -1
-	for i := range_start; i < range_end; i += 1 {
+	for i := start_bound; i < end_bound; i += 1 {
 		if source[i] == '(' {
 			open = i
 			break
@@ -221,7 +255,7 @@ code_action_constructor_body_range :: proc(
 	if open < 0 {
 		return
 	}
-	close := range_end - 1
+	close := end_bound - 1
 	for close > open && source[close] != ')' {
 		close -= 1
 	}

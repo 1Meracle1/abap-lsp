@@ -360,7 +360,12 @@ semantic_fact_value_constructor_structure_at_range :: proc(
 			continue
 		}
 		constructor, constructor_ok := record.node.derived.(^ast.Constructor_Expr)
-		if !constructor_ok || constructor.kind != .Value {
+		_, row_args_ok := record.node.derived.(^ast.Call_Arg_List_Expr)
+		if constructor_ok {
+			if constructor.kind != .Value {
+				continue
+			}
+		} else if !row_args_ok {
 			continue
 		}
 		if !semantic_range_applies_to_query(request, record.node.range) {
@@ -379,7 +384,7 @@ semantic_fact_value_constructor_structure_at_range :: proc(
 		return {}, false
 	}
 	record := q.checker.info.expr_infos[best]
-	constructor := record.node.derived.(^ast.Constructor_Expr)
+	constructor, _ := record.node.derived.(^ast.Constructor_Expr)
 	structure := checker_type_structure(record.info.type)
 	if structure == nil {
 		return {}, false

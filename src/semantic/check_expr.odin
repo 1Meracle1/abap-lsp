@@ -917,13 +917,28 @@ checker_check_value_constructor_table_arg :: proc(
 		checker_check_expr(ctx, n.to)
 		checker_record_operand(ctx, &arg.expr_base, .Value, table_type)
 	case ^ast.Constructor_For_Clause_Expr:
-		checker_check_constructor_for_clause_expr(ctx, &arg.expr_base, n, false)
+		checker_check_constructor_for_clause_expr(ctx, &arg.expr_base, n, false, body_type_hint = row_type)
 	case ^ast.Let_Expr:
 		checker_check_expr(ctx, arg)
 	case:
-		value := checker_check_value_constructor_typed_value(ctx, arg, row_type)
-		checker_check_assignment_compatibility(ctx, value.type, row_type, checker_expr_range(arg))
+		checker_check_value_constructor_row_value(ctx, arg, row_type)
 	}
+}
+
+checker_check_value_constructor_row_value :: proc(
+	ctx: ^Checker_Context,
+	arg: ^ast.Expr,
+	row_type: ^Type,
+) {
+	if arg == nil {
+		return
+	}
+	if row, row_ok := arg.derived_expr.(^ast.Call_Arg_List_Expr); row_ok {
+		checker_check_value_constructor_row_arg_list(ctx, &arg.expr_base, row, row_type)
+		return
+	}
+	value := checker_check_value_constructor_typed_value(ctx, arg, row_type)
+	checker_check_assignment_compatibility(ctx, value.type, row_type, checker_expr_range(arg))
 }
 
 checker_check_value_constructor_row_arg_list :: proc(
@@ -1684,6 +1699,7 @@ checker_check_constructor_for_clause_expr :: proc(
 	expr: ^ast.Constructor_For_Clause_Expr,
 	lhs: bool,
 	reduce_state: ^Checker_Reduce_Validation_State = nil,
+	body_type_hint: ^Type = nil,
 ) -> Operand {
 	checker_open_scope(ctx, .Constructor_For, expr.range)
 	defer checker_close_scope(ctx)
@@ -1708,8 +1724,13 @@ checker_check_constructor_for_clause_expr :: proc(
 			)
 		}
 		for body in expr.body {
-			operand := checker_check_expr(ctx, body)
-			result_type = operand.type
+			if body_type_hint != nil {
+				checker_check_value_constructor_row_value(ctx, body, body_type_hint)
+				result_type = body_type_hint
+			} else {
+				operand := checker_check_expr(ctx, body)
+				result_type = operand.type
+			}
 		}
 	}
 	return checker_record_operand(ctx, node, .No_Value, result_type, lhs = lhs)

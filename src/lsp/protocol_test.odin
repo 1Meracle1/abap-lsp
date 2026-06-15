@@ -5039,6 +5039,69 @@ APPEND VALUE #(  ) TO lr_str.`
 }
 
 @(test)
+lsp_code_action_fills_value_constructor_for_in_row_with_target_structure_fields :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/code_action_value_constructor_for_in_fields.abap"
+	source := `TYPES:
+  BEGIN OF ty_line,
+    docnum TYPE string,
+    count TYPE i,
+  END OF ty_line,
+  tt_lines TYPE STANDARD TABLE OF ty_line WITH EMPTY KEY.
+
+DATA lt_other_lines TYPE tt_lines.
+
+DATA(lt_lines) = VALUE tt_lines(
+  FOR ls_line IN lt_other_lines
+  (  )
+).`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	row_offset := strings.index(source, "(  )")
+	testing.expect(t, row_offset >= 0)
+	if row_offset < 0 {
+		return
+	}
+	params := lsp_test_code_action_params(
+		uri,
+		range_from_offsets(source, row_offset + 1, row_offset + 1),
+	)
+	actions := code_actions_for_params(&state, params, context.allocator)
+
+	action_found := false
+	for action in actions {
+		if action.title != "Fill VALUE with structure fields" {
+			continue
+		}
+		action_found = true
+		testing.expect_value(t, action.kind, "quickfix")
+		edits, edits_ok := action.edit.changes[uri]
+		testing.expect(t, edits_ok)
+		if !edits_ok {
+			return
+		}
+		testing.expect_value(t, len(edits), 1)
+		applied := lsp_test_apply_text_edits(t, source, edits, context.allocator)
+		testing.expect(
+			t,
+			strings.contains(
+				applied,
+				`DATA(lt_lines) = VALUE tt_lines(
+  FOR ls_line IN lt_other_lines
+  (
+    docnum = VALUE #( )
+    count = VALUE #( )
+  )
+).`,
+			),
+		)
+	}
+	testing.expect(t, action_found)
+}
+
+@(test)
 lsp_references_include_method_declaration_implementation_and_call :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/references_method.abap"
 	source := `CLASS lcl_demo DEFINITION.
