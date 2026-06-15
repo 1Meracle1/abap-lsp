@@ -2847,7 +2847,22 @@ parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 		}
 		clause.initial_size = initial_size
 	}
+	if oop_parameter_type_clause_is_complex_definition(clause) {
+		error(
+			p,
+			tokenizer.text_range(keyword.range.start, previous_token(p).range.end),
+			"syntax error: complex type definitions are not allowed in parameter sections",
+		)
+	}
 	return clause
+}
+
+oop_parameter_type_clause_is_complex_definition :: proc(clause: ^ast.Data_Type_Clause) -> bool {
+	if clause == nil {
+		return false
+	}
+	return clause.form == .Range_Of ||
+	       (clause.table_has_of && type_clause_form_allows_missing_ref(clause.form))
 }
 
 parse_oop_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {

@@ -2761,8 +2761,8 @@ ENDCLASS.`,
   PUBLIC SECTION.
     METHODS get RETURNING VALUE(rv_value) type.
 ENDCLASS.`,
-			label = "TYPE STANDARD TABLE OF ... WITH DEFAULT KEY",
-			insert_text = "TYPE STANDARD TABLE OF ${1:string} WITH DEFAULT KEY$0",
+			label = "TYPE STANDARD TABLE",
+			insert_text = "TYPE STANDARD TABLE$0",
 		},
 		{
 			source = `CLASS lcl_demo DEFINITION.
@@ -2837,6 +2837,50 @@ ENDCLASS.`,
 			)
 			testing.expect_value(t, applied, expected)
 		}
+	}
+}
+
+@(test)
+lsp_completion_type_addition_templates_skip_complex_definitions_in_oop_parameter_clauses :: proc(
+	t: ^testing.T,
+) {
+	uri := "file:///D:/repo/completion_oop_parameter_type_addition.abap"
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS get RETURNING VALUE(rt_rows) type.
+ENDCLASS.`
+	state := lsp_test_state_with_open_document(uri, source)
+	defer lsp_test_state_destroy(&state)
+
+	prefix_start := strings.index(source, "type")
+	testing.expect(t, prefix_start >= 0)
+	if prefix_start < 0 {
+		return
+	}
+	offset := prefix_start + len("type")
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+	testing.expect(t, snapshot_ok)
+	if !snapshot_ok {
+		return
+	}
+
+	items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+	_, generic_ok := lsp_test_find_completion_item(items, "TYPE STANDARD TABLE")
+	testing.expect(t, generic_ok)
+
+	complex_labels := [?]string {
+		"TYPE TABLE OF ...",
+		"TYPE STANDARD TABLE OF ... WITH EMPTY KEY",
+		"TYPE STANDARD TABLE OF ... WITH DEFAULT KEY",
+		"TYPE SORTED TABLE OF ... WITH UNIQUE KEY",
+		"TYPE SORTED TABLE OF ... WITH NON-UNIQUE KEY",
+		"TYPE HASHED TABLE OF ... WITH UNIQUE KEY",
+		"TYPE RANGE OF ...",
+	}
+	for label in complex_labels {
+		_, item_ok := lsp_test_find_completion_item(items, label)
+		testing.expect(t, !item_ok)
 	}
 }
 

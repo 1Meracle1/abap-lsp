@@ -524,12 +524,13 @@ completion_get_time_stamp_field_template_count :: proc(
 }
 
 Completion_Statement_Template :: struct {
-	keyword:                 string,
-	label:                   string,
-	snippet:                 string,
-	plain:                   string,
-	types_chain_clause:      bool,
-	type_addition_clause:    bool,
+	keyword:                          string,
+	label:                            string,
+	snippet:                          string,
+	plain:                            string,
+	types_chain_clause:               bool,
+	type_addition_clause:             bool,
+	type_addition_complex_definition: bool,
 }
 
 EXPRESSION_TEMPLATES :: [?]Completion_Statement_Template {
@@ -788,6 +789,7 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		snippet = "TYPE TABLE OF ${1:string}$0",
 		plain = "TYPE TABLE OF string",
 		type_addition_clause = true,
+		type_addition_complex_definition = true,
 	},
 	{
 		keyword = "TYPE",
@@ -816,6 +818,7 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		snippet = "TYPE STANDARD TABLE OF ${1:string} WITH EMPTY KEY$0",
 		plain = "TYPE STANDARD TABLE OF string WITH EMPTY KEY",
 		type_addition_clause = true,
+		type_addition_complex_definition = true,
 	},
 	{
 		keyword = "TYPE",
@@ -823,6 +826,7 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		snippet = "TYPE STANDARD TABLE OF ${1:string} WITH DEFAULT KEY$0",
 		plain = "TYPE STANDARD TABLE OF string WITH DEFAULT KEY",
 		type_addition_clause = true,
+		type_addition_complex_definition = true,
 	},
 	{
 		keyword = "TYPE",
@@ -830,6 +834,7 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		snippet = "TYPE SORTED TABLE OF ${1:string} WITH UNIQUE KEY ${2:table_line}$0",
 		plain = "TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line",
 		type_addition_clause = true,
+		type_addition_complex_definition = true,
 	},
 	{
 		keyword = "TYPE",
@@ -837,6 +842,7 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		snippet = "TYPE SORTED TABLE OF ${1:string} WITH NON-UNIQUE KEY ${2:table_line}$0",
 		plain = "TYPE SORTED TABLE OF string WITH NON-UNIQUE KEY table_line",
 		type_addition_clause = true,
+		type_addition_complex_definition = true,
 	},
 	{
 		keyword = "TYPE",
@@ -844,6 +850,7 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		snippet = "TYPE HASHED TABLE OF ${1:string} WITH UNIQUE KEY ${2:table_line}$0",
 		plain = "TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line",
 		type_addition_clause = true,
+		type_addition_complex_definition = true,
 	},
 	{
 		keyword = "TYPE",
@@ -851,6 +858,7 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		snippet = "TYPE RANGE OF ${1:sy-datum}$0",
 		plain = "TYPE RANGE OF sy-datum",
 		type_addition_clause = true,
+		type_addition_complex_definition = true,
 	},
 	{
 		keyword = "DATA",
@@ -1565,7 +1573,11 @@ completion_common_statement_template_matches :: proc(
 		return completion_template_in_types_chain_clause(source, offset)
 	}
 	if template.type_addition_clause {
-		return completion_template_in_type_addition_clause(source, offset)
+		if !completion_template_in_type_addition_clause(source, offset) {
+			return false
+		}
+		return !template.type_addition_complex_definition ||
+		       !completion_template_in_oop_signature_type_addition_clause(source, offset)
 	}
 	return completion_template_at_statement_start(source, offset)
 }
@@ -1731,6 +1743,26 @@ completion_template_in_type_addition_clause :: proc(source: string, offset: int)
 		       completion_template_has_word_between(source, keyword_end, prefix_start, "tables")
 	}
 	return false
+}
+
+completion_template_in_oop_signature_type_addition_clause :: proc(source: string, offset: int) -> bool {
+	prefix_start := completion_template_prefix_start(source, offset)
+	keyword_start, keyword_end, keyword_ok := completion_template_statement_keyword_before(
+		source,
+		prefix_start,
+	)
+	if !keyword_ok || keyword_end <= keyword_start {
+		return false
+	}
+	keyword := utils.to_lower_ascii(source[keyword_start:keyword_end], context.temp_allocator)
+	if !completion_template_type_addition_signature_keyword(keyword) {
+		return false
+	}
+	return completion_template_has_word_between(source, keyword_end, prefix_start, "importing") ||
+	       completion_template_has_word_between(source, keyword_end, prefix_start, "exporting") ||
+	       completion_template_has_word_between(source, keyword_end, prefix_start, "changing") ||
+	       completion_template_has_word_between(source, keyword_end, prefix_start, "returning") ||
+	       completion_template_has_word_between(source, keyword_end, prefix_start, "receiving")
 }
 
 completion_template_type_addition_decl_statement_keyword :: proc "contextless" (

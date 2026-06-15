@@ -1282,7 +1282,7 @@ ENDCLASS.`
 }
 
 @(test)
-oop_signature_distinguishes_bare_table_from_table_of :: proc(t: ^testing.T) {
+oop_signature_accepts_bare_table_and_rejects_inline_table_definition :: proc(t: ^testing.T) {
 	source := `INTERFACE lif.
   METHODS run
     EXPORTING
@@ -1291,7 +1291,11 @@ oop_signature_distinguishes_bare_table_from_table_of :: proc(t: ^testing.T) {
 ENDINTERFACE.`
 	parsed := parse(source, "oop_table_parameter_shapes.abap", context.allocator)
 
-	testing.expect_value(t, len(parsed.errors), 0)
+	expect_error_contains(
+		t,
+		parsed,
+		"complex type definitions are not allowed in parameter sections",
+	)
 	methods := parsed.root.stmts[0].derived_stmt.(^ast.Interface_Decl).body[0].derived_stmt.(^ast.Oop_Simple_Stmt)
 	exporting := methods.members[0].signatures[0]
 	testing.expect_value(t, len(exporting.parameters), 2)
@@ -1302,6 +1306,28 @@ ENDINTERFACE.`
 	testing.expect(t, exporting.parameters[1].type_clause.table_has_of)
 	row_ref := exporting.parameters[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, row_ref.base_name.text, "string")
+}
+
+@(test)
+oop_signature_rejects_complex_parameter_type_definition :: proc(t: ^testing.T) {
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+  CLASS-METHODS method_name
+    IMPORTING
+      !it_dels TYPE STANDARD TABLE OF /sttp/e_docnum WITH EMPTY KEY.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD method_name.
+  ENDMETHOD.
+ENDCLASS.`
+	parsed := parse(source, "oop_complex_parameter_type.abap", context.allocator)
+
+	expect_error_contains(
+		t,
+		parsed,
+		"complex type definitions are not allowed in parameter sections",
+	)
 }
 
 @(test)
