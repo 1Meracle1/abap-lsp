@@ -1326,7 +1326,8 @@ checker_check_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_Stmt)
 		checker_check_sql_insert_stmt(ctx, stmt)
 		return
 	}
-	target := checker_check_expr(ctx, stmt.target, .Value, stmt.form == .Internal_Table)
+	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	checker_check_insert_target(ctx, stmt.target, target)
 	row_type := checker_type_row(ctx, target.type)
 	if stmt.source != nil {
 		source := checker_check_expr(ctx, stmt.source)
@@ -1339,6 +1340,29 @@ checker_check_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_Stmt)
 	for assignment in stmt.assignments {
 		checker_check_expr(ctx, assignment.name)
 		checker_check_expr(ctx, assignment.value)
+	}
+}
+
+checker_check_insert_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Insert_Operand,
+			checker_expr_range(expr),
+			"INSERT target is not writable",
+		)
+		return
+	}
+	if !checker_type_is_table_like(ctx, target.type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Insert_Operand,
+			checker_expr_range(expr),
+			"INSERT target is not an internal table",
+		)
 	}
 }
 

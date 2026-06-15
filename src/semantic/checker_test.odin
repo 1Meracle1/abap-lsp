@@ -3032,6 +3032,54 @@ ENDLOOP.`
 }
 
 @(test)
+root_semantic_stmt_checker_diagnoses_invalid_insert_targets :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ztt_osmm_aif_job,
+         id TYPE string,
+       END OF ztt_osmm_aif_job.
+DATA lv_text TYPE string.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+CONSTANTS gc_text TYPE string VALUE ''.
+INSERT VALUE #(  ) INTO TABLE lv_text.
+INSERT VALUE #(  ) INTO TABLE gc_text.
+INSERT VALUE #(  ) INTO TABLE ztt_osmm_aif_job.
+INSERT VALUE #(  ) INTO TABLE lt_missing.
+INSERT VALUE #(  ) INTO TABLE lt_text.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_insert_invalid_target.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Insert_Operand), 3)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+
+	seen_not_table := false
+	seen_constant := false
+	seen_type_target := false
+	seen_missing := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Invalid_Insert_Operand && text == "lv_text" {
+			seen_not_table = true
+			testing.expect_value(t, diagnostic.message, "INSERT target is not an internal table")
+		} else if diagnostic.kind == .Invalid_Insert_Operand && text == "gc_text" {
+			seen_constant = true
+			testing.expect_value(t, diagnostic.message, "INSERT target is not writable")
+		} else if diagnostic.kind == .Invalid_Insert_Operand && text == "ztt_osmm_aif_job" {
+			seen_type_target = true
+			testing.expect_value(t, diagnostic.message, "INSERT target is not writable")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "lt_missing" {
+			seen_missing = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable lt_missing")
+		}
+	}
+	testing.expect(t, seen_not_table)
+	testing.expect(t, seen_constant)
+	testing.expect(t, seen_type_target)
+	testing.expect(t, seen_missing)
+}
+
+@(test)
 root_semantic_stmt_checker_diagnoses_invalid_sort_operands :: proc(t: ^testing.T) {
 	source := `DATA lv_not_table TYPE string.
 CONSTANTS gc_text TYPE string VALUE ''.

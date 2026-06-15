@@ -30,6 +30,7 @@ Checker_Diagnostic_Kind :: enum {
 	Invalid_Open_Sql_Order_By,
 	Invalid_Loop_Source,
 	Invalid_Constructor_For_Iterator_Reuse,
+	Invalid_Insert_Operand,
 	Invalid_Append_Operand,
 	Invalid_Sort_Operand,
 	Invalid_Concatenate_Operand,
