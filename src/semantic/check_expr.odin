@@ -56,7 +56,9 @@ checker_check_expr :: proc(
 		operand := checker_check_expr(ctx, n.expr, namespace, lhs)
 		return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity, lhs = lhs)
 	case ^ast.Template_Format_Spec_Expr:
-		checker_check_expr(ctx, n.value)
+		if !checker_template_format_spec_value_is_literal(n) {
+			checker_check_expr(ctx, n.value)
+		}
 		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Type_Ref_Expr:
 		if n.raw_operand {
@@ -232,6 +234,57 @@ checker_check_expr :: proc(
 		return checker_record_operand(ctx, node, .Variable, entity.type if entity != nil else project_type_unknown(ctx.project), entity, lhs)
 	}
 	return checker_record_operand(ctx, node, .Value, project_type_unknown(ctx.project), lhs = lhs)
+}
+
+checker_template_format_spec_value_is_literal :: proc(spec: ^ast.Template_Format_Spec_Expr) -> bool {
+	if spec == nil {
+		return false
+	}
+	option, has_option := spec.option.?
+	if !has_option {
+		return false
+	}
+	value, ok := checker_template_format_value_name(spec.value)
+	if !ok {
+		return false
+	}
+	#partial switch option {
+	case .Alpha:
+		return strings.equal_fold(value, "IN") ||
+		       strings.equal_fold(value, "OUT") ||
+		       strings.equal_fold(value, "RAW")
+	case .Align:
+		return strings.equal_fold(value, "LEFT") ||
+		       strings.equal_fold(value, "RIGHT") ||
+		       strings.equal_fold(value, "CENTER")
+	case .Date, .Time:
+		return strings.equal_fold(value, "RAW") ||
+		       strings.equal_fold(value, "ISO") ||
+		       strings.equal_fold(value, "USER") ||
+		       strings.equal_fold(value, "ENVIRONMENT")
+	case .Timestamp:
+		return strings.equal_fold(value, "SPACE") ||
+		       strings.equal_fold(value, "ISO") ||
+		       strings.equal_fold(value, "USER") ||
+		       strings.equal_fold(value, "ENVIRONMENT")
+	}
+	return false
+}
+
+checker_template_format_value_name :: proc(expr: ^ast.Expr) -> (string, bool) {
+	if expr == nil {
+		return "", false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return n.name, n.name != ""
+	case ^ast.Type_Ref_Expr:
+		if n.raw_operand || n.name.text == "" || n.base_name.text != "" || len(n.path) > 0 {
+			return "", false
+		}
+		return n.name.text, true
+	}
+	return "", false
 }
 
 checker_check_host_expr :: proc(

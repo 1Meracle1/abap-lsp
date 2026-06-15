@@ -2513,6 +2513,45 @@ ENDFORM.`
 }
 
 @(test)
+root_semantic_expr_checker_accepts_template_format_literals :: proc(t: ^testing.T) {
+	source := `FORM run.
+  DATA lv_docnum TYPE string.
+  DATA lv_width TYPE i.
+  lv_docnum = |{ lv_docnum
+    ALPHA = IN
+    ALIGN = LEFT
+    DATE = ISO
+    TIME = ENVIRONMENT
+    TIMESTAMP = USER
+    WIDTH = lv_width
+    DECIMALS = 2 }|.
+ENDFORM.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://template_format_literals.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "IN"), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "LEFT"), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "ISO"), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "ENVIRONMENT"), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "USER"), 0)
+
+	run := checker_test_lookup(t, &project, file.root_scope, .Routine, "run", .Form)
+	testing.expect(t, run != nil)
+	if run == nil {
+		return
+	}
+	run_payload := run.payload.(^Entity_Routine_Payload)
+	lv_docnum := checker_test_lookup(t, &project, run_payload.body_scope, .Value, "lv_docnum", .Variable)
+	lv_width := checker_test_lookup(t, &project, run_payload.body_scope, .Value, "lv_width", .Variable)
+	testing.expect(t, lv_docnum != nil && .Used in lv_docnum.flags)
+	testing.expect(t, lv_width != nil && .Used in lv_width.flags)
+}
+
+@(test)
 root_semantic_stmt_checker_reports_assignment_conversion_failures :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_row,
          value TYPE c,
