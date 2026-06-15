@@ -6449,3 +6449,62 @@ lo_repo-`
 	testing.expect(t, !constructor_found)
 	testing.expect(t, !unrelated_found)
 }
+
+@(test)
+root_semantic_query_completion_after_pending_structure_dash_inside_value_constructor_uses_receiver_type :: proc(
+	t: ^testing.T,
+) {
+	source := `TYPES:
+  BEGIN OF ty_line,
+    field1 TYPE string,
+    field2 TYPE string,
+  END OF ty_line,
+  BEGIN OF ty_line2,
+    field TYPE string,
+  END OF ty_line2,
+  tt_table TYPE TABLE OF ty_line WITH EMPTY KEY.
+
+DATA lt_table TYPE tt_table.
+DATA ls_line TYPE ty_line2.
+
+APPEND VALUE #(
+  field1 = VALUE #( )
+  field2 = ls_line-
+) TO lt_table.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	parsed := parser.parse(source, "mem://query_pending_structure_dash_in_constructor.abap", context.allocator)
+	checker := checker_make(&project)
+	file := checker_add_file(&checker, parsed.path, parsed.root)
+	checker_check_file(&checker, file)
+
+	query := semantic_query(&project, &checker, file)
+	offset := checker_test_find_text(source, "ls_line-") + len("ls_line-")
+	testing.expect(t, offset >= len("ls_line-"))
+
+	items := semantic_completion_items_at_offset(
+		semantic_query_completion(query),
+		offset,
+		"",
+		context.allocator,
+		source,
+	)
+
+	receiver_field_found := false
+	populated_field_found := false
+	for item in items {
+		if item.name == "field" &&
+		   item.namespace == .Value &&
+		   item.source == .Selector_Member &&
+		   item.selector_op == .Dash {
+			receiver_field_found = true
+		}
+		if item.name == "field1" || item.name == "field2" {
+			populated_field_found = true
+		}
+	}
+	testing.expect(t, receiver_field_found)
+	testing.expect(t, !populated_field_found)
+}

@@ -797,10 +797,8 @@ semantic_completion_operand_info_before_offset :: proc(
 	offset: int,
 ) -> (Checker_Expr_Info, bool) {
 	best := -1
-	best_exact := false
 	best_priority := 0
 	best_width := 0
-	probe := offset - 1
 	for record, i in q.checker.info.expr_infos {
 		if record.node == nil || !semantic_query_record_matches_file(record, q.file) {
 			continue
@@ -809,21 +807,16 @@ semantic_completion_operand_info_before_offset :: proc(
 		if range.start >= range.end {
 			continue
 		}
-		exact := range.end == offset
-		contains := range.start <= probe && probe < range.end
-		if !exact && !contains {
+		if range.end != offset {
 			continue
 		}
 		kind := semantic_expression_info_kind_from_node(record.node)
 		priority := semantic_expression_info_priority(kind)
 		width := semantic_range_width(range)
 		if best < 0 ||
-		   (exact && !best_exact) ||
-		   (exact == best_exact &&
-		    (priority < best_priority ||
-		     (priority == best_priority && width < best_width))) {
+		   priority < best_priority ||
+		   (priority == best_priority && width < best_width) {
 			best = i
-			best_exact = exact
 			best_priority = priority
 			best_width = width
 		}
