@@ -421,18 +421,18 @@ checker_check_convert_time_stamp_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.
 		checker_check_expr(ctx, stmt.date)
 		checker_check_expr(ctx, stmt.time)
 		checker_check_expr(ctx, stmt.daylight_saving_time)
-		checker_check_convert_target(ctx, stmt.time_stamp, timestamp_type)
+		checker_check_type_hinted_target(ctx, stmt.time_stamp, timestamp_type)
 		checker_check_expr(ctx, stmt.time_zone)
 	case .Time_Stamp_To_Date_Time:
 		checker_check_expr(ctx, stmt.time_stamp)
 		checker_check_expr(ctx, stmt.time_zone)
-		checker_check_convert_target(ctx, stmt.date, date_type)
-		checker_check_convert_target(ctx, stmt.time, time_type)
-		checker_check_convert_target(ctx, stmt.daylight_saving_time, dst_type)
+		checker_check_type_hinted_target(ctx, stmt.date, date_type)
+		checker_check_type_hinted_target(ctx, stmt.time, time_type)
+		checker_check_type_hinted_target(ctx, stmt.daylight_saving_time, dst_type)
 	}
 }
 
-checker_check_convert_target :: proc(
+checker_check_type_hinted_target :: proc(
 	ctx: ^Checker_Context,
 	expr: ^ast.Expr,
 	type_hint: ^Type,
@@ -3017,7 +3017,12 @@ checker_check_report_dependency_target :: proc(
 checker_check_runtime_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Runtime_Stmt) {
 	checker_check_expr(ctx, stmt.id)
 	checker_check_expr(ctx, stmt.field, .Value, stmt.kind == .Get)
-	checker_check_expr(ctx, stmt.target, .Value, true)
+	if stmt.kind == .Get && stmt.subject == .Time_Stamp_Field {
+		timestamp_type := checker_builtin_type_from_name(ctx.checker, "timestamp")
+		checker_check_type_hinted_target(ctx, stmt.target, timestamp_type)
+	} else {
+		checker_check_expr(ctx, stmt.target, .Value, true)
+	}
 	checker_check_expr(ctx, stmt.value)
 	checker_check_expr(ctx, stmt.line, .Value, true)
 	checker_check_expr(ctx, stmt.offset, .Value, true)

@@ -2845,6 +2845,24 @@ CONVERT TIME STAMP lv_ts TIME ZONE lv_zone INTO DATE lv_date TIME lv_time DAYLIG
 }
 
 @(test)
+root_semantic_stmt_checker_infers_get_time_stamp_inline_target :: proc(t: ^testing.T) {
+	source := `GET TIME STAMP FIELD DATA(lv_modify_timestamp).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_get_timestamp_inline.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lv_modify_timestamp := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_modify_timestamp", .Variable)
+	testing.expect(t, lv_modify_timestamp != nil && lv_modify_timestamp.type != nil)
+	if lv_modify_timestamp == nil || lv_modify_timestamp.type == nil {
+		return
+	}
+	testing.expect_value(t, checker_test_type_name(&project, lv_modify_timestamp.type), "timestamp")
+}
+
+@(test)
 root_semantic_stmt_checker_infers_catch_inline_exception_ref_type :: proc(t: ^testing.T) {
 	source := `TRY.
 CATCH cx_root INTO DATA(lx_error).
