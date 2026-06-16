@@ -985,8 +985,7 @@ parse_filter_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dy
 		} else if allow_keyword(p, "IN") {
 			append_if_expr(out, parse_constructor_value_expr(p, body_start))
 		} else if allow_keyword(p, "USING") {
-			allow_keyword(p, "KEY")
-			_ = expect_token(p, .Ident)
+			append_if_expr(out, parse_filter_using_key_clause_expr(p, body_start))
 		} else if at_keyword(p, "WHERE") {
 			append_if_expr(out, parse_constructor_where_clause_expr(p))
 		} else {
@@ -994,6 +993,22 @@ parse_filter_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dy
 		}
 		ensure_forward_progress(p, start)
 	}
+}
+
+parse_filter_using_key_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
+	start := previous_token(p)
+	using_key := parse_table_key_selector(p, body_start, {"WHERE"})
+	end := start.range.end
+	if p.index > 0 {
+		end = p.tokens[p.index - 1].range.end
+	}
+	expr := ast.new(
+		ast.Constructor_Filter_Using_Key_Clause_Expr,
+		tokenizer.text_range(start.range.start, end),
+		p.allocator,
+	)
+	expr.using_key = using_key
+	return expr
 }
 
 parse_filter_except_in_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {

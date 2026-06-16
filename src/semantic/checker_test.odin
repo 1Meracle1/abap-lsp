@@ -4293,7 +4293,9 @@ root_semantic_checker_accepts_case_filter_reduce_and_constructor_for_forms :: pr
          id TYPE i,
          text TYPE string,
        END OF ty_row.
-DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row
+  WITH EMPTY KEY
+  WITH NON-UNIQUE SORTED KEY by_id COMPONENTS id.
 DATA lt_filtered TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
 DATA lv_id TYPE i.
 DATA lv_sum TYPE i.
@@ -4303,7 +4305,7 @@ CASE lv_id.
   WHEN OTHERS.
 ENDCASE.
 
-lt_filtered = FILTER #( lt_rows WHERE id = lv_id ).
+lt_filtered = FILTER #( lt_rows USING KEY by_id WHERE id = lv_id ).
 lv_sum = REDUCE i( INIT total = 0 FOR row IN lt_rows WHERE ( id = lv_id ) NEXT total = total + row-id ).
 lv_sum = REDUCE i( INIT total = 0 FOR idx = 1 THEN idx + 1 UNTIL idx > 3 NEXT total = total + idx ).
 lv_sum = REDUCE i( INIT total = 0 FOR idx = 1 UNTIL idx > 3 NEXT total = total + idx ).`
@@ -4331,7 +4333,7 @@ root_semantic_filter_except_in_where_uses_left_and_right_row_fields :: proc(t: ^
     docnum TYPE string,
   END OF ty_header,
   tt_docnum TYPE STANDARD TABLE OF string WITH EMPTY KEY,
-  tt_header TYPE STANDARD TABLE OF ty_header WITH EMPTY KEY.
+  tt_header TYPE SORTED TABLE OF ty_header WITH NON-UNIQUE KEY docnum.
 
 DATA lt_docnum TYPE tt_docnum.
 DATA lt_header TYPE tt_header.
@@ -4401,13 +4403,88 @@ lt_delta = FILTER #(
 }
 
 @(test)
+root_semantic_filter_warns_when_explicit_result_row_differs_from_source :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_aif_job_header,
+    mandt  TYPE string,
+    docnum TYPE string,
+  END OF ty_aif_job_header,
+  tt_docnum TYPE STANDARD TABLE OF string WITH EMPTY KEY,
+  tt_aif_job_header_sorted TYPE SORTED TABLE OF ty_aif_job_header WITH UNIQUE KEY docnum.
+
+DATA lt_aif_job_header_existing TYPE tt_aif_job_header_sorted.
+DATA lt_docnum_wt_ship TYPE tt_docnum.
+
+DATA(lt_delta_docnum_wt_ship1) = FILTER tt_aif_job_header_sorted(
+  lt_docnum_wt_ship EXCEPT IN lt_aif_job_header_existing
+  WHERE table_line = docnum
+).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://filter_explicit_result_shape_warning.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 1)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"FILTER explicit result type is structurally different from the source table",
+		),
+		1,
+	)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Syntax_Form ||
+		   diagnostic.message != "FILTER explicit result type is structurally different from the source table" {
+			continue
+		}
+		testing.expect_value(t, diagnostic.severity, Checker_Diagnostic_Severity.Warning)
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "tt_aif_job_header_sorted")
+	}
+}
+
+@(test)
+root_semantic_filter_inferred_result_uses_source_table_type :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_aif_job_header,
+    mandt  TYPE string,
+    docnum TYPE string,
+  END OF ty_aif_job_header,
+  tt_docnum TYPE STANDARD TABLE OF string WITH EMPTY KEY,
+  tt_aif_job_header_sorted TYPE SORTED TABLE OF ty_aif_job_header WITH UNIQUE KEY docnum.
+
+DATA lt_aif_job_header_existing TYPE tt_aif_job_header_sorted.
+DATA lt_docnum_wt_ship TYPE tt_docnum.
+
+DATA(lt_delta_docnum_wt_ship1) = FILTER #(
+  lt_docnum_wt_ship EXCEPT IN lt_aif_job_header_existing
+  WHERE table_line = docnum
+).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://filter_inferred_result_source_type.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lt_docnum_wt_ship := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_docnum_wt_ship", .Variable)
+	lt_delta_docnum_wt_ship1 := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_delta_docnum_wt_ship1", .Variable)
+	testing.expect(t, lt_docnum_wt_ship != nil && lt_delta_docnum_wt_ship1 != nil)
+	if lt_docnum_wt_ship != nil && lt_delta_docnum_wt_ship1 != nil {
+		testing.expect(t, checker_type_same(lt_delta_docnum_wt_ship1.type, lt_docnum_wt_ship.type))
+	}
+}
+
+@(test)
 root_semantic_filter_except_in_where_diagnoses_unknown_left_table_line :: proc(t: ^testing.T) {
 	source := `TYPES:
   BEGIN OF ty_header,
     docnum TYPE string,
   END OF ty_header,
   tt_docnum TYPE STANDARD TABLE OF string WITH EMPTY KEY,
-  tt_header TYPE STANDARD TABLE OF ty_header WITH EMPTY KEY.
+  tt_header TYPE SORTED TABLE OF ty_header WITH NON-UNIQUE KEY docnum.
 
 DATA lt_docnum TYPE tt_docnum.
 DATA lt_header TYPE tt_header.
@@ -4432,6 +4509,183 @@ lt_delta = FILTER #(
 		}
 		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "table_line1")
 		testing.expect_value(t, diagnostic.message, "unknown internal table field table_line1")
+	}
+}
+
+@(test)
+root_semantic_filter_accepts_sorted_hashed_and_secondary_keys :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE i,
+       END OF ty_row,
+       ty_secondary TYPE STANDARD TABLE OF ty_row
+         WITH EMPTY KEY
+         WITH NON-UNIQUE SORTED KEY by_id COMPONENTS id.
+DATA lt_sorted TYPE SORTED TABLE OF ty_row WITH NON-UNIQUE KEY id.
+DATA lt_hashed TYPE HASHED TABLE OF ty_row WITH UNIQUE KEY id.
+DATA lt_secondary TYPE ty_secondary.
+DATA lt_filtered TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lv_id TYPE i.
+
+lt_filtered = FILTER #( lt_sorted WHERE id = lv_id ).
+lt_filtered = FILTER #( lt_hashed WHERE id = lv_id ).
+lt_filtered = FILTER #( lt_secondary USING KEY by_id WHERE id = lv_id ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://filter_keyed_tables_valid.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+}
+
+@(test)
+root_semantic_filter_rejects_plain_standard_table_lookup :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE i,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_filtered TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lv_id TYPE i.
+
+lt_filtered = FILTER #( lt_rows WHERE id = lv_id ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://filter_plain_standard_invalid.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"FILTER requires a sorted or hashed table key",
+		),
+		1,
+	)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Syntax_Form {
+			continue
+		}
+		if diagnostic.message != "FILTER requires a sorted or hashed table key" {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "lt_rows")
+	}
+}
+
+@(test)
+root_semantic_filter_rejects_unselected_secondary_key :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE i,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row
+  WITH EMPTY KEY
+  WITH NON-UNIQUE SORTED KEY by_id COMPONENTS id.
+DATA lt_filtered TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lv_id TYPE i.
+
+lt_filtered = FILTER #( lt_rows WHERE id = lv_id ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://filter_unselected_secondary_invalid.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"FILTER requires a sorted or hashed table key",
+		),
+		1,
+	)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Syntax_Form ||
+		   diagnostic.message != "FILTER requires a sorted or hashed table key" {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "lt_rows")
+	}
+}
+
+@(test)
+root_semantic_filter_in_validates_membership_table_key :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE i,
+       END OF ty_row.
+DATA lt_source TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_filter TYPE SORTED TABLE OF ty_row WITH UNIQUE KEY id.
+DATA lt_filter_by_id TYPE STANDARD TABLE OF ty_row
+  WITH EMPTY KEY
+  WITH UNIQUE HASHED KEY by_id COMPONENTS id.
+DATA lt_bad_filter TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_filtered TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+
+lt_filtered = FILTER #( lt_source IN lt_filter WHERE id = id ).
+lt_filtered = FILTER #( lt_source IN lt_filter_by_id USING KEY by_id WHERE id = id ).
+lt_filtered = FILTER #( lt_source IN lt_bad_filter WHERE id = id ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://filter_in_membership_key.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"FILTER requires a sorted or hashed table key",
+		),
+		1,
+	)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Syntax_Form ||
+		   diagnostic.message != "FILTER requires a sorted or hashed table key" {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "lt_bad_filter")
+	}
+}
+
+@(test)
+root_semantic_filter_accepts_plain_explicit_result_table_type :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_aif_job_header,
+    mandt  TYPE string,
+    docnum TYPE string,
+  END OF ty_aif_job_header,
+  tt_docnum         TYPE STANDARD TABLE OF string WITH EMPTY KEY,
+  tt_docnum_sorted  TYPE SORTED TABLE OF string WITH NON-UNIQUE KEY table_line,
+  tt_aif_job_header TYPE SORTED TABLE OF ty_aif_job_header WITH UNIQUE KEY docnum.
+
+DATA lt_aif_job_header_existing TYPE tt_aif_job_header.
+
+DATA lt_docnum_wt_ship TYPE tt_docnum_sorted.
+APPEND '100123' TO lt_docnum_wt_ship.
+
+DATA(lt_delta_docnum_wt_ship) = FILTER tt_docnum(
+  lt_docnum_wt_ship EXCEPT IN lt_aif_job_header_existing
+  WHERE table_line = docnum
+).
+DATA(lt_delta_docnum_wt_ship1) = FILTER tt_docnum(
+  lt_docnum_wt_ship
+  WHERE table_line = 'docnum'
+).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://filter_plain_explicit_result_type_valid.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lt_delta_docnum_wt_ship := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_delta_docnum_wt_ship", .Variable)
+	lt_delta_docnum_wt_ship1 := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_delta_docnum_wt_ship1", .Variable)
+	testing.expect(t, lt_delta_docnum_wt_ship != nil && lt_delta_docnum_wt_ship1 != nil)
+	if lt_delta_docnum_wt_ship != nil && lt_delta_docnum_wt_ship1 != nil {
+		testing.expect(t, checker_type_same(lt_delta_docnum_wt_ship.type, lt_delta_docnum_wt_ship1.type))
 	}
 }
 

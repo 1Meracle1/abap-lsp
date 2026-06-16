@@ -726,6 +726,19 @@ checker_type_form_is_table_category :: proc "contextless" (form: ast.Data_Type_F
 	return false
 }
 
+checker_type_table_form :: proc(typ: ^Type, depth := 0) -> (ast.Data_Type_Form, bool) {
+	if depth > 16 || typ == nil {
+		return {}, false
+	}
+	#partial switch typ.kind {
+	case .Table:
+		return typ.table_form, true
+	case .Named:
+		return checker_type_table_form(typ.base, depth + 1)
+	}
+	return {}, false
+}
+
 checker_type_row :: proc(ctx: ^Checker_Context, typ: ^Type, depth := 0) -> ^Type {
 	if depth > 16 || typ == nil {
 		return project_type_unknown(ctx.project)

@@ -450,10 +450,20 @@ filter_constructor_accepts_using_key_before_where :: proc(t: ^testing.T) {
 	decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Inline_Decl)
 	constructor := decl.expr.derived_expr.(^ast.Constructor_Expr)
 	testing.expect_value(t, constructor.kind, ast.Constructor_Kind.Filter)
-	testing.expect_value(t, len(constructor.args), 2)
+	testing.expect_value(t, len(constructor.args), 3)
 	_, source_ok := constructor.args[0].derived_expr.(^ast.Ident_Expr)
-	_, where_ok := constructor.args[1].derived_expr.(^ast.Constructor_Where_Clause_Expr)
+	using_key, using_key_ok := constructor.args[1].derived_expr.(^ast.Constructor_Filter_Using_Key_Clause_Expr)
+	_, where_ok := constructor.args[2].derived_expr.(^ast.Constructor_Where_Clause_Expr)
 	testing.expect(t, source_ok)
+	testing.expect(t, using_key_ok)
+	if using_key_ok {
+		testing.expect_value(t, using_key.using_key.name.text, "primary_key")
+		testing.expect_value(
+			t,
+			source[using_key.using_key.name.range.start:using_key.using_key.name.range.end],
+			"primary_key",
+		)
+	}
 	testing.expect(t, where_ok)
 }
 

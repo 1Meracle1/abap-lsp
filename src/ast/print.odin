@@ -294,6 +294,9 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 			emit_space(p)
 			emit_node(p, n.where_clause)
 		}
+	case ^Constructor_Filter_Using_Key_Clause_Expr:
+		emit(p, "USING KEY ")
+		emit_table_key_selector(p, n.using_key)
 	case ^Constructor_Init_Clause_Expr:
 		emit(p, "INIT ")
 		emit_expr_list(p, n.assignments, " ")

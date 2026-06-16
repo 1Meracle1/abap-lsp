@@ -820,7 +820,7 @@ checker_check_constructor_expr :: proc(
 	case .Cond:
 		typ = checker_check_cond_constructor_expr(ctx, expr, typ)
 	case .Filter:
-		checker_check_filter_constructor_expr(ctx, expr, typ)
+		typ = checker_check_filter_constructor_expr(ctx, expr, typ)
 	case .Reduce:
 		checker_check_reduce_constructor_expr(ctx, expr)
 	case:
@@ -1303,7 +1303,7 @@ checker_check_filter_constructor_expr :: proc(
 	ctx: ^Checker_Context,
 	expr: ^ast.Constructor_Expr,
 	result_type: ^Type,
-) {
+) -> ^Type {
 	if !checker_type_is_unknown(result_type) && !checker_type_is_table_like(ctx, result_type) {
 		checker_add_diagnostic(
 			ctx,
@@ -1318,6 +1318,8 @@ checker_check_filter_constructor_expr :: proc(
 	where_clause: ^ast.Constructor_Where_Clause_Expr
 	except_in_arg: ^ast.Expr
 	except_in_clause: ^ast.Constructor_Filter_Except_In_Clause_Expr
+	using_key_arg: ^ast.Expr
+	using_key_clause: ^ast.Constructor_Filter_Using_Key_Clause_Expr
 	seen_where := false
 	for arg in expr.args {
 		if except_node, ok := arg.derived_expr.(^ast.Constructor_Filter_Except_In_Clause_Expr); ok {
@@ -1359,6 +1361,27 @@ checker_check_filter_constructor_expr :: proc(
 					checker_check_expr(ctx, except_node.where_clause)
 				}
 			}
+			continue
+		}
+		if using_key_node, ok := arg.derived_expr.(^ast.Constructor_Filter_Using_Key_Clause_Expr); ok {
+			if seen_where {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"FILTER source clauses must precede WHERE",
+				)
+			}
+			if using_key_clause != nil {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"FILTER allows only one USING KEY clause",
+				)
+			}
+			using_key_arg = arg
+			using_key_clause = using_key_node
 			continue
 		}
 		if where_node, ok := arg.derived_expr.(^ast.Constructor_Where_Clause_Expr); ok {
@@ -1404,11 +1427,15 @@ checker_check_filter_constructor_expr :: proc(
 			"FILTER requires a WHERE clause",
 		)
 	}
-
 	row_type := project_type_unknown(ctx.project)
 	row_structure: ^Structure
+	source_table_type := project_type_unknown(ctx.project)
 	except_in_row_type := project_type_unknown(ctx.project)
 	except_in_row_structure: ^Structure
+	lookup_source_index := 0
+	if len(sources) > 1 {
+		lookup_source_index = 1
+	}
 	for source, i in sources {
 		operand := checker_check_expr(ctx, source)
 		if i > 1 {
@@ -1431,7 +1458,11 @@ checker_check_filter_constructor_expr :: proc(
 			)
 			continue
 		}
+		if i == lookup_source_index {
+			checker_check_filter_lookup_key(ctx, source, operand, using_key_clause)
+		}
 		if i == 0 {
+			source_table_type = operand.type
 			row_type = checker_type_row(ctx, operand.type)
 			row_structure = checker_type_structure(row_type)
 		} else if i == 1 {
@@ -1441,7 +1472,7 @@ checker_check_filter_constructor_expr :: proc(
 	}
 
 	if where_clause != nil {
-		if except_in_clause != nil && where_arg == except_in_clause.where_clause && len(sources) > 1 {
+		if len(sources) > 1 {
 			checker_check_filter_except_in_where_expr(
 				ctx,
 				where_clause.condition,
@@ -1458,6 +1489,318 @@ checker_check_filter_constructor_expr :: proc(
 	if except_in_arg != nil {
 		checker_record_operand(ctx, &except_in_arg.expr_base, .No_Value, project_type_unknown(ctx.project))
 	}
+	if using_key_arg != nil {
+		checker_check_table_key_selector(ctx, using_key_clause.using_key)
+		checker_record_operand(ctx, &using_key_arg.expr_base, .No_Value, project_type_unknown(ctx.project))
+	}
+
+	if checker_filter_constructor_has_explicit_type_ref(expr) {
+		checker_warn_filter_constructor_result_shape(ctx, expr, result_type, source_table_type)
+	}
+	if checker_filter_constructor_has_inferred_type_ref(expr) &&
+	   checker_type_is_table_like(ctx, source_table_type) {
+		return source_table_type
+	}
+	return result_type
+}
+
+checker_check_filter_lookup_key :: proc(
+	ctx: ^Checker_Context,
+	source: ^ast.Expr,
+	operand: Operand,
+	using_key_clause: ^ast.Constructor_Filter_Using_Key_Clause_Expr,
+) {
+	if checker_filter_table_key_is_suitable(ctx, operand.type, operand.entity, using_key_clause) {
+		return
+	}
+	checker_add_diagnostic(
+		ctx,
+		.Invalid_Syntax_Form,
+		checker_filter_key_diagnostic_range(source, using_key_clause),
+		"FILTER requires a sorted or hashed table key",
+	)
+}
+
+checker_filter_table_key_is_suitable :: proc(
+	ctx: ^Checker_Context,
+	typ: ^Type,
+	entity: ^Entity,
+	using_key_clause: ^ast.Constructor_Filter_Using_Key_Clause_Expr,
+) -> bool {
+	if using_key_clause != nil {
+		if using_key_clause.using_key.dynamic_name != nil {
+			return true
+		}
+		key_name := project_intern_lower_ascii(ctx.project, using_key_clause.using_key.name.text)
+		if key_name == "" {
+			return true
+		}
+		if checker_filter_key_name_is_primary(key_name) {
+			return checker_filter_primary_key_is_suitable(typ)
+		}
+		return checker_filter_secondary_key_is_suitable(ctx, entity, typ, key_name)
+	}
+	return checker_filter_primary_key_is_suitable(typ)
+}
+
+checker_filter_primary_key_is_suitable :: proc(typ: ^Type) -> bool {
+	form, ok := checker_type_table_form(typ)
+	if !ok {
+		return true
+	}
+	#partial switch form {
+	case .Sorted_Table,
+	     .Hashed_Table,
+	     .Like_Sorted_Table,
+	     .Like_Hashed_Table:
+		return true
+	}
+	return false
+}
+
+checker_filter_secondary_key_is_suitable :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	typ: ^Type,
+	key_name: string,
+) -> bool {
+	if checker_filter_entity_has_secondary_key(ctx, entity, key_name) {
+		return true
+	}
+	type_entity := checker_filter_table_type_entity(typ)
+	return type_entity != nil &&
+	       type_entity != entity &&
+	       checker_filter_entity_has_secondary_key(ctx, type_entity, key_name)
+}
+
+checker_filter_entity_has_secondary_key :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	key_name: string,
+	depth := 0,
+) -> bool {
+	if depth > 16 || entity == nil {
+		return false
+	}
+	if checker_filter_decl_has_secondary_key(ctx, entity.decl_info, key_name) {
+		return true
+	}
+	next := checker_filter_next_type_entity(entity.type, entity)
+	return next != nil && checker_filter_entity_has_secondary_key(ctx, next, key_name, depth + 1)
+}
+
+checker_filter_decl_has_secondary_key :: proc(
+	ctx: ^Checker_Context,
+	decl: ^Decl_Info,
+	key_name: string,
+) -> bool {
+	if decl == nil || decl.type_clause == nil || decl.type_clause.type_ref == nil {
+		return false
+	}
+	ref, ok := decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	if !ok {
+		return false
+	}
+	if len(ref.keys) > 0 {
+		for key in ref.keys {
+			if checker_filter_key_clause_matches(ctx, key, key_name) {
+				return true
+			}
+		}
+		return false
+	}
+	return checker_filter_key_clause_matches(ctx, ref.key, key_name)
+}
+
+checker_filter_key_clause_matches :: proc(
+	ctx: ^Checker_Context,
+	key: ^ast.Type_Ref_Key_Clause,
+	key_name: string,
+) -> bool {
+	return key != nil &&
+	       (key.sorted || key.hashed) &&
+	       project_intern_lower_ascii(ctx.project, key.name.text) == key_name
+}
+
+checker_filter_table_type_entity :: proc(typ: ^Type, depth := 0) -> ^Entity {
+	if depth > 16 || typ == nil {
+		return nil
+	}
+	#partial switch typ.kind {
+	case .Named:
+		if typ.entity != nil {
+			return typ.entity
+		}
+		return checker_filter_table_type_entity(typ.base, depth + 1)
+	}
+	return nil
+}
+
+checker_filter_next_type_entity :: proc(typ: ^Type, current: ^Entity, depth := 0) -> ^Entity {
+	if depth > 16 || typ == nil {
+		return nil
+	}
+	#partial switch typ.kind {
+	case .Named:
+		if typ.entity != nil && typ.entity != current {
+			return typ.entity
+		}
+		return checker_filter_next_type_entity(typ.base, current, depth + 1)
+	}
+	return nil
+}
+
+checker_filter_key_name_is_primary :: #force_inline proc "contextless" (name: string) -> bool {
+	return name == "primary_key"
+}
+
+checker_filter_key_diagnostic_range :: proc(
+	source: ^ast.Expr,
+	using_key_clause: ^ast.Constructor_Filter_Using_Key_Clause_Expr,
+) -> Range {
+	if using_key_clause != nil && using_key_clause.using_key.name.text != "" {
+		return using_key_clause.using_key.name.range
+	}
+	return checker_expr_range(source)
+}
+
+checker_filter_constructor_has_explicit_type_ref :: proc(expr: ^ast.Constructor_Expr) -> bool {
+	return expr != nil &&
+	       expr.type_ref != nil &&
+	       !checker_expr_is_inferred_type_ref(expr.type_ref)
+}
+
+checker_filter_constructor_has_inferred_type_ref :: proc(expr: ^ast.Constructor_Expr) -> bool {
+	return expr == nil ||
+	       expr.type_ref == nil ||
+	       checker_expr_is_inferred_type_ref(expr.type_ref)
+}
+
+checker_warn_filter_constructor_result_shape :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Constructor_Expr,
+	result_type: ^Type,
+	source_table_type: ^Type,
+) {
+	if expr == nil ||
+	   expr.type_ref == nil ||
+	   checker_type_is_unknown(result_type) ||
+	   checker_type_is_unknown(source_table_type) ||
+	   !checker_type_is_table_like(ctx, result_type) ||
+	   !checker_type_is_table_like(ctx, source_table_type) {
+		return
+	}
+	result_row_type := checker_type_row(ctx, result_type)
+	source_row_type := checker_type_row(ctx, source_table_type)
+	if same, known := checker_filter_row_types_structurally_same(ctx, result_row_type, source_row_type); !known || same {
+		return
+	}
+	checker_add_diagnostic(
+		ctx,
+		.Invalid_Syntax_Form,
+		expr.type_ref.range,
+		"FILTER explicit result type is structurally different from the source table",
+		severity = .Warning,
+	)
+}
+
+checker_filter_row_types_structurally_same :: proc(
+	ctx: ^Checker_Context,
+	result_row_type: ^Type,
+	source_row_type: ^Type,
+) -> (bool, bool) {
+	return checker_filter_types_structurally_same(ctx, result_row_type, source_row_type)
+}
+
+checker_filter_types_structurally_same :: proc(
+	ctx: ^Checker_Context,
+	left: ^Type,
+	right: ^Type,
+	depth := 0,
+) -> (bool, bool) {
+	if left == right {
+		return true, true
+	}
+	if depth > 32 {
+		return true, false
+	}
+	left_type := checker_filter_structural_type_base(left)
+	right_type := checker_filter_structural_type_base(right)
+	if checker_type_is_unknown(left_type) ||
+	   checker_type_is_unknown(right_type) ||
+	   left_type == nil ||
+	   right_type == nil {
+		return true, false
+	}
+	if left_type.kind != right_type.kind {
+		return false, true
+	}
+	#partial switch left_type.kind {
+	case .Builtin:
+		left_name, left_ok := checker_type_builtin_name(ctx, left_type)
+		right_name, right_ok := checker_type_builtin_name(ctx, right_type)
+		if !left_ok || !right_ok {
+			return true, false
+		}
+		return left_name == right_name, true
+	case .Structure:
+		return checker_filter_structures_structurally_same(ctx, left_type.structure, right_type.structure, depth + 1)
+	case .Table:
+		return checker_filter_types_structurally_same(ctx, left_type.base, right_type.base, depth + 1)
+	case .Ref,
+	     .Class,
+	     .Interface,
+	     .Routine:
+		return checker_type_same(left_type, right_type), true
+	}
+	return checker_type_same(left_type, right_type), true
+}
+
+checker_filter_structures_structurally_same :: proc(
+	ctx: ^Checker_Context,
+	left: ^Structure,
+	right: ^Structure,
+	depth: int,
+) -> (bool, bool) {
+	if left == right {
+		return true, true
+	}
+	if left == nil || right == nil {
+		return true, false
+	}
+	if len(left.fields) != len(right.fields) {
+		return false, true
+	}
+	known := true
+	for left_field, i in left.fields {
+		right_field := right.fields[i]
+		if left_field == nil || right_field == nil {
+			known = false
+			continue
+		}
+		if left_field.name != right_field.name {
+			return false, true
+		}
+		field_same, field_known := checker_filter_types_structurally_same(ctx, left_field.type, right_field.type, depth + 1)
+		if !field_known {
+			known = false
+			continue
+		}
+		if !field_same {
+			return false, true
+		}
+	}
+	return true, known
+}
+
+checker_filter_structural_type_base :: proc(typ: ^Type, depth := 0) -> ^Type {
+	if depth > 16 || typ == nil {
+		return typ
+	}
+	if typ.kind == .Named && typ.base != nil {
+		return checker_filter_structural_type_base(typ.base, depth + 1)
+	}
+	return typ
 }
 
 checker_check_reduce_constructor_expr :: proc(

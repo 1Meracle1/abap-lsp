@@ -638,6 +638,12 @@ Constructor_Filter_Except_In_Clause_Expr :: struct {
 	where_clause: ^Expr,
 }
 
+// ABAP syntax: `USING KEY key` inside a `FILTER` constructor.
+Constructor_Filter_Using_Key_Clause_Expr :: struct {
+	using node: Expr,
+	using_key:  Table_Key_Selector,
+}
+
 // ABAP syntax: `INIT name = value ...` inside `REDUCE`.
 Constructor_Init_Clause_Expr :: struct {
 	using node:  Expr,
@@ -2964,6 +2970,7 @@ Any_Node :: union {
 	^Constructor_For_Clause_Expr,
 	^Constructor_Where_Clause_Expr,
 	^Constructor_Filter_Except_In_Clause_Expr,
+	^Constructor_Filter_Using_Key_Clause_Expr,
 	^Constructor_Init_Clause_Expr,
 	^Constructor_Next_Clause_Expr,
 	^Constructor_Named_Assignment_Expr,
@@ -3128,6 +3135,7 @@ Any_Expr :: union {
 	^Constructor_For_Clause_Expr,
 	^Constructor_Where_Clause_Expr,
 	^Constructor_Filter_Except_In_Clause_Expr,
+	^Constructor_Filter_Using_Key_Clause_Expr,
 	^Constructor_Init_Clause_Expr,
 	^Constructor_Next_Clause_Expr,
 	^Constructor_Named_Assignment_Expr,

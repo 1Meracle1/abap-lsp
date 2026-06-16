@@ -131,6 +131,8 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Constructor_Filter_Except_In_Clause_Expr:
 		walk(next, n.source)
 		walk(next, n.where_clause)
+	case ^Constructor_Filter_Using_Key_Clause_Expr:
+		walk(next, n.using_key.dynamic_name)
 	case ^Constructor_Init_Clause_Expr:
 		walk_expr_list(next, n.assignments)
 	case ^Constructor_Next_Clause_Expr:
