@@ -103,7 +103,8 @@ checker_check_stmt :: proc(
 		checker_check_oop_load_stmt(ctx, n)
 	case ^ast.Data_Inline_Decl:
 		rhs := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.expr)
-		if checker_data_inline_decl_has_inferred_value_constructor(n) {
+		if checker_data_inline_decl_has_inferred_value_constructor(n) &&
+		   checker_type_is_unknown(rhs.type) {
 			checker_add_diagnostic(
 				ctx,
 				.Invalid_Syntax_Form,

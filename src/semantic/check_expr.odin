@@ -816,7 +816,7 @@ checker_check_constructor_expr :: proc(
 	case .New:
 		checker_check_new_constructor_expr(ctx, expr, typ)
 	case .Value:
-		checker_check_value_constructor_expr(ctx, expr, typ)
+		typ = checker_check_value_constructor_expr(ctx, expr, typ)
 	case .Cond:
 		typ = checker_check_cond_constructor_expr(ctx, expr, typ)
 	case .Filter:
@@ -835,10 +835,22 @@ checker_check_value_constructor_expr :: proc(
 	ctx: ^Checker_Context,
 	expr: ^ast.Constructor_Expr,
 	typ: ^Type,
-) {
+) -> ^Type {
+	result_type := typ
+	inferred_base_arg: ^ast.Expr
+	inferred_base_operand: Operand
+	inferred_base_checked := false
+	if checker_type_is_unknown(result_type) {
+		base_type: ^Type
+		base_type, inferred_base_arg, inferred_base_operand, inferred_base_checked = checker_infer_value_constructor_base_type(ctx, expr)
+		if !checker_type_is_unknown(base_type) {
+			result_type = base_type
+		}
+	}
+
 	if checker_value_constructor_has_for_in_clause(expr) &&
-	   !checker_type_is_unknown(typ) &&
-	   !checker_type_is_table_like(ctx, typ) {
+	   !checker_type_is_unknown(result_type) &&
+	   !checker_type_is_table_like(ctx, result_type) {
 		checker_add_diagnostic(
 			ctx,
 			.Invalid_Syntax_Form,
@@ -847,24 +859,71 @@ checker_check_value_constructor_expr :: proc(
 		)
 	}
 
-	if checker_type_is_table_like(ctx, typ) {
-		row_type := checker_type_row(ctx, typ)
+	if checker_type_is_table_like(ctx, result_type) {
+		row_type := checker_type_row(ctx, result_type)
 		for arg in expr.args {
-			checker_check_value_constructor_table_arg(ctx, arg, typ, row_type)
+			if checker_record_checked_value_constructor_base_arg(ctx, arg, inferred_base_arg, inferred_base_operand, inferred_base_checked) {
+				continue
+			}
+			checker_check_value_constructor_table_arg(ctx, arg, result_type, row_type)
 		}
-		return
+		return result_type
 	}
 
-	if structure := checker_type_structure(typ); structure != nil {
+	if structure := checker_type_structure(result_type); structure != nil {
 		for arg in expr.args {
-			checker_check_value_constructor_structure_arg(ctx, arg, typ, structure)
+			if checker_record_checked_value_constructor_base_arg(ctx, arg, inferred_base_arg, inferred_base_operand, inferred_base_checked) {
+				continue
+			}
+			checker_check_value_constructor_structure_arg(ctx, arg, result_type, structure)
 		}
-		return
+		return result_type
 	}
 
 	for arg in expr.args {
+		if checker_record_checked_value_constructor_base_arg(ctx, arg, inferred_base_arg, inferred_base_operand, inferred_base_checked) {
+			continue
+		}
 		checker_check_expr_with_unresolved_value_diagnostics(ctx, arg)
 	}
+	return result_type
+}
+
+checker_infer_value_constructor_base_type :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Constructor_Expr,
+) -> (
+	typ: ^Type,
+	arg: ^ast.Expr,
+	operand: Operand,
+	checked: bool,
+) {
+	if expr == nil || expr.kind != .Value || !checker_expr_is_inferred_type_ref(expr.type_ref) {
+		return project_type_unknown(ctx.project), nil, {}, false
+	}
+	for candidate in expr.args {
+		base, ok := candidate.derived_expr.(^ast.Constructor_Base_Clause_Expr)
+		if !ok {
+			continue
+		}
+		value := checker_check_expr_with_unresolved_value_diagnostics(ctx, base.value)
+		return value.type, candidate, value, true
+	}
+	return project_type_unknown(ctx.project), nil, {}, false
+}
+
+checker_record_checked_value_constructor_base_arg :: proc(
+	ctx: ^Checker_Context,
+	arg: ^ast.Expr,
+	inferred_base_arg: ^ast.Expr,
+	inferred_base_operand: Operand,
+	inferred_base_checked: bool,
+) -> bool {
+	if !inferred_base_checked || arg == nil || arg != inferred_base_arg {
+		return false
+	}
+	checker_record_operand(ctx, &arg.expr_base, .No_Value, inferred_base_operand.type)
+	return true
 }
 
 checker_value_constructor_has_for_in_clause :: proc(expr: ^ast.Constructor_Expr) -> bool {
