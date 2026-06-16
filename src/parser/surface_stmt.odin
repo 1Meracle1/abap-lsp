@@ -3036,6 +3036,9 @@ select_aggregate_name :: proc(name: string) -> bool {
 	)
 }
 
+MODIFY_TRANSPORTING_KEYWORD_MESSAGE :: "syntax error: expected TRANSPORTING in MODIFY statement"
+MODIFY_UNEXPECTED_TOKEN_MESSAGE :: "syntax error: unexpected token in MODIFY statement"
+
 parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "MODIFY")
 	body_start := p.index
@@ -3113,7 +3116,16 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			continue
 		}
 		if allow_keyword(p, "TRANSPORTING") {
-			parse_modify_transporting_fields(p, body_start, stmt)
+			parse_modify_transporting_field_list(p, body_start, &stmt.transporting)
+			continue
+		}
+		if tok := current_token(p);
+		   tok.kind == .Ident &&
+		   strings.equal_fold(tokenizer.token_lexeme(tok, p.source), "TRANNSPORTING") {
+			error_current(p, MODIFY_TRANSPORTING_KEYWORD_MESSAGE)
+			bump_token(p)
+			fields := make([dynamic]ast.Transporting_Field_Clause, 0, 2, context.temp_allocator)
+			parse_modify_transporting_field_list(p, body_start, &fields)
 			continue
 		}
 		if allow_keyword(p, "WHERE") {
@@ -3196,13 +3208,18 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			}
 			continue
 		}
+		error_current(p, MODIFY_UNEXPECTED_TOKEN_MESSAGE)
 		bump_token(p)
 	}
 	stmt.range = data_stmt_range(p, start)
 	return stmt
 }
 
-parse_modify_transporting_fields :: proc(p: ^Parser, body_start: int, stmt: ^ast.Modify_Stmt) {
+parse_modify_transporting_field_list :: proc(
+	p: ^Parser,
+	body_start: int,
+	fields: ^[dynamic]ast.Transporting_Field_Clause,
+) {
 	stop_keywords := []string{"WHERE", "ASSIGNING", "REFERENCE", "CLIENT", "CONNECTION"}
 	for !data_stmt_done(p, body_start) && !data_current_keyword_in(p, stop_keywords) {
 		if allow_token(p, .Comma) || allow_token(p, .Colon) {
@@ -3210,7 +3227,7 @@ parse_modify_transporting_fields :: proc(p: ^Parser, body_start: int, stmt: ^ast
 		}
 		start := p.index
 		if field, ok := parse_transporting_field(p); ok {
-			append(&stmt.transporting, field)
+			append(fields, field)
 		} else {
 			error_current(p, "syntax error: expected MODIFY TRANSPORTING component path")
 			bump_token(p)
@@ -3263,7 +3280,7 @@ parse_transporting_field :: proc(
 		true
 }
 
-transporting_segment_token :: proc(tok: Token) -> bool {
+transporting_segment_token :: #force_inline proc "contextless" (tok: Token) -> bool {
 	return tok.kind == .Ident || tok.kind == .Number
 }
 

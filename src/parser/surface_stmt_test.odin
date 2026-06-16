@@ -197,6 +197,54 @@ modify_transporting_rejects_spaced_component_selector :: proc(t: ^testing.T) {
 }
 
 @(test)
+modify_rejects_misspelled_transporting_clause_after_value_source :: proc(t: ^testing.T) {
+	source := `MODIFY lt_aif_job_header_existing
+  FROM VALUE ty_aif_job_header(
+    status = c_aif_job_status-created
+    jobname = VALUE #( )
+    jobcount = VALUE #( )
+    modified_time = lv_modify_timestamp
+    modified_user = sy-uname
+  )
+  TRANNSPORTING status jobname jobcount modified_time modified_user.`
+	parsed := parse(source, "modify_transporting_typo.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 1)
+	testing.expect_value(t, parsed.errors[0].message, MODIFY_TRANSPORTING_KEYWORD_MESSAGE)
+	testing.expect_value(
+		t,
+		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
+		"TRANNSPORTING",
+	)
+	modify := parsed.root.stmts[0].derived_stmt.(^ast.Modify_Stmt)
+	testing.expect_value(t, len(modify.transporting), 0)
+}
+
+@(test)
+modify_rejects_unexpected_tokens_between_structural_additions :: proc(t: ^testing.T) {
+	source := `MODIFY lt_aif_job_header_existing
+  FROM VALUE ty_aif_job_header(
+    status = c_aif_job_status-created
+    jobname = VALUE #( )
+    jobcount = VALUE #( )
+    modified_time = lv_modify_timestamp
+    modified_user = sy-uname
+  )fsdfz
+  TRaaANSPORTINGsdfs status jobname jobcount modified_time modified_user.`
+	parsed := parse(source, "modify_unexpected_additions.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) >= 2)
+	testing.expect_value(t, parsed.errors[0].message, MODIFY_UNEXPECTED_TOKEN_MESSAGE)
+	testing.expect_value(t, source[parsed.errors[0].range.start:parsed.errors[0].range.end], "fsdfz")
+	testing.expect_value(t, parsed.errors[1].message, MODIFY_UNEXPECTED_TOKEN_MESSAGE)
+	testing.expect_value(
+		t,
+		source[parsed.errors[1].range.start:parsed.errors[1].range.end],
+		"TRaaANSPORTINGsdfs",
+	)
+}
+
+@(test)
 sort_by_keeps_component_names :: proc(t: ^testing.T) {
 	source := `SORT cs_webi-pvepparameter BY vepname version function vepparam vepparamtype.`
 	parsed := parse(source, "sort_components.abap", context.allocator)

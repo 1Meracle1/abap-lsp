@@ -5506,6 +5506,88 @@ MODIFY SCREEN.`
 	testing.expect(t, lt_more != nil && .Used in lt_more.flags)
 	testing.expect(t, ls_row != nil && .Used in ls_row.flags)
 	testing.expect(t, lv_id != nil && .Used in lv_id.flags)
+
+	query := semantic_query(&project, &checker, file)
+	ref_query := semantic_query_refs(query)
+	ty_row := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_row", .Type_Def)
+	ty_nested := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_nested", .Type_Def)
+	id_field := checker_test_structure_field(t, &project, checker_type_structure(ty_row.type), "id")
+	part_field := checker_test_structure_field(t, &project, checker_type_structure(ty_nested.type), "part")
+
+	id_offset := checker_test_find_text(source, "TRANSPORTING id")
+	if id_offset >= 0 {
+		id_offset += len("TRANSPORTING ")
+	}
+	part_offset := checker_test_find_text(source, "nested-part")
+	if part_offset >= 0 {
+		part_offset += len("nested-")
+	}
+	testing.expect(t, id_offset >= 0 && part_offset >= 0)
+
+	id_use := semantic_ref_use_at_offset(ref_query, id_offset)
+	testing.expect(t, id_use != nil)
+	if id_use != nil {
+		testing.expect(t, id_use.entity == id_field)
+		range := semantic_entity_use_range(id_use^)
+		testing.expect_value(t, source[range.start:range.end], "id")
+	}
+	part_use := semantic_ref_use_at_offset(ref_query, part_offset)
+	testing.expect(t, part_use != nil)
+	if part_use != nil {
+		testing.expect(t, part_use.entity == part_field)
+		range := semantic_entity_use_range(part_use^)
+		testing.expect_value(t, source[range.start:range.end], "part")
+	}
+}
+
+@(test)
+root_semantic_modify_transporting_uses_known_source_when_target_row_is_unknown :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE string,
+         status TYPE string,
+       END OF ty_row.
+
+SELECT *
+  FROM zmissing_rows
+  INTO TABLE @DATA(lt_rows).
+
+MODIFY lt_rows
+  FROM VALUE ty_row(
+    id = '1'
+    status = '2'
+  )
+  TRANSPORTING status111 status.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://modify_unknown_target.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 1)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind == .Unknown_Field {
+			testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "status111")
+		}
+	}
+
+	query := semantic_query(&project, &checker, file)
+	ref_query := semantic_query_refs(query)
+	ty_row := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_row", .Type_Def)
+	status_field := checker_test_structure_field(t, &project, checker_type_structure(ty_row.type), "status")
+
+	status_offset := checker_test_find_text(source, "status111 status")
+	if status_offset >= 0 {
+		status_offset += len("status111 ")
+	}
+	testing.expect(t, status_offset >= 0)
+
+	status_use := semantic_ref_use_at_offset(ref_query, status_offset)
+	testing.expect(t, status_use != nil)
+	if status_use != nil {
+		testing.expect(t, status_use.entity == status_field)
+		range := semantic_entity_use_range(status_use^)
+		testing.expect_value(t, source[range.start:range.end], "status")
+	}
 }
 
 @(test)

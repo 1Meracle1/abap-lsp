@@ -5644,6 +5644,36 @@ APPEND VALUE #( ) TO lr_str.`
 }
 
 @(test)
+lsp_hover_reports_modify_transporting_field_types :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_nested,
+         part TYPE string,
+       END OF ty_nested.
+TYPES: BEGIN OF ty_row,
+         id TYPE string,
+         nested TYPE ty_nested,
+       END OF ty_row.
+
+SELECT *
+  FROM zmissing_rows
+  INTO TABLE @DATA(lt_rows).
+
+MODIFY lt_rows
+  FROM VALUE ty_row(
+    id = '1'
+    nested = VALUE #( )
+  )
+  TRANSPORTING id nested-part.`
+
+	id_text := lsp_test_hover_text(t, source, "TRANSPORTING id", "id")
+	part_text := lsp_test_hover_text(t, source, "nested-part", "part")
+
+	testing.expect(t, strings.contains(id_text, "`id` field"))
+	testing.expect(t, strings.contains(id_text, "type: `string`"))
+	testing.expect(t, strings.contains(part_text, "`part` field"))
+	testing.expect(t, strings.contains(part_text, "type: `string`"))
+}
+
+@(test)
 lsp_hover_reports_constant_type_and_value_as_abap_syntax :: proc(t: ^testing.T) {
 	source := `CONSTANTS:
   BEGIN OF c_shipping_status,

@@ -1128,7 +1128,7 @@ checker_check_transporting_field :: proc(
 			checker_add_diagnostic(ctx, .Unknown_Field, segment.name.range, checker_table_component_message(ctx, "unknown internal table field ", name))
 			return
 		}
-		checker_add_entity_use(ctx, nil, entity)
+		checker_add_entity_use_at_range(ctx, nil, entity, segment.name.range)
 		current_type = entity.type if entity.type != nil else project_type_unknown(ctx.project)
 		current_structure = checker_type_structure(current_type)
 	}
@@ -1425,10 +1425,28 @@ checker_check_modify_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt)
 				checker_expr_range(stmt.source),
 			)
 		}
+		checker_refine_modify_row_type_from_source(ctx, stmt, source.type, &row_type, &row_structure)
 	}
 	checker_check_expr(ctx, stmt.index)
 	checker_check_loop_transporting_fields(ctx, stmt.transporting[:], row_type, row_structure)
 	checker_check_internal_table_where_expr(ctx, stmt.where_cond, row_type, row_structure)
+}
+
+checker_refine_modify_row_type_from_source :: proc(
+	ctx: ^Checker_Context,
+	stmt: ^ast.Modify_Stmt,
+	source_type: ^Type,
+	row_type: ^^Type,
+	row_structure: ^^Structure,
+) {
+	if !checker_type_is_unknown(row_type^) || checker_type_is_unknown(source_type) {
+		return
+	}
+	source_row_type := checker_type_row(ctx, source_type) if stmt.from_table else source_type
+	if structure := checker_type_structure(source_row_type); structure != nil {
+		row_type^ = source_row_type
+		row_structure^ = structure
+	}
 }
 
 checker_modify_stmt_is_screen :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt) -> bool {
