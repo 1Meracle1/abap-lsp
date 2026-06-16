@@ -232,6 +232,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Include_Stmt:
 	case ^Assign_Stmt:
 		walk(next, n.lhs)
+		walk_expr_list(next, n.chain_lhs)
 		walk(next, n.rhs)
 	case ^Downcast_Assign_Stmt:
 		walk(next, n.lhs)

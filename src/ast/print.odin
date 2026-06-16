@@ -367,6 +367,10 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_include_stmt(p, n)
 	case ^Assign_Stmt:
 		emit_node(p, n.lhs)
+		for target in n.chain_lhs {
+			emit(p, " = ")
+			emit_node(p, target)
+		}
 		emit(p, " = ")
 		emit_node(p, n.rhs)
 		emit(p, ".")

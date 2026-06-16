@@ -77,6 +77,27 @@ assignment_with_trailing_pragma_keeps_lhs_rhs_shape :: proc(t: ^testing.T) {
 }
 
 @(test)
+chained_assignment_keeps_all_targets :: proc(t: ^testing.T) {
+	parsed := parse(`struct1 = struct2 = struct.`, "chained_assignment.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 1)
+	assign, ok := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Stmt)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	testing.expect_value(t, len(assign.chain_lhs), 1)
+	lhs := assign.lhs.derived_expr.(^ast.Ident_Expr)
+	middle := assign.chain_lhs[0].derived_expr.(^ast.Ident_Expr)
+	rhs := assign.rhs.derived_expr.(^ast.Ident_Expr)
+	testing.expect_value(t, lhs.name, "struct1")
+	testing.expect_value(t, middle.name, "struct2")
+	testing.expect_value(t, rhs.name, "struct")
+	testing.expect_value(t, ast.print_node(assign, context.allocator), "struct1 = struct2 = struct.")
+}
+
+@(test)
 selection_screen_statements_are_not_macro_calls :: proc(t: ^testing.T) {
 	source := `SELECTION-SCREEN BEGIN OF SCREEN 1002 TITLE sc_title.
 SELECTION-SCREEN COMMENT 1(18) sc_url FOR FIELD p_url.

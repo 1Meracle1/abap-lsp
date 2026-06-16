@@ -5687,6 +5687,20 @@ parse_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		error_current(p, "syntax error: expected assignment value after '='")
 		return nil
 	}
+	chain_lhs := make([dynamic]^ast.Expr, 0, 0, p.allocator)
+	for !downcast && current_token(p).kind == .Eq {
+		append(&chain_lhs, rhs)
+		bump_token(p)
+		if !expr_lead_token(current_token(p)) {
+			error_current(p, "syntax error: expected assignment value after '='")
+			return nil
+		}
+		rhs = parse_expr(p)
+		if rhs == nil {
+			error_current(p, "syntax error: expected assignment value after '='")
+			return nil
+		}
+	}
 	if closing_delimiter_error(p) {
 		return nil
 	}
@@ -5709,6 +5723,7 @@ parse_assign_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 	stmt := ast.new(ast.Assign_Stmt, stmt_range, p.allocator)
 	stmt.lhs = lhs
+	stmt.chain_lhs = chain_lhs
 	stmt.rhs = rhs
 	return stmt
 }

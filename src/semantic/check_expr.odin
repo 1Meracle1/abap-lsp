@@ -969,6 +969,8 @@ checker_check_value_constructor_table_arg :: proc(
 	#partial switch n in arg.derived_expr {
 	case ^ast.Call_Arg_List_Expr:
 		checker_check_value_constructor_row_arg_list(ctx, &arg.expr_base, n, row_type)
+	case ^ast.Let_Expr:
+		checker_check_value_constructor_table_let_expr(ctx, &arg.expr_base, n, table_type, row_type)
 	case ^ast.Constructor_Base_Clause_Expr:
 		value := checker_check_value_constructor_typed_value(ctx, n.value, table_type)
 		checker_check_assignment_compatibility(ctx, value.type, table_type, checker_expr_range(n.value))
@@ -981,8 +983,6 @@ checker_check_value_constructor_table_arg :: proc(
 		checker_record_operand(ctx, &arg.expr_base, .Value, table_type)
 	case ^ast.Constructor_For_Clause_Expr:
 		checker_check_constructor_for_clause_expr(ctx, &arg.expr_base, n, false, body_type_hint = row_type)
-	case ^ast.Let_Expr:
-		checker_check_expr(ctx, arg)
 	case:
 		checker_check_value_constructor_row_value(ctx, arg, row_type)
 	}
@@ -999,6 +999,12 @@ checker_check_value_constructor_row_value :: proc(
 	if row, row_ok := arg.derived_expr.(^ast.Call_Arg_List_Expr); row_ok {
 		checker_check_value_constructor_row_arg_list(ctx, &arg.expr_base, row, row_type)
 		return
+	}
+	if let, let_ok := arg.derived_expr.(^ast.Let_Expr); let_ok {
+		if structure := checker_type_structure(row_type); structure != nil {
+			checker_check_value_constructor_structure_let_expr(ctx, &arg.expr_base, let, row_type, structure)
+			return
+		}
 	}
 	value := checker_check_value_constructor_typed_value(ctx, arg, row_type)
 	checker_check_assignment_compatibility(ctx, value.type, row_type, checker_expr_range(arg))
@@ -1035,6 +1041,8 @@ checker_check_value_constructor_structure_arg :: proc(
 	#partial switch n in arg.derived_expr {
 	case ^ast.Constructor_Named_Assignment_Expr:
 		checker_check_value_constructor_named_assignment(ctx, &arg.expr_base, n, structure)
+	case ^ast.Let_Expr:
+		checker_check_value_constructor_structure_let_expr(ctx, &arg.expr_base, n, struct_type, structure)
 	case ^ast.Call_Arg_List_Expr:
 		for child in n.args {
 			checker_check_value_constructor_structure_arg(ctx, child, struct_type, structure)
@@ -1048,6 +1056,44 @@ checker_check_value_constructor_structure_arg :: proc(
 		value := checker_check_value_constructor_typed_value(ctx, arg, struct_type)
 		checker_check_assignment_compatibility(ctx, value.type, struct_type, checker_expr_range(arg))
 	}
+}
+
+checker_check_value_constructor_table_let_expr :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Let_Expr,
+	table_type: ^Type,
+	row_type: ^Type,
+) -> Operand {
+	checker_open_scope(ctx, .Constructor_For, expr.range)
+	defer checker_close_scope(ctx)
+
+	for binding in expr.bindings {
+		checker_check_expr(ctx, binding)
+	}
+	for body in expr.body {
+		checker_check_value_constructor_table_arg(ctx, body, table_type, row_type)
+	}
+	return checker_record_operand(ctx, node, .Value, table_type)
+}
+
+checker_check_value_constructor_structure_let_expr :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Let_Expr,
+	struct_type: ^Type,
+	structure: ^Structure,
+) -> Operand {
+	checker_open_scope(ctx, .Constructor_For, expr.range)
+	defer checker_close_scope(ctx)
+
+	for binding in expr.bindings {
+		checker_check_expr(ctx, binding)
+	}
+	for body in expr.body {
+		checker_check_value_constructor_structure_arg(ctx, body, struct_type, structure)
+	}
+	return checker_record_operand(ctx, node, .Value, struct_type)
 }
 
 checker_check_value_constructor_named_assignment :: proc(

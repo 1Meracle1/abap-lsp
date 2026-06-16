@@ -347,6 +347,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 	case ^Assign_Stmt:
 		r := clone_shallow(n, allocator)
 		r.lhs = clone(n.lhs, allocator)
+		r.chain_lhs = clone_expr_list(n.chain_lhs, allocator)
 		r.rhs = clone(n.rhs, allocator)
 		return r
 	case ^Downcast_Assign_Stmt:

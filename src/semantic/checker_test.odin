@@ -2645,6 +2645,37 @@ lr_i = lr_data.`
 }
 
 @(test)
+root_semantic_stmt_checker_checks_chained_assignment_targets :: proc(t: ^testing.T) {
+	source := `DATA:
+  BEGIN OF struct,
+    col1 TYPE i VALUE 1,
+  END OF struct,
+  struct1 LIKE struct,
+  struct2 LIKE struct.
+
+struct1 = struct2 = struct.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_chained_assignment.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	testing.expect_value(t, len(file.root.stmts), 2)
+	assign := file.root.stmts[1].derived_stmt.(^ast.Assign_Stmt)
+	testing.expect_value(t, len(assign.chain_lhs), 1)
+	middle_info, middle_ok := checker_test_expr_info_for_node(t, &checker, &assign.chain_lhs[0].expr_base)
+	rhs_info, rhs_ok := checker_test_expr_info_for_node(t, &checker, &assign.rhs.expr_base)
+	testing.expect(t, middle_ok && rhs_ok)
+	if middle_ok {
+		testing.expect(t, middle_info.is_lhs)
+	}
+	if middle_ok && rhs_ok {
+		testing.expect(t, checker_type_same(middle_info.type, rhs_info.type))
+	}
+}
+
+@(test)
 root_semantic_stmt_checker_reports_unresolved_assignment_operands :: proc(t: ^testing.T) {
 	source := `FORM run.
 DATA lv_text TYPE string.
@@ -3117,6 +3148,45 @@ ENDLOOP.`
 	testing.expect(t, seen_option1)
 	testing.expect(t, seen_missing)
 	testing.expect_value(t, seen_ls_del, 4)
+}
+
+@(test)
+root_semantic_expr_checker_resolves_value_constructor_let_body_fields :: proc(t: ^testing.T) {
+	source := `DATA:
+  BEGIN OF struct,
+    col1 TYPE i VALUE 1,
+    col2 TYPE i VALUE 2,
+    col3 TYPE i VALUE 3,
+    col4 TYPE i VALUE 4,
+  END OF struct,
+  struct2 LIKE struct.
+
+struct2 = VALUE #( LET x = struct2 IN
+                   col1 = x-col2
+                   col4 = 5 ).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://value_constructor_let_fields.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	struct2 := checker_test_lookup(t, &project, file.root_scope, .Value, "struct2", .Variable)
+	testing.expect(t, struct2 != nil)
+	if struct2 == nil {
+		return
+	}
+	structure := checker_type_structure(struct2.type)
+	testing.expect(t, structure != nil)
+	if structure == nil {
+		return
+	}
+	col1 := checker_test_structure_field(t, &project, structure, "col1")
+	col2 := checker_test_structure_field(t, &project, structure, "col2")
+	col4 := checker_test_structure_field(t, &project, structure, "col4")
+	testing.expect(t, .Used in col1.flags)
+	testing.expect(t, .Used in col2.flags)
+	testing.expect(t, .Used in col4.flags)
 }
 
 @(test)

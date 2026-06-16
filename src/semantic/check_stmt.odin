@@ -121,7 +121,7 @@ checker_check_stmt :: proc(
 			rhs.type,
 		)
 	case ^ast.Assign_Stmt:
-		checker_check_assignment_stmt(ctx, n.lhs, n.rhs)
+		checker_check_assignment_stmt(ctx, n.lhs, n.rhs, chain_lhs = n.chain_lhs[:])
 	case ^ast.Downcast_Assign_Stmt:
 		checker_check_assignment_stmt(ctx, n.lhs, n.rhs, downcast = true)
 	case ^ast.Expr_Stmt:
@@ -940,21 +940,41 @@ checker_check_assignment_stmt :: proc(
 	lhs_expr: ^ast.Expr,
 	rhs_expr: ^ast.Expr,
 	downcast := false,
+	chain_lhs: []^ast.Expr = nil,
 ) {
-	lhs := checker_check_expr(ctx, lhs_expr, .Value, true)
 	diagnose_unresolved := checker_should_diagnose_unresolved_value_operand(ctx)
-	if diagnose_unresolved {
-		checker_check_unresolved_variable_operand(ctx, lhs_expr, lhs)
+
+	target_exprs := make([dynamic]^ast.Expr, 0, 1 + len(chain_lhs), context.temp_allocator)
+	append(&target_exprs, lhs_expr)
+	for target in chain_lhs {
+		append(&target_exprs, target)
 	}
+
+	targets := make([dynamic]Operand, 0, len(target_exprs), context.temp_allocator)
+	for target_expr in target_exprs {
+		target := checker_check_expr(ctx, target_expr, .Value, true)
+		if diagnose_unresolved {
+			checker_check_unresolved_variable_operand(ctx, target_expr, target)
+		}
+		append(&targets, target)
+	}
+
 	rhs_ctx := ctx^
-	rhs_ctx.type_hint = lhs.type
-	rhs_ctx.type_hint_expr = lhs_expr
+	rhs_ctx.type_hint = targets[len(targets) - 1].type
+	rhs_ctx.type_hint_expr = target_exprs[len(target_exprs) - 1]
 	rhs_ctx.diagnose_unresolved_value_refs = diagnose_unresolved
 	rhs := checker_check_expr(&rhs_ctx, rhs_expr)
 	if diagnose_unresolved {
 		checker_check_unresolved_variable_operand(ctx, rhs_expr, rhs)
 	}
-	checker_check_assignment_compatibility(ctx, rhs.type, lhs.type, checker_expr_range(rhs_expr), downcast)
+
+	source_type := rhs.type
+	source_range := checker_expr_range(rhs_expr)
+	for i := len(targets) - 1; i >= 0; i -= 1 {
+		checker_check_assignment_compatibility(ctx, source_type, targets[i].type, source_range, downcast)
+		source_type = targets[i].type
+		source_range = checker_expr_range(target_exprs[i])
+	}
 }
 
 checker_check_assignment_compatibility :: proc(

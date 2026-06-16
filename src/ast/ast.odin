@@ -1070,6 +1070,7 @@ Selection_Request_Clause :: struct {
 Assign_Stmt :: struct {
 	using node: Stmt,
 	lhs:        ^Expr,
+	chain_lhs:  [dynamic]^Expr,
 	rhs:        ^Expr,
 }
 
