@@ -973,9 +973,10 @@ parse_filter_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dy
 			continue
 		}
 		start := p.index
-		if allow_keyword(p, "EXCEPT") {
-			allow_keyword(p, "IN")
-			append_if_expr(out, parse_constructor_value_expr(p, body_start))
+		if at_keyword(p, "EXCEPT") && at_keyword_index(p, p.index + 1, "IN") {
+			append_if_expr(out, parse_filter_except_in_clause_expr(p, body_start))
+		} else if allow_keyword(p, "EXCEPT") {
+			// Standalone FILTER EXCEPT is a modifier; the source table remains the first constructor operand.
 		} else if allow_keyword(p, "IN") {
 			append_if_expr(out, parse_constructor_value_expr(p, body_start))
 		} else if allow_keyword(p, "USING") {
@@ -988,6 +989,40 @@ parse_filter_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dy
 		}
 		ensure_forward_progress(p, start)
 	}
+}
+
+parse_filter_except_in_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
+	start := expect_keyword(p, "EXCEPT")
+	if start.kind != .Ident {
+		return nil
+	}
+	if !allow_keyword(p, "IN") {
+		error_current(p, "syntax error: expected keyword")
+		return nil
+	}
+	source := parse_constructor_value_expr(p, body_start)
+	if source == nil {
+		return nil
+	}
+	expr := ast.new(
+		ast.Constructor_Filter_Except_In_Clause_Expr,
+		tokenizer.text_range(start.range.start, source.range.end),
+		p.allocator,
+	)
+	expr.source = source
+	if at_keyword(p, "WHERE") {
+		expr.where_clause = parse_constructor_where_clause_expr(p)
+		if expr.where_clause != nil {
+			if where_node, ok := expr.where_clause.derived_expr.(^ast.Constructor_Where_Clause_Expr); ok {
+				_, condition_parenthesized := where_node.condition.derived_expr.(^ast.Paren_Expr)
+				if condition_parenthesized {
+					error(p, where_node.range, "syntax error: FILTER EXCEPT IN WHERE clause does not allow parentheses")
+				}
+			}
+			expr.range = tokenizer.text_range(start.range.start, expr.where_clause.range.end)
+		}
+	}
+	return expr
 }
 
 parse_reduce_constructor_sequence :: proc(p: ^Parser, body_start: int, out: ^[dynamic]^ast.Expr) {
@@ -1243,19 +1278,11 @@ parse_constructor_where_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if start.kind != .Ident {
 		return nil
 	}
-	open := allow_token(p, .LParen)
 	condition := parse_logical_expr(p)
 	if condition == nil {
 		return nil
 	}
 	end := condition.range.end
-	if open {
-		close := expect_token(p, .RParen)
-		if close.kind != .RParen {
-			return nil
-		}
-		end = close.range.end
-	}
 	expr := ast.new(
 		ast.Constructor_Where_Clause_Expr,
 		tokenizer.text_range(start.range.start, end),

@@ -231,6 +231,11 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.condition = clone(n.condition, allocator)
 		return r
+	case ^Constructor_Filter_Except_In_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.source = clone(n.source, allocator)
+		r.where_clause = clone(n.where_clause, allocator)
+		return r
 	case ^Constructor_Init_Clause_Expr:
 		r := clone_shallow(n, allocator)
 		r.assignments = clone_expr_list(n.assignments, allocator)

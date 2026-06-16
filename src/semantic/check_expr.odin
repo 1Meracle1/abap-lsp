@@ -186,6 +186,10 @@ checker_check_expr :: proc(
 	case ^ast.Constructor_Where_Clause_Expr:
 		checker_check_expr(ctx, n.condition)
 		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
+	case ^ast.Constructor_Filter_Except_In_Clause_Expr:
+		checker_check_expr(ctx, n.source)
+		checker_check_expr(ctx, n.where_clause)
+		return checker_record_operand(ctx, node, .No_Value, project_type_unknown(ctx.project), lhs = lhs)
 	case ^ast.Constructor_Init_Clause_Expr:
 		for assignment in n.assignments {
 			checker_check_expr(ctx, assignment)
@@ -1312,8 +1316,51 @@ checker_check_filter_constructor_expr :: proc(
 	sources := make([dynamic]^ast.Expr, 0, 2, context.temp_allocator)
 	where_arg: ^ast.Expr
 	where_clause: ^ast.Constructor_Where_Clause_Expr
+	except_in_arg: ^ast.Expr
+	except_in_clause: ^ast.Constructor_Filter_Except_In_Clause_Expr
 	seen_where := false
 	for arg in expr.args {
+		if except_node, ok := arg.derived_expr.(^ast.Constructor_Filter_Except_In_Clause_Expr); ok {
+			if seen_where {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"FILTER source clauses must precede WHERE",
+				)
+			}
+			if except_in_clause != nil {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					arg.range,
+					"FILTER allows only one EXCEPT IN clause",
+				)
+			}
+			except_in_arg = arg
+			except_in_clause = except_node
+			append(&sources, except_node.source)
+			if except_node.where_clause != nil {
+				if where_clause != nil {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						except_node.where_clause.range,
+						"FILTER allows only one WHERE clause",
+					)
+					checker_check_expr(ctx, except_node.where_clause)
+					continue
+				}
+				if where_node, where_ok := except_node.where_clause.derived_expr.(^ast.Constructor_Where_Clause_Expr); where_ok {
+					where_arg = except_node.where_clause
+					where_clause = where_node
+					seen_where = true
+				} else {
+					checker_check_expr(ctx, except_node.where_clause)
+				}
+			}
+			continue
+		}
 		if where_node, ok := arg.derived_expr.(^ast.Constructor_Where_Clause_Expr); ok {
 			if where_clause != nil {
 				checker_add_diagnostic(
@@ -1360,6 +1407,8 @@ checker_check_filter_constructor_expr :: proc(
 
 	row_type := project_type_unknown(ctx.project)
 	row_structure: ^Structure
+	except_in_row_type := project_type_unknown(ctx.project)
+	except_in_row_structure: ^Structure
 	for source, i in sources {
 		operand := checker_check_expr(ctx, source)
 		if i > 1 {
@@ -1385,12 +1434,29 @@ checker_check_filter_constructor_expr :: proc(
 		if i == 0 {
 			row_type = checker_type_row(ctx, operand.type)
 			row_structure = checker_type_structure(row_type)
+		} else if i == 1 {
+			except_in_row_type = checker_type_row(ctx, operand.type)
+			except_in_row_structure = checker_type_structure(except_in_row_type)
 		}
 	}
 
 	if where_clause != nil {
-		checker_check_internal_table_where_expr(ctx, where_clause.condition, row_type, row_structure)
+		if except_in_clause != nil && where_arg == except_in_clause.where_clause && len(sources) > 1 {
+			checker_check_filter_except_in_where_expr(
+				ctx,
+				where_clause.condition,
+				row_type,
+				row_structure,
+				except_in_row_type,
+				except_in_row_structure,
+			)
+		} else {
+			checker_check_internal_table_where_expr(ctx, where_clause.condition, row_type, row_structure)
+		}
 		checker_record_operand(ctx, &where_arg.expr_base, .No_Value, project_type_unknown(ctx.project))
+	}
+	if except_in_arg != nil {
+		checker_record_operand(ctx, &except_in_arg.expr_base, .No_Value, project_type_unknown(ctx.project))
 	}
 }
 

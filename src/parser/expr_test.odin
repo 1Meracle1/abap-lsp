@@ -465,6 +465,26 @@ filter_constructor_allows_except_in_where :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(parsed.errors), 0)
 	counts := count_nodes(parsed.root)
 	testing.expect_value(t, counts.constructor, 1)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Inline_Decl)
+	constructor := decl.expr.derived_expr.(^ast.Constructor_Expr)
+	testing.expect_value(t, len(constructor.args), 2)
+	_, source_ok := constructor.args[0].derived_expr.(^ast.Ident_Expr)
+	except_in := constructor.args[1].derived_expr.(^ast.Constructor_Filter_Except_In_Clause_Expr)
+	where_clause := except_in.where_clause.derived_expr.(^ast.Constructor_Where_Clause_Expr)
+	testing.expect(t, source_ok)
+	testing.expect(t, except_in.source != nil)
+	_, condition_parenthesized := where_clause.condition.derived_expr.(^ast.Paren_Expr)
+	testing.expect(t, !condition_parenthesized)
+}
+
+@(test)
+filter_constructor_rejects_parenthesized_except_in_where :: proc(t: ^testing.T) {
+	source := `DATA(lt_obj_dif) = FILTER #( lt_child_obj
+  EXCEPT IN lt_rep_rel_obj
+  WHERE ( objid = objid ) ).`
+	parsed := parse(source, "filter_except_in_parenthesized_where.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "FILTER EXCEPT IN WHERE clause does not allow parentheses")
 }
 
 @(test)

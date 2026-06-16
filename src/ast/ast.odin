@@ -631,6 +631,13 @@ Constructor_Where_Clause_Expr :: struct {
 	condition:  ^Expr,
 }
 
+// ABAP syntax: `EXCEPT IN source WHERE condition` inside a `FILTER` constructor.
+Constructor_Filter_Except_In_Clause_Expr :: struct {
+	using node:   Expr,
+	source:       ^Expr,
+	where_clause: ^Expr,
+}
+
 // ABAP syntax: `INIT name = value ...` inside `REDUCE`.
 Constructor_Init_Clause_Expr :: struct {
 	using node:  Expr,
@@ -2956,6 +2963,7 @@ Any_Node :: union {
 	^Constructor_Else_Clause_Expr,
 	^Constructor_For_Clause_Expr,
 	^Constructor_Where_Clause_Expr,
+	^Constructor_Filter_Except_In_Clause_Expr,
 	^Constructor_Init_Clause_Expr,
 	^Constructor_Next_Clause_Expr,
 	^Constructor_Named_Assignment_Expr,
@@ -3119,6 +3127,7 @@ Any_Expr :: union {
 	^Constructor_Else_Clause_Expr,
 	^Constructor_For_Clause_Expr,
 	^Constructor_Where_Clause_Expr,
+	^Constructor_Filter_Except_In_Clause_Expr,
 	^Constructor_Init_Clause_Expr,
 	^Constructor_Next_Clause_Expr,
 	^Constructor_Named_Assignment_Expr,

@@ -285,9 +285,15 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Constructor_For_Clause_Expr:
 		emit_constructor_for_clause(p, n)
 	case ^Constructor_Where_Clause_Expr:
-		emit(p, "WHERE ( ")
+		emit(p, "WHERE ")
 		emit_node(p, n.condition)
-		emit(p, " )")
+	case ^Constructor_Filter_Except_In_Clause_Expr:
+		emit(p, "EXCEPT IN ")
+		emit_node(p, n.source)
+		if n.where_clause != nil {
+			emit_space(p)
+			emit_node(p, n.where_clause)
+		}
 	case ^Constructor_Init_Clause_Expr:
 		emit(p, "INIT ")
 		emit_expr_list(p, n.assignments, " ")

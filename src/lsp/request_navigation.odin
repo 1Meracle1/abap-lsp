@@ -14,17 +14,79 @@ import "core:os"
 import "core:strings"
 
 handle_hover :: proc(ctx: ^Request_Context, params: json.Value) {
-	found := entity_at_position(ctx.state, params)
+	found := hover_at_position(ctx.state, params)
 	if !found.ok {
 		send_success(ctx.output, ctx.id, json.Null(nil), ctx.state.allocator)
 		return
 	}
-	text := entity_hover_text(found.snapshot.project, found.entity)
 	hover := Hover {
-		contents = Hover_Markup{kind = "markdown", value = text},
+		contents = Hover_Markup{kind = "markdown", value = found.text},
 		range = range_from_offsets(found.snapshot.source, found.range.start, found.range.end),
 	}
 	send_success(ctx.output, ctx.id, hover, ctx.state.allocator)
+}
+
+Hover_Lookup :: struct {
+	snapshot: Snapshot_Lookup,
+	text:     string,
+	range:    semantic.Range,
+	ok:       bool,
+}
+
+hover_at_position :: proc(state: ^Server_State, params: json.Value) -> Hover_Lookup {
+	if found := entity_at_position(state, params); found.ok {
+		return Hover_Lookup {
+			snapshot = found.snapshot,
+			text = entity_hover_text(found.snapshot.project, found.entity),
+			range = found.range,
+			ok = true,
+		}
+	}
+
+	snapshot, offset, ok := snapshot_for_position(state, params)
+	if !ok {
+		return {}
+	}
+	query := semantic.semantic_query(snapshot.project, snapshot.checker, snapshot.file)
+	if info, info_ok := semantic.semantic_fact_expression_info_at_offset(
+		semantic.semantic_query_facts(query),
+		offset,
+	); info_ok {
+		text := expression_hover_text(snapshot.project, info.info)
+		if text != "" {
+			return Hover_Lookup {
+				snapshot = snapshot,
+				text = text,
+				range = info.range,
+				ok = true,
+			}
+		}
+	}
+	return {}
+}
+
+expression_hover_text :: proc(
+	project: ^semantic.Project,
+	info: semantic.Checker_Expr_Info,
+) -> string {
+	#partial switch info.mode {
+	case .Table_Line:
+		return table_line_hover_text(project, info.type)
+	case:
+	}
+	return ""
+}
+
+table_line_hover_text :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
+	out := strings.builder_make(context.temp_allocator)
+	strings.write_string(&out, "`table_line` table line")
+	if type_text := type_label(project, typ); type_text != "" {
+		strings.write_string(&out, "\n\n")
+		strings.write_string(&out, "type: `")
+		strings.write_string(&out, type_text)
+		strings.write_byte(&out, '`')
+	}
+	return strings.to_string(out)
 }
 
 handle_definition :: proc(ctx: ^Request_Context, params: json.Value) {

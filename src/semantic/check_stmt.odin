@@ -1117,6 +1117,10 @@ checker_check_transporting_field :: proc(
 			continue
 		}
 		if current_structure == nil {
+			if checker_type_is_unknown(current_type) {
+				return
+			}
+			checker_add_unknown_table_component_diagnostic(ctx, segment.name.text, segment.name.range)
 			return
 		}
 		name := project_intern_lower_ascii(ctx.project, segment.name.text)
@@ -1234,6 +1238,10 @@ checker_check_read_table_key_name :: proc(
 			structure = checker_type_structure(current_type)
 		}
 		if structure == nil {
+			if checker_type_is_unknown(current_type) {
+				return Operand{mode = .Value, type = project_type_unknown(ctx.project)}
+			}
+			checker_add_unknown_table_component_diagnostic(ctx, segment.name.text, segment.name.range)
 			return Operand{mode = .Value, type = project_type_unknown(ctx.project)}
 		}
 		name := project_intern_lower_ascii(ctx.project, segment.name.text)
@@ -1628,6 +1636,143 @@ checker_check_internal_table_where_component_expr :: proc(
 	return checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
 }
 
+checker_check_filter_except_in_where_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	left_row_type: ^Type,
+	left_row_structure: ^Structure,
+	right_row_type: ^Type,
+	right_row_structure: ^Structure,
+) -> Operand {
+	if expr == nil {
+		return checker_invalid_operand()
+	}
+	if operand, ok := checker_check_table_component_expr(ctx, expr, left_row_type, left_row_structure, false); ok {
+		return operand
+	}
+	node := &expr.expr_base
+	#partial switch n in expr.derived_expr {
+	case ^ast.Binary_Expr:
+		left, right: Operand
+		if n.op == .And || n.op == .Or {
+			left = checker_check_filter_except_in_where_expr(
+				ctx,
+				n.left,
+				left_row_type,
+				left_row_structure,
+				right_row_type,
+				right_row_structure,
+			)
+			right = checker_check_filter_except_in_where_expr(
+				ctx,
+				n.right,
+				left_row_type,
+				left_row_structure,
+				right_row_type,
+				right_row_structure,
+			)
+		} else if checker_internal_table_where_component_binary_op(n.op) {
+			left = checker_check_filter_except_in_where_side_expr(
+				ctx,
+				n.left,
+				left_row_type,
+				left_row_structure,
+			)
+			right = checker_check_filter_except_in_where_side_expr(
+				ctx,
+				n.right,
+				right_row_type,
+				right_row_structure,
+			)
+			checker_check_internal_table_where_operand_compatibility(
+				ctx,
+				n.op,
+				right.type,
+				left.type,
+				checker_expr_range(n.right),
+			)
+		} else {
+			left = checker_check_expr_with_unresolved_value_diagnostics(ctx, n.left)
+			right = checker_check_expr_with_unresolved_value_diagnostics(ctx, n.right)
+		}
+		return checker_record_operand(ctx, node, .Value, checker_binary_result_type(ctx, n.op, left, right))
+	case ^ast.Unary_Expr:
+		operand := checker_check_filter_except_in_where_expr(
+			ctx,
+			n.expr,
+			left_row_type,
+			left_row_structure,
+			right_row_type,
+			right_row_structure,
+		) if n.op == .Not else checker_check_expr_with_unresolved_value_diagnostics(ctx, n.expr)
+		return checker_record_operand(ctx, node, .Value, operand.type)
+	case ^ast.Paren_Expr:
+		operand := checker_check_filter_except_in_where_expr(
+			ctx,
+			n.expr,
+			left_row_type,
+			left_row_structure,
+			right_row_type,
+			right_row_structure,
+		)
+		return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity)
+	case ^ast.Substring_Expr:
+		base := checker_check_filter_except_in_where_side_expr(ctx, n.base, left_row_type, left_row_structure)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.offset)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.length)
+		return checker_record_operand(ctx, node, .Value, base.type, base.entity)
+	case ^ast.Between_Expr:
+		subject := checker_check_filter_except_in_where_side_expr(ctx, n.subject, left_row_type, left_row_structure)
+		low := checker_check_filter_except_in_where_side_expr(ctx, n.low, right_row_type, right_row_structure)
+		high := checker_check_filter_except_in_where_side_expr(ctx, n.high, right_row_type, right_row_structure)
+		checker_check_internal_table_where_operand_compatibility(
+			ctx,
+			.Between,
+			low.type,
+			subject.type,
+			checker_expr_range(n.low),
+		)
+		checker_check_internal_table_where_operand_compatibility(
+			ctx,
+			.Between,
+			high.type,
+			subject.type,
+			checker_expr_range(n.high),
+		)
+		return checker_record_operand(ctx, node, .Value, checker_builtin_type_from_name(ctx.checker, "abap_bool"))
+	case ^ast.Is_Predicate_Expr:
+		checker_check_filter_except_in_where_side_expr(ctx, n.subject, left_row_type, left_row_structure)
+		return checker_record_operand(ctx, node, .Value, checker_builtin_type_from_name(ctx.checker, "abap_bool"))
+	}
+	return checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
+}
+
+checker_check_filter_except_in_where_side_expr :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	row_type: ^Type,
+	row_structure: ^Structure,
+) -> Operand {
+	if expr == nil {
+		return checker_invalid_operand()
+	}
+	if operand, ok := checker_check_table_component_expr(ctx, expr, row_type, row_structure, false); ok {
+		return operand
+	}
+	node := &expr.expr_base
+	#partial switch n in expr.derived_expr {
+	case ^ast.Paren_Expr:
+		operand := checker_check_filter_except_in_where_side_expr(ctx, n.expr, row_type, row_structure)
+		return checker_record_operand(ctx, node, operand.mode, operand.type, operand.entity)
+	case ^ast.Substring_Expr:
+		base := checker_check_filter_except_in_where_side_expr(ctx, n.base, row_type, row_structure)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.offset)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.length)
+		return checker_record_operand(ctx, node, .Value, base.type, base.entity)
+	}
+	return checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
+}
+
 checker_internal_table_where_component_binary_op :: proc(op: ast.Binary_Op) -> bool {
 	#partial switch op {
 	case .Equal,
@@ -1741,9 +1886,18 @@ checker_check_table_component_expr :: proc(
 		}
 	}
 	if row_structure == nil {
-		mode := ast.Addressing_Mode.Table_Line if len(segments) == 1 && checker_table_component_is_table_line(first.name) else ast.Addressing_Mode.Value
-		typ := row_type if mode == .Table_Line else project_type_unknown(ctx.project)
-		return checker_record_operand(ctx, &expr.expr_base, mode, typ), true
+		if len(segments) == 1 && checker_table_component_is_table_line(first.name) {
+			return checker_record_operand(ctx, &expr.expr_base, .Table_Line, row_type), true
+		}
+		if checker_type_is_unknown(row_type) {
+			return checker_record_operand(ctx, &expr.expr_base, .Value, project_type_unknown(ctx.project)), true
+		}
+		unknown := first
+		if checker_table_component_is_table_line(first.name) && len(segments) > 1 {
+			unknown = segments[1]
+		}
+		checker_add_unknown_table_component_diagnostic(ctx, unknown.name, unknown.range)
+		return checker_record_operand(ctx, &expr.expr_base, .Value, project_type_unknown(ctx.project)), true
 	}
 	current_type := row_type
 	current_structure := row_structure
@@ -1872,6 +2026,23 @@ checker_append_table_component_segment :: proc(
 
 checker_table_component_is_table_line :: proc(name: string) -> bool {
 	return strings.equal_fold(name, "table_line")
+}
+
+checker_add_unknown_table_component_diagnostic :: proc(
+	ctx: ^Checker_Context,
+	name_text: string,
+	range: Range,
+) {
+	name := project_intern_lower_ascii(ctx.project, name_text)
+	if name == "" {
+		return
+	}
+	checker_add_diagnostic(
+		ctx,
+		.Unknown_Field,
+		range,
+		checker_table_component_message(ctx, "unknown internal table field ", name),
+	)
 }
 
 checker_table_component_message :: proc(

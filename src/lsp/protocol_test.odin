@@ -5679,6 +5679,29 @@ MODIFY lt_rows
 }
 
 @(test)
+lsp_hover_reports_filter_except_in_table_line_type :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_header,
+    docnum TYPE string,
+  END OF ty_header,
+  tt_docnum TYPE STANDARD TABLE OF string WITH EMPTY KEY,
+  tt_header TYPE STANDARD TABLE OF ty_header WITH EMPTY KEY.
+
+DATA lt_docnum_wt_ship TYPE tt_docnum.
+DATA lt_aif_job_header_existing TYPE tt_header.
+
+DATA(lt_delta_docnum_wt_ship) = FILTER tt_docnum(
+  lt_docnum_wt_ship EXCEPT IN lt_aif_job_header_existing
+  WHERE table_line = docnum
+).`
+
+	text := lsp_test_hover_text(t, source, "WHERE table_line = docnum", "table_line")
+
+	testing.expect(t, strings.contains(text, "`table_line` table line"))
+	testing.expect(t, strings.contains(text, "type: `string`"))
+}
+
+@(test)
 lsp_hover_reports_constant_type_and_value_as_abap_syntax :: proc(t: ^testing.T) {
 	source := `CONSTANTS:
   BEGIN OF c_shipping_status,
@@ -5923,12 +5946,12 @@ lsp_test_hover_text :: proc(
 		return ""
 	}
 	params := lsp_test_rename_position_params(uri, offset_to_position(source, base + inside), "")
-	found := entity_at_position(&state, params)
+	found := hover_at_position(&state, params)
 	testing.expect(t, found.ok)
 	if !found.ok {
 		return ""
 	}
-	return entity_hover_text(found.snapshot.project, found.entity)
+	return found.text
 }
 
 lsp_test_find_completion_item :: proc(

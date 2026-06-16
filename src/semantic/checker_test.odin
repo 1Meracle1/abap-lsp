@@ -4325,6 +4325,117 @@ lv_sum = REDUCE i( INIT total = 0 FOR idx = 1 UNTIL idx > 3 NEXT total = total +
 }
 
 @(test)
+root_semantic_filter_except_in_where_uses_left_and_right_row_fields :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_header,
+    docnum TYPE string,
+  END OF ty_header,
+  tt_docnum TYPE STANDARD TABLE OF string WITH EMPTY KEY,
+  tt_header TYPE STANDARD TABLE OF ty_header WITH EMPTY KEY.
+
+DATA lt_docnum TYPE tt_docnum.
+DATA lt_header TYPE tt_header.
+DATA lt_delta TYPE tt_docnum.
+
+lt_delta = FILTER #(
+  lt_docnum EXCEPT IN lt_header
+  WHERE table_line = docnum
+).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://filter_except_in_where_fields.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "table_line"), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "docnum"), 0)
+	lt_docnum := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_docnum", .Variable)
+	lt_header := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_header", .Variable)
+	lt_delta := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_delta", .Variable)
+	testing.expect(t, lt_docnum != nil && .Used in lt_docnum.flags)
+	testing.expect(t, lt_header != nil && .Used in lt_header.flags)
+	testing.expect(t, lt_delta != nil && .Used in lt_delta.flags)
+
+	where_offset := checker_test_find_text(source, "WHERE table_line = docnum")
+	testing.expect(t, where_offset >= 0)
+	if where_offset < 0 {
+		return
+	}
+	table_line_offset := where_offset + len("WHERE ")
+	docnum_offset := where_offset + len("WHERE table_line = ")
+	query := semantic_query(&project, &checker, file)
+	fact_query := semantic_query_facts(query)
+
+	table_line_info, table_line_ok := semantic_fact_operand_info_at_offset(fact_query, table_line_offset)
+	testing.expect(t, table_line_ok)
+	if table_line_ok {
+		testing.expect_value(t, table_line_info.mode, ast.Addressing_Mode.Table_Line)
+		testing.expect(t, table_line_info.type != nil)
+		if table_line_info.type != nil {
+			testing.expect_value(t, table_line_info.type.kind, Type_Kind.Builtin)
+			testing.expect_value(t, table_line_info.type.name, "string")
+		}
+	}
+
+	docnum_info, docnum_info_ok := semantic_fact_operand_info_at_offset(fact_query, docnum_offset)
+	testing.expect(t, docnum_info_ok)
+	if docnum_info_ok {
+		testing.expect_value(t, docnum_info.mode, ast.Addressing_Mode.Field)
+		testing.expect(t, docnum_info.type != nil)
+		if docnum_info.type != nil {
+			testing.expect_value(t, docnum_info.type.kind, Type_Kind.Builtin)
+			testing.expect_value(t, docnum_info.type.name, "string")
+		}
+	}
+
+	ty_header := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_header", .Type_Def)
+	docnum_field := checker_test_structure_field(t, &project, checker_type_structure(ty_header.type), "docnum")
+	docnum_use := semantic_ref_use_at_offset(semantic_query_refs(query), docnum_offset)
+	testing.expect(t, docnum_use != nil)
+	if docnum_use != nil {
+		testing.expect(t, docnum_use.entity == docnum_field)
+		range := semantic_entity_use_range(docnum_use^)
+		testing.expect_value(t, source[range.start:range.end], "docnum")
+	}
+}
+
+@(test)
+root_semantic_filter_except_in_where_diagnoses_unknown_left_table_line :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_header,
+    docnum TYPE string,
+  END OF ty_header,
+  tt_docnum TYPE STANDARD TABLE OF string WITH EMPTY KEY,
+  tt_header TYPE STANDARD TABLE OF ty_header WITH EMPTY KEY.
+
+DATA lt_docnum TYPE tt_docnum.
+DATA lt_header TYPE tt_header.
+DATA lt_delta TYPE tt_docnum.
+
+lt_delta = FILTER #(
+  lt_docnum EXCEPT IN lt_header
+  WHERE table_line1 = docnum
+).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://filter_except_in_where_unknown_left.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 1)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "table_line1"), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "docnum"), 0)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unknown_Field {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "table_line1")
+		testing.expect_value(t, diagnostic.message, "unknown internal table field table_line1")
+	}
+}
+
+@(test)
 root_semantic_checker_rejects_value_constructor_for_in_with_non_table_result_type :: proc(t: ^testing.T) {
 	source := `TYPES:
   BEGIN OF ty_line,
@@ -5755,6 +5866,33 @@ DELETE ADJACENT DUPLICATES FROM lt_rows COMPARING gone.`
 		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
 	}
 	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "lv_id"), 0)
+}
+
+@(test)
+root_semantic_missing_elementary_table_components_diagnose_without_symbol_candidates :: proc(
+	t: ^testing.T,
+) {
+	source := `DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_text TYPE string.
+
+SORT lt_text BY table_line1.
+READ TABLE lt_text WITH KEY table_line2 = lv_text TRANSPORTING NO FIELDS.
+LOOP AT lt_text TRANSPORTING table_line3 WHERE table_line4 = lv_text.
+ENDLOOP.
+DELETE lt_text WHERE table_line5 = lv_text.
+DELETE ADJACENT DUPLICATES FROM lt_text COMPARING table_line6.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://missing_elementary_table_components.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 6)
+	missing_names := [?]string{"table_line1", "table_line2", "table_line3", "table_line4", "table_line5", "table_line6"}
+	for name in missing_names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "lv_text"), 0)
 }
 
 @(test)
