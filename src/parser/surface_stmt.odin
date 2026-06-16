@@ -1055,6 +1055,7 @@ parse_select_query_clause :: proc(
 						"EXCEPT",
 					},
 				)
+				query.for_all_entries = sql_implicit_host_expr(p, query.for_all_entries)
 				query.for_all_entries_clause = select_clause_expr_range(
 					p,
 					start,
@@ -2022,6 +2023,9 @@ parse_select_result_tail :: proc(
 			body_start,
 			SELECT_RESULT_TARGET_STOP_KEYWORDS,
 		)
+	}
+	if validate_open_sql_target {
+		clause.target = sql_implicit_host_expr(p, clause.target)
 	}
 	if validate_open_sql_target && parenthesized_target {
 		target_range := clause.target.range if clause.target != nil else target_start.range

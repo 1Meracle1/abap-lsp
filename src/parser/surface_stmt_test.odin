@@ -1154,6 +1154,42 @@ open_sql_mixed_host_escape_styles_are_diagnosed :: proc(t: ^testing.T) {
 }
 
 @(test)
+open_sql_mixed_host_escape_styles_include_result_and_for_all_entries_hosts :: proc(t: ^testing.T) {
+	source := `SELECT matnr
+  FROM mara
+  WHERE matnr = @lv_matnr
+  INTO TABLE lt_rows.
+
+SELECT matnr
+  FROM mara
+  FOR ALL ENTRIES IN lt_keys
+  WHERE matnr = @lt_keys-matnr
+  INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_mixed_result_and_fae_hosts.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, OPEN_SQL_HOST_ESCAPE_MESSAGE), 2)
+	testing.expect_value(t, len(parsed.errors), 2)
+	testing.expect_value(
+		t,
+		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
+		"lt_rows",
+	)
+	testing.expect_value(
+		t,
+		source[parsed.errors[1].range.start:parsed.errors[1].range.end],
+		"lt_keys",
+	)
+
+	result_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	result_host, result_is_host := result_stmt.query.result.target.derived_expr.(^ast.Host_Expr)
+	testing.expect(t, result_is_host && result_host.implicit)
+
+	fae_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt)
+	fae_host, fae_is_host := fae_stmt.query.for_all_entries.derived_expr.(^ast.Host_Expr)
+	testing.expect(t, fae_is_host && fae_host.implicit)
+}
+
+@(test)
 open_sql_order_by_rejects_table_alias_field_access :: proc(t: ^testing.T) {
 	source := `SELECT q~trnid, MAX( w~creation_time ) AS creation_time
   FROM /sttp/dm_trn_evt AS q
