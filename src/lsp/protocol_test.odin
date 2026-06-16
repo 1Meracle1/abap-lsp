@@ -2983,6 +2983,11 @@ lsp_completion_dml_statement_templates_expand_from_keyword_prefixes :: proc(
 		},
 		{
 			prefix = "mo",
+			label = "MODIFY ... FROM VALUE #( ... ) TRANSPORTING",
+			insert_text = "MODIFY ${1:itab} FROM VALUE #( ${2} ) TRANSPORTING ${3:field}.$0",
+		},
+		{
+			prefix = "mo",
 			label = "MODIFY SCREEN",
 			insert_text = "MODIFY SCREEN.$0",
 		},

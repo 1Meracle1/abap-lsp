@@ -1294,6 +1294,12 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 	},
 	{
 		keyword = "MODIFY",
+		label = "MODIFY ... FROM VALUE #( ... ) TRANSPORTING",
+		snippet = "MODIFY ${1:itab} FROM VALUE #( ${2} ) TRANSPORTING ${3:field}.$0",
+		plain = "MODIFY itab FROM VALUE #( ) TRANSPORTING field.",
+	},
+	{
+		keyword = "MODIFY",
 		label = "MODIFY SCREEN",
 		snippet = "MODIFY SCREEN.$0",
 		plain = "MODIFY SCREEN.",
