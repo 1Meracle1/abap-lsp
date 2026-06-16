@@ -267,6 +267,9 @@ entity_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Ent
 	if signature := constant_hover_signature(project, entity); signature != "" {
 		return signature
 	}
+	if signature := field_hover_signature(entity); signature != "" {
+		return signature
+	}
 	if entity.kind == .Method {
 		return method_hover_signature(entity)
 	}
@@ -275,6 +278,21 @@ entity_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Ent
 		return payload.signature
 	}
 	return ""
+}
+
+field_hover_signature :: proc(entity: ^semantic.Entity) -> string {
+	if entity == nil || entity.kind != .Field || !decl_info_has_type_additions(entity.decl_info) {
+		return ""
+	}
+	type_text := decl_info_type_syntax(entity.decl_info)
+	if type_text == "" {
+		return ""
+	}
+	out := strings.builder_make(context.temp_allocator)
+	strings.write_string(&out, entity.name)
+	strings.write_byte(&out, ' ')
+	strings.write_string(&out, type_text)
+	return strings.to_string(out)
 }
 
 constant_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
@@ -392,8 +410,8 @@ constant_entity_type_syntax :: proc(project: ^semantic.Project, entity: ^semanti
 	if entity == nil {
 		return ""
 	}
-	if entity.decl_info != nil && entity.decl_info.type_clause != nil {
-		return data_type_clause_syntax(entity.decl_info.type_clause)
+	if syntax := decl_info_type_syntax(entity.decl_info); syntax != "" {
+		return syntax
 	}
 	type_text := type_label(project, entity.type)
 	if type_text == "" || type_text == "unknown" {
@@ -461,6 +479,43 @@ quoted_abap_text_literal :: proc(text: string) -> string {
 	}
 	strings.write_byte(&out, '\'')
 	return strings.to_string(out)
+}
+
+decl_info_type_syntax :: proc(info: ^semantic.Decl_Info) -> string {
+	if info == nil || info.type_clause == nil {
+		return ""
+	}
+	type_text := data_type_clause_syntax(info.type_clause)
+	if type_text == "" {
+		return ""
+	}
+	out := strings.builder_make(context.temp_allocator)
+	strings.write_string(&out, type_text)
+	write_decl_type_additions(&out, info.paren_length, info.length_clauses)
+	return strings.to_string(out)
+}
+
+decl_info_has_type_additions :: proc(info: ^semantic.Decl_Info) -> bool {
+	return info != nil && info.type_clause != nil && (info.paren_length != nil || len(info.length_clauses) > 0)
+}
+
+write_decl_type_additions :: proc(
+	out: ^strings.Builder,
+	paren_length: ^ast.Paren_Length_Clause,
+	length_clauses: []ast.Length_Clause,
+) {
+	if paren_length != nil && paren_length.expr != nil {
+		strings.write_string(out, " LENGTH ")
+		strings.write_string(out, ast.print_node(&paren_length.expr.expr_base, context.temp_allocator))
+	}
+	for clause in length_clauses {
+		strings.write_byte(out, ' ')
+		strings.write_string(out, "DECIMALS" if clause.kind == .Decimals else "LENGTH")
+		strings.write_byte(out, ' ')
+		if clause.expr != nil {
+			strings.write_string(out, ast.print_node(&clause.expr.expr_base, context.temp_allocator))
+		}
+	}
 }
 
 data_type_clause_syntax :: proc(clause: ^ast.Data_Type_Clause) -> string {

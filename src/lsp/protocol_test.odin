@@ -5680,6 +5680,32 @@ MODIFY lt_rows
 }
 
 @(test)
+lsp_hover_reports_structure_field_length_syntax :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF struct,
+    col1 TYPE c LENGTH 2,
+    col2 TYPE c LENGTH 2,
+    col3 TYPE c LENGTH 2,
+  END OF struct,
+  itab2 TYPE SORTED TABLE OF struct WITH UNIQUE KEY col1 col2 col3.
+
+DATA(base2) = VALUE itab2(
+                ( col1 = 'x1' col2 = 'y1' col3 = 'z1' )
+                ( col1 = 'x2' col2 = 'y2' col3 = 'z2' )
+                ( col1 = 'x3' col2 = 'y3' col3 = 'z3' ) ).`
+
+	decl_text := lsp_test_hover_text(t, source, "col1 TYPE c LENGTH 2", "col1")
+	value_text := lsp_test_hover_text(t, source, "col2 = 'y1'", "col2")
+
+	testing.expect(t, strings.contains(decl_text, "```abap"))
+	testing.expect(t, strings.contains(decl_text, "col1 TYPE c LENGTH 2"))
+	testing.expect(t, !strings.contains(decl_text, "type: `c`"))
+	testing.expect(t, strings.contains(value_text, "```abap"))
+	testing.expect(t, strings.contains(value_text, "col2 TYPE c LENGTH 2"))
+	testing.expect(t, !strings.contains(value_text, "type: `c`"))
+}
+
+@(test)
 lsp_hover_reports_filter_except_in_table_line_type :: proc(t: ^testing.T) {
 	source := `TYPES:
   BEGIN OF ty_header,

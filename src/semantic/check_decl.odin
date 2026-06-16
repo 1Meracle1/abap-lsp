@@ -487,6 +487,8 @@ checker_collect_constants_decl :: proc(
 			.Constant,
 			owner,
 			visibility = visibility,
+			paren_length = clause.paren_length,
+			length_clauses = clause.length_clauses[:],
 		)
 	}
 }
@@ -516,6 +518,8 @@ checker_collect_statics_decl :: proc(
 			.Variable,
 			owner,
 			visibility = visibility,
+			paren_length = clause.paren_length,
+			length_clauses = clause.length_clauses[:],
 		)
 		checker_note_variable_decl_flags(entity, is_static = true)
 	}
@@ -570,6 +574,8 @@ checker_collect_data_decl_clause :: proc(
 		entity_kind,
 		owner,
 		visibility,
+		paren_length = clause.paren_length,
+		length_clauses = clause.length_clauses[:],
 	)
 }
 
@@ -590,6 +596,8 @@ checker_collect_data_branch :: proc(
 	entity_kind: Entity_Kind,
 	owner: ^Entity = nil,
 	visibility: Visibility = .Public,
+	paren_length: ^ast.Paren_Length_Clause = nil,
+	length_clauses: []ast.Length_Clause = nil,
 ) -> ^Entity {
 	if .Common_Part_Delimiter in flags {
 		return nil
@@ -601,9 +609,34 @@ checker_collect_data_branch :: proc(
 		entity: ^Entity
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name.text, name.range, node, type_clause, value_clause, occurs)
+			entity = checker_collect_structure_field(
+				ctx,
+				parent.structure,
+				parent.scope,
+				parent.entity,
+				name.text,
+				name.range,
+				node,
+				type_clause,
+				value_clause,
+				occurs,
+				paren_length = paren_length,
+				length_clauses = length_clauses,
+			)
 		} else {
-			entity = checker_collect_variable_decl(ctx, ctx.scope, name.text, entity_kind, name.range, node, type_clause, value_clause, occurs = occurs)
+			entity = checker_collect_variable_decl(
+				ctx,
+				ctx.scope,
+				name.text,
+				entity_kind,
+				name.range,
+				node,
+				type_clause,
+				value_clause,
+				occurs = occurs,
+				paren_length = paren_length,
+				length_clauses = length_clauses,
+			)
 			checker_note_variable_decl_flags(entity, read_only = read_only)
 			checker_note_member_owner(entity, owner, .Attribute, visibility)
 		}
@@ -621,9 +654,34 @@ checker_collect_data_branch :: proc(
 	case .Normal:
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, name.text, name.range, node, type_clause, value_clause, occurs)
+			return checker_collect_structure_field(
+				ctx,
+				parent.structure,
+				parent.scope,
+				parent.entity,
+				name.text,
+				name.range,
+				node,
+				type_clause,
+				value_clause,
+				occurs,
+				paren_length = paren_length,
+				length_clauses = length_clauses,
+			)
 		}
-		entity := checker_collect_variable_decl(ctx, ctx.scope, name.text, entity_kind, name.range, node, type_clause, value_clause, occurs = occurs)
+		entity := checker_collect_variable_decl(
+			ctx,
+			ctx.scope,
+			name.text,
+			entity_kind,
+			name.range,
+			node,
+			type_clause,
+			value_clause,
+			occurs = occurs,
+			paren_length = paren_length,
+			length_clauses = length_clauses,
+		)
 		checker_note_variable_decl_flags(entity, read_only = read_only)
 		checker_note_member_owner(entity, owner, .Attribute, visibility)
 		return entity
@@ -679,9 +737,32 @@ checker_collect_type_clause :: proc(
 		entity: ^Entity
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			entity = checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name.text, clause.name.range, node, clause.type_clause, nil, clause.occurs)
+			entity = checker_collect_structure_field(
+				ctx,
+				parent.structure,
+				parent.scope,
+				parent.entity,
+				clause.name.text,
+				clause.name.range,
+				node,
+				clause.type_clause,
+				nil,
+				clause.occurs,
+				paren_length = clause.paren_length,
+				length_clauses = clause.length_clauses[:],
+			)
 		} else {
-			entity = checker_collect_type_decl(ctx, ctx.scope, clause.name.text, clause.name.range, node, clause.type_clause, clause.occurs)
+			entity = checker_collect_type_decl(
+				ctx,
+				ctx.scope,
+				clause.name.text,
+				clause.name.range,
+				node,
+				clause.type_clause,
+				clause.occurs,
+				paren_length = clause.paren_length,
+				length_clauses = clause.length_clauses[:],
+			)
 			checker_note_member_owner(entity, owner, .None, visibility)
 		}
 		if entity == nil {
@@ -698,9 +779,32 @@ checker_collect_type_clause :: proc(
 	case .Normal:
 		if len(frames^) > 0 {
 			parent := &frames^[len(frames^) - 1]
-			return checker_collect_structure_field(ctx, parent.structure, parent.scope, parent.entity, clause.name.text, clause.name.range, node, clause.type_clause, nil, clause.occurs)
+			return checker_collect_structure_field(
+				ctx,
+				parent.structure,
+				parent.scope,
+				parent.entity,
+				clause.name.text,
+				clause.name.range,
+				node,
+				clause.type_clause,
+				nil,
+				clause.occurs,
+				paren_length = clause.paren_length,
+				length_clauses = clause.length_clauses[:],
+			)
 		}
-		entity := checker_collect_type_decl(ctx, ctx.scope, clause.name.text, clause.name.range, node, clause.type_clause, clause.occurs)
+		entity := checker_collect_type_decl(
+			ctx,
+			ctx.scope,
+			clause.name.text,
+			clause.name.range,
+			node,
+			clause.type_clause,
+			clause.occurs,
+			paren_length = clause.paren_length,
+			length_clauses = clause.length_clauses[:],
+		)
 		checker_note_member_owner(entity, owner, .None, visibility)
 		return entity
 	case .Include_Type, .Include_Structure:
@@ -789,6 +893,8 @@ checker_collect_type_decl :: proc(
 	node: ^ast.Node,
 	type_clause: ^ast.Data_Type_Clause,
 	occurs: ^ast.Expr = nil,
+	paren_length: ^ast.Paren_Length_Clause = nil,
+	length_clauses: []ast.Length_Clause = nil,
 ) -> ^Entity {
 	if name == "" {
 		return nil
@@ -796,7 +902,19 @@ checker_collect_type_decl :: proc(
 	entity := project_new_entity(ctx.project, .Type_Def)
 	entity.node = node
 	interned := project_intern_lower_ascii(ctx.project, name)
-	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Type_Def, range, node, type_clause, occurs)
+	decl := project_new_decl_info(
+		ctx.project,
+		entity,
+		scope,
+		interned,
+		.Type_Def,
+		range,
+		node,
+		type_clause,
+		occurs,
+		paren_length = paren_length,
+		length_clauses = length_clauses,
+	)
 	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
 	return entity
 }
@@ -812,6 +930,8 @@ checker_collect_structure_field :: proc(
 	type_clause: ^ast.Data_Type_Clause,
 	value_clause: ^ast.Value_Clause = nil,
 	occurs: ^ast.Expr = nil,
+	paren_length: ^ast.Paren_Length_Clause = nil,
+	length_clauses: []ast.Length_Clause = nil,
 ) -> ^Entity {
 	if name == "" {
 		return nil
@@ -821,7 +941,20 @@ checker_collect_structure_field :: proc(
 	entity.owner = owner
 	entity.source_file = ctx.file
 	interned := project_intern_lower_ascii(ctx.project, name)
-	decl := project_new_decl_info(ctx.project, entity, scope, interned, .Field, range, node, type_clause, occurs, value_clause)
+	decl := project_new_decl_info(
+		ctx.project,
+		entity,
+		scope,
+		interned,
+		.Field,
+		range,
+		node,
+		type_clause,
+		occurs,
+		value_clause,
+		paren_length = paren_length,
+		length_clauses = length_clauses,
+	)
 	payload, ok := entity.payload.(^Entity_Field_Payload)
 	if ok && payload != nil {
 		payload.owner_structure = structure
@@ -908,6 +1041,8 @@ checker_collect_variable_decl :: proc(
 	value_clause: ^ast.Value_Clause,
 	default_expr: ^ast.Expr = nil,
 	occurs: ^ast.Expr = nil,
+	paren_length: ^ast.Paren_Length_Clause = nil,
+	length_clauses: []ast.Length_Clause = nil,
 ) -> ^Entity {
 	if name == "" {
 		return nil
@@ -915,7 +1050,21 @@ checker_collect_variable_decl :: proc(
 	entity := project_new_entity(ctx.project, kind)
 	entity.node = node
 	interned := project_intern_lower_ascii(ctx.project, name)
-	decl := project_new_decl_info(ctx.project, entity, scope, interned, kind, range, node, type_clause, occurs, value_clause, default_expr)
+	decl := project_new_decl_info(
+		ctx.project,
+		entity,
+		scope,
+		interned,
+		kind,
+		range,
+		node,
+		type_clause,
+		occurs,
+		value_clause,
+		default_expr,
+		paren_length = paren_length,
+		length_clauses = length_clauses,
+	)
 	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
 	checker_note_variable_decl_flags(entity, has_type = type_clause != nil)
 	return entity
@@ -1065,6 +1214,8 @@ checker_collect_parameters_decl :: proc(
 			clause.type_clause,
 			nil,
 			clause.default_expr,
+			paren_length = clause.paren_length,
+			length_clauses = clause.length_clauses[:],
 		)
 		if entity != nil && .As_Checkbox in clause.flags {
 			entity.flags += {.Has_Declared_Type}
