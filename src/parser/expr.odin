@@ -819,7 +819,12 @@ parse_constructor_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 
 	args := make([dynamic]^ast.Expr, 0, 4, p.allocator)
-	if allow_token(p, .LParen) {
+	if current_token(p).kind == .LParen {
+		open := current_token(p)
+		if !tokens_touch(previous_token(p), open) {
+			error(p, open.range, "syntax error: constructor type must be directly followed by '('")
+		}
+		bump_token(p)
 		body_start := p.index
 		parse_constructor_body_sequence(p, constructor_body_kind(p, kw), body_start, &args)
 		close := expect_token_message(p, .RParen, "syntax error: expected ')' to close constructor expression")

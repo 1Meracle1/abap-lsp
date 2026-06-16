@@ -314,6 +314,36 @@ constructor_expr_keeps_kind_enum :: proc(t: ^testing.T) {
 }
 
 @(test)
+constructor_expr_accepts_compact_type_lparen :: proc(t: ^testing.T) {
+	source := `DATA(lv_data) = VALUE #( ).
+DATA(lv_data1) = VALUE type_name( ).
+DATA(lt_filtered) = FILTER #( lt_rows WHERE id = lv_id ).`
+	parsed := parse(source, "constructor_compact_type_lparen.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	counts := count_nodes(parsed.root)
+	testing.expect_value(t, counts.constructor, 3)
+}
+
+@(test)
+constructor_expr_rejects_spaced_type_lparen :: proc(t: ^testing.T) {
+	source := `DATA(lv_data) = VALUE # ( ).
+DATA(lv_data2) = VALUE #
+( ).
+DATA(lv_data1) = VALUE type_name ( ).
+DATA(lt_filtered) = FILTER # ( lt_rows WHERE id = lv_id ).`
+	parsed := parse(source, "constructor_spaced_type_lparen.abap", context.allocator)
+
+	message_count := 0
+	for e in parsed.errors {
+		if strings.contains(e.message, "constructor type must be directly followed by '('") {
+			message_count += 1
+		}
+	}
+	testing.expect_value(t, message_count, 4)
+}
+
+@(test)
 logical_predicates_build_dedicated_nodes :: proc(t: ^testing.T) {
 	source := `IF oref IS INSTANCE OF cl_foo OR lv BETWEEN 1 AND max_v.
 ENDIF.`
