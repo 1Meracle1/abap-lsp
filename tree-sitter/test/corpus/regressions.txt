@@ -1674,6 +1674,50 @@ DESCRIBE FIELD lv_value LENGTH lv_length IN CHARACTER MODE.
     (keyword)))
 
 ==================
+Dataset statements highlight additions as keywords
+==================
+
+OPEN DATASET lv_filename FOR INPUT IN TEXT MODE ENCODING DEFAULT
+                         MESSAGE lv_message IGNORING CONVERSION ERRORS.
+READ DATASET lv_filename INTO lv_line.
+CLOSE DATASET lv_filename.
+
+---
+
+(source_file
+  (dataset_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword))
+  (dataset_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (dataset_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))))
+
+==================
 Reduce and filter constructor additions highlight as keywords
 ==================
 

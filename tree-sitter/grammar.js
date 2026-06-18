@@ -436,6 +436,32 @@ const FIND_TAIL_KEYWORDS = [
   "TABLE",
 ];
 
+const DATASET_TAIL_KEYWORDS = [
+  "APPENDING",
+  "AT",
+  "BINARY",
+  "BYTE-ORDER",
+  "CONVERSION",
+  "DEFAULT",
+  "ENCODING",
+  "ERRORS",
+  "FILTER",
+  "FOR",
+  "IGNORING",
+  "IN",
+  "INPUT",
+  "INTO",
+  "LEGACY",
+  "MESSAGE",
+  "MODE",
+  "OUTPUT",
+  "POSITION",
+  "SKIPPING",
+  "TEXT",
+  "UPDATE",
+  "WITH",
+];
+
 const STATEMENT_TAIL_KEYWORDS = [
   "ACCEPTING",
   "ADD",
@@ -648,6 +674,7 @@ module.exports = grammar({
         $.exec_sql_statement,
         $.report_statement,
         $.include_statement,
+        $.dataset_statement,
         $.assign_statement,
         $.find_statement,
         $.assignment_statement,
@@ -1035,6 +1062,32 @@ module.exports = grammar({
 
     include_statement: ($) =>
       seq(keyword($, "INCLUDE"), optional(":"), repeat1(choice($._name, ",", keywordChoice($, ["IF", "FOUND"]))), "."),
+
+    dataset_statement: ($) =>
+      prec(
+        3,
+        seq(
+          field("keyword", keywordChoice($, ["OPEN", "READ", "CLOSE"])),
+          keyword($, "DATASET"),
+          repeat($._dataset_tail_token),
+          ".",
+        ),
+      ),
+
+    _dataset_tail_token: ($) =>
+      choice(
+        keywordChoice($, DATASET_TAIL_KEYWORDS),
+        $.static_type_path,
+        $.field_symbol_path,
+        $.field_path,
+        $.dynamic_name,
+        $.substring_expression,
+        $.qualified_name,
+        $._literal,
+        $.operator,
+        $.punctuation,
+        $.tail_fragment,
+      ),
 
     if_statement: ($) =>
       seq(
