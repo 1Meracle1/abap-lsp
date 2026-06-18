@@ -33718,6 +33718,22 @@
                         "value": 2,
                         "content": {
                           "type": "PATTERN",
+                          "value": "[oO][rR][dD][eE][rR]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "identifier"
+                  },
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
                           "value": "[sS][oO][uU][rR][cC][eE]"
                         }
                       }

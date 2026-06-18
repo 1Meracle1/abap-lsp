@@ -90,6 +90,7 @@ Keyword-like structured field name is identifier
 TYPES: BEGIN OF ty_result,
          source TYPE string,
          field TYPE string,
+         order TYPE c LENGTH 20,
        END OF ty_result.
 
 ---
@@ -111,6 +112,13 @@ TYPES: BEGIN OF ty_result,
     (keyword)
     (qualified_name
       (identifier))
+    (punctuation)
+    (identifier)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (number)
     (punctuation)
     (keyword)
     (keyword)
