@@ -63,10 +63,34 @@ CLASS-DATA gv TYPE i VALUE 0.`
 	testing.expect_value(t, len(constants.constants), 1)
 	testing.expect(t, constants.constants[0].value_clause != nil)
 	testing.expect(t, ranges.ranges[0].for_expr != nil)
+	range_ref := ranges.ranges[0].for_expr.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, range_ref.base_name.text, "mara")
+	testing.expect_value(t, range_ref.path[0].name.text, "matnr")
 	testing.expect(t, parameters.parameters[0].default_expr != nil)
 	testing.expect(t, options.options[0].for_expr != nil)
 	testing.expect(t, controls.controls[0].using_screen != nil)
 	testing.expect(t, class_data.decls[0].value_clause != nil)
+}
+
+@(test)
+ranges_for_type_reference_keeps_base_and_path :: proc(t: ^testing.T) {
+	source := `RANGES: gr_mblnr FOR string, gr_date FOR sy-datum.`
+	parsed := parse(source, "ranges_for_type_ref.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	ranges := parsed.root.stmts[0].derived_stmt.(^ast.Ranges_Decl)
+	testing.expect_value(t, len(ranges.ranges), 2)
+
+	string_ref := ranges.ranges[0].for_expr.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, string_ref.name.text, "string")
+	testing.expect_value(t, string_ref.base_name.text, "string")
+
+	date_ref := ranges.ranges[1].for_expr.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, date_ref.base_name.text, "sy")
+	testing.expect_value(t, len(date_ref.path), 1)
+	testing.expect_value(t, date_ref.path[0].name.text, "datum")
+	testing.expect_value(t, date_ref.path[0].selector, ast.Selector_Op.Dash)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
 @(test)

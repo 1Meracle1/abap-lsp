@@ -874,7 +874,7 @@ parse_ranges_clause :: proc(p: ^Parser) -> (ast.Ranges_Clause, bool) {
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "FOR") {
-			clause.for_expr = parse_required_for_expr(p)
+			clause.for_expr = parse_required_for_type_ref_expr(p)
 			if clause.for_expr == nil {
 				return ast.Ranges_Clause{}, false
 			}
@@ -1442,6 +1442,15 @@ parse_required_default_expr :: proc(p: ^Parser) -> ^ast.Expr {
 parse_required_for_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_keyword(p, "FOR")
 	value := parse_expr(p)
+	if value == nil {
+		return nil
+	}
+	return value
+}
+
+parse_required_for_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	expect_keyword(p, "FOR")
+	value := parse_type_ref_expr(p)
 	if value == nil {
 		return nil
 	}

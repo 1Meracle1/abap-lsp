@@ -174,10 +174,12 @@ checker_add_range_row_field :: proc(
 	name: string,
 	typ: ^Type,
 	node: ^ast.Node,
+	owner: ^Entity = nil,
 	length: string = "",
 ) -> ^Entity {
 	entity := project_new_entity(ctx.project, .Field)
 	entity.node = node
+	entity.owner = owner
 	entity.source_file = ctx.file
 	entity.name = project_intern_lower_ascii(ctx.project, name)
 	entity.scope = scope

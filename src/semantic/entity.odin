@@ -66,6 +66,8 @@ Decl_Info :: struct {
 	scope:          ^Scope,
 	decl_node:      ^ast.Node,
 	type_clause:    ^ast.Data_Type_Clause,
+	range_for_expr: ^ast.Expr,
+	is_range_decl:  bool,
 	paren_length:   ^ast.Paren_Length_Clause,
 	length_clauses: []ast.Length_Clause,
 	occurs:         ^ast.Expr,

@@ -768,6 +768,53 @@ DATA int_eket LIKE beket OCCURS 0 WITH HEADER LINE.`
 }
 
 @(test)
+root_semantic_ranges_decl_resolves_for_type_and_value_refs :: proc(t: ^testing.T) {
+	source := `DATA lv_mblnr TYPE string.
+RANGES: gr_mblnr FOR string,
+        gr_like FOR lv_mblnr.
+DATA lv_low TYPE string.
+lv_low = gr_mblnr-low.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://ranges_decl.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lv_mblnr := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_mblnr", .Variable)
+	gr_mblnr := checker_test_lookup(t, &project, file.root_scope, .Value, "gr_mblnr", .Variable)
+	gr_like := checker_test_lookup(t, &project, file.root_scope, .Value, "gr_like", .Variable)
+	testing.expect(t, lv_mblnr != nil && gr_mblnr != nil && gr_like != nil)
+	if lv_mblnr == nil || gr_mblnr == nil || gr_like == nil {
+		return
+	}
+	testing.expect(t, .Used in lv_mblnr.flags)
+
+	range_entities := [?]^Entity{gr_mblnr, gr_like}
+	for ranges in range_entities {
+		testing.expect(t, ranges.type != nil)
+		if ranges.type == nil {
+			continue
+		}
+		testing.expect_value(t, ranges.type.kind, Type_Kind.Structure)
+		structure := checker_type_structure(ranges.type)
+		testing.expect(t, structure != nil)
+		if structure == nil {
+			continue
+		}
+		testing.expect_value(t, len(structure.fields), 4)
+		sign := checker_test_structure_field(t, &project, structure, "sign")
+		option := checker_test_structure_field(t, &project, structure, "option")
+		low := checker_test_structure_field(t, &project, structure, "low")
+		high := checker_test_structure_field(t, &project, structure, "high")
+		testing.expect_value(t, checker_test_type_name(&project, sign.type), "c")
+		testing.expect_value(t, checker_test_type_name(&project, option.type), "c")
+		testing.expect_value(t, checker_test_type_name(&project, low.type), "string")
+		testing.expect_value(t, checker_test_type_name(&project, high.type), "string")
+	}
+}
+
+@(test)
 root_semantic_type_checker_resolves_ast_type_ref_paths :: proc(t: ^testing.T) {
 	source := `INTERFACE lif_demo.
   TYPES ty_line TYPE i.

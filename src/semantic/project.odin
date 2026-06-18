@@ -235,12 +235,14 @@ project_new_decl_info :: proc(
 	comment: []ast.Ast_Trivia = nil,
 	paren_length: ^ast.Paren_Length_Clause = nil,
 	length_clauses: []ast.Length_Clause = nil,
+	range_for_expr: ^ast.Expr = nil,
 ) -> ^Decl_Info {
 	value := Decl_Info {
 		entity         = entity,
 		scope          = scope,
 		decl_node      = decl_node,
 		type_clause    = type_clause,
+		range_for_expr = range_for_expr,
 		paren_length   = paren_length,
 		length_clauses = length_clauses,
 		occurs         = occurs,

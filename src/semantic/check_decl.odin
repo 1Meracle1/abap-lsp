@@ -1156,11 +1156,11 @@ checker_collect_ranges_decl :: proc(
 	for clause in decl.ranges {
 		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name.text, .Variable, clause.name.range, &decl.node.decl_base.stmt_base, nil, nil)
 		if entity != nil {
-			structure, scope := checker_attach_structure_to_entity(ctx, entity, decl.range)
-			checker_collect_range_component(ctx, structure, scope, entity, "sign", Range{}, &decl.node.decl_base.stmt_base)
-			checker_collect_range_component(ctx, structure, scope, entity, "option", Range{}, &decl.node.decl_base.stmt_base)
-			checker_collect_range_component(ctx, structure, scope, entity, "low", Range{}, &decl.node.decl_base.stmt_base)
-			checker_collect_range_component(ctx, structure, scope, entity, "high", Range{}, &decl.node.decl_base.stmt_base)
+			if entity.decl_info != nil {
+				entity.decl_info.range_for_expr = clause.for_expr
+				entity.decl_info.is_range_decl = true
+			}
+			checker_note_variable_decl_flags(entity, has_type = true)
 		}
 		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
@@ -2034,7 +2034,9 @@ checker_check_builtin_decl :: proc(ctx: ^Checker_Context, entity: ^Entity) {
 }
 
 checker_check_variable_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
-	if typ := checker_check_decl_type_clause(ctx, entity, decl.type_clause, decl.occurs); typ != nil {
+	if decl.is_range_decl {
+		entity.type = checker_check_range_for_decl(ctx, entity, decl)
+	} else if typ := checker_check_decl_type_clause(ctx, entity, decl.type_clause, decl.occurs); typ != nil {
 		entity.type = typ
 	}
 	checker_check_value_clause(ctx, decl.value_clause)
@@ -2042,6 +2044,49 @@ checker_check_variable_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl
 	if entity.type == nil {
 		entity.type = project_type_unknown(ctx.project)
 	}
+}
+
+checker_check_range_for_decl :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	decl: ^Decl_Info,
+) -> ^Type {
+	value_type := checker_check_range_for_expr_type(ctx, entity, decl.range_for_expr)
+	range := decl.decl_node.range if decl.decl_node != nil else entity.name_range
+	structure, scope := checker_attach_structure_to_entity(ctx, entity, range)
+	checker_add_range_decl_components(ctx, structure, scope, entity, value_type, decl.decl_node)
+	return entity.type
+}
+
+checker_check_range_for_expr_type :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	expr: ^ast.Expr,
+) -> ^Type {
+	if expr == nil {
+		return project_type_unknown(ctx.project)
+	}
+	type_ref := checker_type_ref_data_from_expr(ctx, expr, .Value)
+	type_ref.allow_type_lookup = true
+	typ, _ := checker_type_from_ref_data(ctx, type_ref, &expr.expr_base, entity)
+	checker_record_type_expr_info(ctx, expr, typ)
+	return typ if typ != nil else project_type_unknown(ctx.project)
+}
+
+checker_add_range_decl_components :: proc(
+	ctx: ^Checker_Context,
+	structure: ^Structure,
+	scope: ^Scope,
+	owner: ^Entity,
+	value_type: ^Type,
+	node: ^ast.Node,
+) {
+	component_type := value_type if value_type != nil else project_type_unknown(ctx.project)
+	char_type := checker_builtin_type_from_name(ctx.checker, "c")
+	checker_add_range_row_field(ctx, structure, scope, "sign", char_type, node, owner = owner, length = "1")
+	checker_add_range_row_field(ctx, structure, scope, "option", char_type, node, owner = owner, length = "2")
+	checker_add_range_row_field(ctx, structure, scope, "low", component_type, node, owner = owner)
+	checker_add_range_row_field(ctx, structure, scope, "high", component_type, node, owner = owner)
 }
 
 checker_check_constant_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
