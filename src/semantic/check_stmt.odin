@@ -1208,6 +1208,12 @@ checker_check_table_line_target :: proc(
 }
 
 checker_check_loop_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Loop_Stmt) {
+	if stmt.source_kind == .Screen {
+		checker_check_expr(ctx, stmt.source)
+		checker_check_stmt_list(ctx, stmt.body)
+		return
+	}
+
 	source := checker_check_expr(ctx, stmt.source)
 	row_type := checker_loop_source_row_type(ctx, stmt, source)
 	row_structure := checker_type_structure(row_type)

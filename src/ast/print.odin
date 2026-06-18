@@ -3133,10 +3133,14 @@ method_amdp_language_text :: proc(language: Method_Amdp_Language) -> string {
 
 emit_loop_stmt :: proc(p: ^Printer, stmt: ^Loop_Stmt) {
 	emit(p, "LOOP AT ")
-	if stmt.source_kind == .Group {
+	if stmt.source_kind == .Screen {
+		emit(p, "SCREEN")
+	} else if stmt.source_kind == .Group {
 		emit(p, "GROUP ")
+		emit_node(p, stmt.source)
+	} else {
+		emit_node(p, stmt.source)
 	}
-	emit_node(p, stmt.source)
 	emit_loop_target_clause(p, stmt.target_kind, stmt.target)
 	if stmt.target_casting {
 		emit(p, " CASTING")

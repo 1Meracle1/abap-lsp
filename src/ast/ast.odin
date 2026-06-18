@@ -2168,6 +2168,7 @@ Loop_Target_Kind :: enum {
 Loop_Source_Kind :: enum {
 	Table,
 	Group,
+	Screen,
 }
 
 Loop_Group_Order :: enum {

@@ -243,6 +243,16 @@ when_dash_is_selector :: proc(p: ^Parser, index, start, end: int) -> bool {
 }
 
 parse_loop_header_tail :: proc(p: ^Parser, stmt: ^ast.Loop_Stmt, body_start: int) -> bool {
+	if stmt.source_kind == .Screen {
+		if current_token(p).kind == .Period ||
+		   current_token(p).kind == .Eof ||
+		   block_header_boundary_at(p, []string{"ENDLOOP"}) {
+			return true
+		}
+		error_current(p, "syntax error: expected '.' after LOOP AT SCREEN")
+		return false
+	}
+
 	stops := []string{"INTO", "ASSIGNING", "REFERENCE", "FROM", "TO", "USING", "WHERE", "TRANSPORTING", "GROUP", "CASTING"}
 	for current_token(p).kind != .Period &&
 	    current_token(p).kind != .Eof &&
@@ -786,6 +796,14 @@ parse_loop_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 }
 
 parse_loop_source :: proc(p: ^Parser, stmt: ^ast.Loop_Stmt, body_start: int) -> bool {
+	if at_keyword(p, "SCREEN") {
+		screen := bump_token(p)
+		source := ast.new(ast.Ident_Expr, screen.range, p.allocator)
+		source.name = parser_intern_token_name(p, screen)
+		stmt.source_kind = .Screen
+		stmt.source = source
+		return true
+	}
 	if !at_keyword(p, "GROUP") {
 		stmt.source = parse_required_expr_after(p, "syntax error: expected loop source after LOOP AT")
 		return stmt.source != nil

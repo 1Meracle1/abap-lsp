@@ -4831,6 +4831,46 @@ ENDLOOP.`
 }
 
 @(test)
+root_semantic_stmt_checker_accepts_loop_at_screen :: proc(t: ^testing.T) {
+	source := `LOOP AT SCREEN.
+  IF screen-group1 = 'XYZ'.
+    screen-intensified = '1'.
+    MODIFY SCREEN.
+  ENDIF.
+ENDLOOP.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_loop_at_screen.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	screen, screen_ok := checker_lookup_builtin_entity(&checker, .Value, "screen")
+	testing.expect(t, screen_ok)
+	if screen_ok {
+		testing.expect(t, .Used in screen.flags)
+	}
+	screen_type, screen_type_ok := checker_lookup_builtin_entity(&checker, .Type, "screen")
+	testing.expect(t, screen_type_ok)
+	if !screen_type_ok {
+		return
+	}
+	structure := checker_type_structure(screen_type.type)
+	testing.expect(t, structure != nil)
+	if structure == nil {
+		return
+	}
+	screen_field_names := [?]string{"group1", "intensified"}
+	for name in screen_field_names {
+		field, field_ok := checker_lookup_structure_field(structure, project_intern_lower_ascii(&project, name))
+		testing.expect(t, field_ok)
+		if field_ok {
+			testing.expect(t, .Used in field.flags)
+		}
+	}
+}
+
+@(test)
 root_semantic_stmt_checker_dispatches_control_and_write_operands :: proc(t: ^testing.T) {
 	source := `DATA lv_count TYPE i.
 DATA lv_target TYPE string.

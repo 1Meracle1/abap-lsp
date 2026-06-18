@@ -1078,6 +1078,33 @@ ENDLOOP.`
 }
 
 @(test)
+loop_at_screen_has_dedicated_source_kind :: proc(t: ^testing.T) {
+	source := `LOOP AT SCREEN.
+  IF screen-group1 = 'XYZ'.
+    screen-intensified = '1'.
+    MODIFY SCREEN.
+  ENDIF.
+ENDLOOP.`
+	parsed := parse(source, "loop_at_screen.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	loop := parsed.root.stmts[0].derived_stmt.(^ast.Loop_Stmt)
+	testing.expect_value(t, loop.source_kind, ast.Loop_Source_Kind.Screen)
+	testing.expect(t, loop.source != nil)
+	testing.expect_value(t, source[loop.source.range.start:loop.source.range.end], "SCREEN")
+	testing.expect_value(t, len(loop.body), 1)
+}
+
+@(test)
+loop_at_screen_rejects_table_loop_additions :: proc(t: ^testing.T) {
+	source := `LOOP AT SCREEN INTO DATA(row).
+ENDLOOP.`
+	parsed := parse(source, "loop_at_screen_addition.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected '.' after LOOP AT SCREEN")
+}
+
+@(test)
 loop_header_requires_assignment_target :: proc(t: ^testing.T) {
 	source := `LOOP AT lt_rows ASSIGNING.
 ENDLOOP.`
