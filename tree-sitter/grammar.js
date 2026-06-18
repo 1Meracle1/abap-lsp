@@ -485,6 +485,7 @@ const STATEMENT_TAIL_KEYWORDS = [
   "FRAME",
   "KEYS",
   "LEADING",
+  "LIST-PROCESSING",
   "MESSAGE",
   "NEXT",
   "NO-GAPS",

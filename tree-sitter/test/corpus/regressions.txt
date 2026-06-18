@@ -54,6 +54,19 @@ SHIFT lv_po_number LEFT DELETING LEADING '0'.
     (string)))
 
 ==================
+Leave list-processing highlights tail keyword
+==================
+
+LEAVE LIST-PROCESSING.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)))
+
+==================
 Inline constructor rows and bare DO
 ==================
 
