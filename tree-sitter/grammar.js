@@ -841,8 +841,25 @@ module.exports = grammar({
     argument_list: ($) =>
       seq(
         "(",
-        repeat(choice($.constructor_row, $.named_argument, $._expression, $._argument_token)),
+        repeat(choice($.for_groups_clause, $.constructor_row, $.named_argument, $._expression, $._argument_token)),
         ")",
+      ),
+
+    for_groups_clause: ($) =>
+      prec(
+        PREC.CALL + 1,
+        seq(
+          keyword($, "FOR"),
+          keyword($, "GROUPS"),
+          field("group", $.component_name),
+          keyword($, "OF"),
+          field("item", $.component_name),
+          keyword($, "IN"),
+          field("source", $._expression),
+          keyword($, "GROUP"),
+          keyword($, "BY"),
+          field("key", $._expression),
+        ),
       ),
 
     _argument_token: ($) =>

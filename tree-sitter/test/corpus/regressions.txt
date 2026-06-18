@@ -1779,6 +1779,59 @@ DATA(lv_res1) = REDUCE string( INIT text = `Count up:`
                 (template_end)))))))))
 
 ==================
+For groups clause highlights only syntax keywords
+==================
+
+DATA(lr_orders) = VALUE tr_orders(
+  FOR GROUPS order OF ls_item IN lt_all_items
+  GROUP BY ls_item-order
+  ( sign = 'I' option = 'EQ' low = order )
+).
+
+---
+
+(source_file
+  (data_declaration
+    (keyword)
+    (binary_expression
+      (parenthesized_expression
+        (qualified_name
+          (identifier)))
+      (constructor_expression
+        (keyword)
+        (qualified_name
+          (identifier))
+        (argument_list
+          (for_groups_clause
+            (keyword)
+            (keyword)
+            (component_name
+              (identifier))
+            (keyword)
+            (component_name
+              (identifier))
+            (keyword)
+            (qualified_name
+              (identifier))
+            (keyword)
+            (keyword)
+            (field_path))
+          (constructor_row
+            (named_argument
+              (identifier)
+              (equals)
+              (string))
+            (named_argument
+              (identifier)
+              (equals)
+              (string))
+            (named_argument
+              (identifier)
+              (equals)
+              (qualified_name
+                (identifier)))))))))
+
+==================
 FIND additions highlight as keywords
 ==================
 
