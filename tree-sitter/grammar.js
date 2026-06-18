@@ -9,6 +9,7 @@ const PREC = {
   UNARY: 8,
   SELECTOR: 9,
   CALL: 10,
+  SUBSTRING: 11,
 };
 
 function escapeRegExp(text) {
@@ -926,11 +927,30 @@ module.exports = grammar({
         seq(field("table", $._expression), "[", repeat(choice($.named_argument, $._expression, keywordChoice($, EXPRESSION_KEYWORDS), $.operator, $.punctuation)), "]"),
       ),
 
-    substring_expression: (_) =>
-      token(
+    _substring_base: ($) => choice($.field_path, $.identifier),
+
+    _immediate_number: (_) => token.immediate(/\d+/),
+
+    substring_expression: ($) =>
+      choice(
         prec(
-          1,
-          /[A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z_][A-Za-z0-9_]*)*(?:(?:\+\d+)?\(\d+\)|\+\d+)/,
+          PREC.SUBSTRING,
+          seq(
+            field("base", $._substring_base),
+            token.immediate("+"),
+            field("offset", alias($._immediate_number, $.number)),
+            optional(seq(
+              token.immediate("("),
+              field("length", alias($._immediate_number, $.number)),
+              token.immediate(")"),
+            )),
+          ),
+        ),
+        token(
+          prec(
+            1,
+            /[A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z_][A-Za-z0-9_]*)*\(\d+\)/,
+          ),
         ),
       ),
 

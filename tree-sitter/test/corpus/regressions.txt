@@ -1059,11 +1059,17 @@ LEAVE TO SCREEN sy-dynnr.
   (assignment_statement
     (qualified_name
       (identifier))
-    (substring_expression))
+    (substring_expression
+      (identifier)
+      (number)
+      (number)))
   (simple_statement
     (keyword)
     (substring_expression)
-    (substring_expression)
+    (substring_expression
+      (identifier)
+      (number)
+      (number))
     (keyword)
     (qualified_name
       (identifier)))
@@ -1993,3 +1999,34 @@ FIND REGEX 'pattern' IN TABLE lt_text MATCH LINE lv_line MATCH OFFSET lv_offset 
     (keyword)
     (qualified_name
       (identifier))))
+
+==================
+Substring offsets expose numbers
+==================
+
+CONCATENATE lv_ndc+0(5) lv_ndc+5(4) lv_ndc+9(2)
+        INTO rv_mfrpn SEPARATED BY '-'.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (substring_expression
+      (identifier)
+      (number)
+      (number))
+    (substring_expression
+      (identifier)
+      (number)
+      (number))
+    (substring_expression
+      (identifier)
+      (number)
+      (number))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (string)))
