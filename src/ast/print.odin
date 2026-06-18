@@ -2250,6 +2250,9 @@ emit_submit_option :: proc(p: ^Printer, option: Submit_Option_Clause) {
 	case .Using_Selection_Set:
 		emit(p, " USING SELECTION-SET ")
 		emit_node(p, option.value)
+	case .Using_Selection_Sets_Of_Program:
+		emit(p, " USING SELECTION-SETS OF PROGRAM ")
+		emit_node(p, option.value)
 	case .With_Selection_Table:
 		emit(p, " WITH SELECTION-TABLE ")
 		emit_node(p, option.value)
@@ -2264,12 +2267,26 @@ emit_submit_option :: proc(p: ^Printer, option: Submit_Option_Clause) {
 			emit(p, submit_operator_text(option.operator))
 			emit_space(p)
 			emit_node(p, option.value)
+			if option.high_value != nil {
+				emit(p, " AND ")
+				emit_node(p, option.high_value)
+			}
+			if option.sign_value != nil {
+				emit(p, " SIGN ")
+				emit_node(p, option.sign_value)
+			}
 		}
 	case .Line_Size:
 		emit(p, " LINE-SIZE ")
 		emit_node(p, option.value)
 	case .Line_Count:
 		emit(p, " LINE-COUNT ")
+		emit_node(p, option.value)
+	case .Spool_Parameters:
+		emit(p, " SPOOL PARAMETERS ")
+		emit_node(p, option.value)
+	case .Archive_Parameters:
+		emit(p, " ARCHIVE PARAMETERS ")
 		emit_node(p, option.value)
 	case .User:
 		emit(p, " USER ")
@@ -2283,7 +2300,6 @@ emit_submit_option :: proc(p: ^Printer, option: Submit_Option_Clause) {
 	case .Language:
 		emit(p, " LANGUAGE ")
 		emit_node(p, option.value)
-	case .Using_Selection_Sets_Of_Program:
 	}
 }
 
@@ -4289,6 +4305,9 @@ submit_operator_text :: proc(op: Submit_Option_Operator) -> string {
 	case .Nb: return "NB"
 	case .Cp: return "CP"
 	case .Np: return "NP"
+	case .In: return "IN"
+	case .Between: return "BETWEEN"
+	case .Not_Between: return "NOT BETWEEN"
 	case .Ge: return "GE"
 	case .Gt: return "GT"
 	case .Le: return "LE"

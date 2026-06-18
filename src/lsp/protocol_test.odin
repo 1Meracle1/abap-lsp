@@ -3079,6 +3079,77 @@ lsp_completion_dml_statement_templates_expand_from_keyword_prefixes :: proc(
 }
 
 @(test)
+lsp_completion_submit_statement_templates_expand_from_keyword_prefixes :: proc(
+	t: ^testing.T,
+) {
+	cases := [?]Completion_Template_Prefix_Test_Case {
+		{
+			prefix = "sub",
+			label = "SUBMIT ... AND RETURN",
+			insert_text = "SUBMIT ${1:report} AND RETURN.$0",
+		},
+		{
+			prefix = "sub",
+			label = "SUBMIT ... WITH ... EQ",
+			insert_text = "SUBMIT ${1:report}\n  WITH ${2:p_param} EQ ${3:lv_value}\n  AND RETURN.$0",
+		},
+		{
+			prefix = "sub",
+			label = "SUBMIT ... WITH ... IN",
+			insert_text = "SUBMIT ${1:report}\n  WITH ${2:s_range} IN ${3:lt_range}\n  AND RETURN.$0",
+		},
+		{
+			prefix = "sub",
+			label = "SUBMIT ... VIA JOB ... NUMBER ... WITH ... USER ... AND RETURN",
+			insert_text = "SUBMIT ${1:report}\n  VIA JOB ${2:lv_jobname}\n  NUMBER ${3:lv_jobcount}\n  WITH ${4:s_range} IN ${5:lt_range}\n  WITH ${6:p_flag} EQ ${7:lv_flag}\n  USER ${8:sy-uname}\n  AND RETURN.$0",
+		},
+	}
+
+	for test_case, i in cases {
+		uri := strings.concatenate(
+			{"file:///D:/repo/completion_submit_template_", fmt.tprintf("%d", i), ".abap"},
+			context.temp_allocator,
+		)
+		source := strings.concatenate({"REPORT zmain.\nFORM run.\n  ", test_case.prefix}, context.temp_allocator)
+		state := lsp_test_state_with_open_document(uri, source)
+		defer lsp_test_state_destroy(&state)
+
+		offset := len(source)
+		params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+		snapshot, completion_offset, snapshot_ok := snapshot_for_position(&state, params)
+		testing.expect(t, snapshot_ok)
+		if !snapshot_ok {
+			continue
+		}
+
+		items := completion_items_for_snapshot(snapshot, completion_offset, true, context.allocator)
+		item, item_ok := lsp_test_find_completion_item(items, test_case.label)
+		testing.expect(t, item_ok)
+		if !item_ok {
+			continue
+		}
+
+		testing.expect_value(t, item.kind, COMPLETION_SNIPPET)
+		testing.expect_value(
+			t,
+			item.sort_text,
+			completion_sort_text("2", test_case.label, context.temp_allocator),
+		)
+		testing.expect_value(t, item.insert_text_format, COMPLETION_INSERT_TEXT_FORMAT_SNIPPET)
+		testing.expect_value(t, item.insert_text, test_case.insert_text)
+		edit, edit_ok := item.text_edit.?
+		testing.expect(t, edit_ok)
+		if edit_ok {
+			testing.expect_value(t, edit.new_text, item.insert_text)
+			testing.expect_value(t, edit.range.start.line, 2)
+			testing.expect_value(t, edit.range.start.character, 2)
+			testing.expect_value(t, edit.range.end.line, 2)
+			testing.expect_value(t, edit.range.end.character, 2 + len(test_case.prefix))
+		}
+	}
+}
+
+@(test)
 lsp_completion_hyphenated_statement_templates_expand_from_hyphen_prefixes :: proc(
 	t: ^testing.T,
 ) {
@@ -4100,6 +4171,13 @@ lsp_completion_common_statement_templates_sort_after_matching_symbols :: proc(t:
 			template_sort = "2:update ... set ... where",
 		},
 		{
+			source = "DATA submit_candidate TYPE i.\nsub",
+			symbol_label = "submit_candidate",
+			template_label = "SUBMIT ... AND RETURN",
+			symbol_sort = "1:submit_candidate",
+			template_sort = "2:submit ... and return",
+		},
+		{
 			source = "DATA condense_candidate TYPE i.\ncond",
 			symbol_label = "condense_candidate",
 			template_label = "CONDENSE ...",
@@ -4359,6 +4437,7 @@ lsp_completion_common_statement_templates_do_not_match_expression_prefixes :: pr
 	cases := [?]Completion_Template_Prefix_Test_Case {
 		{prefix = "me", label = "MESSAGE ... TYPE"},
 		{prefix = "me", label = "METHODS ..."},
+		{prefix = "sub", label = "SUBMIT ... AND RETURN"},
 		{prefix = "cond", label = "CONDENSE ..."},
 		{prefix = "find", label = "FIND ... IN"},
 		{prefix = "type", label = "TYPE-POOLS ..."},

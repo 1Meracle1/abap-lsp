@@ -1167,6 +1167,30 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		plain = "MESSAGE 'Text' TYPE 'S' INTO lv_message.",
 	},
 	{
+		keyword = "SUBMIT",
+		label = "SUBMIT ... AND RETURN",
+		snippet = "SUBMIT ${1:report} AND RETURN.$0",
+		plain = "SUBMIT report AND RETURN.",
+	},
+	{
+		keyword = "SUBMIT",
+		label = "SUBMIT ... WITH ... EQ",
+		snippet = "SUBMIT ${1:report}\n  WITH ${2:p_param} EQ ${3:lv_value}\n  AND RETURN.$0",
+		plain = "SUBMIT report\n  WITH p_param EQ lv_value\n  AND RETURN.",
+	},
+	{
+		keyword = "SUBMIT",
+		label = "SUBMIT ... WITH ... IN",
+		snippet = "SUBMIT ${1:report}\n  WITH ${2:s_range} IN ${3:lt_range}\n  AND RETURN.$0",
+		plain = "SUBMIT report\n  WITH s_range IN lt_range\n  AND RETURN.",
+	},
+	{
+		keyword = "SUBMIT",
+		label = "SUBMIT ... VIA JOB ... NUMBER ... WITH ... USER ... AND RETURN",
+		snippet = "SUBMIT ${1:report}\n  VIA JOB ${2:lv_jobname}\n  NUMBER ${3:lv_jobcount}\n  WITH ${4:s_range} IN ${5:lt_range}\n  WITH ${6:p_flag} EQ ${7:lv_flag}\n  USER ${8:sy-uname}\n  AND RETURN.$0",
+		plain = "SUBMIT report\n  VIA JOB lv_jobname\n  NUMBER lv_jobcount\n  WITH s_range IN lt_range\n  WITH p_flag EQ lv_flag\n  USER sy-uname\n  AND RETURN.",
+	},
+	{
 		keyword = "DESCRIBE",
 		label = "DESCRIBE TABLE ... LINES",
 		snippet = "DESCRIBE TABLE ${1:itab} LINES ${2:lv_lines}.$0",

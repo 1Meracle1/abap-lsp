@@ -1694,6 +1694,7 @@ clone_submit_options :: proc(list: [dynamic]Submit_Option_Clause, allocator: mem
 			operator   = clause.operator,
 			value      = clone(clause.value, allocator),
 			high_value = clone(clause.high_value, allocator),
+			sign_value = clone(clause.sign_value, allocator),
 		})
 	}
 	return res

@@ -367,6 +367,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		for clause in n.options {
 			walk(next, clause.value)
 			walk(next, clause.high_value)
+			walk(next, clause.sign_value)
 		}
 	case ^Message_Stmt:
 		walk_message_head(next, n.head)

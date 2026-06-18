@@ -1483,6 +1483,8 @@ Submit_Option_Kind :: enum {
 	With_Parameter,
 	Line_Size,
 	Line_Count,
+	Spool_Parameters,
+	Archive_Parameters,
 	User,
 	Via_Job,
 	Number,
@@ -1498,6 +1500,9 @@ Submit_Option_Operator :: enum {
 	Nb,
 	Cp,
 	Np,
+	In,
+	Between,
+	Not_Between,
 	Ge,
 	Gt,
 	Le,
@@ -1526,6 +1531,7 @@ Submit_Option_Clause :: struct {
 	operator:   Submit_Option_Operator,
 	value:      ^Expr,
 	high_value: ^Expr,
+	sign_value: ^Expr,
 }
 
 // ABAP syntax: `SUBMIT report ... [AND RETURN].`

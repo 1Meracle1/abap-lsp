@@ -5326,30 +5326,68 @@ call_stmt_arg_value_end :: proc(p: ^Parser, start: int) -> int {
 	return i
 }
 
+SUBMIT_OPTION_STOP_KEYWORDS :: []string {
+	"USING",
+	"VIA",
+	"WITH",
+	"LINE-SIZE",
+	"LINE-COUNT",
+	"LINE",
+	"EXPORTING",
+	"TO",
+	"SPOOL",
+	"ARCHIVE",
+	"WITHOUT",
+	"USER",
+	"NUMBER",
+	"LANGUAGE",
+	"AND",
+}
+
+SUBMIT_WITH_VALUE_STOP_KEYWORDS :: []string {
+	"USING",
+	"VIA",
+	"WITH",
+	"LINE-SIZE",
+	"LINE-COUNT",
+	"LINE",
+	"EXPORTING",
+	"TO",
+	"SPOOL",
+	"ARCHIVE",
+	"WITHOUT",
+	"USER",
+	"NUMBER",
+	"LANGUAGE",
+	"AND",
+	"SIGN",
+}
+
+SUBMIT_BETWEEN_LOW_STOP_KEYWORDS :: []string {
+	"AND",
+	"USING",
+	"VIA",
+	"WITH",
+	"LINE-SIZE",
+	"LINE-COUNT",
+	"LINE",
+	"EXPORTING",
+	"TO",
+	"SPOOL",
+	"ARCHIVE",
+	"WITHOUT",
+	"USER",
+	"NUMBER",
+	"LANGUAGE",
+	"SIGN",
+}
+
 parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "SUBMIT")
 	body_start := p.index
 	stmt := ast.new(ast.Submit_Stmt, start.range, p.allocator)
 	stmt.options = make([dynamic]ast.Submit_Option_Clause, 0, 2, p.allocator)
-	stmt.target = simple_expr(
-		p,
-		body_start,
-		[]string {
-			"USING",
-			"VIA",
-			"WITH",
-			"LINE",
-			"EXPORTING",
-			"TO",
-			"SPOOL",
-			"ARCHIVE",
-			"WITHOUT",
-			"USER",
-			"NUMBER",
-			"LANGUAGE",
-			"AND",
-		},
-	)
+	stmt.target = simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 	if stmt.target == nil {
 		error_current(p, "syntax error: expected SUBMIT target")
 	} else if submit_target_is_dynamic(stmt.target) {
@@ -5372,11 +5410,7 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			) {
 				stmt.flags += {.Via_Selection_Screen}
 			} else if allow_keyword(p, "JOB") {
-				value := required_simple_expr(
-					p,
-					body_start,
-					[]string{"NUMBER", "LANGUAGE", "AND", "WITH", "USER"},
-				)
+				value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 				append(&stmt.options, ast.Submit_Option_Clause{kind = .Via_Job, value = value})
 			}
 			continue
@@ -5404,23 +5438,35 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 		if allow_keyword(p, "USING") {
 			if allow_hyphen2(p, "SELECTION", "SCREEN") {
-				value := required_simple_expr(p, body_start, []string{})
+				value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 				append(
 					&stmt.options,
 					ast.Submit_Option_Clause{kind = .Using_Selection_Screen, value = value},
 				)
 			} else if allow_hyphen2(p, "SELECTION", "SET") {
-				value := required_simple_expr(p, body_start, []string{})
+				value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 				append(
 					&stmt.options,
 					ast.Submit_Option_Clause{kind = .Using_Selection_Set, value = value},
+				)
+			} else if allow_hyphen2(p, "SELECTION", "SETS") {
+				if !allow_keyword(p, "OF") || !allow_keyword(p, "PROGRAM") {
+					error_current(p, "syntax error: expected OF PROGRAM after USING SELECTION-SETS")
+				}
+				value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
+				append(
+					&stmt.options,
+					ast.Submit_Option_Clause {
+						kind  = .Using_Selection_Sets_Of_Program,
+						value = value,
+					},
 				)
 			}
 			continue
 		}
 		if allow_keyword(p, "WITH") {
 			if allow_hyphen2(p, "SELECTION", "TABLE") {
-				value := required_simple_expr(p, body_start, []string{})
+				value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 				append(
 					&stmt.options,
 					ast.Submit_Option_Clause{kind = .With_Selection_Table, value = value},
@@ -5428,55 +5474,54 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				continue
 			}
 			if allow_keyword(p, "FREE") && allow_keyword(p, "SELECTIONS") {
-				value := required_simple_expr(p, body_start, []string{})
+				value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 				append(
 					&stmt.options,
 					ast.Submit_Option_Clause{kind = .With_Free_Selections, value = value},
 				)
 				continue
 			}
-			name := current_token(p)
-			if name.kind == .Ident {
-				bump_token(p)
-				option := ast.Submit_Option_Clause {
-					kind = .With_Parameter,
-					name = parser_ast_name_token(p, name),
-				}
-				if current_token(p).kind == .Eq || current_token(p).kind == .Ident {
-					op := bump_token(p)
-					option.operator = submit_option_operator(p, op)
-					option.value = simple_expr(
-						p,
-						body_start,
-						[]string{"WITH", "AND", "VIA", "USER", "LANGUAGE"},
-					)
-				}
-				append(&stmt.options, option)
-			}
+			parse_submit_with_parameter_option(p, stmt, body_start)
 			continue
 		}
 		if allow_hyphen2(p, "LINE", "SIZE") || allow_keyword_phrase(p, "LINE-SIZE") {
-			value := required_simple_expr(p, body_start, []string{})
+			value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 			append(&stmt.options, ast.Submit_Option_Clause{kind = .Line_Size, value = value})
 			continue
 		}
 		if allow_hyphen2(p, "LINE", "COUNT") || allow_keyword_phrase(p, "LINE-COUNT") {
-			value := required_simple_expr(p, body_start, []string{})
+			value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 			append(&stmt.options, ast.Submit_Option_Clause{kind = .Line_Count, value = value})
 			continue
 		}
+		if allow_keyword(p, "SPOOL") {
+			if !allow_keyword(p, "PARAMETERS") {
+				error_current(p, "syntax error: expected PARAMETERS after SPOOL")
+			}
+			value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
+			append(&stmt.options, ast.Submit_Option_Clause{kind = .Spool_Parameters, value = value})
+			continue
+		}
+		if allow_keyword(p, "ARCHIVE") {
+			if !allow_keyword(p, "PARAMETERS") {
+				error_current(p, "syntax error: expected PARAMETERS after ARCHIVE")
+			}
+			value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
+			append(&stmt.options, ast.Submit_Option_Clause{kind = .Archive_Parameters, value = value})
+			continue
+		}
 		if allow_keyword(p, "USER") {
-			value := required_simple_expr(p, body_start, []string{})
+			value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 			append(&stmt.options, ast.Submit_Option_Clause{kind = .User, value = value})
 			continue
 		}
 		if allow_keyword(p, "NUMBER") {
-			value := required_simple_expr(p, body_start, []string{})
+			value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 			append(&stmt.options, ast.Submit_Option_Clause{kind = .Number, value = value})
 			continue
 		}
 		if allow_keyword(p, "LANGUAGE") {
-			value := required_simple_expr(p, body_start, []string{})
+			value := required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
 			append(&stmt.options, ast.Submit_Option_Clause{kind = .Language, value = value})
 			continue
 		}
@@ -5484,6 +5529,67 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
+}
+
+parse_submit_with_parameter_option :: proc(
+	p: ^Parser,
+	stmt: ^ast.Submit_Stmt,
+	body_start: int,
+) {
+	name := current_token(p)
+	if name.kind != .Ident {
+		error_current(p, "syntax error: expected SUBMIT selection parameter after WITH")
+		return
+	}
+	bump_token(p)
+
+	option := ast.Submit_Option_Clause {
+		kind = .With_Parameter,
+		name = parser_ast_name_token(p, name),
+	}
+	if operator, ok := submit_option_operator_current(p); ok {
+		option.operator = operator
+		if operator == .Between || operator == .Not_Between {
+			option.value = required_simple_expr(p, body_start, SUBMIT_BETWEEN_LOW_STOP_KEYWORDS)
+			if allow_keyword(p, "AND") {
+				option.high_value = required_simple_expr(
+					p,
+					body_start,
+					SUBMIT_WITH_VALUE_STOP_KEYWORDS,
+				)
+			} else {
+				error_current(p, "syntax error: expected AND in SUBMIT BETWEEN option")
+			}
+		} else {
+			option.value = required_simple_expr(p, body_start, SUBMIT_WITH_VALUE_STOP_KEYWORDS)
+		}
+		if allow_keyword(p, "SIGN") {
+			option.sign_value = required_simple_expr(p, body_start, SUBMIT_OPTION_STOP_KEYWORDS)
+		}
+	}
+	append(&stmt.options, option)
+}
+
+submit_option_operator_current :: proc(p: ^Parser) -> (ast.Submit_Option_Operator, bool) {
+	if current_token(p).kind == .Eq {
+		bump_token(p)
+		return .Assign, true
+	}
+	if at_keyword(p, "NOT") && at_keyword_index(p, p.index + 1, "BETWEEN") {
+		bump_token(p)
+		bump_token(p)
+		return .Not_Between, true
+	}
+	tok := current_token(p)
+	if tok.kind != .Ident {
+		return .None, false
+	}
+	operator := submit_option_operator(p, tok)
+	if operator == .None || operator == .Other {
+		return .None, false
+	}
+	bump_token(p)
+	return operator, true
 }
 
 submit_option_operator :: proc(p: ^Parser, tok: Token) -> ast.Submit_Option_Operator {
@@ -5507,6 +5613,12 @@ submit_option_operator :: proc(p: ^Parser, tok: Token) -> ast.Submit_Option_Oper
 	}
 	if token_is_keyword(p, tok, "NP") {
 		return .Np
+	}
+	if token_is_keyword(p, tok, "IN") {
+		return .In
+	}
+	if token_is_keyword(p, tok, "BETWEEN") {
+		return .Between
 	}
 	if token_is_keyword(p, tok, "GE") {
 		return .Ge

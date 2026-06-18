@@ -559,6 +559,86 @@ SUBMIT (lv_report) VIA SELECTION-SCREEN.`,
 }
 
 @(test)
+submit_statement_parses_job_and_selection_parameter_options :: proc(t: ^testing.T) {
+	source := `SUBMIT zsa_dropship_so_batch_update
+  VIA JOB ev_jobname
+  NUMBER ev_jobcount
+  WITH s_mblnr IN it_mblnr_range
+  WITH ch_bat_u EQ iv_update_batch
+  WITH ch_inv_c EQ iv_create_inv
+  USER iv_job_user
+  AND RETURN.`
+	parsed := parse(source, "submit_job_options.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Submit_Stmt)
+	testing.expect_value(t, stmt.target_kind, ast.Submit_Target_Kind.Static)
+	testing.expect(t, .And_Return in stmt.flags)
+	testing.expect_value(t, len(stmt.options), 6)
+	testing.expect_value(t, stmt.options[0].kind, ast.Submit_Option_Kind.Via_Job)
+	testing.expect_value(t, stmt.options[1].kind, ast.Submit_Option_Kind.Number)
+	testing.expect_value(t, stmt.options[2].kind, ast.Submit_Option_Kind.With_Parameter)
+	testing.expect_value(t, stmt.options[2].name.text, "s_mblnr")
+	testing.expect_value(t, stmt.options[2].operator, ast.Submit_Option_Operator.In)
+	testing.expect_value(t, stmt.options[3].name.text, "ch_bat_u")
+	testing.expect_value(t, stmt.options[3].operator, ast.Submit_Option_Operator.Eq)
+	testing.expect_value(t, stmt.options[4].name.text, "ch_inv_c")
+	testing.expect_value(t, stmt.options[4].operator, ast.Submit_Option_Operator.Eq)
+	testing.expect_value(t, stmt.options[5].kind, ast.Submit_Option_Kind.User)
+}
+
+@(test)
+submit_statement_parses_full_documented_option_set :: proc(t: ^testing.T) {
+	source := `SUBMIT (lv_report)
+  USING SELECTION-SCREEN '1100'
+  VIA SELECTION-SCREEN
+  USING SELECTION-SET lv_variant
+  USING SELECTION-SETS OF PROGRAM lv_prog
+  WITH SELECTION-TABLE lt_rspar
+  WITH p_bukrs EQ lv_bukrs
+  WITH s_erdat NOT BETWEEN lv_low AND lv_high SIGN lv_sign
+  WITH s_vkorg IN lt_vkorg
+  WITH FREE SELECTIONS lt_texpr
+  LINE-SIZE lv_width
+  LINE-COUNT lv_lines
+  TO SAP-SPOOL
+  SPOOL PARAMETERS ls_pri
+  ARCHIVE PARAMETERS ls_arc
+  WITHOUT SPOOL DYNPRO
+  USER lv_user
+  VIA JOB lv_job NUMBER lv_count LANGUAGE lv_lang
+  AND RETURN.`
+	parsed := parse(source, "submit_full_options.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Submit_Stmt)
+	testing.expect_value(t, stmt.target_kind, ast.Submit_Target_Kind.Dynamic)
+	testing.expect(t, .Via_Selection_Screen in stmt.flags)
+	testing.expect(t, .To_Sap_Spool in stmt.flags)
+	testing.expect(t, .Without_Spool_Dynpro in stmt.flags)
+	testing.expect(t, .And_Return in stmt.flags)
+	testing.expect_value(t, len(stmt.options), 16)
+	testing.expect_value(t, stmt.options[0].kind, ast.Submit_Option_Kind.Using_Selection_Screen)
+	testing.expect_value(t, stmt.options[1].kind, ast.Submit_Option_Kind.Using_Selection_Set)
+	testing.expect_value(t, stmt.options[2].kind, ast.Submit_Option_Kind.Using_Selection_Sets_Of_Program)
+	testing.expect_value(t, stmt.options[3].kind, ast.Submit_Option_Kind.With_Selection_Table)
+	testing.expect_value(t, stmt.options[4].operator, ast.Submit_Option_Operator.Eq)
+	testing.expect_value(t, stmt.options[5].operator, ast.Submit_Option_Operator.Not_Between)
+	testing.expect(t, stmt.options[5].high_value != nil)
+	testing.expect(t, stmt.options[5].sign_value != nil)
+	testing.expect_value(t, stmt.options[6].operator, ast.Submit_Option_Operator.In)
+	testing.expect_value(t, stmt.options[7].kind, ast.Submit_Option_Kind.With_Free_Selections)
+	testing.expect_value(t, stmt.options[8].kind, ast.Submit_Option_Kind.Line_Size)
+	testing.expect_value(t, stmt.options[9].kind, ast.Submit_Option_Kind.Line_Count)
+	testing.expect_value(t, stmt.options[10].kind, ast.Submit_Option_Kind.Spool_Parameters)
+	testing.expect_value(t, stmt.options[11].kind, ast.Submit_Option_Kind.Archive_Parameters)
+	testing.expect_value(t, stmt.options[12].kind, ast.Submit_Option_Kind.User)
+	testing.expect_value(t, stmt.options[13].kind, ast.Submit_Option_Kind.Via_Job)
+	testing.expect_value(t, stmt.options[14].kind, ast.Submit_Option_Kind.Number)
+	testing.expect_value(t, stmt.options[15].kind, ast.Submit_Option_Kind.Language)
+}
+
+@(test)
 perform_statement_shape_is_modeled_and_validated :: proc(t: ^testing.T) {
 	source := `PERFORM (lv_form) IN PROGRAM ('RDDU0001') IF FOUND.
 PERFORM local_form IN PROGRAM.`

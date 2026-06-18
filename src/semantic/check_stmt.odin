@@ -3375,13 +3375,19 @@ checker_check_message_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Message_Stm
 }
 
 checker_check_submit_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Submit_Stmt) {
-	checker_check_expr(ctx, stmt.target)
+	target := checker_check_expr(ctx, stmt.target)
 	if stmt.target_kind == .Static {
 		checker_check_report_dependency_target(ctx, stmt.target, .Submit, false)
+	} else {
+		checker_check_unresolved_variable_operand(ctx, stmt.target, target)
 	}
 	for option in stmt.options {
-		checker_check_expr(ctx, option.value)
-		checker_check_expr(ctx, option.high_value)
+		value := checker_check_expr(ctx, option.value)
+		checker_check_unresolved_variable_operand(ctx, option.value, value)
+		high_value := checker_check_expr(ctx, option.high_value)
+		checker_check_unresolved_variable_operand(ctx, option.high_value, high_value)
+		sign_value := checker_check_expr(ctx, option.sign_value)
+		checker_check_unresolved_variable_operand(ctx, option.sign_value, sign_value)
 	}
 }
 

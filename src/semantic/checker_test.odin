@@ -4175,6 +4175,81 @@ ENDFORM.`
 }
 
 @(test)
+root_semantic_stmt_checker_resolves_submit_operands :: proc(t: ^testing.T) {
+	source := `REPORT zsubmit_full.
+DATA lv_report TYPE string.
+DATA lv_variant TYPE string.
+DATA lv_prog TYPE string.
+DATA lt_rspar TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_bukrs TYPE string.
+DATA lv_low TYPE string.
+DATA lv_high TYPE string.
+DATA lv_sign TYPE string.
+DATA lt_vkorg TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lt_texpr TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_width TYPE i.
+DATA lv_lines TYPE i.
+DATA ls_pri TYPE string.
+DATA ls_arc TYPE string.
+DATA lv_user TYPE string.
+DATA lv_job TYPE string.
+DATA lv_count TYPE string.
+DATA lv_lang TYPE string.
+
+START-OF-SELECTION.
+  SUBMIT (lv_report)
+    USING SELECTION-SCREEN '1100'
+    USING SELECTION-SET lv_variant
+    USING SELECTION-SETS OF PROGRAM lv_prog
+    WITH SELECTION-TABLE lt_rspar
+    WITH p_bukrs EQ lv_bukrs
+    WITH s_erdat NOT BETWEEN lv_low AND lv_high SIGN lv_sign
+    WITH s_vkorg IN lt_vkorg
+    WITH FREE SELECTIONS lt_texpr
+    LINE-SIZE lv_width
+    LINE-COUNT lv_lines
+    TO SAP-SPOOL
+    SPOOL PARAMETERS ls_pri
+    ARCHIVE PARAMETERS ls_arc
+    WITHOUT SPOOL DYNPRO
+    USER lv_user
+    VIA JOB lv_job NUMBER lv_count LANGUAGE lv_lang
+    AND RETURN.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://submit_operands.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	names := [?]string {
+		"lv_report",
+		"lv_variant",
+		"lv_prog",
+		"lt_rspar",
+		"lv_bukrs",
+		"lv_low",
+		"lv_high",
+		"lv_sign",
+		"lt_vkorg",
+		"lt_texpr",
+		"lv_width",
+		"lv_lines",
+		"ls_pri",
+		"ls_arc",
+		"lv_user",
+		"lv_job",
+		"lv_count",
+		"lv_lang",
+	}
+	for name in names {
+		entity := checker_test_lookup(t, &project, file.root_scope, .Value, name, .Variable)
+		testing.expect(t, entity != nil && .Used in entity.flags)
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
+	}
+}
+
+@(test)
 root_semantic_checker_collects_structured_form_header_parameters :: proc(t: ^testing.T) {
 	source := `FORM plain.
 ENDFORM.
