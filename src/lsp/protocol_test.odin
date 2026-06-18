@@ -5638,7 +5638,8 @@ lv_subrc = sy-subrc.`
 
 	text := lsp_test_hover_text(t, source, "sy-subrc", "subrc")
 
-	testing.expect(t, strings.contains(text, "`subrc` field"))
+	testing.expect(t, strings.contains(text, "```abap"))
+	testing.expect(t, strings.contains(text, "TYPES subrc TYPE i."))
 	testing.expect(t, strings.contains(text, "Return code set by many ABAP statements"))
 }
 
@@ -5650,8 +5651,8 @@ lsp_hover_reports_unknown_open_sql_inline_table_type :: proc(t: ^testing.T) {
 
 	text := lsp_test_hover_text(t, source, "@DATA(lt_jobs)", "lt_jobs")
 
-	testing.expect(t, strings.contains(text, "`lt_jobs` variable"))
-	testing.expect(t, strings.contains(text, "type: `STANDARD TABLE OF unknown`"))
+	testing.expect(t, strings.contains(text, "```abap"))
+	testing.expect(t, strings.contains(text, "DATA lt_jobs TYPE STANDARD TABLE OF unknown."))
 }
 
 @(test)
@@ -5661,8 +5662,8 @@ APPEND VALUE #( ) TO lr_str.`
 
 	text := lsp_test_hover_text(t, source, "APPEND VALUE #( ) TO lr_str", "lr_str")
 
-	testing.expect(t, strings.contains(text, "`lr_str` variable"))
-	testing.expect(t, strings.contains(text, "type: `RANGE OF string`"))
+	testing.expect(t, strings.contains(text, "```abap"))
+	testing.expect(t, strings.contains(text, "DATA lr_str TYPE RANGE OF string."))
 	testing.expect(t, !strings.contains(text, "RANGE OF range"))
 }
 
@@ -5690,10 +5691,10 @@ MODIFY lt_rows
 	id_text := lsp_test_hover_text(t, source, "TRANSPORTING id", "id")
 	part_text := lsp_test_hover_text(t, source, "nested-part", "part")
 
-	testing.expect(t, strings.contains(id_text, "`id` field"))
-	testing.expect(t, strings.contains(id_text, "type: `string`"))
-	testing.expect(t, strings.contains(part_text, "`part` field"))
-	testing.expect(t, strings.contains(part_text, "type: `string`"))
+	testing.expect(t, strings.contains(id_text, "```abap"))
+	testing.expect(t, strings.contains(id_text, "TYPES id TYPE string."))
+	testing.expect(t, strings.contains(part_text, "```abap"))
+	testing.expect(t, strings.contains(part_text, "TYPES part TYPE string."))
 }
 
 @(test)
@@ -5715,11 +5716,48 @@ DATA(base2) = VALUE itab2(
 	value_text := lsp_test_hover_text(t, source, "col2 = 'y1'", "col2")
 
 	testing.expect(t, strings.contains(decl_text, "```abap"))
-	testing.expect(t, strings.contains(decl_text, "col1 TYPE c LENGTH 2"))
+	testing.expect(t, strings.contains(decl_text, "TYPES col1 TYPE c LENGTH 2."))
 	testing.expect(t, !strings.contains(decl_text, "type: `c`"))
 	testing.expect(t, strings.contains(value_text, "```abap"))
-	testing.expect(t, strings.contains(value_text, "col2 TYPE c LENGTH 2"))
+	testing.expect(t, strings.contains(value_text, "TYPES col2 TYPE c LENGTH 2."))
 	testing.expect(t, !strings.contains(value_text, "type: `c`"))
+}
+
+@(test)
+lsp_hover_reports_constructor_for_groups_key_and_row_field_syntax :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_struct,
+    order TYPE c LENGTH 20,
+  END OF ty_struct,
+
+  ty_order TYPE c LENGTH 10,
+  tr_orders TYPE RANGE OF ty_order.
+
+DATA lt_all_items TYPE TABLE OF ty_struct WITH EMPTY KEY.
+
+DATA(lr_orders) = VALUE tr_orders(
+  FOR GROUPS order OF ls_item IN lt_all_items
+  GROUP BY ls_item-order
+  ( sign = 'I' option = 'EQ' low = order )
+).`
+
+	selector_text := lsp_test_hover_text(t, source, "GROUP BY ls_item-order", "order")
+	group_text := lsp_test_hover_text(t, source, "low = order", "order")
+	sign_text := lsp_test_hover_text(t, source, "( sign = 'I'", "sign")
+	option_text := lsp_test_hover_text(t, source, "option = 'EQ'", "option")
+	low_text := lsp_test_hover_text(t, source, "low = order", "low")
+
+	testing.expect(t, strings.contains(selector_text, "TYPES order TYPE c LENGTH 20."))
+	testing.expect(t, !strings.contains(selector_text, "type: `c`"))
+	testing.expect(t, strings.contains(group_text, "DATA order TYPE c LENGTH 20."))
+	testing.expect(t, !strings.contains(group_text, "type: `c`"))
+	testing.expect(t, strings.contains(sign_text, "```abap"))
+	testing.expect(t, strings.contains(sign_text, "TYPES sign TYPE c LENGTH 1."))
+	testing.expect(t, strings.contains(option_text, "```abap"))
+	testing.expect(t, strings.contains(option_text, "TYPES option TYPE c LENGTH 2."))
+	testing.expect(t, strings.contains(low_text, "```abap"))
+	testing.expect(t, strings.contains(low_text, "TYPES low TYPE ty_order."))
+	testing.expect(t, !strings.contains(low_text, "DATA order TYPE c LENGTH 20."))
 }
 
 @(test)
@@ -5741,8 +5779,8 @@ DATA(lt_delta_docnum_wt_ship) = FILTER tt_docnum(
 
 	text := lsp_test_hover_text(t, source, "WHERE table_line = docnum", "table_line")
 
-	testing.expect(t, strings.contains(text, "`table_line` table line"))
-	testing.expect(t, strings.contains(text, "type: `string`"))
+	testing.expect(t, strings.contains(text, "```abap"))
+	testing.expect(t, strings.contains(text, "TYPES table_line TYPE string."))
 }
 
 @(test)
@@ -5844,11 +5882,11 @@ CLOSE CURSOR @lv_cursor.`
 	cursor_text := lsp_test_hover_text(t, source, "@DATA(lv_cursor)", "lv_cursor")
 	package_text := lsp_test_hover_text(t, source, "@DATA(lt_package)", "lt_package")
 
-	testing.expect(t, strings.contains(cursor_text, "`lv_cursor` variable"))
-	testing.expect(t, strings.contains(cursor_text, "type: `cursor`"))
+	testing.expect(t, strings.contains(cursor_text, "```abap"))
+	testing.expect(t, strings.contains(cursor_text, "DATA lv_cursor TYPE cursor."))
 	testing.expect(t, !strings.contains(cursor_text, "type: `unknown`"))
-	testing.expect(t, strings.contains(package_text, "`lt_package` variable"))
-	testing.expect(t, strings.contains(package_text, "type: `STANDARD TABLE OF"))
+	testing.expect(t, strings.contains(package_text, "```abap"))
+	testing.expect(t, strings.contains(package_text, "DATA lt_package TYPE STANDARD TABLE OF"))
 	testing.expect(t, !strings.contains(package_text, "STANDARD TABLE OF unknown"))
 }
 
@@ -5862,8 +5900,8 @@ ENDTRY.`
 
 	text := lsp_test_hover_text(t, source, "DATA(lx_error)", "lx_error")
 
-	testing.expect(t, strings.contains(text, "`lx_error` variable"))
-	testing.expect(t, strings.contains(text, "type: `ref to cx_root`"))
+	testing.expect(t, strings.contains(text, "```abap"))
+	testing.expect(t, strings.contains(text, "DATA lx_error TYPE REF TO cx_root."))
 	testing.expect(t, !strings.contains(text, "type: `unknown`"))
 }
 

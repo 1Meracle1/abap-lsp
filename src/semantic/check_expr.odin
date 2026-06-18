@@ -2392,7 +2392,15 @@ checker_check_constructor_for_groups_clause :: proc(
 		)
 	}
 	if expr.variable.text != "" {
-		checker_collect_inferred_expr_decl(ctx, expr.variable.text, .Variable, expr.variable.range, node, group_type)
+		checker_collect_inferred_expr_decl(
+			ctx,
+			expr.variable.text,
+			.Variable,
+			expr.variable.range,
+			node,
+			group_type,
+			inferred_type_entity = group_by.entity,
+		)
 	}
 	return group_type
 }
@@ -2462,12 +2470,13 @@ checker_collect_inferred_expr_decl :: proc(
 	range: Range,
 	node: ^ast.Node,
 	typ: ^Type,
+	inferred_type_entity: ^Entity = nil,
 ) -> ^Entity {
 	entity := checker_collect_variable_decl(ctx, ctx.scope, name, kind, range, node, nil, nil)
 	if entity == nil {
 		return nil
 	}
-	checker_set_inferred_entity_type(ctx, entity, typ)
+	checker_set_inferred_entity_type(ctx, entity, typ, inferred_type_entity)
 	return entity
 }
 
@@ -2481,13 +2490,21 @@ checker_apply_inline_decl_type :: proc(ctx: ^Checker_Context, name: string, typ:
 	}
 }
 
-checker_set_inferred_entity_type :: proc(ctx: ^Checker_Context, entity: ^Entity, typ: ^Type) {
+checker_set_inferred_entity_type :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	typ: ^Type,
+	inferred_type_entity: ^Entity = nil,
+) {
 	assert(entity != nil)
 	resolved_type := typ
 	if resolved_type == nil {
 		resolved_type = project_type_unknown(ctx.project)
 	}
 	entity.type = resolved_type
+	if payload, ok := entity.payload.(^Entity_Variable_Payload); ok && payload != nil {
+		payload.inferred_type_entity = inferred_type_entity
+	}
 	entity.flags -= {.Untyped}
 	entity.state = .Resolved
 	if entity.decl_info != nil {

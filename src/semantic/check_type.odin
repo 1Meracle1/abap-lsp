@@ -160,8 +160,8 @@ checker_range_row_structure :: proc(
 	structure := project_new_structure(ctx.project, "range", ctx.file, scope, Range{})
 	component_type := value_type if value_type != nil else project_type_unknown(ctx.project)
 	char_type := checker_builtin_type_from_name(ctx.checker, "c")
-	checker_add_range_row_field(ctx, structure, scope, "sign", char_type, node)
-	checker_add_range_row_field(ctx, structure, scope, "option", char_type, node)
+	checker_add_range_row_field(ctx, structure, scope, "sign", char_type, node, length = "1")
+	checker_add_range_row_field(ctx, structure, scope, "option", char_type, node, length = "2")
 	checker_add_range_row_field(ctx, structure, scope, "low", component_type, node)
 	checker_add_range_row_field(ctx, structure, scope, "high", component_type, node)
 	return structure
@@ -174,6 +174,7 @@ checker_add_range_row_field :: proc(
 	name: string,
 	typ: ^Type,
 	node: ^ast.Node,
+	length: string = "",
 ) -> ^Entity {
 	entity := project_new_entity(ctx.project, .Field)
 	entity.node = node
@@ -187,11 +188,50 @@ checker_add_range_row_field :: proc(
 	payload.owner_structure = structure
 	payload.decl_unit = ctx.file
 	payload.field_index = len(structure.fields)
+	payload.type_clause_form = .Type
+	payload.has_type_clause_form = true
+	payload.flags += {.Synthetic}
+	if length != "" {
+		decl := checker_range_row_char_field_decl_info(ctx, entity, scope, length)
+		payload.flags += {.Has_Type_Ref}
+		type_ref, _ := checker_type_ref_data_from_clause(ctx, decl.type_clause)
+		payload.type_ref = type_ref
+	}
 	append(&structure.fields, entity)
 	previous := scope_insert_declaration(scope, entity)
 	assert(previous == nil || previous == entity)
 	checker_add_definition(ctx.info, entity)
 	return entity
+}
+
+checker_range_row_char_field_decl_info :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	scope: ^Scope,
+	length: string,
+) -> ^Decl_Info {
+	type_ref := ast.new(ast.Ident_Expr, Range{}, ctx.project.allocator)
+	type_ref.name = "c"
+	type_clause := new(ast.Data_Type_Clause, ctx.project.allocator)
+	type_clause.form = .Type
+	type_clause.type_ref = &type_ref.node
+
+	length_expr := ast.new(ast.Literal_Expr, Range{}, ctx.project.allocator)
+	length_expr.value = length
+	length_clauses := make([]ast.Length_Clause, 1, ctx.project.allocator)
+	length_clauses[0] = ast.Length_Clause{kind = .Length, expr = &length_expr.node}
+
+	decl := project_new_decl_info(
+		ctx.project,
+		entity,
+		scope,
+		entity.name,
+		.Field,
+		type_clause = type_clause,
+		length_clauses = length_clauses,
+	)
+	decl.state = .Resolved
+	return decl
 }
 
 checker_type_from_ref_data :: proc(

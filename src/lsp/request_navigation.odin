@@ -79,12 +79,11 @@ expression_hover_text :: proc(
 
 table_line_hover_text :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
 	out := strings.builder_make(context.temp_allocator)
-	strings.write_string(&out, "`table_line` table line")
-	if type_text := type_label(project, typ); type_text != "" {
-		strings.write_string(&out, "\n\n")
-		strings.write_string(&out, "type: `")
-		strings.write_string(&out, type_text)
-		strings.write_byte(&out, '`')
+	if type_text := type_addition_syntax(project, typ); type_text != "" {
+		signature := typed_value_declaration_signature("TYPES", "table_line", type_text)
+		write_markdown_code_block(&out, "abap", signature)
+	} else {
+		strings.write_string(&out, "`table_line` table line")
 	}
 	return strings.to_string(out)
 }
@@ -267,7 +266,10 @@ entity_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Ent
 	if signature := constant_hover_signature(project, entity); signature != "" {
 		return signature
 	}
-	if signature := field_hover_signature(entity); signature != "" {
+	if signature := type_definition_hover_signature(project, entity); signature != "" {
+		return signature
+	}
+	if signature := typed_value_hover_signature(project, entity); signature != "" {
 		return signature
 	}
 	if entity.kind == .Method {
@@ -280,18 +282,120 @@ entity_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Ent
 	return ""
 }
 
-field_hover_signature :: proc(entity: ^semantic.Entity) -> string {
-	if entity == nil || entity.kind != .Field || !decl_info_has_type_additions(entity.decl_info) {
+typed_value_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
+	if entity == nil || !entity_kind_has_typed_value_hover(entity.kind) {
 		return ""
 	}
-	type_text := decl_info_type_syntax(entity.decl_info)
-	if type_text == "" {
+	source := entity_hover_type_source(entity)
+	keyword := typed_value_declaration_keyword(entity.kind)
+	if keyword == "" {
+		return ""
+	}
+	if type_text := entity_decl_type_syntax(source); type_text != "" {
+		return typed_value_declaration_signature(keyword, entity.name, type_text)
+	}
+	if entity.kind == .Field {
+		if signature := synthetic_field_hover_signature(project, entity); signature != "" {
+			return signature
+		}
+	}
+	type_text := type_addition_syntax(project, entity.type)
+	return typed_value_declaration_signature(keyword, entity.name, type_text) if type_text != "" else ""
+}
+
+typed_value_declaration_keyword :: proc(kind: semantic.Entity_Kind) -> string {
+	#partial switch kind {
+	case .Variable, .Parameter, .Control:
+		return "DATA"
+	case .Field_Symbol:
+		return "FIELD-SYMBOLS"
+	case .Field:
+		return "TYPES"
+	}
+	return ""
+}
+
+typed_value_declaration_signature :: proc(keyword, name, type_text: string) -> string {
+	if keyword == "" || name == "" || type_text == "" {
 		return ""
 	}
 	out := strings.builder_make(context.temp_allocator)
-	strings.write_string(&out, entity.name)
+	strings.write_string(&out, keyword)
+	strings.write_byte(&out, ' ')
+	strings.write_string(&out, name)
 	strings.write_byte(&out, ' ')
 	strings.write_string(&out, type_text)
+	strings.write_byte(&out, '.')
+	return strings.to_string(out)
+}
+
+synthetic_field_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
+	if entity == nil || entity.kind != .Field {
+		return ""
+	}
+	payload, ok := entity.payload.(^semantic.Entity_Field_Payload)
+	if !ok || payload == nil || !(.Synthetic in payload.flags) {
+		return ""
+	}
+	type_text := type_addition_syntax(project, entity.type)
+	if type_text == "" {
+		return ""
+	}
+	return typed_value_declaration_signature("TYPES", entity.name, type_text)
+}
+
+entity_kind_has_typed_value_hover :: proc(kind: semantic.Entity_Kind) -> bool {
+	#partial switch kind {
+	case .Variable, .Field_Symbol, .Parameter, .Field, .Control:
+		return true
+	}
+	return false
+}
+
+entity_hover_type_source :: proc(entity: ^semantic.Entity) -> ^semantic.Entity {
+	if entity == nil {
+		return nil
+	}
+	if payload, ok := entity.payload.(^semantic.Entity_Variable_Payload);
+	   ok && payload != nil && payload.inferred_type_entity != nil {
+		return payload.inferred_type_entity
+	}
+	return entity
+}
+
+type_definition_hover_signature :: proc(project: ^semantic.Project, entity: ^semantic.Entity) -> string {
+	if entity == nil || entity.kind != .Type_Def {
+		return ""
+	}
+	if type_text := entity_decl_type_syntax(entity); type_text != "" {
+		return typed_value_declaration_signature("TYPES", entity.name, type_text)
+	}
+	structure := semantic.checker_type_structure(entity.type)
+	if structure == nil {
+		return ""
+	}
+	out := strings.builder_make(context.temp_allocator)
+	strings.write_string(&out, "TYPES:\n")
+	strings.write_string(&out, "  BEGIN OF ")
+	strings.write_string(&out, entity.name)
+	strings.write_string(&out, ",\n")
+	for field in structure.fields {
+		type_text := entity_decl_type_syntax(field)
+		if type_text == "" {
+			type_text = type_addition_syntax(project, field.type) if field != nil else ""
+		}
+		if field == nil || type_text == "" {
+			continue
+		}
+		strings.write_string(&out, "    ")
+		strings.write_string(&out, field.name)
+		strings.write_byte(&out, ' ')
+		strings.write_string(&out, type_text)
+		strings.write_string(&out, ",\n")
+	}
+	strings.write_string(&out, "  END OF ")
+	strings.write_string(&out, entity.name)
+	strings.write_byte(&out, '.')
 	return strings.to_string(out)
 }
 
@@ -417,7 +521,7 @@ constant_entity_type_syntax :: proc(project: ^semantic.Project, entity: ^semanti
 	if type_text == "" || type_text == "unknown" {
 		return ""
 	}
-	return fmt.tprintf("TYPE %s", type_text)
+	return type_addition_syntax(project, entity.type)
 }
 
 constant_entity_value_syntax :: proc(entity: ^semantic.Entity) -> string {
@@ -493,6 +597,13 @@ decl_info_type_syntax :: proc(info: ^semantic.Decl_Info) -> string {
 	strings.write_string(&out, type_text)
 	write_decl_type_additions(&out, info.paren_length, info.length_clauses)
 	return strings.to_string(out)
+}
+
+entity_decl_type_syntax :: proc(entity: ^semantic.Entity) -> string {
+	if entity == nil {
+		return ""
+	}
+	return decl_info_type_syntax(entity.decl_info)
 }
 
 decl_info_has_type_additions :: proc(info: ^semantic.Decl_Info) -> bool {
@@ -815,6 +926,66 @@ type_label :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
 		return "unknown"
 	}
 	return ""
+}
+
+type_addition_syntax :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
+	type_text := type_label_abap(project, typ)
+	if type_text == "" {
+		return ""
+	}
+	return fmt.tprintf("TYPE %s", type_text)
+}
+
+type_label_abap :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
+	if typ == nil {
+		return ""
+	}
+	switch typ.kind {
+	case .Builtin, .Named, .Class, .Interface:
+		if typ.name != "" {
+			return typ.name
+		}
+	case .Structure:
+		if typ.structure != nil && typ.structure.name != "" {
+			return typ.structure.name
+		}
+		return "structure"
+	case .Table:
+		if typ.table_form == .Range_Of {
+			base := range_table_value_type_label_abap(project, typ)
+			return fmt.tprintf("RANGE OF %s", base) if base != "" else "RANGE"
+		}
+		base := type_label_abap(project, typ.base)
+		if !table_type_form_has_row_type(typ.table_form) && (base == "" || base == "unknown") {
+			return table_type_form_label(typ.table_form)
+		}
+		if base == "" {
+			base = "unknown"
+		}
+		return fmt.tprintf("%s OF %s", table_type_form_label(typ.table_form), base)
+	case .Ref:
+		base := type_label_abap(project, typ.base)
+		return fmt.tprintf("REF TO %s", base) if base != "" else "REF TO unknown"
+	case .Routine:
+		return "routine"
+	case .Unknown:
+		return "unknown"
+	}
+	return ""
+}
+
+range_table_value_type_label_abap :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {
+	if typ == nil || typ.table_form != .Range_Of || typ.base == nil {
+		return ""
+	}
+	if typ.base.kind == .Structure && typ.base.structure != nil {
+		for field in typ.base.structure.fields {
+			if field != nil && field.name == "low" {
+				return type_label_abap(project, field.type)
+			}
+		}
+	}
+	return type_label_abap(project, typ.base)
 }
 
 range_table_value_type_label :: proc(project: ^semantic.Project, typ: ^semantic.Type) -> string {

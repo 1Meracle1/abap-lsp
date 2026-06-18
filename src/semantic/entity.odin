@@ -50,6 +50,7 @@ Structure_Field_Flag :: enum {
 	Has_Type_Ref,
 	Is_Key,
 	Is_Include,
+	Synthetic,
 }
 Structure_Field_Flags :: bit_set[Structure_Field_Flag]
 
@@ -199,15 +200,16 @@ Entity_Parameter_Value :: struct {
 }
 
 Entity_Variable_Payload :: struct {
-	type_expr:         ^ast.Node,
-	init_expr:         ^ast.Node,
-	field_index:       i32,
-	field_group_index: i32,
-	param_value:       Entity_Parameter_Value,
-	passing:           Entity_Parameter_Passing,
-	section:           Entity_Parameter_Section,
-	docs:              []ast.Ast_Trivia,
-	comment:           []ast.Ast_Trivia,
+	type_expr:            ^ast.Node,
+	init_expr:            ^ast.Node,
+	inferred_type_entity: ^Entity,
+	field_index:          i32,
+	field_group_index:    i32,
+	param_value:          Entity_Parameter_Value,
+	passing:              Entity_Parameter_Passing,
+	section:              Entity_Parameter_Section,
+	docs:                 []ast.Ast_Trivia,
+	comment:              []ast.Ast_Trivia,
 }
 
 Entity_Constant_Flag :: enum {
