@@ -4876,6 +4876,34 @@ DATA(lv_count) =
 }
 
 @(test)
+root_semantic_checker_accepts_constructor_for_groups_group_by_values :: proc(t: ^testing.T) {
+	source := `TYPES:
+  BEGIN OF ty_struct,
+    ebeln TYPE c LENGTH 20,
+  END OF ty_struct,
+  ty_order TYPE c LENGTH 20,
+  tr_orders TYPE RANGE OF ty_order.
+
+DATA lt_all_items TYPE STANDARD TABLE OF ty_struct WITH EMPTY KEY.
+
+DATA(lr_orders) = VALUE tr_orders(
+  FOR GROUPS order OF ls_item IN lt_all_items
+  GROUP BY ls_item-ebeln
+  ( sign = 'I' option = 'EQ' low = order )
+).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://constructor_for_groups.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 0)
+}
+
+@(test)
 root_semantic_checker_reports_incompatible_reduce_for_in_where_values :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_line,
          docnum TYPE string,

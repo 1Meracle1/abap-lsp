@@ -269,7 +269,7 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.constructor_else += 1
 	case ^ast.Constructor_For_Clause_Expr:
 		counts.constructor_for += 1
-		if n.group_source.text != "" {
+		if n.kind == .For_Groups || n.group_source.text != "" {
 			counts.constructor_for_group += 1
 		}
 	case ^ast.Constructor_Init_Clause_Expr:

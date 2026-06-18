@@ -224,6 +224,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.then_expr = clone(n.then_expr, allocator)
 		r.condition = clone(n.condition, allocator)
 		r.source = clone(n.source, allocator)
+		r.group_by = clone(n.group_by, allocator)
 		r.where_clause = clone(n.where_clause, allocator)
 		r.body = clone_expr_list(n.body, allocator)
 		return r
@@ -1039,6 +1040,11 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 		}
 		when intrinsics.type_field_type(T, "group_source") == Token_Text {
 			dst.group_source = clone_token_text(src.group_source, allocator)
+		}
+	}
+	when intrinsics.type_has_field(T, "member_variable") {
+		when intrinsics.type_field_type(T, "member_variable") == Token_Text {
+			dst.member_variable = clone_token_text(src.member_variable, allocator)
 		}
 	}
 	when intrinsics.type_has_field(T, "id") {

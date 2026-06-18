@@ -1067,28 +1067,41 @@ emit_type_ref_key_clause :: proc(p: ^Printer, key: ^Type_Ref_Key_Clause) {
 
 emit_constructor_for_clause :: proc(p: ^Printer, expr: ^Constructor_For_Clause_Expr) {
 	emit(p, "FOR ")
-	emit(p, expr.variable)
-	if expr.group_source.text != "" {
-		emit(p, " IN GROUP ")
-		emit(p, expr.group_source)
-	} else if expr.source != nil {
+	if expr.kind == .For_Groups {
+		emit(p, "GROUPS ")
+		emit(p, expr.variable)
+		emit(p, " OF ")
+		emit(p, expr.member_variable)
 		emit(p, " IN ")
 		emit_node(p, expr.source)
-		if expr.where_clause != nil {
-			emit_space(p)
-			emit_node(p, expr.where_clause)
-		}
+		emit(p, " GROUP BY ")
+		emit_node(p, expr.group_by)
 	} else {
-		emit(p, " = ")
-		emit_node(p, expr.init)
-		if expr.then_expr != nil {
-			emit(p, " THEN ")
-			emit_node(p, expr.then_expr)
+		emit(p, expr.variable)
+	}
+	if expr.kind != .For_Groups {
+		if expr.group_source.text != "" {
+			emit(p, " IN GROUP ")
+			emit(p, expr.group_source)
+		} else if expr.source != nil {
+			emit(p, " IN ")
+			emit_node(p, expr.source)
+			if expr.where_clause != nil {
+				emit_space(p)
+				emit_node(p, expr.where_clause)
+			}
+		} else {
+			emit(p, " = ")
+			emit_node(p, expr.init)
+			if expr.then_expr != nil {
+				emit(p, " THEN ")
+				emit_node(p, expr.then_expr)
+			}
+			emit(p, " ")
+			emit(p, "WHILE" if expr.kind == .For_Then_While else "UNTIL")
+			emit_space(p)
+			emit_node(p, expr.condition)
 		}
-		emit(p, " ")
-		emit(p, "WHILE" if expr.kind == .For_Then_While else "UNTIL")
-		emit_space(p)
-		emit_node(p, expr.condition)
 	}
 	if len(expr.body) > 0 {
 		emit_space(p)

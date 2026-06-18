@@ -533,6 +533,7 @@ Is_Predicate_Kind :: enum {
 
 Constructor_For_Kind :: enum {
 	For_In,
+	For_Groups,
 	For_Then_Until,
 	For_Then_While,
 }
@@ -611,16 +612,18 @@ Constructor_Else_Clause_Expr :: struct {
 	result:     ^Expr,
 }
 
-// ABAP syntax: `FOR name IN source [WHERE (...)] ...` or `FOR name = init [THEN next] UNTIL|WHILE condition ...`.
+// ABAP syntax: `FOR name IN source [WHERE (...)] ...`, `FOR GROUPS group OF row IN source GROUP BY key ...`, or `FOR name = init [THEN next] UNTIL|WHILE condition ...`.
 Constructor_For_Clause_Expr :: struct {
 	using node:   Expr,
 	kind:         Constructor_For_Kind,
 	variable:     Token_Text,
+	member_variable: Token_Text,
 	init:         ^Expr,
 	then_expr:    ^Expr,
 	condition:    ^Expr,
 	source:       ^Expr,
 	group_source: Token_Text,
+	group_by:     ^Expr,
 	where_clause: ^Expr,
 	body:         [dynamic]^Expr,
 }

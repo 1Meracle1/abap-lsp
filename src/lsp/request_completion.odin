@@ -656,6 +656,18 @@ EXPRESSION_TEMPLATES :: [?]Completion_Statement_Template {
 	},
 	{
 		keyword = "FOR",
+		label = "FOR GROUPS ... GROUP BY",
+		snippet = "FOR GROUPS ${1:group} OF ${2:row} IN ${3:itab} GROUP BY ${2:row}-${4:field} ( ${1:group} )$0",
+		plain = "FOR GROUPS group OF row IN itab GROUP BY row-field ( group )",
+	},
+	{
+		keyword = "FOR",
+		label = "FOR GROUPS ... GROUP BY ( ... )",
+		snippet = "FOR GROUPS ${1:group} OF ${2:row} IN ${3:itab} GROUP BY ( ${4:key} = ${2:row}-${5:field} ) ( ${1:group}-${4:key} )$0",
+		plain = "FOR GROUPS group OF row IN itab GROUP BY ( key = row-field ) ( group-key )",
+	},
+	{
+		keyword = "FOR",
 		label = "FOR ... THEN ... UNTIL",
 		snippet = "FOR ${1:index} = ${2:1} THEN ${1} + ${3:1} UNTIL ${1:index} > ${4:limit} ( ${1:index} )$0",
 		plain = "FOR index = 1 THEN index + 1 UNTIL index > limit ( index )",

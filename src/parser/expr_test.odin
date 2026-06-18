@@ -392,6 +392,53 @@ value_constructor_allows_for_in_group_clause :: proc(t: ^testing.T) {
 }
 
 @(test)
+value_constructor_allows_for_groups_group_by_clause :: proc(t: ^testing.T) {
+	source := `DATA(lr_orders) = VALUE tr_orders(
+  FOR GROUPS order OF ls_item IN lt_all_items
+  GROUP BY ls_item-ebeln
+  ( sign = 'I' option = 'EQ' low = order )
+).`
+	parsed := parse(source, "value_for_groups.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Inline_Decl)
+	constructor := decl.expr.derived_expr.(^ast.Constructor_Expr)
+	for_clause := constructor.args[0].derived_expr.(^ast.Constructor_For_Clause_Expr)
+
+	testing.expect_value(t, for_clause.kind, ast.Constructor_For_Kind.For_Groups)
+	testing.expect_value(t, for_clause.variable.text, "order")
+	testing.expect_value(t, for_clause.member_variable.text, "ls_item")
+	testing.expect_value(t, ast.print_node(for_clause.source, context.allocator), "lt_all_items")
+	testing.expect_value(t, ast.print_node(for_clause.group_by, context.allocator), "ls_item-ebeln")
+	testing.expect_value(t, len(for_clause.body), 1)
+
+	counts := count_nodes(parsed.root)
+	testing.expect_value(t, counts.constructor_for, 1)
+	testing.expect_value(t, counts.constructor_for_group, 1)
+	testing.expect_value(t, counts.constructor_named, 3)
+}
+
+@(test)
+value_constructor_allows_for_groups_structured_group_by_key :: proc(t: ^testing.T) {
+	source := `DATA(lt_new) = VALUE #( FOR GROUPS group OF row IN rows GROUP BY ( ebeln = row-ebeln ) ( group-ebeln ) ).`
+	parsed := parse(source, "value_for_groups_structured.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Inline_Decl)
+	constructor := decl.expr.derived_expr.(^ast.Constructor_Expr)
+	for_clause := constructor.args[0].derived_expr.(^ast.Constructor_For_Clause_Expr)
+	group_key := for_clause.group_by.derived_expr.(^ast.Call_Arg_List_Expr)
+	key_assignment := group_key.args[0].derived_expr.(^ast.Constructor_Named_Assignment_Expr)
+
+	testing.expect_value(t, for_clause.kind, ast.Constructor_For_Kind.For_Groups)
+	testing.expect_value(t, for_clause.variable.text, "group")
+	testing.expect_value(t, for_clause.member_variable.text, "row")
+	testing.expect_value(t, key_assignment.name.text, "ebeln")
+	testing.expect_value(t, ast.print_node(for_clause.group_by, context.allocator), "( ebeln = row-ebeln )")
+	testing.expect_value(t, len(for_clause.body), 1)
+}
+
+@(test)
 value_constructor_allows_component_path_assignment_names :: proc(t: ^testing.T) {
 	source := `lt_decode = VALUE #( ( obj_code-code_char = |{ '(00)' }{ is_resp_stru-kod } | code_type = 'C' ) ).`
 	parsed := parse(source, "value_component_path.abap", context.allocator)

@@ -124,6 +124,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.then_expr)
 		walk(next, n.condition)
 		walk(next, n.source)
+		walk(next, n.group_by)
 		walk(next, n.where_clause)
 		walk_expr_list(next, n.body)
 	case ^Constructor_Where_Clause_Expr:

@@ -1244,6 +1244,9 @@ parse_constructor_for_clause_expr :: proc(
 	body_start: int,
 ) -> ^ast.Expr {
 	start := expect_keyword(p, "FOR")
+	if at_keyword(p, "GROUPS") {
+		return parse_constructor_for_groups_clause_expr(p, body_kind, body_start, start)
+	}
 	name := expect_token(p, .Ident)
 	if name.kind != .Ident {
 		return nil
@@ -1291,6 +1294,64 @@ parse_constructor_for_clause_expr :: proc(
 	parse_constructor_body_sequence(p, body_kind, body_start, &expr.body)
 	expr.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 	return expr
+}
+
+parse_constructor_for_groups_clause_expr :: proc(
+	p: ^Parser,
+	body_kind: Constructor_Body_Kind,
+	body_start: int,
+	start: Token,
+) -> ^ast.Expr {
+	expect_keyword(p, "GROUPS")
+	group := expect_token(p, .Ident)
+	if group.kind != .Ident {
+		return nil
+	}
+	group.range = parser_token_name_range(p, group)
+	expr := ast.new(ast.Constructor_For_Clause_Expr, start.range, p.allocator)
+	expr.kind = .For_Groups
+	expr.variable = parser_ast_raw_name_token(p, group)
+	expr.body = make([dynamic]^ast.Expr, 0, 2, p.allocator)
+
+	if !allow_keyword(p, "OF") {
+		error_current(p, "syntax error: expected keyword")
+		return nil
+	}
+	member := expect_token(p, .Ident)
+	if member.kind != .Ident {
+		return nil
+	}
+	member.range = parser_token_name_range(p, member)
+	expr.member_variable = parser_ast_raw_name_token(p, member)
+
+	if !allow_keyword(p, "IN") {
+		error_current(p, "syntax error: expected keyword")
+		return nil
+	}
+	expr.source = parse_expr(p)
+	if expr.source == nil {
+		return nil
+	}
+
+	if !allow_keyword(p, "GROUP") || !allow_keyword(p, "BY") {
+		error_current(p, "syntax error: expected GROUP BY in FOR GROUPS clause")
+		return nil
+	}
+	expr.group_by = parse_constructor_group_by_expr(p, body_start)
+	if expr.group_by == nil {
+		return nil
+	}
+
+	parse_constructor_body_sequence(p, body_kind, body_start, &expr.body)
+	expr.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
+	return expr
+}
+
+parse_constructor_group_by_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
+	if current_token(p).kind == .LParen {
+		return parse_constructor_row_expr(p, .Value)
+	}
+	return parse_constructor_value_expr(p, body_start)
 }
 
 parse_constructor_where_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {

@@ -948,7 +948,9 @@ checker_constructor_arg_has_for_in_clause :: proc(arg: ^ast.Expr) -> bool {
 	}
 	#partial switch n in arg.derived_expr {
 	case ^ast.Constructor_For_Clause_Expr:
-		return n.kind == .For_In || checker_constructor_body_has_for_in_clause(n.body[:])
+		return n.kind == .For_In ||
+		       n.kind == .For_Groups ||
+		       checker_constructor_body_has_for_in_clause(n.body[:])
 	case ^ast.Let_Expr:
 		return checker_constructor_body_has_for_in_clause(n.body[:])
 	case ^ast.Call_Arg_List_Expr:
@@ -2222,6 +2224,8 @@ checker_check_constructor_for_clause_expr :: proc(
 	switch expr.kind {
 	case .For_In:
 		result_type = checker_check_constructor_for_in_clause(ctx, node, expr)
+	case .For_Groups:
+		result_type = checker_check_constructor_for_groups_clause(ctx, node, expr)
 	case .For_Then_Until,
 	     .For_Then_While:
 		result_type = checker_check_constructor_for_then_clause(ctx, node, expr)
@@ -2321,12 +2325,84 @@ checker_check_constructor_for_in_clause :: proc(
 	return row_type
 }
 
+checker_check_constructor_for_groups_clause :: proc(
+	ctx: ^Checker_Context,
+	node: ^ast.Node,
+	expr: ^ast.Constructor_For_Clause_Expr,
+) -> ^Type {
+	if expr.init != nil || expr.then_expr != nil || expr.condition != nil || expr.where_clause != nil || expr.group_source.text != "" {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FOR GROUPS cannot have THEN, UNTIL, WHILE, WHERE, or IN GROUP operands",
+		)
+	}
+	row_type := project_type_unknown(ctx.project)
+	source_table_type := project_type_unknown(ctx.project)
+	if expr.source == nil {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FOR GROUPS requires a source table",
+		)
+	} else {
+		source := checker_check_expr(ctx, expr.source)
+		if !checker_check_unresolved_variable_operand(ctx, expr.source, source) && !checker_type_is_unknown(source.type) {
+			if checker_type_is_table_like(ctx, source.type) {
+				source_table_type = source.type
+				row_type = checker_type_row(ctx, source.type)
+			} else {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					expr.source.range,
+					"FOR GROUPS source is not an internal table",
+				)
+			}
+		}
+	}
+	if expr.member_variable.text != "" {
+		parent_scope := ctx.scope.parent if ctx.scope != nil && ctx.scope.parent != nil else ctx.scope
+		checker_record_constructor_for_iterator_binding(
+			ctx,
+			parent_scope,
+			expr.member_variable.text,
+			expr.member_variable.range,
+			source_table_type,
+		)
+		checker_collect_inferred_expr_decl(
+			ctx,
+			expr.member_variable.text,
+			.Variable,
+			expr.member_variable.range,
+			node,
+			row_type,
+		)
+	}
+	group_by := checker_check_expr(ctx, expr.group_by)
+	group_type := group_by.type if expr.group_by != nil else project_type_unknown(ctx.project)
+	if expr.group_by == nil {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			expr.range,
+			"FOR GROUPS requires a GROUP BY expression",
+		)
+	}
+	if expr.variable.text != "" {
+		checker_collect_inferred_expr_decl(ctx, expr.variable.text, .Variable, expr.variable.range, node, group_type)
+	}
+	return group_type
+}
+
 checker_check_constructor_for_then_clause :: proc(
 	ctx: ^Checker_Context,
 	node: ^ast.Node,
 	expr: ^ast.Constructor_For_Clause_Expr,
 ) -> ^Type {
-	if expr.source != nil || expr.group_source.text != "" || expr.where_clause != nil {
+	if expr.source != nil || expr.group_source.text != "" || expr.group_by != nil || expr.where_clause != nil || expr.member_variable.text != "" {
 		checker_add_diagnostic(
 			ctx,
 			.Invalid_Syntax_Form,

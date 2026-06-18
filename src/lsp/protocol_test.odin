@@ -1735,6 +1735,16 @@ lsp_completion_expression_templates_expand_from_keyword_prefixes :: proc(t: ^tes
 		},
 		{
 			prefix = "fo",
+			label = "FOR GROUPS ... GROUP BY",
+			insert_text = "FOR GROUPS ${1:group} OF ${2:row} IN ${3:itab} GROUP BY ${2:row}-${4:field} ( ${1:group} )$0",
+		},
+		{
+			prefix = "fo",
+			label = "FOR GROUPS ... GROUP BY ( ... )",
+			insert_text = "FOR GROUPS ${1:group} OF ${2:row} IN ${3:itab} GROUP BY ( ${4:key} = ${2:row}-${5:field} ) ( ${1:group}-${4:key} )$0",
+		},
+		{
+			prefix = "fo",
 			label = "FOR ... THEN ... UNTIL",
 			insert_text = "FOR ${1:index} = ${2:1} THEN ${1} + ${3:1} UNTIL ${1:index} > ${4:limit} ( ${1:index} )$0",
 		},
@@ -4010,6 +4020,13 @@ lsp_completion_case_and_expression_templates_sort_after_matching_symbols :: proc
 			template_label = "FOR ... IN",
 			symbol_sort = "1:for_candidate",
 			template_sort = "2:for ... in",
+		},
+		{
+			source = "DATA for_candidate TYPE i.\nWRITE fo",
+			symbol_label = "for_candidate",
+			template_label = "FOR GROUPS ... GROUP BY",
+			symbol_sort = "1:for_candidate",
+			template_sort = "2:for groups ... group by",
 		},
 		{
 			source = "DATA new_candidate TYPE i.\nWRITE ne",
