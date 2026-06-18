@@ -565,6 +565,9 @@ const STATEMENT_TAIL_KEYWORDS = [
   "TESTING",
   "VALUE",
   "WAIT",
+  "COLOR",
+  "COL_POSITIVE",
+  "RESET",
 ];
 
 const SUBMIT_TAIL_KEYWORDS = [

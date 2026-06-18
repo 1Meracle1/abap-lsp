@@ -2113,3 +2113,26 @@ CONCATENATE lv_ndc(5) lv_ndc
     (keyword)
     (keyword)
     (string)))
+
+==================
+Format additions highlight as keywords
+==================
+
+FORMAT COLOR 6.
+FORMAT COLOR COL_POSITIVE.
+FORMAT RESET.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)
+    (number))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword))
+  (simple_statement
+    (keyword)
+    (keyword)))
