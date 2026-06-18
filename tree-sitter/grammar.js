@@ -539,6 +539,12 @@ const STATEMENT_TAIL_KEYWORDS = [
   "WAIT",
 ];
 
+const SUBMIT_TAIL_KEYWORDS = [
+  ...STATEMENT_TAIL_KEYWORDS,
+  "USER",
+  "WITH",
+];
+
 const DECLARATION_FIELD_NAME_KEYWORDS = [
   "FIELD",
   "ORDER",
@@ -1424,7 +1430,7 @@ module.exports = grammar({
 
     _submit_tail_token: ($) =>
       choice(
-        keywordChoice($, STATEMENT_TAIL_KEYWORDS),
+        keywordChoice($, SUBMIT_TAIL_KEYWORDS),
         $.qualified_name,
         $._literal,
         keywordChoice($, EXPRESSION_KEYWORDS),
