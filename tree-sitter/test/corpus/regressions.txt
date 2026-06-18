@@ -30,6 +30,30 @@ SORT mt_trn BY docnum creation_time ASCENDING.
     (keyword)))
 
 ==================
+String normalization additions highlight as keywords
+==================
+
+CONDENSE lv_po_number NO-GAPS.
+SHIFT lv_po_number LEFT DELETING LEADING '0'.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword))
+  (simple_statement
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (keyword)
+    (string)))
+
+==================
 Inline constructor rows and bare DO
 ==================
 

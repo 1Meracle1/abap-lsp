@@ -3610,6 +3610,22 @@
                         "value": 2,
                         "content": {
                           "type": "PATTERN",
+                          "value": "[dD][eE][lL][eE][tT][iI][nN][gG]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "keyword"
+                  },
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
                           "value": "[dD][eE][sS][cC][eE][nN][dD][iI][nN][gG]"
                         }
                       }
@@ -3770,6 +3786,22 @@
                         "value": 2,
                         "content": {
                           "type": "PATTERN",
+                          "value": "[lL][eE][aA][dD][iI][nN][gG]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "keyword"
+                  },
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
                           "value": "[mM][eE][sS][sS][aA][gG][eE]"
                         }
                       }
@@ -3787,6 +3819,22 @@
                         "content": {
                           "type": "PATTERN",
                           "value": "[nN][eE][xX][tT]"
+                        }
+                      }
+                    },
+                    "named": true,
+                    "value": "keyword"
+                  },
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "TOKEN",
+                      "content": {
+                        "type": "PREC",
+                        "value": 2,
+                        "content": {
+                          "type": "PATTERN",
+                          "value": "[nN][oO]-[gG][aA][pP][sS]"
                         }
                       }
                     },
@@ -17505,6 +17553,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[dD][eE][lL][eE][tT][iI][nN][gG]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[dD][eE][sS][cC][eE][nN][dD][iI][nN][gG]"
                   }
                 }
@@ -17665,6 +17729,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[lL][eE][aA][dD][iI][nN][gG]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[mM][eE][sS][sS][aA][gG][eE]"
                   }
                 }
@@ -17682,6 +17762,22 @@
                   "content": {
                     "type": "PATTERN",
                     "value": "[nN][eE][xX][tT]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[nN][oO]-[gG][aA][pP][sS]"
                   }
                 }
               },
@@ -24379,6 +24475,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[dD][eE][lL][eE][tT][iI][nN][gG]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[dD][eE][sS][cC][eE][nN][dD][iI][nN][gG]"
                   }
                 }
@@ -24539,6 +24651,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[lL][eE][aA][dD][iI][nN][gG]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[mM][eE][sS][sS][aA][gG][eE]"
                   }
                 }
@@ -24556,6 +24684,22 @@
                   "content": {
                     "type": "PATTERN",
                     "value": "[nN][eE][xX][tT]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[nN][oO]-[gG][aA][pP][sS]"
                   }
                 }
               },
@@ -26005,6 +26149,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[dD][eE][lL][eE][tT][iI][nN][gG]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[dD][eE][sS][cC][eE][nN][dD][iI][nN][gG]"
                   }
                 }
@@ -26165,6 +26325,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[lL][eE][aA][dD][iI][nN][gG]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[mM][eE][sS][sS][aA][gG][eE]"
                   }
                 }
@@ -26182,6 +26358,22 @@
                   "content": {
                     "type": "PATTERN",
                     "value": "[nN][eE][xX][tT]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[nN][oO]-[gG][aA][pP][sS]"
                   }
                 }
               },
@@ -33967,6 +34159,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[dD][eE][lL][eE][tT][iI][nN][gG]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[dD][eE][sS][cC][eE][nN][dD][iI][nN][gG]"
                   }
                 }
@@ -34127,6 +34335,22 @@
                   "value": 2,
                   "content": {
                     "type": "PATTERN",
+                    "value": "[lL][eE][aA][dD][iI][nN][gG]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
                     "value": "[mM][eE][sS][sS][aA][gG][eE]"
                   }
                 }
@@ -34144,6 +34368,22 @@
                   "content": {
                     "type": "PATTERN",
                     "value": "[nN][eE][xX][tT]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[nN][oO]-[gG][aA][pP][sS]"
                   }
                 }
               },
