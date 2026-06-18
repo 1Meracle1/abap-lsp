@@ -47,6 +47,13 @@ Checker_Scalar_Group :: enum {
 	Generic_Simple,
 }
 
+Checker_Move_Corresponding_Operand_Kind :: enum {
+	Unknown,
+	Structure,
+	Table,
+	Invalid,
+}
+
 Checker_Table_Component_Segment :: struct {
 	name:  string,
 	range: Range,
@@ -149,10 +156,7 @@ checker_check_stmt :: proc(
 			checker_check_assignment_stmt(ctx, entry.target, entry.source)
 		}
 	case ^ast.Move_Corresponding_Stmt:
-		for entry in n.entries {
-			checker_check_expr(ctx, entry.source)
-			checker_check_expr(ctx, entry.target, .Value, true)
-		}
+		checker_check_move_corresponding_stmt(ctx, n)
 	case ^ast.Add_Stmt:
 		for entry in n.entries {
 			checker_check_expr(ctx, entry.source)
@@ -1007,6 +1011,114 @@ checker_check_expr_list :: proc(
 ) {
 	for expr in exprs {
 		checker_check_expr(ctx, expr, namespace, lhs)
+	}
+}
+
+checker_check_move_corresponding_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Move_Corresponding_Stmt) {
+	for entry in stmt.entries {
+		checker_check_move_corresponding_entry(ctx, entry)
+	}
+}
+
+checker_check_move_corresponding_entry :: proc(ctx: ^Checker_Context, entry: ast.Move_Entry_Clause) {
+	diagnose_unresolved := checker_should_diagnose_unresolved_value_operand(ctx)
+
+	source := checker_check_expr(ctx, entry.source)
+	if diagnose_unresolved {
+		checker_check_unresolved_variable_operand(ctx, entry.source, source)
+	}
+
+	target := checker_check_expr(ctx, entry.target, .Value, true)
+	if diagnose_unresolved {
+		checker_check_unresolved_variable_operand(ctx, entry.target, target)
+	}
+
+	source_structure, source_kind := checker_move_corresponding_structure(ctx, entry.source, source, true)
+	target_structure, target_kind := checker_move_corresponding_structure(ctx, entry.target, target, false)
+	if source_structure == nil || target_structure == nil {
+		return
+	}
+	if source_kind != target_kind {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(entry.target),
+			"MOVE-CORRESPONDING source and target must both be structures or both be internal tables",
+		)
+		return
+	}
+	checker_check_move_corresponding_fields(ctx, source_structure, target_structure, checker_expr_range(entry.source))
+}
+
+checker_move_corresponding_structure :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	operand: Operand,
+	source: bool,
+) -> (
+	^Structure,
+	Checker_Move_Corresponding_Operand_Kind,
+) {
+	if checker_type_is_unknown(operand.type) {
+		return nil, .Unknown
+	}
+	if checker_type_is_table_like(ctx, operand.type) {
+		row_type := checker_type_row(ctx, operand.type)
+		if checker_type_is_unknown(row_type) {
+			return nil, .Unknown
+		}
+		if structure := checker_type_structure(row_type); structure != nil {
+			return structure, .Table
+		}
+		checker_add_move_corresponding_operand_diagnostic(ctx, expr, source, true)
+		return nil, .Invalid
+	}
+	if structure := checker_type_structure(operand.type); structure != nil {
+		return structure, .Structure
+	}
+	checker_add_move_corresponding_operand_diagnostic(ctx, expr, source, false)
+	return nil, .Invalid
+}
+
+checker_add_move_corresponding_operand_diagnostic :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	source: bool,
+	table_row: bool,
+) {
+	message := "MOVE-CORRESPONDING source is not a structure or internal table"
+	if source {
+		if table_row {
+			message = "MOVE-CORRESPONDING source row is not a structure"
+		}
+	} else {
+		message = "MOVE-CORRESPONDING target is not a structure or internal table"
+		if table_row {
+			message = "MOVE-CORRESPONDING target row is not a structure"
+		}
+	}
+	checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(expr), message)
+}
+
+checker_check_move_corresponding_fields :: proc(
+	ctx: ^Checker_Context,
+	source_structure: ^Structure,
+	target_structure: ^Structure,
+	range: Range,
+) {
+	for target_field in target_structure.fields {
+		if target_field == nil {
+			continue
+		}
+		source_field, ok := checker_lookup_structure_field(source_structure, target_field.name)
+		if !ok || source_field == nil {
+			continue
+		}
+		checker_check_entity_for_operand(ctx, source_field)
+		checker_check_entity_for_operand(ctx, target_field)
+		source_type := source_field.type if source_field.type != nil else project_type_unknown(ctx.project)
+		target_type := target_field.type if target_field.type != nil else project_type_unknown(ctx.project)
+		checker_check_assignment_compatibility(ctx, source_type, target_type, range)
 	}
 }
 

@@ -2676,6 +2676,64 @@ struct1 = struct2 = struct.`
 }
 
 @(test)
+root_semantic_stmt_checker_accepts_move_corresponding_structures :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_mseg_tmp,
+         kdauf TYPE string,
+         matnr TYPE string,
+       END OF ty_mseg_tmp.
+TYPES: BEGIN OF ty_output,
+         kdauf TYPE string,
+         maktx TYPE string,
+       END OF ty_output.
+DATA ls_mseg_tmp TYPE ty_mseg_tmp.
+DATA gs_output TYPE ty_output.
+
+MOVE-CORRESPONDING ls_mseg_tmp TO gs_output.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_move_corresponding.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	ls_mseg_tmp := checker_test_lookup(t, &project, file.root_scope, .Value, "ls_mseg_tmp", .Variable)
+	gs_output := checker_test_lookup(t, &project, file.root_scope, .Value, "gs_output", .Variable)
+	testing.expect(t, ls_mseg_tmp != nil && .Used in ls_mseg_tmp.flags)
+	testing.expect(t, gs_output != nil && .Used in gs_output.flags)
+}
+
+@(test)
+root_semantic_stmt_checker_validates_move_corresponding_matching_components :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_mseg_tmp,
+         kdauf TYPE string,
+         budat TYPE d,
+         matnr TYPE string,
+       END OF ty_mseg_tmp.
+TYPES: BEGIN OF ty_output,
+         kdauf TYPE string,
+         budat TYPE t,
+         maktx TYPE string,
+       END OF ty_output.
+DATA ls_mseg_tmp TYPE ty_mseg_tmp.
+DATA gs_output TYPE ty_output.
+
+MOVE-CORRESPONDING ls_mseg_tmp TO gs_output.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_move_corresponding_mismatch.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 1)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Incompatible_Assignment_Type {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "ls_mseg_tmp")
+	}
+}
+
+@(test)
 root_semantic_stmt_checker_reports_unresolved_assignment_operands :: proc(t: ^testing.T) {
 	source := `FORM run.
 DATA lv_text TYPE string.
