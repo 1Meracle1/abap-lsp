@@ -3672,15 +3672,189 @@ checker_check_selection_screen_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Se
 }
 
 checker_check_dataset_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Dataset_Stmt) {
-	checker_check_expr(ctx, stmt.dataset)
-	checker_check_expr(ctx, stmt.source)
-	checker_check_expr(ctx, stmt.target, .Value, stmt.kind == .Read || stmt.kind == .Get)
-	checker_check_expr(ctx, stmt.position)
-	checker_check_expr(ctx, stmt.message, .Value, true)
-	checker_check_expr(ctx, stmt.maximum_length)
-	checker_check_expr(ctx, stmt.actual_length, .Value, true)
-	checker_check_expr(ctx, stmt.length)
-	checker_check_expr(ctx, stmt.attributes, .Value, stmt.kind == .Get)
+	checker_check_dataset_filename(ctx, stmt.dataset)
+
+	#partial switch stmt.kind {
+	case .Open:
+		checker_check_dataset_integer_value(ctx, stmt.position, "OPEN DATASET POSITION operand is not integer-compatible")
+		checker_check_dataset_character_value(ctx, stmt.code_page, "OPEN DATASET CODE PAGE operand is not character-like")
+		checker_check_dataset_character_value(ctx, stmt.file_type, "OPEN DATASET TYPE operand is not character-like")
+		checker_check_dataset_character_value(ctx, stmt.filter, "OPEN DATASET FILTER operand is not character-like")
+		checker_check_dataset_character_value(ctx, stmt.replacement, "OPEN DATASET REPLACEMENT CHARACTER operand is not character-like")
+		checker_check_dataset_character_target(
+			ctx,
+			stmt.message,
+			nil,
+			"OPEN DATASET MESSAGE target is not writable",
+			"OPEN DATASET MESSAGE target is not character-like",
+		)
+	case .Read:
+		checker_check_dataset_text_or_byte_target(
+			ctx,
+			stmt.target,
+			"READ DATASET INTO target is not writable",
+			"READ DATASET INTO target is not character-like or byte-like",
+		)
+		checker_check_dataset_integer_value(ctx, stmt.maximum_length, "READ DATASET MAXIMUM LENGTH operand is not integer-compatible")
+		checker_check_dataset_integer_target(
+			ctx,
+			stmt.actual_length,
+			"READ DATASET ACTUAL LENGTH target is not writable",
+			"READ DATASET ACTUAL LENGTH target is not integer-compatible",
+		)
+		checker_check_dataset_integer_target(
+			ctx,
+			stmt.length,
+			"READ DATASET LENGTH target is not writable",
+			"READ DATASET LENGTH target is not integer-compatible",
+		)
+	case .Close:
+	case .Transfer:
+		checker_check_dataset_text_or_byte_value(ctx, stmt.source, "TRANSFER source is not character-like or byte-like")
+		checker_check_dataset_integer_value(ctx, stmt.length, "TRANSFER LENGTH operand is not integer-compatible")
+	case .Delete:
+	case .Get:
+		checker_check_dataset_integer_target(
+			ctx,
+			stmt.position,
+			"GET DATASET POSITION target is not writable",
+			"GET DATASET POSITION target is not integer-compatible",
+		)
+		checker_check_dataset_character_target(
+			ctx,
+			stmt.attributes,
+			nil,
+			"GET DATASET ATTRIBUTES target is not writable",
+			"GET DATASET ATTRIBUTES target is not character-like",
+		)
+	case .Set:
+		checker_check_dataset_integer_value(ctx, stmt.position, "SET DATASET POSITION operand is not integer-compatible")
+		checker_check_dataset_character_value(ctx, stmt.attributes, "SET DATASET ATTRIBUTES operand is not character-like")
+	case .Truncate:
+		checker_check_dataset_integer_value(ctx, stmt.position, "TRUNCATE DATASET POSITION operand is not integer-compatible")
+	}
+}
+
+checker_check_dataset_filename :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) -> Operand {
+	return checker_check_dataset_character_value(ctx, expr, "DATASET filename is not character-like")
+}
+
+checker_check_dataset_value :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	type_hint: ^Type = nil,
+) -> Operand {
+	if expr == nil {
+		return checker_invalid_operand()
+	}
+	local := ctx^
+	local.type_hint = type_hint
+	local.type_hint_expr = expr
+	local.diagnose_unresolved_value_refs = true
+	return checker_check_expr(&local, expr)
+}
+
+checker_check_dataset_target :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	type_hint: ^Type,
+	not_writable_message: string,
+) -> Operand {
+	if expr == nil {
+		return checker_invalid_operand()
+	}
+	local := ctx^
+	local.type_hint = type_hint
+	local.type_hint_expr = expr
+	local.diagnose_unresolved_value_refs = true
+	target := checker_check_expr(&local, expr, .Value, true)
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return target
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(expr), not_writable_message)
+	}
+	return target
+}
+
+checker_check_dataset_character_value :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, message: string) -> Operand {
+	operand := checker_check_dataset_value(ctx, expr)
+	if checker_check_unresolved_variable_operand(ctx, expr, operand) || checker_type_is_unknown(operand.type) {
+		return operand
+	}
+	if ok, known := checker_character_like_type_supported(ctx, operand.type); known && !ok {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(expr), message)
+	}
+	return operand
+}
+
+checker_check_dataset_text_or_byte_value :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, message: string) -> Operand {
+	operand := checker_check_dataset_value(ctx, expr)
+	if checker_check_unresolved_variable_operand(ctx, expr, operand) || checker_type_is_unknown(operand.type) {
+		return operand
+	}
+	if ok, known := checker_text_or_byte_type_supported(ctx, operand.type); known && !ok {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(expr), message)
+	}
+	return operand
+}
+
+checker_check_dataset_character_target :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	type_hint: ^Type,
+	not_writable_message: string,
+	not_character_message: string,
+) -> Operand {
+	target := checker_check_dataset_target(ctx, expr, type_hint, not_writable_message)
+	if checker_type_is_unknown(target.type) {
+		return target
+	}
+	if ok, known := checker_character_like_type_supported(ctx, target.type); known && !ok {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(expr), not_character_message)
+	}
+	return target
+}
+
+checker_check_dataset_text_or_byte_target :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	not_writable_message: string,
+	not_text_or_byte_message: string,
+) -> Operand {
+	target := checker_check_dataset_target(ctx, expr, nil, not_writable_message)
+	if checker_type_is_unknown(target.type) {
+		return target
+	}
+	if ok, known := checker_text_or_byte_type_supported(ctx, target.type); known && !ok {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(expr), not_text_or_byte_message)
+	}
+	return target
+}
+
+checker_check_dataset_integer_value :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, message: string) -> Operand {
+	int_type := checker_builtin_type_from_name(ctx.checker, "i")
+	operand := checker_check_dataset_value(ctx, expr, int_type)
+	if checker_check_unresolved_variable_operand(ctx, expr, operand) {
+		return operand
+	}
+	checker_check_integer_compatible_type(ctx, operand.type, checker_expr_range(expr), message)
+	return operand
+}
+
+checker_check_dataset_integer_target :: proc(
+	ctx: ^Checker_Context,
+	expr: ^ast.Expr,
+	not_writable_message: string,
+	not_integer_message: string,
+) -> Operand {
+	int_type := checker_builtin_type_from_name(ctx.checker, "i")
+	target := checker_check_dataset_target(ctx, expr, int_type, not_writable_message)
+	if checker_check_unresolved_variable_operand(ctx, expr, target) {
+		return target
+	}
+	checker_check_integer_compatible_type(ctx, target.type, checker_expr_range(expr), not_integer_message)
+	return target
 }
 
 checker_check_select_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Select_Stmt) {

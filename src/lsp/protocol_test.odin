@@ -1812,6 +1812,26 @@ lsp_completion_common_statement_templates_expand_from_keyword_prefixes :: proc(t
 			insert_text = "MESSAGE ${1:'Text'} TYPE ${2:'S'}.$0",
 		},
 		{
+			prefix = "op",
+			label = "OPEN DATASET ... FOR INPUT",
+			insert_text = "OPEN DATASET ${1:lv_filename} FOR INPUT IN TEXT MODE ENCODING DEFAULT\n             MESSAGE ${2:lv_message} IGNORING CONVERSION ERRORS.$0",
+		},
+		{
+			prefix = "op",
+			label = "OPEN DATASET ... READ DATASET ... CLOSE DATASET",
+			insert_text = "OPEN DATASET ${1:lv_filename} FOR INPUT IN TEXT MODE ENCODING DEFAULT\n             MESSAGE ${2:lv_message} IGNORING CONVERSION ERRORS.\n\nDO.\n  READ DATASET ${1:lv_filename} INTO ${3:lv_line}.\n  IF sy-subrc <> 0.\n    EXIT.\n  ENDIF.\n\n  $0\nENDDO.\n\nCLOSE DATASET ${1:lv_filename}.",
+		},
+		{
+			prefix = "re",
+			label = "READ DATASET ... INTO",
+			insert_text = "READ DATASET ${1:lv_filename} INTO ${2:lv_line}.$0",
+		},
+		{
+			prefix = "cl",
+			label = "CLOSE DATASET ...",
+			insert_text = "CLOSE DATASET ${1:lv_filename}.$0",
+		},
+		{
 			prefix = "de",
 			label = "DESCRIBE TABLE ... LINES",
 			insert_text = "DESCRIBE TABLE ${1:itab} LINES ${2:lv_lines}.$0",

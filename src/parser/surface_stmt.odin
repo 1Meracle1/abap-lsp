@@ -3769,58 +3769,113 @@ delete_comparing_clause :: proc(expr: ^ast.Expr) -> ast.Delete_Comparing_Clause 
 	return clause
 }
 
+DATASET_OPEN_CLAUSE_KEYWORDS :: []string {
+	"FOR",
+	"IN",
+	"ENCODING",
+	"AT",
+	"TYPE",
+	"FILTER",
+	"MESSAGE",
+	"IGNORING",
+	"REPLACEMENT",
+	"WITH",
+	"SKIPPING",
+	"CODE",
+	"BIG",
+	"LITTLE",
+}
+
+DATASET_POSITION_CLAUSE_KEYWORDS :: []string {
+	"ATTRIBUTES",
+	"MESSAGE",
+	"TYPE",
+	"FILTER",
+	"IGNORING",
+	"REPLACEMENT",
+	"WITH",
+	"SKIPPING",
+	"CODE",
+	"BIG",
+	"LITTLE",
+}
+
+DATASET_READ_CLAUSE_KEYWORDS :: []string {
+	"INTO",
+	"MAXIMUM",
+	"ACTUAL",
+	"LENGTH",
+}
+
+DATASET_TRANSFER_CLAUSE_KEYWORDS :: []string {
+	"LENGTH",
+	"NO",
+}
+
 parse_dataset_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := current_token(p)
 	body_start := p.index
 	stmt := ast.new(ast.Dataset_Stmt, start.range, p.allocator)
 	if allow_keyword(p, "TRANSFER") {
 		stmt.kind = .Transfer
-		stmt.source = data_expr(p, body_start, []string{"TO"})
-		allow_keyword(p, "TO")
-		stmt.dataset = data_expr(p, body_start, []string{"LENGTH", "NO"})
+		stmt.source = dataset_required_expr(p, body_start, []string{"TO"}, "syntax error: expected source after TRANSFER")
+		if dataset_expect_keyword(p, "TO", "syntax error: expected TO after TRANSFER source") {
+			stmt.dataset = dataset_required_expr(
+				p,
+				body_start,
+				DATASET_TRANSFER_CLAUSE_KEYWORDS,
+				"syntax error: expected dataset name after TRANSFER TO",
+			)
+		}
 	} else if allow_keyword(p, "OPEN") {
 		stmt.kind = .Open
-		allow_keyword(p, "DATASET")
-		stmt.dataset = data_expr(
+		dataset_expect_keyword(p, "DATASET", "syntax error: expected DATASET after OPEN")
+		stmt.dataset = dataset_required_expr(
 			p,
 			body_start,
-			[]string {
-				"FOR",
-				"IN",
-				"AT",
-				"TYPE",
-				"FILTER",
-				"MESSAGE",
-				"IGNORING",
-				"REPLACEMENT",
-				"WITH",
-			},
+			DATASET_OPEN_CLAUSE_KEYWORDS,
+			"syntax error: expected dataset name after OPEN DATASET",
 		)
 	} else if allow_keyword(p, "READ") {
 		stmt.kind = .Read
-		allow_keyword(p, "DATASET")
-		stmt.dataset = data_expr(p, body_start, []string{"INTO", "MAXIMUM", "ACTUAL", "LENGTH"})
+		dataset_expect_keyword(p, "DATASET", "syntax error: expected DATASET after READ")
+		stmt.dataset = dataset_required_expr(
+			p,
+			body_start,
+			DATASET_READ_CLAUSE_KEYWORDS,
+			"syntax error: expected dataset name after READ DATASET",
+		)
 	} else if allow_keyword(p, "CLOSE") {
 		stmt.kind = .Close
-		allow_keyword(p, "DATASET")
-		stmt.dataset = data_expr(p, body_start, []string{})
+		dataset_expect_keyword(p, "DATASET", "syntax error: expected DATASET after CLOSE")
+		stmt.dataset = dataset_required_expr(p, body_start, []string{}, "syntax error: expected dataset name after CLOSE DATASET")
 	} else if allow_keyword(p, "DELETE") {
 		stmt.kind = .Delete
-		allow_keyword(p, "DATASET")
-		stmt.dataset = data_expr(p, body_start, []string{})
+		dataset_expect_keyword(p, "DATASET", "syntax error: expected DATASET after DELETE")
+		stmt.dataset = dataset_required_expr(p, body_start, []string{}, "syntax error: expected dataset name after DELETE DATASET")
 	} else if allow_keyword(p, "GET") {
 		stmt.kind = .Get
-		allow_keyword(p, "DATASET")
-		stmt.dataset = data_expr(p, body_start, []string{"POSITION", "ATTRIBUTES"})
+		dataset_expect_keyword(p, "DATASET", "syntax error: expected DATASET after GET")
+		stmt.dataset = dataset_required_expr(
+			p,
+			body_start,
+			[]string{"POSITION", "ATTRIBUTES"},
+			"syntax error: expected dataset name after GET DATASET",
+		)
 	} else if allow_keyword(p, "SET") {
 		stmt.kind = .Set
-		allow_keyword(p, "DATASET")
-		stmt.dataset = data_expr(p, body_start, []string{"POSITION", "ATTRIBUTES"})
+		dataset_expect_keyword(p, "DATASET", "syntax error: expected DATASET after SET")
+		stmt.dataset = dataset_required_expr(
+			p,
+			body_start,
+			[]string{"POSITION", "ATTRIBUTES"},
+			"syntax error: expected dataset name after SET DATASET",
+		)
 	} else {
 		stmt.kind = .Truncate
 		allow_keyword(p, "TRUNCATE")
-		allow_keyword(p, "DATASET")
-		stmt.dataset = data_expr(p, body_start, []string{"AT"})
+		dataset_expect_keyword(p, "DATASET", "syntax error: expected DATASET after TRUNCATE")
+		stmt.dataset = dataset_required_expr(p, body_start, []string{"AT"}, "syntax error: expected dataset name after TRUNCATE DATASET")
 	}
 	parse_dataset_tail(p, body_start, stmt)
 	stmt.range = data_stmt_range(p, start)
@@ -3828,83 +3883,360 @@ parse_dataset_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 }
 
 parse_dataset_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Dataset_Stmt) {
-	for !data_stmt_done(p, body_start) {
+	for !dataset_stmt_done(p, body_start) {
 		if allow_keyword(p, "FOR") {
-			if allow_keyword(p, "INPUT") {
-				stmt.access = .Input
-			} else if allow_keyword(p, "OUTPUT") {
-				stmt.access = .Output
-			} else if allow_keyword(p, "APPENDING") {
-				stmt.access = .Append
-			} else if allow_keyword(p, "UPDATE") {
-				stmt.access = .Update
-			}
+			parse_dataset_access(p, stmt)
 			continue
 		}
 		if allow_keyword(p, "IN") {
-			if allow_keyword(p, "TEXT") {
-				stmt.text_mode = true
-				allow_keyword(p, "MODE")
-			} else if allow_keyword(p, "BINARY") {
-				stmt.binary_mode = true
-				allow_keyword(p, "MODE")
-			}
+			parse_dataset_mode(p, stmt)
 			continue
 		}
 		if allow_keyword(p, "ENCODING") {
-			tok := current_token(p)
-			if tok.kind == .Ident || tok.kind == .String {
-				tok = bump_token(p)
-				stmt.encoding = parser_clone_token_text(p, tok) if tok.kind == .String else parser_intern_token_name(p, tok)
+			stmt.encoding = parse_dataset_token_value(p, "syntax error: expected value after OPEN DATASET ENCODING")
+			continue
+		}
+		if allow_keyword(p, "CODE") {
+			if dataset_expect_keyword(p, "PAGE", "syntax error: expected PAGE after OPEN DATASET CODE") {
+				stmt.code_page = dataset_required_expr(
+					p,
+					body_start,
+					DATASET_OPEN_CLAUSE_KEYWORDS,
+					"syntax error: expected expression after OPEN DATASET CODE PAGE",
+				)
+			}
+			continue
+		}
+		if allow_keyword(p, "BIG") {
+			if dataset_expect_keyword(p, "ENDIAN", "syntax error: expected ENDIAN after OPEN DATASET BIG") {
+				stmt.endian = .Big
+			}
+			continue
+		}
+		if allow_keyword(p, "LITTLE") {
+			if dataset_expect_keyword(p, "ENDIAN", "syntax error: expected ENDIAN after OPEN DATASET LITTLE") {
+				stmt.endian = .Little
 			}
 			continue
 		}
 		if allow_keyword(p, "INTO") {
-			stmt.target = data_expr(p, body_start, []string{"MAXIMUM", "ACTUAL", "LENGTH"})
+			stmt.target = dataset_required_expr(
+				p,
+				body_start,
+				DATASET_READ_CLAUSE_KEYWORDS,
+				"syntax error: expected target after READ DATASET INTO",
+			)
 			continue
 		}
 		if allow_keyword(p, "MAXIMUM") {
-			allow_keyword(p, "LENGTH")
-			stmt.maximum_length = data_expr(p, body_start, []string{"ACTUAL", "LENGTH"})
+			if dataset_expect_keyword(p, "LENGTH", "syntax error: expected LENGTH after READ DATASET MAXIMUM") {
+				stmt.maximum_length = dataset_required_expr(
+					p,
+					body_start,
+					[]string{"ACTUAL", "LENGTH"},
+					"syntax error: expected expression after READ DATASET MAXIMUM LENGTH",
+				)
+			}
 			continue
 		}
 		if allow_keyword(p, "ACTUAL") {
-			allow_keyword(p, "LENGTH")
-			stmt.actual_length = data_expr(p, body_start, []string{"LENGTH"})
+			if dataset_expect_keyword(p, "LENGTH", "syntax error: expected LENGTH after READ DATASET ACTUAL") {
+				stmt.actual_length = dataset_required_expr(
+					p,
+					body_start,
+					[]string{"LENGTH"},
+					"syntax error: expected target after READ DATASET ACTUAL LENGTH",
+				)
+			}
 			continue
 		}
 		if allow_keyword(p, "LENGTH") {
-			stmt.length = data_expr(p, body_start, []string{"NO"})
+			stmt.length = dataset_required_expr(
+				p,
+				body_start,
+				[]string{"NO"},
+				"syntax error: expected target after READ DATASET LENGTH",
+			)
+			continue
+		}
+		if allow_keyword(p, "NO") {
+			if stmt.kind == .Transfer &&
+			   dataset_expect_keyword(p, "END", "syntax error: expected END after TRANSFER NO") &&
+			   dataset_expect_keyword(p, "OF", "syntax error: expected OF after TRANSFER NO END") &&
+			   dataset_expect_keyword(p, "LINE", "syntax error: expected LINE after TRANSFER NO END OF") {
+				stmt.flags += {.No_End_Of_Line}
+			}
 			continue
 		}
 		if allow_keyword(p, "AT") {
 			if allow_keyword(p, "CURRENT") {
-				stmt.at_current_position = allow_keyword(p, "POSITION")
+				if dataset_expect_keyword(p, "POSITION", "syntax error: expected POSITION after OPEN DATASET AT CURRENT") {
+					stmt.flags += {.At_Current_Position}
+				}
 			} else {
-				allow_keyword(p, "POSITION")
-				stmt.position = data_expr(p, body_start, []string{"MESSAGE"})
+				if dataset_expect_keyword(p, "POSITION", "syntax error: expected POSITION after OPEN DATASET AT") {
+					stmt.position = dataset_required_expr(
+						p,
+						body_start,
+						DATASET_POSITION_CLAUSE_KEYWORDS,
+						"syntax error: expected expression after OPEN DATASET AT POSITION",
+					)
+				}
 			}
+			continue
+		}
+		if allow_keyword(p, "TYPE") {
+			stmt.file_type = dataset_required_expr(
+				p,
+				body_start,
+				DATASET_OPEN_CLAUSE_KEYWORDS,
+				"syntax error: expected expression after OPEN DATASET TYPE",
+			)
+			continue
+		}
+		if allow_keyword(p, "FILTER") {
+			stmt.filter = dataset_required_expr(
+				p,
+				body_start,
+				DATASET_OPEN_CLAUSE_KEYWORDS,
+				"syntax error: expected expression after OPEN DATASET FILTER",
+			)
 			continue
 		}
 		if allow_keyword(p, "POSITION") {
 			if allow_keyword(p, "END") {
-				allow_keyword(p, "OF")
-				allow_keyword(p, "FILE")
+				if dataset_expect_keyword(p, "OF", "syntax error: expected OF after DATASET POSITION END") {
+					if dataset_expect_keyword(p, "FILE", "syntax error: expected FILE after DATASET POSITION END OF") {
+						if stmt.kind == .Set {
+							stmt.flags += {.Position_End_Of_File}
+						}
+					}
+				}
 			} else {
-				stmt.position = data_expr(p, body_start, []string{"ATTRIBUTES"})
+				stmt.position = dataset_required_expr(
+					p,
+					body_start,
+					DATASET_POSITION_CLAUSE_KEYWORDS,
+					"syntax error: expected expression after DATASET POSITION",
+				)
 			}
 			continue
 		}
 		if allow_keyword(p, "ATTRIBUTES") {
-			stmt.attributes = data_expr(p, body_start, []string{"POSITION"})
+			stmt.attributes = dataset_required_expr(
+				p,
+				body_start,
+				[]string{"POSITION"},
+				"syntax error: expected expression after DATASET ATTRIBUTES",
+			)
 			continue
 		}
 		if allow_keyword(p, "MESSAGE") {
-			stmt.message = data_expr(p, body_start, []string{})
+			stmt.message = dataset_required_expr(
+				p,
+				body_start,
+				DATASET_OPEN_CLAUSE_KEYWORDS,
+				"syntax error: expected target after OPEN DATASET MESSAGE",
+			)
+			continue
+		}
+		if allow_keyword(p, "IGNORING") {
+			if dataset_expect_keyword(p, "CONVERSION", "syntax error: expected CONVERSION after OPEN DATASET IGNORING") &&
+			   dataset_expect_keyword(p, "ERRORS", "syntax error: expected ERRORS after OPEN DATASET IGNORING CONVERSION") {
+				stmt.flags += {.Ignoring_Conversion_Errors}
+			}
+			continue
+		}
+		if allow_keyword(p, "REPLACEMENT") {
+			if dataset_expect_keyword(p, "CHARACTER", "syntax error: expected CHARACTER after OPEN DATASET REPLACEMENT") {
+				stmt.replacement = dataset_required_expr(
+					p,
+					body_start,
+					DATASET_OPEN_CLAUSE_KEYWORDS,
+					"syntax error: expected expression after OPEN DATASET REPLACEMENT CHARACTER",
+				)
+			}
+			continue
+		}
+		if allow_keyword(p, "WITH") {
+			if matched, complete := parse_dataset_byte_order_mark(p, "syntax error: expected MARK after OPEN DATASET WITH BYTE-ORDER"); matched {
+				if complete {
+					stmt.byte_order_mark = .With
+				}
+			} else if mode, ok := parse_dataset_linefeed_mode(p); ok {
+				if mode != .Default {
+					stmt.linefeed_mode = mode
+				}
+			} else {
+				error_current(p, "syntax error: expected BYTE-ORDER MARK or linefeed mode after OPEN DATASET WITH")
+			}
+			continue
+		}
+		if allow_keyword(p, "SKIPPING") {
+			if matched, complete := parse_dataset_byte_order_mark(p, "syntax error: expected MARK after OPEN DATASET SKIPPING BYTE-ORDER"); matched {
+				if complete {
+					stmt.byte_order_mark = .Skipping
+				}
+			} else {
+				error_current(p, "syntax error: expected BYTE-ORDER MARK after OPEN DATASET SKIPPING")
+			}
 			continue
 		}
 		bump_token(p)
 	}
+}
+
+dataset_required_expr :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_keywords: []string,
+	message: string,
+) -> ^ast.Expr {
+	expr := data_expr(p, body_start, stop_keywords)
+	if expr == nil {
+		error_current(p, message)
+	}
+	return expr
+}
+
+dataset_expect_keyword :: proc(p: ^Parser, keyword: string, message: string) -> bool {
+	if allow_keyword(p, keyword) {
+		return true
+	}
+	error_current(p, message)
+	return false
+}
+
+parse_dataset_access :: proc(p: ^Parser, stmt: ^ast.Dataset_Stmt) {
+	if allow_keyword(p, "INPUT") {
+		stmt.access = .Input
+		return
+	}
+	if allow_keyword(p, "OUTPUT") {
+		stmt.access = .Output
+		return
+	}
+	if allow_keyword(p, "APPENDING") {
+		stmt.access = .Append
+		return
+	}
+	if allow_keyword(p, "UPDATE") {
+		stmt.access = .Update
+		return
+	}
+	error_current(p, "syntax error: expected INPUT, OUTPUT, APPENDING, or UPDATE after OPEN DATASET FOR")
+}
+
+parse_dataset_mode :: proc(p: ^Parser, stmt: ^ast.Dataset_Stmt) {
+	legacy := allow_keyword(p, "LEGACY")
+	if allow_keyword(p, "TEXT") {
+		if dataset_expect_keyword(p, "MODE", "syntax error: expected MODE after OPEN DATASET IN TEXT") {
+			if legacy {
+				stmt.flags += {.Legacy_Mode}
+			}
+			stmt.flags += {.Text_Mode}
+		}
+		return
+	}
+	if allow_keyword(p, "BINARY") {
+		if dataset_expect_keyword(p, "MODE", "syntax error: expected MODE after OPEN DATASET IN BINARY") {
+			if legacy {
+				stmt.flags += {.Legacy_Mode}
+			}
+			stmt.flags += {.Binary_Mode}
+		}
+		return
+	}
+	if legacy {
+		error_current(p, "syntax error: expected TEXT or BINARY after OPEN DATASET IN LEGACY")
+	} else {
+		error_current(p, "syntax error: expected TEXT, BINARY, or LEGACY after OPEN DATASET IN")
+	}
+}
+
+parse_dataset_byte_order_mark :: proc(p: ^Parser, missing_mark_message: string) -> (matched: bool, complete: bool) {
+	if !allow_hyphen2(p, "BYTE", "ORDER") {
+		return false, false
+	}
+	if !dataset_expect_keyword(p, "MARK", missing_mark_message) {
+		return true, false
+	}
+	return true, true
+}
+
+parse_dataset_token_value :: proc(p: ^Parser, message: string) -> string {
+	start := current_token(p)
+	if start.kind != .Ident && start.kind != .String && start.kind != .Number {
+		error_current(p, message)
+		return ""
+	}
+	bump_token(p)
+	if current_token(p).kind == .Minus &&
+	   tokens_touch(previous_token(p), current_token(p)) &&
+	   (next_token_kind(p, 1) == .Ident || next_token_kind(p, 1) == .Number) &&
+	   tokens_touch(current_token(p), p.tokens[p.index + 1]) {
+		bump_token(p)
+		bump_token(p)
+	}
+	return parser_clone_range_text(p, tokenizer.text_range(start.range.start, previous_token(p).range.end))
+}
+
+parse_dataset_linefeed_mode :: proc(p: ^Parser) -> (ast.Dataset_Linefeed_Mode, bool) {
+	mode := ast.Dataset_Linefeed_Mode.Default
+	if allow_keyword(p, "NATIVE") {
+		mode = .Native
+	} else if allow_keyword(p, "UNIX") {
+		mode = .Unix
+	} else if allow_keyword(p, "WINDOWS") {
+		mode = .Windows
+	} else if allow_keyword(p, "SMART") {
+		mode = .Smart
+	} else {
+		return .Default, false
+	}
+	if !dataset_expect_keyword(p, "LINEFEED", "syntax error: expected LINEFEED after OPEN DATASET WITH linefeed mode") {
+		return .Default, true
+	}
+	return mode, true
+}
+
+dataset_stmt_done :: proc(p: ^Parser, body_start: int) -> bool {
+	tok := current_token(p)
+	return(
+		tok.kind == .Period ||
+		tok.kind == .Eof ||
+		(p.index > body_start &&
+				.Has_Newline_Before in tok.flags &&
+				known_stmt_lead_at(p, p.index) &&
+				!line_continuation_starts(p, p.index) &&
+				!dataset_clause_starts(p)) \
+	)
+}
+
+dataset_clause_starts :: proc(p: ^Parser) -> bool {
+	return(
+		at_keyword(p, "FOR") ||
+		at_keyword(p, "IN") ||
+		at_keyword(p, "ENCODING") ||
+		at_keyword(p, "CODE") ||
+		at_keyword(p, "BIG") ||
+		at_keyword(p, "LITTLE") ||
+		at_keyword(p, "INTO") ||
+		at_keyword(p, "MAXIMUM") ||
+		at_keyword(p, "ACTUAL") ||
+		at_keyword(p, "LENGTH") ||
+		at_keyword(p, "NO") ||
+		at_keyword(p, "AT") ||
+		at_keyword(p, "TYPE") ||
+		at_keyword(p, "FILTER") ||
+		at_keyword(p, "POSITION") ||
+		at_keyword(p, "ATTRIBUTES") ||
+		at_keyword(p, "MESSAGE") ||
+		at_keyword(p, "IGNORING") ||
+		at_keyword(p, "REPLACEMENT") ||
+		at_keyword(p, "WITH") ||
+		at_keyword(p, "SKIPPING") \
+	)
 }
 
 parse_report_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

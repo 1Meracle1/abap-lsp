@@ -714,7 +714,7 @@ INSERT TEXTPOOL prog FROM pool LANGUAGE lang.`
 	testing.expect(t, close_cursor.handle != nil)
 	testing.expect_value(t, open_dataset.kind, ast.Dataset_Kind.Open)
 	testing.expect_value(t, open_dataset.access, ast.Dataset_Open_Access.Output)
-	testing.expect(t, open_dataset.text_mode)
+	testing.expect(t, .Text_Mode in open_dataset.flags)
 	testing.expect_value(t, open_dataset.encoding, "DEFAULT")
 	testing.expect(t, open_dataset.position != nil)
 	testing.expect(t, open_dataset.message != nil)
@@ -732,6 +732,168 @@ INSERT TEXTPOOL prog FROM pool LANGUAGE lang.`
 	testing.expect_value(t, textpool.kind, ast.Textpool_Kind.Insert)
 	testing.expect(t, textpool.table != nil)
 	testing.expect(t, textpool.language != nil)
+}
+
+@(test)
+dataset_open_read_close_full_forms :: proc(t: ^testing.T) {
+	source := `OPEN DATASET lv_filename FOR INPUT IN TEXT MODE ENCODING UTF-8
+             MESSAGE lv_message IGNORING CONVERSION ERRORS REPLACEMENT CHARACTER lv_repl.
+OPEN DATASET lv_legacy FOR APPENDING IN LEGACY TEXT MODE CODE PAGE lv_code_page
+             LITTLE ENDIAN WITH SMART LINEFEED TYPE lv_attr FILTER lv_filter.
+READ DATASET lv_filename INTO lv_line MAXIMUM LENGTH lv_max ACTUAL LENGTH DATA(lv_length).
+READ DATASET lv_filename INTO lv_line LENGTH lv_length.
+CLOSE DATASET lv_filename.`
+	parsed := parse(source, "dataset_full_forms.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	open := parsed.root.stmts[0].derived_stmt.(^ast.Dataset_Stmt)
+	legacy_open := parsed.root.stmts[1].derived_stmt.(^ast.Dataset_Stmt)
+	read_actual := parsed.root.stmts[2].derived_stmt.(^ast.Dataset_Stmt)
+	read_length := parsed.root.stmts[3].derived_stmt.(^ast.Dataset_Stmt)
+	close := parsed.root.stmts[4].derived_stmt.(^ast.Dataset_Stmt)
+
+	testing.expect_value(t, open.kind, ast.Dataset_Kind.Open)
+	testing.expect_value(t, open.access, ast.Dataset_Open_Access.Input)
+	testing.expect(t, .Text_Mode in open.flags)
+	testing.expect_value(t, open.encoding, "UTF-8")
+	testing.expect(t, open.message != nil)
+	testing.expect(t, .Ignoring_Conversion_Errors in open.flags)
+	testing.expect(t, open.replacement != nil)
+
+	testing.expect_value(t, legacy_open.kind, ast.Dataset_Kind.Open)
+	testing.expect_value(t, legacy_open.access, ast.Dataset_Open_Access.Append)
+	testing.expect(t, .Legacy_Mode in legacy_open.flags)
+	testing.expect(t, .Text_Mode in legacy_open.flags)
+	testing.expect(t, legacy_open.code_page != nil)
+	testing.expect_value(t, legacy_open.endian, ast.Dataset_Endian.Little)
+	testing.expect_value(t, legacy_open.linefeed_mode, ast.Dataset_Linefeed_Mode.Smart)
+	testing.expect(t, legacy_open.file_type != nil)
+	testing.expect(t, legacy_open.filter != nil)
+
+	testing.expect_value(t, read_actual.kind, ast.Dataset_Kind.Read)
+	testing.expect(t, read_actual.target != nil)
+	testing.expect(t, read_actual.maximum_length != nil)
+	testing.expect(t, read_actual.actual_length != nil)
+	testing.expect_value(t, read_length.kind, ast.Dataset_Kind.Read)
+	testing.expect(t, read_length.length != nil)
+	testing.expect_value(t, close.kind, ast.Dataset_Kind.Close)
+	testing.expect(t, close.dataset != nil)
+}
+
+@(test)
+dataset_open_read_close_sample_preserves_source_facts :: proc(t: ^testing.T) {
+	source := `OPEN DATASET lv_filename FOR INPUT IN TEXT MODE ENCODING DEFAULT
+                             MESSAGE lv_message IGNORING CONVERSION ERRORS.
+
+    DO.
+      READ DATASET lv_filename INTO lv_line.
+      IF sy-subrc <> 0.
+        EXIT.
+      ENDIF.
+
+      CHECK NOT lv_line IS INITIAL.
+      APPEND lv_line TO gt_raw.
+    ENDDO.
+
+    CLOSE DATASET lv_filename.`
+	parsed := parse(source, "dataset_sample.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	open := parsed.root.stmts[0].derived_stmt.(^ast.Dataset_Stmt)
+	do_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Do_Stmt)
+	read := do_stmt.body[0].derived_stmt.(^ast.Dataset_Stmt)
+	close := parsed.root.stmts[2].derived_stmt.(^ast.Dataset_Stmt)
+
+	testing.expect_value(t, open.kind, ast.Dataset_Kind.Open)
+	testing.expect_value(t, source[open.range.start:open.range.end], `OPEN DATASET lv_filename FOR INPUT IN TEXT MODE ENCODING DEFAULT
+                             MESSAGE lv_message IGNORING CONVERSION ERRORS.`)
+	testing.expect_value(t, source[open.dataset.range.start:open.dataset.range.end], "lv_filename")
+	testing.expect_value(t, open.access, ast.Dataset_Open_Access.Input)
+	testing.expect(t, .Text_Mode in open.flags)
+	testing.expect_value(t, open.encoding, "DEFAULT")
+	testing.expect(t, open.message != nil)
+	testing.expect_value(t, source[open.message.range.start:open.message.range.end], "lv_message")
+	testing.expect(t, .Ignoring_Conversion_Errors in open.flags)
+
+	testing.expect_value(t, read.kind, ast.Dataset_Kind.Read)
+	testing.expect_value(t, source[read.dataset.range.start:read.dataset.range.end], "lv_filename")
+	testing.expect(t, read.target != nil)
+	testing.expect_value(t, source[read.target.range.start:read.target.range.end], "lv_line")
+	testing.expect_value(t, close.kind, ast.Dataset_Kind.Close)
+	testing.expect_value(t, source[close.range.start:close.range.end], "CLOSE DATASET lv_filename.")
+	testing.expect_value(t, source[close.dataset.range.start:close.dataset.range.end], "lv_filename")
+}
+
+@(test)
+dataset_misspelled_clause_keywords_do_not_set_clean_ast_facts :: proc(t: ^testing.T) {
+	source := `OPEN DATASET lv_filename FOR INPT IN TEXT MDOE ENCODING DEFAULT
+             MESSAGE lv_message IGNORING CNVERSION ERRORS
+             REPLACEMENT CHAR lv_repl CODE PG lv_code_page
+             LITTLE ENDAN WITH SMART LINFEED SKIPPING BYTE-ORDER MRK.
+READ DATASET lv_filename INTO lv_line MAXIMUM LENGHT lv_max ACTUAL LENGHT lv_actual.
+CLOSE DATASET lv_filename.`
+	parsed := parse(source, "dataset_typos.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected INPUT, OUTPUT, APPENDING, or UPDATE after OPEN DATASET FOR"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected MODE after OPEN DATASET IN TEXT"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected CONVERSION after OPEN DATASET IGNORING"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected CHARACTER after OPEN DATASET REPLACEMENT"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected PAGE after OPEN DATASET CODE"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected ENDIAN after OPEN DATASET LITTLE"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected LINEFEED after OPEN DATASET WITH linefeed mode"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected MARK after OPEN DATASET SKIPPING BYTE-ORDER"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected LENGTH after READ DATASET MAXIMUM"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected LENGTH after READ DATASET ACTUAL"), 1)
+
+	open := parsed.root.stmts[0].derived_stmt.(^ast.Dataset_Stmt)
+	read := parsed.root.stmts[1].derived_stmt.(^ast.Dataset_Stmt)
+	close := parsed.root.stmts[2].derived_stmt.(^ast.Dataset_Stmt)
+
+	testing.expect_value(t, open.access, ast.Dataset_Open_Access.Default)
+	testing.expect(t, !(.Text_Mode in open.flags))
+	testing.expect_value(t, open.encoding, "DEFAULT")
+	testing.expect(t, open.message != nil)
+	testing.expect(t, !(.Ignoring_Conversion_Errors in open.flags))
+	testing.expect(t, open.replacement == nil)
+	testing.expect(t, open.code_page == nil)
+	testing.expect_value(t, open.endian, ast.Dataset_Endian.Default)
+	testing.expect_value(t, open.linefeed_mode, ast.Dataset_Linefeed_Mode.Default)
+	testing.expect_value(t, open.byte_order_mark, ast.Dataset_Byte_Order_Mark.Default)
+	testing.expect(t, read.target != nil)
+	testing.expect(t, read.maximum_length == nil)
+	testing.expect(t, read.actual_length == nil)
+	testing.expect(t, close.dataset != nil)
+}
+
+@(test)
+dataset_position_and_transfer_flags_are_preserved :: proc(t: ^testing.T) {
+	source := `TRANSFER text TO file LENGTH len NO END OF LINE.
+GET DATASET file POSITION DATA(pos) ATTRIBUTES DATA(attrs).
+SET DATASET file POSITION END OF FILE ATTRIBUTES attrs.
+TRUNCATE DATASET file AT CURRENT POSITION.
+TRUNCATE DATASET file AT POSITION pos.`
+	parsed := parse(source, "dataset_flags.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	transfer := parsed.root.stmts[0].derived_stmt.(^ast.Dataset_Stmt)
+	get := parsed.root.stmts[1].derived_stmt.(^ast.Dataset_Stmt)
+	set := parsed.root.stmts[2].derived_stmt.(^ast.Dataset_Stmt)
+	truncate_current := parsed.root.stmts[3].derived_stmt.(^ast.Dataset_Stmt)
+	truncate_position := parsed.root.stmts[4].derived_stmt.(^ast.Dataset_Stmt)
+
+	testing.expect(t, .No_End_Of_Line in transfer.flags)
+	testing.expect(t, get.position != nil)
+	testing.expect(t, get.attributes != nil)
+	testing.expect(t, .Position_End_Of_File in set.flags)
+	testing.expect(t, set.attributes != nil)
+	testing.expect(t, .At_Current_Position in truncate_current.flags)
+	testing.expect(t, truncate_position.position != nil)
+
+	testing.expect_value(t, ast.print_node(transfer, context.allocator), "TRANSFER text TO file LENGTH len NO END OF LINE.")
+	testing.expect_value(t, ast.print_node(get, context.allocator), "GET DATASET file POSITION DATA(pos) ATTRIBUTES DATA(attrs).")
+	testing.expect_value(t, ast.print_node(set, context.allocator), "SET DATASET file POSITION END OF FILE ATTRIBUTES attrs.")
+	testing.expect_value(t, ast.print_node(truncate_current, context.allocator), "TRUNCATE DATASET file AT CURRENT POSITION.")
+	testing.expect_value(t, ast.print_node(truncate_position, context.allocator), "TRUNCATE DATASET file AT POSITION pos.")
 }
 
 @(test)

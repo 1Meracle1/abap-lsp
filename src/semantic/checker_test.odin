@@ -2979,6 +2979,179 @@ DESCRIBE TABLE itab LINES DATA(lv_inline).`
 }
 
 @(test)
+root_semantic_stmt_checker_resolves_dataset_open_read_close_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_filename TYPE string.
+DATA lv_line TYPE string.
+DATA lv_message TYPE string.
+DATA lv_repl TYPE c LENGTH 1.
+DATA lv_attr TYPE string.
+DATA lv_filter TYPE string.
+DATA lv_code_page TYPE string.
+DATA lv_max_length TYPE i.
+DATA lv_length TYPE i.
+DATA gt_raw TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+OPEN DATASET lv_filename FOR INPUT IN TEXT MODE ENCODING DEFAULT
+             MESSAGE lv_message IGNORING CONVERSION ERRORS
+             REPLACEMENT CHARACTER lv_repl.
+OPEN DATASET lv_filename FOR INPUT IN LEGACY TEXT MODE CODE PAGE lv_code_page
+             TYPE lv_attr FILTER lv_filter.
+DO.
+  READ DATASET lv_filename INTO lv_line MAXIMUM LENGTH lv_max_length ACTUAL LENGTH DATA(lv_actual_length).
+  READ DATASET lv_filename INTO lv_line LENGTH lv_length.
+  IF sy-subrc <> 0.
+    EXIT.
+  ENDIF.
+
+  CHECK NOT lv_line IS INITIAL.
+  APPEND lv_line TO gt_raw.
+ENDDO.
+
+CLOSE DATASET lv_filename.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_dataset.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lv_filename := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_filename", .Variable)
+	lv_line := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_line", .Variable)
+	lv_message := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_message", .Variable)
+	lv_repl := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_repl", .Variable)
+	lv_attr := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_attr", .Variable)
+	lv_filter := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_filter", .Variable)
+	lv_code_page := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_code_page", .Variable)
+	lv_max_length := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_max_length", .Variable)
+	lv_length := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_length", .Variable)
+	gt_raw := checker_test_lookup(t, &project, file.root_scope, .Value, "gt_raw", .Variable)
+	lv_actual_length := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_actual_length", .Variable)
+	entities := [?]^Entity {
+		lv_filename,
+		lv_line,
+		lv_message,
+		lv_repl,
+		lv_attr,
+		lv_filter,
+		lv_code_page,
+		lv_max_length,
+		lv_length,
+		gt_raw,
+	}
+	for entity in entities {
+		testing.expect(t, entity != nil && .Used in entity.flags)
+	}
+	testing.expect(t, lv_actual_length != nil && lv_actual_length.type != nil)
+	if lv_actual_length != nil && lv_actual_length.type != nil {
+		testing.expect_value(t, checker_test_type_name(&project, lv_actual_length.type), "i")
+	}
+
+	open := file.root.stmts[10].derived_stmt.(^ast.Dataset_Stmt)
+	do_stmt := file.root.stmts[12].derived_stmt.(^ast.Do_Stmt)
+	read_actual := do_stmt.body[0].derived_stmt.(^ast.Dataset_Stmt)
+	read_length := do_stmt.body[1].derived_stmt.(^ast.Dataset_Stmt)
+	close := file.root.stmts[13].derived_stmt.(^ast.Dataset_Stmt)
+	message_info, message_ok := checker_test_expr_info_for_node(t, &checker, &open.message.expr_base)
+	read_target_info, read_target_ok := checker_test_expr_info_for_node(t, &checker, &read_actual.target.expr_base)
+	actual_length_info, actual_length_ok := checker_test_expr_info_for_node(t, &checker, &read_actual.actual_length.expr_base)
+	length_info, length_ok := checker_test_expr_info_for_node(t, &checker, &read_length.length.expr_base)
+	close_dataset_info, close_dataset_ok := checker_test_expr_info_for_node(t, &checker, &close.dataset.expr_base)
+	testing.expect(t, message_ok && read_target_ok && actual_length_ok && length_ok && close_dataset_ok)
+	if message_ok {
+		testing.expect(t, message_info.is_lhs)
+	}
+	if read_target_ok {
+		testing.expect(t, read_target_info.is_lhs)
+	}
+	if actual_length_ok {
+		testing.expect(t, actual_length_info.is_lhs)
+		testing.expect_value(t, checker_test_type_name(&project, actual_length_info.type), "i")
+	}
+	if length_ok {
+		testing.expect(t, length_info.is_lhs)
+	}
+	if close_dataset_ok {
+		testing.expect(t, !close_dataset_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_diagnoses_invalid_dataset_operands :: proc(t: ^testing.T) {
+	source := `DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_text TYPE string.
+DATA lv_count TYPE i.
+CONSTANTS gc_text TYPE string VALUE ''.
+
+OPEN DATASET lt_text FOR INPUT IN TEXT MODE MESSAGE gc_text AT POSITION lv_text.
+READ DATASET missing_file INTO gc_text MAXIMUM LENGTH lt_text ACTUAL LENGTH lv_text.
+READ DATASET lv_text INTO lt_text LENGTH missing_len.
+CLOSE DATASET missing_close.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_dataset_invalid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 7)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 3)
+
+	seen_filename_type := false
+	seen_message_writable := false
+	seen_open_position := false
+	seen_missing_file := false
+	seen_read_target_writable := false
+	seen_maximum_length := false
+	seen_actual_length := false
+	seen_read_target_type := false
+	seen_missing_len := false
+	seen_missing_close := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Invalid_Syntax_Form && text == "lt_text" &&
+		   diagnostic.message == "DATASET filename is not character-like" {
+			seen_filename_type = true
+		} else if diagnostic.kind == .Invalid_Syntax_Form && text == "gc_text" &&
+		          diagnostic.message == "OPEN DATASET MESSAGE target is not writable" {
+			seen_message_writable = true
+		} else if diagnostic.kind == .Invalid_Syntax_Form && text == "lv_text" &&
+		          diagnostic.message == "OPEN DATASET POSITION operand is not integer-compatible" {
+			seen_open_position = true
+		} else if diagnostic.kind == .Unresolved_Reference && text == "missing_file" {
+			seen_missing_file = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable missing_file")
+		} else if diagnostic.kind == .Invalid_Syntax_Form && text == "gc_text" &&
+		          diagnostic.message == "READ DATASET INTO target is not writable" {
+			seen_read_target_writable = true
+		} else if diagnostic.kind == .Invalid_Syntax_Form && text == "lt_text" &&
+		          diagnostic.message == "READ DATASET MAXIMUM LENGTH operand is not integer-compatible" {
+			seen_maximum_length = true
+		} else if diagnostic.kind == .Invalid_Syntax_Form && text == "lv_text" &&
+		          diagnostic.message == "READ DATASET ACTUAL LENGTH target is not integer-compatible" {
+			seen_actual_length = true
+		} else if diagnostic.kind == .Invalid_Syntax_Form && text == "lt_text" &&
+		          diagnostic.message == "READ DATASET INTO target is not character-like or byte-like" {
+			seen_read_target_type = true
+		} else if diagnostic.kind == .Unresolved_Reference && text == "missing_len" {
+			seen_missing_len = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable missing_len")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "missing_close" {
+			seen_missing_close = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable missing_close")
+		}
+	}
+	testing.expect(t, seen_filename_type)
+	testing.expect(t, seen_message_writable)
+	testing.expect(t, seen_open_position)
+	testing.expect(t, seen_missing_file)
+	testing.expect(t, seen_read_target_writable)
+	testing.expect(t, seen_maximum_length)
+	testing.expect(t, seen_actual_length)
+	testing.expect(t, seen_read_target_type)
+	testing.expect(t, seen_missing_len)
+	testing.expect(t, seen_missing_close)
+}
+
+@(test)
 root_semantic_stmt_checker_infers_convert_time_stamp_inline_targets :: proc(t: ^testing.T) {
 	source := `DATA lv_date TYPE d.
 DATA lv_time TYPE t.

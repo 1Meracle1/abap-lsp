@@ -4073,11 +4073,169 @@ emit_dataset_stmt :: proc(p: ^Printer, stmt: ^Dataset_Stmt) {
 		emit(p, "TRUNCATE DATASET ")
 	}
 	emit_node(p, stmt.dataset)
+	switch stmt.kind {
+	case .Open:
+		emit_dataset_open_tail(p, stmt)
+	case .Read:
+		emit_dataset_read_tail(p, stmt)
+	case .Transfer:
+		emit_dataset_transfer_tail(p, stmt)
+	case .Get:
+		emit_dataset_get_tail(p, stmt)
+	case .Set:
+		emit_dataset_set_tail(p, stmt)
+	case .Truncate:
+		emit_dataset_truncate_tail(p, stmt)
+	case .Close, .Delete:
+	}
+	emit(p, ".")
+}
+
+emit_dataset_transfer_tail :: proc(p: ^Printer, stmt: ^Dataset_Stmt) {
+	if stmt.length != nil {
+		emit(p, " LENGTH ")
+		emit_node(p, stmt.length)
+	}
+	if .No_End_Of_Line in stmt.flags {
+		emit(p, " NO END OF LINE")
+	}
+}
+
+emit_dataset_get_tail :: proc(p: ^Printer, stmt: ^Dataset_Stmt) {
+	if stmt.position != nil {
+		emit(p, " POSITION ")
+		emit_node(p, stmt.position)
+	}
+	if stmt.attributes != nil {
+		emit(p, " ATTRIBUTES ")
+		emit_node(p, stmt.attributes)
+	}
+}
+
+emit_dataset_set_tail :: proc(p: ^Printer, stmt: ^Dataset_Stmt) {
+	if .Position_End_Of_File in stmt.flags {
+		emit(p, " POSITION END OF FILE")
+	} else if stmt.position != nil {
+		emit(p, " POSITION ")
+		emit_node(p, stmt.position)
+	}
+	if stmt.attributes != nil {
+		emit(p, " ATTRIBUTES ")
+		emit_node(p, stmt.attributes)
+	}
+}
+
+emit_dataset_truncate_tail :: proc(p: ^Printer, stmt: ^Dataset_Stmt) {
+	if .At_Current_Position in stmt.flags {
+		emit(p, " AT CURRENT POSITION")
+	} else if stmt.position != nil {
+		emit(p, " AT POSITION ")
+		emit_node(p, stmt.position)
+	}
+}
+
+emit_dataset_open_tail :: proc(p: ^Printer, stmt: ^Dataset_Stmt) {
+	switch stmt.access {
+	case .Default:
+	case .Input:
+		emit(p, " FOR INPUT")
+	case .Output:
+		emit(p, " FOR OUTPUT")
+	case .Append:
+		emit(p, " FOR APPENDING")
+	case .Update:
+		emit(p, " FOR UPDATE")
+	}
+	if .Text_Mode in stmt.flags || .Binary_Mode in stmt.flags || .Legacy_Mode in stmt.flags {
+		emit(p, " IN ")
+		if .Legacy_Mode in stmt.flags {
+			emit(p, "LEGACY ")
+		}
+		if .Text_Mode in stmt.flags {
+			emit(p, "TEXT MODE")
+		} else if .Binary_Mode in stmt.flags {
+			emit(p, "BINARY MODE")
+		} else {
+			emit(p, "MODE")
+		}
+	}
+	if stmt.encoding != "" {
+		emit(p, " ENCODING ")
+		emit(p, stmt.encoding)
+	}
+	if stmt.code_page != nil {
+		emit(p, " CODE PAGE ")
+		emit_node(p, stmt.code_page)
+	}
+	switch stmt.endian {
+	case .Default:
+	case .Big:
+		emit(p, " BIG ENDIAN")
+	case .Little:
+		emit(p, " LITTLE ENDIAN")
+	}
+	if stmt.position != nil {
+		emit(p, " AT POSITION ")
+		emit_node(p, stmt.position)
+	} else if .At_Current_Position in stmt.flags {
+		emit(p, " AT CURRENT POSITION")
+	}
+	if stmt.file_type != nil {
+		emit(p, " TYPE ")
+		emit_node(p, stmt.file_type)
+	}
+	if stmt.filter != nil {
+		emit(p, " FILTER ")
+		emit_node(p, stmt.filter)
+	}
+	if stmt.message != nil {
+		emit(p, " MESSAGE ")
+		emit_node(p, stmt.message)
+	}
+	if .Ignoring_Conversion_Errors in stmt.flags {
+		emit(p, " IGNORING CONVERSION ERRORS")
+	}
+	if stmt.replacement != nil {
+		emit(p, " REPLACEMENT CHARACTER ")
+		emit_node(p, stmt.replacement)
+	}
+	switch stmt.byte_order_mark {
+	case .Default:
+	case .With:
+		emit(p, " WITH BYTE-ORDER MARK")
+	case .Skipping:
+		emit(p, " SKIPPING BYTE-ORDER MARK")
+	}
+	switch stmt.linefeed_mode {
+	case .Default:
+	case .Native:
+		emit(p, " WITH NATIVE LINEFEED")
+	case .Unix:
+		emit(p, " WITH UNIX LINEFEED")
+	case .Windows:
+		emit(p, " WITH WINDOWS LINEFEED")
+	case .Smart:
+		emit(p, " WITH SMART LINEFEED")
+	}
+}
+
+emit_dataset_read_tail :: proc(p: ^Printer, stmt: ^Dataset_Stmt) {
 	if stmt.target != nil {
 		emit(p, " INTO ")
 		emit_node(p, stmt.target)
 	}
-	emit(p, ".")
+	if stmt.maximum_length != nil {
+		emit(p, " MAXIMUM LENGTH ")
+		emit_node(p, stmt.maximum_length)
+	}
+	if stmt.actual_length != nil {
+		emit(p, " ACTUAL LENGTH ")
+		emit_node(p, stmt.actual_length)
+	}
+	if stmt.length != nil {
+		emit(p, " LENGTH ")
+		emit_node(p, stmt.length)
+	}
 }
 
 emit_report_stmt :: proc(p: ^Printer, stmt: ^Report_Stmt) {

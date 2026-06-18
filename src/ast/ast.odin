@@ -2851,6 +2851,37 @@ Dataset_Open_Access :: enum {
 	Update,
 }
 
+Dataset_Flag :: enum {
+	Text_Mode,
+	Binary_Mode,
+	Legacy_Mode,
+	At_Current_Position,
+	Ignoring_Conversion_Errors,
+	Position_End_Of_File,
+	No_End_Of_Line,
+}
+Dataset_Flags :: bit_set[Dataset_Flag]
+
+Dataset_Byte_Order_Mark :: enum {
+	Default,
+	With,
+	Skipping,
+}
+
+Dataset_Endian :: enum {
+	Default,
+	Big,
+	Little,
+}
+
+Dataset_Linefeed_Mode :: enum {
+	Default,
+	Native,
+	Unix,
+	Windows,
+	Smart,
+}
+
 // ABAP syntax: `OPEN DATASET`, `READ DATASET`, `TRANSFER`, `GET/SET/TRUNCATE DATASET`, and close/delete forms.
 Dataset_Stmt :: struct {
 	using node:          Stmt,
@@ -2859,16 +2890,21 @@ Dataset_Stmt :: struct {
 	source:              ^Expr,
 	target:              ^Expr,
 	access:              Dataset_Open_Access,
-	text_mode:           bool,
-	binary_mode:         bool,
+	flags:               Dataset_Flags,
 	encoding:            string,
+	code_page:           ^Expr,
+	file_type:           ^Expr,
+	filter:              ^Expr,
+	replacement:         ^Expr,
 	position:            ^Expr,
 	message:             ^Expr,
 	maximum_length:      ^Expr,
 	actual_length:       ^Expr,
 	length:              ^Expr,
 	attributes:          ^Expr,
-	at_current_position: bool,
+	byte_order_mark:     Dataset_Byte_Order_Mark,
+	endian:              Dataset_Endian,
+	linefeed_mode:       Dataset_Linefeed_Mode,
 }
 
 Report_Kind :: enum {

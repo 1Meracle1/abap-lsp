@@ -1167,6 +1167,42 @@ COMMON_STATEMENT_TEMPLATES :: [?]Completion_Statement_Template {
 		plain = "MESSAGE 'Text' TYPE 'S' INTO lv_message.",
 	},
 	{
+		keyword = "OPEN",
+		label = "OPEN DATASET ... FOR INPUT",
+		snippet = "OPEN DATASET ${1:lv_filename} FOR INPUT IN TEXT MODE ENCODING DEFAULT\n             MESSAGE ${2:lv_message} IGNORING CONVERSION ERRORS.$0",
+		plain = "OPEN DATASET lv_filename FOR INPUT IN TEXT MODE ENCODING DEFAULT\n             MESSAGE lv_message IGNORING CONVERSION ERRORS.",
+	},
+	{
+		keyword = "OPEN",
+		label = "OPEN DATASET ... FOR OUTPUT",
+		snippet = "OPEN DATASET ${1:lv_filename} FOR OUTPUT IN TEXT MODE ENCODING DEFAULT\n             MESSAGE ${2:lv_message}.$0",
+		plain = "OPEN DATASET lv_filename FOR OUTPUT IN TEXT MODE ENCODING DEFAULT\n             MESSAGE lv_message.",
+	},
+	{
+		keyword = "OPEN",
+		label = "OPEN DATASET ... READ DATASET ... CLOSE DATASET",
+		snippet = "OPEN DATASET ${1:lv_filename} FOR INPUT IN TEXT MODE ENCODING DEFAULT\n             MESSAGE ${2:lv_message} IGNORING CONVERSION ERRORS.\n\nDO.\n  READ DATASET ${1:lv_filename} INTO ${3:lv_line}.\n  IF sy-subrc <> 0.\n    EXIT.\n  ENDIF.\n\n  $0\nENDDO.\n\nCLOSE DATASET ${1:lv_filename}.",
+		plain = "OPEN DATASET lv_filename FOR INPUT IN TEXT MODE ENCODING DEFAULT\n             MESSAGE lv_message IGNORING CONVERSION ERRORS.\n\nDO.\n  READ DATASET lv_filename INTO lv_line.\n  IF sy-subrc <> 0.\n    EXIT.\n  ENDIF.\n\n  \nENDDO.\n\nCLOSE DATASET lv_filename.",
+	},
+	{
+		keyword = "READ",
+		label = "READ DATASET ... INTO",
+		snippet = "READ DATASET ${1:lv_filename} INTO ${2:lv_line}.$0",
+		plain = "READ DATASET lv_filename INTO lv_line.",
+	},
+	{
+		keyword = "READ",
+		label = "READ DATASET ... INTO ... LENGTH",
+		snippet = "READ DATASET ${1:lv_filename} INTO ${2:lv_line} MAXIMUM LENGTH ${3:lv_max_length} ACTUAL LENGTH ${4:lv_length}.$0",
+		plain = "READ DATASET lv_filename INTO lv_line MAXIMUM LENGTH lv_max_length ACTUAL LENGTH lv_length.",
+	},
+	{
+		keyword = "CLOSE",
+		label = "CLOSE DATASET ...",
+		snippet = "CLOSE DATASET ${1:lv_filename}.$0",
+		plain = "CLOSE DATASET lv_filename.",
+	},
+	{
 		keyword = "SUBMIT",
 		label = "SUBMIT ... AND RETURN",
 		snippet = "SUBMIT ${1:report} AND RETURN.$0",
