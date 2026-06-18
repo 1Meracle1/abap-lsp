@@ -137,7 +137,6 @@ const SIMPLE_STATEMENT_KEYWORDS = [
   "FORMAT",
   "POSITION",
   "HIDE",
-  "SELECTION-SCREEN",
   "READ",
   "INSERT",
   "APPEND",
@@ -568,6 +567,12 @@ const STATEMENT_TAIL_KEYWORDS = [
   "COLOR",
   "COL_POSITIVE",
   "RESET",
+];
+
+const SELECTION_SCREEN_TAIL_KEYWORDS = [
+  "COMMENT",
+  "LINE",
+  "POSITION",
 ];
 
 const SUBMIT_TAIL_KEYWORDS = [
@@ -1606,12 +1611,21 @@ module.exports = grammar({
         prec(1, seq(field("keyword", keyword($, "MESSAGE")), optional(messageTail($)), ".")),
         prec(1, seq(field("keyword", keyword($, "EXPORT")), optional(memoryTransferTail($)), ".")),
         prec(1, seq(field("keyword", keyword($, "IMPORT")), optional(memoryTransferTail($)), ".")),
+        prec(1, seq(field("keyword", keyword($, "SELECTION-SCREEN")), optional($._selection_screen_tail), ".")),
         seq(field("keyword", keywordChoice($, SIMPLE_STATEMENT_KEYWORDS)), optional($._statement_tail), "."),
       ),
 
     unknown_statement: ($) => prec.dynamic(-10, seq(repeat1($._raw_token), ".")),
 
     _statement_tail: ($) => repeat1($._tail_token),
+
+    _selection_screen_tail: ($) => repeat1($._selection_screen_tail_token),
+
+    _selection_screen_tail_token: ($) =>
+      choice(
+        keywordChoice($, SELECTION_SCREEN_TAIL_KEYWORDS),
+        $._tail_token,
+      ),
 
     _tail_token: ($) =>
       choice(

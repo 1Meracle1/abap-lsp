@@ -33707,6 +33707,51 @@
           }
         },
         {
+          "type": "PREC",
+          "value": 1,
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "FIELD",
+                "name": "keyword",
+                "content": {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "TOKEN",
+                    "content": {
+                      "type": "PREC",
+                      "value": 2,
+                      "content": {
+                        "type": "PATTERN",
+                        "value": "[sS][eE][lL][eE][cC][tT][iI][oO][nN]-[sS][cC][rR][eE][eE][nN]"
+                      }
+                    }
+                  },
+                  "named": true,
+                  "value": "keyword"
+                }
+              },
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "_selection_screen_tail"
+                  },
+                  {
+                    "type": "BLANK"
+                  }
+                ]
+              },
+              {
+                "type": "STRING",
+                "value": "."
+              }
+            ]
+          }
+        },
+        {
           "type": "SEQ",
           "members": [
             {
@@ -34540,22 +34585,6 @@
                         "value": 2,
                         "content": {
                           "type": "PATTERN",
-                          "value": "[sS][eE][lL][eE][cC][tT][iI][oO][nN]-[sS][cC][rR][eE][eE][nN]"
-                        }
-                      }
-                    },
-                    "named": true,
-                    "value": "keyword"
-                  },
-                  {
-                    "type": "ALIAS",
-                    "content": {
-                      "type": "TOKEN",
-                      "content": {
-                        "type": "PREC",
-                        "value": 2,
-                        "content": {
-                          "type": "PATTERN",
                           "value": "[rR][eE][aA][dD]"
                         }
                       }
@@ -34804,6 +34833,75 @@
         "type": "SYMBOL",
         "name": "_tail_token"
       }
+    },
+    "_selection_screen_tail": {
+      "type": "REPEAT1",
+      "content": {
+        "type": "SYMBOL",
+        "name": "_selection_screen_tail_token"
+      }
+    },
+    "_selection_screen_tail_token": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[cC][oO][mM][mM][eE][nN][tT]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[lL][iI][nN][eE]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "TOKEN",
+                "content": {
+                  "type": "PREC",
+                  "value": 2,
+                  "content": {
+                    "type": "PATTERN",
+                    "value": "[pP][oO][sS][iI][tT][iI][oO][nN]"
+                  }
+                }
+              },
+              "named": true,
+              "value": "keyword"
+            }
+          ]
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_tail_token"
+        }
+      ]
     },
     "_tail_token": {
       "type": "CHOICE",

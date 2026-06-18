@@ -2136,3 +2136,69 @@ FORMAT RESET.
   (simple_statement
     (keyword)
     (keyword)))
+
+==================
+Selection-screen line layout additions highlight as keywords
+==================
+
+SELECTION-SCREEN BEGIN OF LINE.
+SELECTION-SCREEN POSITION 1.
+SELECTION-SCREEN COMMENT 1(10) FOR FIELD p_lifnr.
+SELECTION-SCREEN COMMENT 30(14) com MODIF ID xyz.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN: BEGIN OF LINE.
+SELECTION-SCREEN: END OF LINE.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (number))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (call_expression
+      (number)
+      (argument_list
+        (number)))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (call_expression
+      (number)
+      (argument_list
+        (number)))
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier)))
+  (simple_statement
+    (keyword)
+    (keyword)
+    (keyword)
+    (keyword))
+  (simple_statement
+    (keyword)
+    (punctuation)
+    (keyword)
+    (keyword)
+    (keyword))
+  (simple_statement
+    (keyword)
+    (punctuation)
+    (keyword)
+    (keyword)
+    (keyword)))
