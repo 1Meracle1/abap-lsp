@@ -662,7 +662,11 @@ checker_check_table_expr :: proc(
 	expr: ^ast.Table_Expr,
 	lhs: bool,
 ) -> Operand {
-	table := checker_check_expr(ctx, expr.table)
+	table := checker_check_expr(ctx, expr.table, .Value, lhs && len(expr.selectors) == 0)
+	if len(expr.selectors) == 0 {
+		mode := table.mode if lhs else ast.Addressing_Mode.Value
+		return checker_record_operand(ctx, node, mode, table.type, table.entity, lhs = lhs)
+	}
 	row_type := checker_type_row(ctx, table.type)
 	row_structure := checker_type_structure(row_type)
 	for selector in expr.selectors {

@@ -2645,6 +2645,71 @@ lr_i = lr_data.`
 }
 
 @(test)
+root_semantic_stmt_checker_treats_empty_table_expression_as_table_body :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_mseg,
+         matnr TYPE string,
+       END OF ty_mseg.
+DATA gt_mseg TYPE STANDARD TABLE OF ty_mseg WITH EMPTY KEY.
+DATA lt_mseg TYPE STANDARD TABLE OF ty_mseg WITH EMPTY KEY.
+
+gt_mseg[] = lt_mseg[].`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_table_body_assignment.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	gt_mseg := checker_test_lookup(t, &project, file.root_scope, .Value, "gt_mseg", .Variable)
+	lt_mseg := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_mseg", .Variable)
+	testing.expect(t, gt_mseg != nil && lt_mseg != nil)
+	if gt_mseg == nil || lt_mseg == nil {
+		return
+	}
+
+	assign := file.root.stmts[len(file.root.stmts) - 1].derived_stmt.(^ast.Assign_Stmt)
+	lhs := assign.lhs.derived_expr.(^ast.Table_Expr)
+	rhs := assign.rhs.derived_expr.(^ast.Table_Expr)
+	lhs_info, lhs_ok := checker_test_expr_info_for_node(t, &checker, &lhs.expr_base)
+	rhs_info, rhs_ok := checker_test_expr_info_for_node(t, &checker, &rhs.expr_base)
+	testing.expect(t, lhs_ok && rhs_ok)
+	if lhs_ok {
+		testing.expect_value(t, lhs_info.mode, ast.Addressing_Mode.Variable)
+		testing.expect(t, lhs_info.is_lhs)
+		testing.expect(t, checker_type_same(lhs_info.type, gt_mseg.type))
+	}
+	if rhs_ok {
+		testing.expect_value(t, rhs_info.mode, ast.Addressing_Mode.Value)
+		testing.expect(t, !rhs_info.is_lhs)
+		testing.expect(t, checker_type_same(rhs_info.type, lt_mseg.type))
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_rejects_table_body_assignment_from_table_line :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_mseg,
+         matnr TYPE string,
+       END OF ty_mseg.
+DATA gt_mseg TYPE STANDARD TABLE OF ty_mseg WITH EMPTY KEY.
+DATA lt_mseg TYPE STANDARD TABLE OF ty_mseg WITH EMPTY KEY.
+
+gt_mseg[] = lt_mseg[ 1 ].`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_table_body_from_line_assignment.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 1)
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Incompatible_Assignment_Type {
+			continue
+		}
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "lt_mseg[ 1 ]")
+	}
+}
+
+@(test)
 root_semantic_stmt_checker_checks_chained_assignment_targets :: proc(t: ^testing.T) {
 	source := `DATA:
   BEGIN OF struct,

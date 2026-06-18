@@ -478,6 +478,26 @@ parse_table_expr :: proc(p: ^Parser, table: ^ast.Expr) -> ^ast.Expr {
 	if open.kind != .LBracket {
 		return nil
 	}
+	if current_token(p).kind == .RBracket {
+		close := expect_token(p, .RBracket)
+		if close.kind != .RBracket {
+			return nil
+		}
+		if !tokens_touch(open, close) {
+			error(p, tokenizer.text_range(open.range.start, close.range.end), "syntax error: table body expression must be written as []")
+		}
+		expr := ast.new(
+			ast.Table_Expr,
+			tokenizer.text_range(table.range.start, close.range.end),
+			p.allocator,
+		)
+		expr.table = table
+		expr.selectors = make([dynamic]^ast.Expr, 0, 0, p.allocator)
+		return expr
+	}
+	if !has_space_between(open, current_token(p)) {
+		error_current(p, "syntax error: table expression requires a space after '['")
+	}
 	selectors := make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	for current_token(p).kind != .RBracket && current_token(p).kind != .Eof {
 		if allow_token(p, .Comma) {
@@ -491,6 +511,9 @@ parse_table_expr :: proc(p: ^Parser, table: ^ast.Expr) -> ^ast.Expr {
 			bump_token(p)
 		}
 		ensure_forward_progress(p, start)
+	}
+	if current_token(p).kind == .RBracket && !has_space_between(previous_token(p), current_token(p)) {
+		error_current(p, "syntax error: table expression requires a space before ']'")
 	}
 	close := expect_token(p, .RBracket)
 	if close.kind != .RBracket {

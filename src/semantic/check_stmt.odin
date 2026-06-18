@@ -3762,7 +3762,10 @@ checker_type_assignment_compatible :: proc(
 		if src_table && dst_table {
 			return true, true
 		}
-		return false, false
+		if checker_type_is_unknown(src) || checker_type_is_unknown(dst) {
+			return false, false
+		}
+		return false, true
 	}
 	src_structure := checker_type_structure(src) != nil
 	dst_structure := checker_type_structure(dst) != nil

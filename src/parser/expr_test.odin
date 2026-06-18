@@ -86,6 +86,35 @@ table_expression_keeps_table_and_selector_shape :: proc(t: ^testing.T) {
 }
 
 @(test)
+table_body_expression_keeps_empty_selector_list :: proc(t: ^testing.T) {
+	parsed := parse("gt_mseg[] = lt_mseg[].", "test.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	assign := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Stmt)
+	lhs, lhs_ok := assign.lhs.derived_expr.(^ast.Table_Expr)
+	rhs, rhs_ok := assign.rhs.derived_expr.(^ast.Table_Expr)
+	testing.expect(t, lhs_ok && rhs_ok)
+	if lhs_ok {
+		testing.expect_value(t, len(lhs.selectors), 0)
+	}
+	if rhs_ok {
+		testing.expect_value(t, len(rhs.selectors), 0)
+	}
+	testing.expect_value(t, ast.print_node(assign, context.allocator), "gt_mseg[] = lt_mseg[].")
+}
+
+@(test)
+table_expression_requires_inner_padding_unless_empty_body :: proc(t: ^testing.T) {
+	missing_open_space := parse("lv = itab[table_line = 'X' ].", "test.abap", context.allocator)
+	missing_close_space := parse("lv = itab[ table_line = 'X'].", "test.abap", context.allocator)
+	spaced_empty_body := parse("lv = itab[ ].", "test.abap", context.allocator)
+
+	expect_error_contains(t, missing_open_space, "space after '['")
+	expect_error_contains(t, missing_close_space, "space before ']'")
+	expect_error_contains(t, spaced_empty_body, "table body expression must be written as []")
+}
+
+@(test)
 substring_offset_length_keeps_length_out_of_offset :: proc(t: ^testing.T) {
 	source := `lv_a = lv_val+0(1).
 lv_b = lv_val+lv_last(1).
