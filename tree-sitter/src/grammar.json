@@ -12669,28 +12669,73 @@
                 }
               },
               {
-                "type": "IMMEDIATE_TOKEN",
-                "content": {
-                  "type": "STRING",
-                  "value": "+"
-                }
-              },
-              {
-                "type": "FIELD",
-                "name": "offset",
-                "content": {
-                  "type": "ALIAS",
-                  "content": {
-                    "type": "SYMBOL",
-                    "name": "_immediate_number"
-                  },
-                  "named": true,
-                  "value": "number"
-                }
-              },
-              {
                 "type": "CHOICE",
                 "members": [
+                  {
+                    "type": "SEQ",
+                    "members": [
+                      {
+                        "type": "IMMEDIATE_TOKEN",
+                        "content": {
+                          "type": "STRING",
+                          "value": "+"
+                        }
+                      },
+                      {
+                        "type": "FIELD",
+                        "name": "offset",
+                        "content": {
+                          "type": "ALIAS",
+                          "content": {
+                            "type": "SYMBOL",
+                            "name": "_immediate_number"
+                          },
+                          "named": true,
+                          "value": "number"
+                        }
+                      },
+                      {
+                        "type": "CHOICE",
+                        "members": [
+                          {
+                            "type": "SEQ",
+                            "members": [
+                              {
+                                "type": "IMMEDIATE_TOKEN",
+                                "content": {
+                                  "type": "STRING",
+                                  "value": "("
+                                }
+                              },
+                              {
+                                "type": "FIELD",
+                                "name": "length",
+                                "content": {
+                                  "type": "ALIAS",
+                                  "content": {
+                                    "type": "SYMBOL",
+                                    "name": "_immediate_number"
+                                  },
+                                  "named": true,
+                                  "value": "number"
+                                }
+                              },
+                              {
+                                "type": "IMMEDIATE_TOKEN",
+                                "content": {
+                                  "type": "STRING",
+                                  "value": ")"
+                                }
+                              }
+                            ]
+                          },
+                          {
+                            "type": "BLANK"
+                          }
+                        ]
+                      }
+                    ]
+                  },
                   {
                     "type": "SEQ",
                     "members": [
@@ -12722,24 +12767,10 @@
                         }
                       }
                     ]
-                  },
-                  {
-                    "type": "BLANK"
                   }
                 ]
               }
             ]
-          }
-        },
-        {
-          "type": "TOKEN",
-          "content": {
-            "type": "PREC",
-            "value": 1,
-            "content": {
-              "type": "PATTERN",
-              "value": "[A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z_][A-Za-z0-9_]*)*\\(\\d+\\)"
-            }
           }
         }
       ]

@@ -1065,7 +1065,9 @@ LEAVE TO SCREEN sy-dynnr.
       (number)))
   (simple_statement
     (keyword)
-    (substring_expression)
+    (substring_expression
+      (identifier)
+      (number))
     (substring_expression
       (identifier)
       (number)
@@ -2024,6 +2026,30 @@ CONCATENATE lv_ndc+0(5) lv_ndc+5(4) lv_ndc+9(2)
       (identifier)
       (number)
       (number))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (keyword)
+    (string)))
+
+==================
+Substring lengths expose numbers
+==================
+
+CONCATENATE lv_ndc(5) lv_ndc
+        INTO rv_mfrpn SEPARATED BY '-'.
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (substring_expression
+      (identifier)
+      (number))
+    (qualified_name
+      (identifier))
     (keyword)
     (qualified_name
       (identifier))

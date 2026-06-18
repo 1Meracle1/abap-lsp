@@ -4300,7 +4300,7 @@
     "fields": {
       "base": {
         "multiple": false,
-        "required": false,
+        "required": true,
         "types": [
           {
             "type": "field_path",

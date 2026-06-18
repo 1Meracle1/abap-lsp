@@ -937,19 +937,22 @@ module.exports = grammar({
           PREC.SUBSTRING,
           seq(
             field("base", $._substring_base),
-            token.immediate("+"),
-            field("offset", alias($._immediate_number, $.number)),
-            optional(seq(
-              token.immediate("("),
-              field("length", alias($._immediate_number, $.number)),
-              token.immediate(")"),
-            )),
-          ),
-        ),
-        token(
-          prec(
-            1,
-            /[A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z_][A-Za-z0-9_]*)*\(\d+\)/,
+            choice(
+              seq(
+                token.immediate("+"),
+                field("offset", alias($._immediate_number, $.number)),
+                optional(seq(
+                  token.immediate("("),
+                  field("length", alias($._immediate_number, $.number)),
+                  token.immediate(")"),
+                )),
+              ),
+              seq(
+                token.immediate("("),
+                field("length", alias($._immediate_number, $.number)),
+                token.immediate(")"),
+              ),
+            ),
           ),
         ),
       ),
