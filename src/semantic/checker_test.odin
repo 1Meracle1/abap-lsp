@@ -3416,6 +3416,97 @@ SPLIT 'a,b' AT ',' INTO gc_text.`
 }
 
 @(test)
+root_semantic_stmt_checker_accepts_shift_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_po_number TYPE string.
+DATA lv_places TYPE i.
+SHIFT lv_po_number LEFT DELETING LEADING '0'.
+SHIFT lv_po_number RIGHT BY lv_places PLACES.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_shift.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	lv_po_number := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_po_number", .Variable)
+	lv_places := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_places", .Variable)
+	testing.expect(t, lv_po_number != nil && .Used in lv_po_number.flags)
+	testing.expect(t, lv_places != nil && .Used in lv_places.flags)
+	testing.expect_value(t, len(file.root.stmts), 4)
+	shift := file.root.stmts[2].derived_stmt.(^ast.Shift_Stmt)
+	target_info, target_ok := checker_test_expr_info_for_node(t, &checker, &shift.target.expr_base)
+	pattern_info, pattern_ok := checker_test_expr_info_for_node(t, &checker, &shift.delete_pattern.expr_base)
+	testing.expect(t, target_ok && pattern_ok)
+	if target_ok {
+		testing.expect(t, target_info.is_lhs)
+	}
+	if pattern_ok {
+		testing.expect_value(t, checker_test_type_name(&project, pattern_info.type), "string")
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_diagnoses_invalid_shift_operands :: proc(t: ^testing.T) {
+	source := `DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_text TYPE string.
+CONSTANTS gc_text TYPE string VALUE ''.
+SHIFT lt_text LEFT.
+SHIFT gc_text LEFT.
+SHIFT lv_text BY lt_text PLACES.
+SHIFT lv_text LEFT DELETING LEADING lt_text.
+SHIFT missing_text LEFT DELETING LEADING missing_pattern.
+SHIFT lv_text BY missing_places PLACES.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_shift_invalid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 4)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 3)
+
+	seen_target_type := false
+	seen_target_writable := false
+	seen_places := false
+	seen_pattern := false
+	seen_missing_target := false
+	seen_missing_pattern := false
+	seen_missing_places := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Invalid_Syntax_Form && text == "lt_text" &&
+		   diagnostic.message == "SHIFT target is not character-like or byte-like" {
+			seen_target_type = true
+		} else if diagnostic.kind == .Invalid_Syntax_Form && text == "gc_text" {
+			seen_target_writable = true
+			testing.expect_value(t, diagnostic.message, "SHIFT target is not writable")
+		} else if diagnostic.kind == .Invalid_Syntax_Form && text == "lt_text" &&
+		          diagnostic.message == "SHIFT BY operand is not integer-compatible" {
+			seen_places = true
+		} else if diagnostic.kind == .Invalid_Syntax_Form && text == "lt_text" &&
+		          diagnostic.message == "SHIFT DELETING pattern is not character-like or byte-like" {
+			seen_pattern = true
+		} else if diagnostic.kind == .Unresolved_Reference && text == "missing_text" {
+			seen_missing_target = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable missing_text")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "missing_pattern" {
+			seen_missing_pattern = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable missing_pattern")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "missing_places" {
+			seen_missing_places = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable missing_places")
+		}
+	}
+	testing.expect(t, seen_target_type)
+	testing.expect(t, seen_target_writable)
+	testing.expect(t, seen_places)
+	testing.expect(t, seen_pattern)
+	testing.expect(t, seen_missing_target)
+	testing.expect(t, seen_missing_pattern)
+	testing.expect(t, seen_missing_places)
+}
+
+@(test)
 root_semantic_checker_accepts_find_condense_cond_and_type_forms :: proc(t: ^testing.T) {
 	source := `TYPE-POOLS abap.
 TYPES ty_text TYPE string.

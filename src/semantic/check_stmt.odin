@@ -197,9 +197,7 @@ checker_check_stmt :: proc(
 		checker_check_expr(ctx, n.target, .Value, true)
 		checker_check_expr(ctx, n.operand)
 	case ^ast.Shift_Stmt:
-		checker_check_expr(ctx, n.target, .Value, true)
-		checker_check_expr(ctx, n.places)
-		checker_check_expr(ctx, n.delete_pattern)
+		checker_check_shift_stmt(ctx, n)
 	case ^ast.Find_Stmt:
 		checker_check_find_stmt(ctx, n)
 	case ^ast.Search_Stmt:
@@ -750,6 +748,74 @@ checker_check_condense_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, ta
 	}
 }
 
+checker_check_shift_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Shift_Stmt) {
+	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	checker_check_shift_target(ctx, stmt.target, target)
+	checker_check_shift_places(ctx, stmt.places)
+	checker_check_shift_text_operand(
+		ctx,
+		stmt.delete_pattern,
+		"SHIFT DELETING pattern is not character-like or byte-like",
+	)
+}
+
+checker_check_shift_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"SHIFT target is not writable",
+		)
+		return
+	}
+	if ok, known := checker_text_or_byte_type_supported(ctx, target.type); known && !ok {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"SHIFT target is not character-like or byte-like",
+		)
+	}
+}
+
+checker_check_shift_places :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) {
+	if expr == nil {
+		return
+	}
+	int_type := checker_builtin_type_from_name(ctx.checker, "i")
+	local := ctx^
+	local.type_hint = int_type
+	local.type_hint_expr = expr
+	local.diagnose_unresolved_value_refs = true
+	operand := checker_check_expr(&local, expr)
+	if checker_check_unresolved_variable_operand(ctx, expr, operand) {
+		return
+	}
+	checker_check_integer_compatible_type(
+		ctx,
+		operand.type,
+		checker_expr_range(expr),
+		"SHIFT BY operand is not integer-compatible",
+	)
+}
+
+checker_check_shift_text_operand :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, message: string) {
+	if expr == nil {
+		return
+	}
+	operand := checker_check_expr(ctx, expr)
+	if checker_check_unresolved_variable_operand(ctx, expr, operand) || checker_type_is_unknown(operand.type) {
+		return
+	}
+	if ok, known := checker_text_or_byte_type_supported(ctx, operand.type); known && !ok {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(expr), message)
+	}
+}
+
 checker_check_find_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Find_Stmt) {
 	checker_check_find_text_operand(ctx, stmt.pattern, "FIND pattern is not character-like or byte-like")
 	target := checker_check_expr(ctx, stmt.target)
@@ -847,11 +913,20 @@ checker_check_find_write_target :: proc(
 }
 
 checker_check_find_integer_type :: proc(ctx: ^Checker_Context, typ: ^Type, range: Range) {
+	checker_check_integer_compatible_type(ctx, typ, range, "FIND numeric operand is not integer-compatible")
+}
+
+checker_check_integer_compatible_type :: proc(
+	ctx: ^Checker_Context,
+	typ: ^Type,
+	range: Range,
+	message: string,
+) {
 	if checker_type_is_unknown(typ) {
 		return
 	}
 	if checker_type_structure(typ) != nil || checker_type_is_table_like(ctx, typ) || checker_type_is_ref(typ) {
-		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, range, "FIND numeric operand is not integer-compatible")
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, range, message)
 		return
 	}
 	name, ok := checker_type_builtin_name(ctx, typ)
@@ -860,7 +935,7 @@ checker_check_find_integer_type :: proc(ctx: ^Checker_Context, typ: ^Type, range
 	}
 	group := checker_scalar_group(name)
 	if group != .Numeric && name != "n" {
-		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, range, "FIND numeric operand is not integer-compatible")
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, range, message)
 	}
 }
 
