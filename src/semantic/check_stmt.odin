@@ -1614,6 +1614,7 @@ checker_check_delete_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Delete_Stmt)
 		return
 	}
 	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	checker_check_delete_target(ctx, stmt.target, target)
 	row_type := checker_type_row(ctx, target.type)
 	row_structure := checker_type_structure(row_type)
 	checker_check_expr(ctx, stmt.source)
@@ -1628,6 +1629,29 @@ checker_check_delete_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Delete_Stmt)
 			continue
 		}
 		checker_check_expr(ctx, comparing.expr)
+	}
+}
+
+checker_check_delete_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) || checker_type_is_unknown(target.type) {
+		return
+	}
+	if !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Delete_Operand,
+			checker_expr_range(expr),
+			"DELETE target is not writable",
+		)
+		return
+	}
+	if !checker_type_is_table_like(ctx, target.type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Delete_Operand,
+			checker_expr_range(expr),
+			"DELETE target is not an internal table",
+		)
 	}
 }
 

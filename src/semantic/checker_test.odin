@@ -5956,6 +5956,44 @@ DELETE ADJACENT DUPLICATES FROM mt_event COMPARING docnum nested-part.`
 }
 
 @(test)
+root_semantic_delete_adjacent_duplicates_comparing_resolves_row_field :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_mseg_tmp,
+         kdauf TYPE string,
+         matnr TYPE string,
+       END OF ty_mseg_tmp.
+DATA gt_mseg_tmp TYPE STANDARD TABLE OF ty_mseg_tmp WITH EMPTY KEY.
+
+DELETE ADJACENT DUPLICATES FROM gt_mseg_tmp COMPARING kdauf.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://delete_adjacent_kdauf.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "kdauf"), 0)
+	gt_mseg_tmp := checker_test_lookup(t, &project, file.root_scope, .Value, "gt_mseg_tmp", .Variable)
+	ty_mseg_tmp := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_mseg_tmp", .Type_Def)
+	kdauf_field := checker_test_structure_field(t, &project, checker_type_structure(ty_mseg_tmp.type), "kdauf")
+	testing.expect(t, gt_mseg_tmp != nil && .Used in gt_mseg_tmp.flags)
+	testing.expect(t, kdauf_field != nil && .Used in kdauf_field.flags)
+
+	kdauf_offset := checker_test_find_text(source, "COMPARING kdauf")
+	if kdauf_offset >= 0 {
+		kdauf_offset += len("COMPARING ")
+	}
+	testing.expect(t, kdauf_offset >= 0)
+
+	use := semantic_ref_use_at_offset(semantic_query_refs(semantic_query(&project, &checker, file)), kdauf_offset)
+	testing.expect(t, use != nil)
+	if use != nil {
+		testing.expect(t, use.entity == kdauf_field)
+		range := semantic_entity_use_range(use^)
+		testing.expect_value(t, source[range.start:range.end], "kdauf")
+	}
+}
+
+@(test)
 root_semantic_read_table_forms_validate_row_components :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_nested,
          part TYPE string,
@@ -6343,6 +6381,45 @@ DELETE ADJACENT DUPLICATES FROM lt_rows COMPARING gone.`
 		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
 	}
 	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "lv_id"), 0)
+}
+
+@(test)
+root_semantic_delete_reports_invalid_targets :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+CONSTANTS gc_text TYPE string VALUE ''.
+
+DELETE lv_text.
+DELETE ADJACENT DUPLICATES FROM gc_text COMPARING table_line.
+DELETE ADJACENT DUPLICATES FROM lt_missing COMPARING table_line.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://delete_invalid_targets.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Delete_Operand), 2)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+
+	seen_not_table := false
+	seen_not_writable := false
+	seen_missing := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Invalid_Delete_Operand && text == "lv_text" {
+			seen_not_table = true
+			testing.expect_value(t, diagnostic.message, "DELETE target is not an internal table")
+		} else if diagnostic.kind == .Invalid_Delete_Operand && text == "gc_text" {
+			seen_not_writable = true
+			testing.expect_value(t, diagnostic.message, "DELETE target is not writable")
+		} else if diagnostic.kind == .Unresolved_Reference && text == "lt_missing" {
+			seen_missing = true
+			testing.expect_value(t, diagnostic.message, "unresolved variable lt_missing")
+		}
+	}
+	testing.expect(t, seen_not_table)
+	testing.expect(t, seen_not_writable)
+	testing.expect(t, seen_missing)
 }
 
 @(test)
