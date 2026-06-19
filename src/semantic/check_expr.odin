@@ -2653,6 +2653,19 @@ checker_type_is_unknown :: proc(typ: ^Type) -> bool {
 	return typ == nil || typ.kind == .Unknown
 }
 
+checker_type_resolves_to_unknown :: proc(typ: ^Type, depth := 0) -> bool {
+	if depth > 16 || typ == nil {
+		return true
+	}
+	#partial switch typ.kind {
+	case .Unknown:
+		return true
+	case .Named:
+		return checker_type_resolves_to_unknown(typ.base, depth + 1)
+	}
+	return false
+}
+
 checker_addressing_mode_for_entity :: proc(entity: ^Entity) -> ast.Addressing_Mode {
 	#partial switch entity.kind {
 	case .Type_Def, .Class, .Interface:

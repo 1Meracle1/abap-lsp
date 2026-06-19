@@ -2846,6 +2846,27 @@ MOVE-CORRESPONDING ls_mseg_tmp TO gs_output.`
 }
 
 @(test)
+root_semantic_stmt_checker_suppresses_move_corresponding_unresolved_structures :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_known,
+         id TYPE string,
+       END OF ty_known.
+DATA ls_known TYPE ty_known.
+DATA ls_unknown_source TYPE some_unknown_type.
+DATA ls_unknown_target TYPE other_unknown_type.
+
+MOVE-CORRESPONDING ls_unknown_source TO ls_known.
+MOVE-CORRESPONDING ls_known TO ls_unknown_target.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_move_corresponding_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Type), 2)
+}
+
+@(test)
 root_semantic_stmt_checker_reports_unresolved_assignment_operands :: proc(t: ^testing.T) {
 	source := `FORM run.
 DATA lv_text TYPE string.
@@ -6797,18 +6818,21 @@ ENDLOOP.`
 @(test)
 root_semantic_unknown_internal_table_row_components_stay_local :: proc(t: ^testing.T) {
 	source := `DATA mt_event TYPE STANDARD TABLE OF zmissing_row WITH EMPTY KEY.
+DATA lt_tbl TYPE TABLE OF some_unknown_type WITH DEFAULT KEY.
 
 SORT mt_event BY trnid evttime evtid docpos.
 LOOP AT mt_event WHERE item_ref IS INITIAL.
 ENDLOOP.
-DELETE ADJACENT DUPLICATES FROM mt_event COMPARING docpos.`
+DELETE ADJACENT DUPLICATES FROM mt_event COMPARING docpos.
+DELETE lt_tbl WHERE some_unknown_field = '10'.`
 
 	project := project_make()
 	defer project_destroy(&project)
 
 	checker, _ := checker_test_check_source(t, &project, source, "mem://unknown_internal_table_row_components.abap")
 
-	component_names := [?]string{"trnid", "evttime", "evtid", "docpos", "item_ref"}
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	component_names := [?]string{"trnid", "evttime", "evtid", "docpos", "item_ref", "some_unknown_field"}
 	for name in component_names {
 		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
 	}

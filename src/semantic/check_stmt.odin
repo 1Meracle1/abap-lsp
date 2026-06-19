@@ -1059,12 +1059,12 @@ checker_move_corresponding_structure :: proc(
 	^Structure,
 	Checker_Move_Corresponding_Operand_Kind,
 ) {
-	if checker_type_is_unknown(operand.type) {
+	if checker_type_resolves_to_unknown(operand.type) {
 		return nil, .Unknown
 	}
 	if checker_type_is_table_like(ctx, operand.type) {
 		row_type := checker_type_row(ctx, operand.type)
-		if checker_type_is_unknown(row_type) {
+		if checker_type_resolves_to_unknown(row_type) {
 			return nil, .Unknown
 		}
 		if structure := checker_type_structure(row_type); structure != nil {
@@ -1331,7 +1331,7 @@ checker_check_transporting_field :: proc(
 			continue
 		}
 		if current_structure == nil {
-			if checker_type_is_unknown(current_type) {
+			if checker_type_resolves_to_unknown(current_type) {
 				return
 			}
 			checker_add_unknown_table_component_diagnostic(ctx, segment.name.text, segment.name.range)
@@ -1452,7 +1452,7 @@ checker_check_read_table_key_name :: proc(
 			structure = checker_type_structure(current_type)
 		}
 		if structure == nil {
-			if checker_type_is_unknown(current_type) {
+			if checker_type_resolves_to_unknown(current_type) {
 				return Operand{mode = .Value, type = project_type_unknown(ctx.project)}
 			}
 			checker_add_unknown_table_component_diagnostic(ctx, segment.name.text, segment.name.range)
@@ -1661,7 +1661,7 @@ checker_refine_modify_row_type_from_source :: proc(
 	row_type: ^^Type,
 	row_structure: ^^Structure,
 ) {
-	if !checker_type_is_unknown(row_type^) || checker_type_is_unknown(source_type) {
+	if !checker_type_resolves_to_unknown(row_type^) || checker_type_resolves_to_unknown(source_type) {
 		return
 	}
 	source_row_type := checker_type_row(ctx, source_type) if stmt.from_table else source_type
@@ -2127,7 +2127,7 @@ checker_check_table_component_expr :: proc(
 		if len(segments) == 1 && checker_table_component_is_table_line(first.name) {
 			return checker_record_operand(ctx, &expr.expr_base, .Table_Line, row_type), true
 		}
-		if checker_type_is_unknown(row_type) {
+		if checker_type_resolves_to_unknown(row_type) {
 			return checker_record_operand(ctx, &expr.expr_base, .Value, project_type_unknown(ctx.project)), true
 		}
 		unknown := first
