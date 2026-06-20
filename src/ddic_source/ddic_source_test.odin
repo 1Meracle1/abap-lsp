@@ -85,6 +85,7 @@ dependency_source_ignores_metadata_clauses_without_line_slicing :: proc(t: ^test
 	expect_contains_fold(t, source, "tabname type tabname")
 	expect_contains_fold(t, source, "rollname type rollname")
 	expect_contains_fold(t, source, "fieldname type fieldname")
+	expect_contains_fold(t, source, "key fields: tabname, rollname, fieldname")
 	expect_not_contains_fold(t, source, "key tabname")
 	expect_not_contains_fold(t, source, "foreign key")
 	expect_not_contains_fold(t, source, "value help")

@@ -775,6 +775,7 @@ checker_collect_type_clause :: proc(
 		if len(frames^) > 0 {
 			frame := pop(frames)
 			checker_record_structure_end_name_use(ctx, frame.entity, clause.name)
+			checker_mark_structure_key_fields_from_summary(frame.structure, node.trailing_trivia[:])
 		}
 	case .Normal:
 		if len(frames^) > 0 {
@@ -967,10 +968,128 @@ checker_collect_structure_field :: proc(
 		if type_clause != nil {
 			payload.flags += {.Has_Type_Ref}
 		}
+		if decl_comment_marks_key_field(decl.comment) ||
+		   decl_node_comment_marks_key_field(node, checker_structure_field_comment_anchor(range, type_clause)) {
+			payload.flags += {.Is_Key}
+		}
 	}
 	append(&structure.fields, entity)
 	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
 	return entity
+}
+
+decl_comment_marks_key_field :: proc(comments: []ast.Ast_Trivia) -> bool {
+	for comment in comments {
+		if decl_comment_text_marks_key_field(comment.text) {
+			return true
+		}
+	}
+	return false
+}
+
+decl_comment_text_marks_key_field :: proc(text: string) -> bool {
+	trimmed := strings.trim_left(text, " \t")
+	if strings.has_prefix(trimmed, "\"") || strings.has_prefix(trimmed, "*") {
+		trimmed = strings.trim_left(trimmed[1:], " \t")
+	}
+	lower := strings.to_lower(trimmed, context.temp_allocator)
+	lower = strings.trim_space(lower)
+	if lower == "key" || lower == "key field" || lower == "primary key" {
+		return true
+	}
+	return strings.has_prefix(lower, "key;") ||
+	       strings.has_prefix(lower, "key field;") ||
+	       strings.has_prefix(lower, "primary key;")
+}
+
+checker_mark_structure_key_fields_from_summary :: proc(
+	structure: ^Structure,
+	comments: []ast.Ast_Trivia,
+) {
+	if structure == nil {
+		return
+	}
+	for comment in comments {
+		tail, ok := key_summary_comment_tail(comment.text)
+		if !ok {
+			continue
+		}
+		for field in structure.fields {
+			if field == nil || !key_summary_contains_field(tail, field.name) {
+				continue
+			}
+			payload, payload_ok := field.payload.(^Entity_Field_Payload)
+			if payload_ok && payload != nil {
+				payload.flags += {.Is_Key}
+			}
+		}
+	}
+}
+
+key_summary_comment_tail :: proc(text: string) -> (string, bool) {
+	trimmed := strings.trim_left(text, " \t")
+	if strings.has_prefix(trimmed, "\"") || strings.has_prefix(trimmed, "*") {
+		trimmed = strings.trim_left(trimmed[1:], " \t")
+	}
+	lower := strings.to_lower(trimmed, context.temp_allocator)
+	lower = strings.trim_space(lower)
+	if strings.has_prefix(lower, "key fields:") {
+		return lower[len("key fields:"):], true
+	}
+	if strings.has_prefix(lower, "primary key:") {
+		return lower[len("primary key:"):], true
+	}
+	return "", false
+}
+
+key_summary_contains_field :: proc(tail, name: string) -> bool {
+	if name == "" {
+		return false
+	}
+	i := 0
+	for i < len(tail) {
+		for i < len(tail) && key_summary_delimiter(tail[i]) {
+			i += 1
+		}
+		start := i
+		for i < len(tail) && !key_summary_delimiter(tail[i]) {
+			i += 1
+		}
+		if start < i && strings.equal_fold(tail[start:i], name) {
+			return true
+		}
+	}
+	return false
+}
+
+key_summary_delimiter :: proc "contextless" (ch: u8) -> bool {
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == ','
+}
+
+checker_structure_field_comment_anchor :: proc(
+	name_range: Range,
+	type_clause: ^ast.Data_Type_Clause,
+) -> Range {
+	if type_clause != nil && type_clause.type_ref != nil {
+		return type_clause.type_ref.range
+	}
+	return name_range
+}
+
+decl_node_comment_marks_key_field :: proc(node: ^ast.Node, anchor: Range) -> bool {
+	if node == nil || anchor.start >= anchor.end {
+		return false
+	}
+	for comment in node.trailing_trivia {
+		if comment.kind != .Comment {
+			continue
+		}
+		if decl_node_range_is_nearest_before(node, anchor, comment.range.start) &&
+		   decl_comment_text_marks_key_field(comment.text) {
+			return true
+		}
+	}
+	return false
 }
 
 checker_collect_structure_include :: proc(

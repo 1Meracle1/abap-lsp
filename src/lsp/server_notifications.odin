@@ -22,22 +22,22 @@ handle_notification :: proc(
 	case METHOD_DID_OPEN:
 		if update_document_from_open(state, params) {
 			server_reanalyze(state)
-			publish_all_diagnostics(state, output)
+			publish_all_diagnostics_and_lints(state, output)
 		}
 	case METHOD_DID_CHANGE:
 		if update_document_from_change(state, params) {
 			server_reanalyze(state)
-			publish_all_diagnostics(state, output)
+			publish_all_diagnostics_and_lints(state, output)
 		}
 	case METHOD_DID_SAVE:
 		if update_document_from_save(state, params) {
 			server_reanalyze(state)
-			publish_all_diagnostics(state, output)
+			publish_all_diagnostics_and_lints(state, output)
 		}
 	case METHOD_DID_CLOSE:
 		if close_document(state, params) {
 			server_reanalyze(state)
-			publish_all_diagnostics(state, output)
+			publish_all_diagnostics_and_lints(state, output)
 		}
 	case METHOD_DID_CHANGE_WATCHED_FILES:
 		changed := false
@@ -93,7 +93,7 @@ handle_notification :: proc(
 		}
 		if changed {
 			server_reanalyze(state)
-			publish_all_diagnostics(state, output)
+			publish_all_diagnostics_and_lints(state, output)
 		}
 	case METHOD_DID_CREATE_FILES:
 		changed := false
@@ -126,7 +126,7 @@ handle_notification :: proc(
 		}
 		if changed {
 			server_reanalyze(state)
-			publish_all_diagnostics(state, output)
+			publish_all_diagnostics_and_lints(state, output)
 		}
 	case METHOD_DID_DELETE_FILES:
 		changed := false
@@ -165,7 +165,7 @@ handle_notification :: proc(
 		}
 		if changed {
 			server_reanalyze(state)
-			publish_all_diagnostics(state, output)
+			publish_all_diagnostics_and_lints(state, output)
 		}
 	case METHOD_DID_RENAME_FILES:
 		changed := false
@@ -212,7 +212,7 @@ handle_notification :: proc(
 		}
 		if changed {
 			server_reanalyze(state)
-			publish_all_diagnostics(state, output)
+			publish_all_diagnostics_and_lints(state, output)
 		}
 	case METHOD_DID_CHANGE_WORKSPACE_FOLDERS:
 		changed := false
@@ -268,7 +268,7 @@ handle_notification :: proc(
 		}
 		if changed {
 			server_reanalyze(state)
-			publish_all_diagnostics(state, output)
+			publish_all_diagnostics_and_lints(state, output)
 		}
 	case:
 	}
@@ -438,6 +438,7 @@ close_document :: proc(state: ^Server_State, params: json.Value) -> bool {
 }
 
 server_reanalyze :: proc(state: ^Server_State) {
+	server_finish_active_lints(state)
 	clear_parse_diagnostics(state)
 	retired_parse_arenas := make([dynamic]^virtual.Arena, 0, 2, context.temp_allocator)
 	for _, doc in state.documents {

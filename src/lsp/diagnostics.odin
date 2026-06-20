@@ -1,5 +1,6 @@
 package abap_frontend_lsp
 
+import lints "src:lints"
 import "src:parser"
 import "src:semantic"
 
@@ -35,14 +36,20 @@ clear_parse_diagnostics :: proc(state: ^Server_State) {
 }
 
 publish_all_diagnostics :: proc(state: ^Server_State, output: ^os.File) {
-	for uri, _ in state.documents {
+	for uri, doc in state.documents {
 		diagnostics := diagnostics_for_uri(state, uri, context.temp_allocator)
 		params := Publish_Diagnostics_Params {
 			uri         = uri,
+			version     = doc.version,
 			diagnostics = diagnostics,
 		}
 		send_notification(output, METHOD_PUBLISH_DIAGNOSTICS, params, state.allocator)
 	}
+}
+
+publish_all_diagnostics_and_lints :: proc(state: ^Server_State, output: ^os.File) {
+	publish_all_diagnostics(state, output)
+	server_start_lints_async(state, output)
 }
 
 diagnostics_for_uri :: proc(
@@ -92,6 +99,11 @@ diagnostics_for_uri :: proc(
 					context.temp_allocator,
 				)
 				for diagnostic in semantic_diags {
+					if .Enable_Lints in state.options.flags {
+						if _, is_lint := lints.metadata_for_semantic_kind(diagnostic.kind); is_lint {
+							continue
+						}
+					}
 					item := diagnostic_to_lsp(doc.text, diagnostic)
 					if !diagnostic_present(out[:], item) {
 						append(&out, item)

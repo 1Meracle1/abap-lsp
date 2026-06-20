@@ -12,6 +12,7 @@ Option_Flag :: enum {
 	Enable_ADT,
 	Enable_Dependency_Diagnostics,
 	Disable_ADT_Dependency_Fetch,
+	Enable_Lints,
 }
 Option_Flags :: bit_set[Option_Flag]
 

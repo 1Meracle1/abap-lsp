@@ -6,8 +6,12 @@ import "core:mem"
 import "core:os"
 import "core:strconv"
 import "core:strings"
+import "core:sync"
 
 MAX_HEADER_LINE_BYTES :: 8192
+
+@(private = "file")
+write_frame_mutex: sync.Mutex
 
 Frame_Status :: enum {
 	Ok,
@@ -65,6 +69,9 @@ read_frame :: proc(input: ^os.File, allocator: mem.Allocator) -> Frame {
 }
 
 write_frame :: proc(output: ^os.File, payload: []byte) -> bool {
+	sync.mutex_lock(&write_frame_mutex)
+	defer sync.mutex_unlock(&write_frame_mutex)
+
 	header := fmt.tprintf("Content-Length: %d\r\n\r\n", len(payload))
 	return(
 		write_all(output, transmute([]byte)header) &&

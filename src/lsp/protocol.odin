@@ -49,6 +49,7 @@ DIAGNOSTIC_ERROR :: 1
 DIAGNOSTIC_WARNING :: 2
 DIAGNOSTIC_INFORMATION :: 3
 DIAGNOSTIC_HINT :: 4
+DIAGNOSTIC_TAG_UNNECESSARY :: 2
 
 COMPLETION_METHOD :: 2
 COMPLETION_FUNCTION :: 3
@@ -83,15 +84,39 @@ Location :: struct {
 }
 
 Diagnostic :: struct {
-	range:    Range `json:"range"`,
-	severity: int `json:"severity"`,
-	code:     string `json:"code"`,
-	source:   string `json:"source"`,
-	message:  string `json:"message"`,
+	range:            Range `json:"range"`,
+	severity:         int `json:"severity"`,
+	code:             string `json:"code"`,
+	code_description: Maybe(Diagnostic_Code_Description) `json:"codeDescription,omitempty"`,
+	source:           string `json:"source"`,
+	message:          string `json:"message"`,
+	tags:             []int `json:"tags,omitempty"`,
+	data:             Maybe(Diagnostic_Lint_Data) `json:"data,omitempty"`,
+}
+
+Diagnostic_Code_Description :: struct {
+	href: string `json:"href"`,
+}
+
+Diagnostic_Lint_Suppression_Data :: struct {
+	kind:  string `json:"kind"`,
+	token: string `json:"token"`,
+	range: []int `json:"range"`,
+}
+
+Diagnostic_Lint_Data :: struct {
+	kind:        string `json:"kind"`,
+	lint_id:     string `json:"lintId"`,
+	level:       string `json:"level"`,
+	group:       string `json:"group"`,
+	origin:      string `json:"origin"`,
+	suppressed:  bool   `json:"suppressed"`,
+	suppression: Maybe(Diagnostic_Lint_Suppression_Data) `json:"suppression,omitempty"`,
 }
 
 Publish_Diagnostics_Params :: struct {
 	uri:         string `json:"uri"`,
+	version:     int `json:"version,omitempty"`,
 	diagnostics: []Diagnostic `json:"diagnostics"`,
 }
 

@@ -45,6 +45,7 @@ Server_State :: struct {
 	documents:                        map[string]Document,
 	parse_diagnostics:                [dynamic]Parse_Diagnostic_Bucket,
 	workspaces:                       [dynamic]Server_Workspace,
+	active_lint_graph:                ^execution.Graph,
 	pending_removed_uris:             [dynamic]string,
 	pending_disk_refresh_uris:        [dynamic]string,
 	completion_snippets_supported:    bool,
@@ -123,11 +124,12 @@ server_init_with_options :: proc(
 
 server_default_workspace_options :: proc "contextless" () -> workspace.Options {
 	return workspace.Options {
-		flags = workspace.Option_Flags{.Enable_ADT, .Enable_Dependency_Diagnostics},
+		flags = workspace.Option_Flags{.Enable_ADT, .Enable_Dependency_Diagnostics, .Enable_Lints},
 	}
 }
 
 server_destroy :: proc(state: ^Server_State) {
+	server_finish_active_lints(state)
 	for &slot in state.workspaces {
 		if slot.has_analysis {
 			workspace.analysis_result_destroy(&slot.analysis, state.allocator)

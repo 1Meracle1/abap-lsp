@@ -36,8 +36,8 @@ Top-level usage:
 
 2. Single-project checking.
 
-   Use the checker API directly for focused tests or tools that already know the
-   exact root source:
+   Use the checker API directly for focused tests or tools that already have the
+   parsed root AST:
 
    - Create a `Project` with `project_make`.
    - Create a `Checker` with `checker_make` or `checker_init`.

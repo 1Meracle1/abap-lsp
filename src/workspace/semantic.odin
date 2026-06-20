@@ -2,6 +2,7 @@ package abap_frontend_workspace
 
 import adt "src:adt"
 import execution "src:execution"
+import lints "src:lints"
 import "src:parser"
 import remote_deps "src:remote_dependencies"
 import "src:semantic"
@@ -18,6 +19,7 @@ Analysis_Result :: struct {
 	last_update:   semantic.Semantic_Graph_Update_Result,
 	remote_state:  remote_deps.State,
 	remote_result: remote_deps.Result,
+	lint_policy:   lints.Policy,
 	ok:            bool,
 	used_manifest: bool,
 	error:         string,
@@ -136,6 +138,7 @@ analysis_result_update_inputs :: proc(
 		result.remote_result = remote_deps.result_make(allocator)
 		result.ok = true
 	}
+	result.lint_policy = lints.policy_from_config(&workspace.manifest.lints, allocator)
 
 	result.used_manifest = workspace.has_manifest
 	last := semantic.semantic_graph_session_apply_update(
@@ -639,6 +642,7 @@ default_workspace_manifest :: proc(
 		root_path = strings.clone(root_path, allocator),
 		connection = "default",
 		dependency_source = "local-first",
+		lints = lints.config_default(allocator),
 		local_export_roots = make([dynamic]string, 0, 2, allocator),
 		units = make([dynamic]Manifest_Unit, 0, 4, allocator),
 	}

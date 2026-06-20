@@ -324,17 +324,22 @@ main_executor_runs_only_when_drained :: proc(t: ^testing.T) {
 	final := then_with(&graph, root, main_executor(&main), Main_Update{value = &updated}, store_main_value)
 
 	graph_start(&graph)
-	drained := 0
-	for i := 0; i < 1000 && drained == 0; i += 1 {
-		drained = main_executor_drain(&main)
-		if drained == 0 {
+	drained_total := 0
+	completed := false
+	value: No_Result
+	for i := 0; i < 100000 && !completed; i += 1 {
+		drained_total += main_executor_drain(&main)
+		value, completed = try_wait(final)
+		if !completed {
 			thread.yield()
 		}
 	}
-	testing.expect_value(t, drained, 1)
-	value := wait(final)
-	testing.expect_value(t, value, No_Result{})
-	testing.expect_value(t, updated, 16)
+	testing.expect(t, completed)
+	testing.expect_value(t, drained_total, 1)
+	if completed {
+		testing.expect_value(t, value, No_Result{})
+		testing.expect_value(t, updated, 16)
+	}
 	pool_join(&pool)
 }
 

@@ -786,17 +786,26 @@ schedule_cell :: proc(cell: ^Task_Cell) {
 }
 
 execute_cell :: proc(cell: ^Task_Cell) {
-	if _, ok := sync.atomic_compare_exchange_strong_explicit(
+	if !begin_execute_cell(cell) {
+		return
+	}
+	invoke_cell(cell)
+	finish_cell(cell)
+}
+
+begin_execute_cell :: proc(cell: ^Task_Cell) -> bool {
+	_, ok := sync.atomic_compare_exchange_strong_explicit(
 		&cell.state,
 		Task_State.Queued,
 		Task_State.Running,
 		.Acquire,
 		.Relaxed,
-	); !ok {
-		return
-	}
+	)
+	return ok
+}
+
+invoke_cell :: proc(cell: ^Task_Cell) {
 	cell.invoke(cell)
-	finish_cell(cell)
 }
 
 finish_cell :: proc(cell: ^Task_Cell) {
@@ -935,12 +944,16 @@ execute_index :: proc(pool: ^Pool, index: u32) {
 }
 
 worker_execute_cell :: proc(worker: ^Worker, cell: ^Task_Cell) {
+	if !begin_execute_cell(cell) {
+		return
+	}
+
 	previous_temp_allocator := context.temp_allocator
 	context.temp_allocator = worker.temp_allocator
 	worker.temp_depth += 1
 	temp := virtual.arena_temp_begin(&worker.temp_arena)
 
-	execute_cell(cell)
+	invoke_cell(cell)
 
 	virtual.arena_temp_end(temp)
 	worker.temp_depth -= 1
@@ -948,26 +961,32 @@ worker_execute_cell :: proc(worker: ^Worker, cell: ^Task_Cell) {
 		virtual.arena_free_all(&worker.temp_arena)
 	}
 	context.temp_allocator = previous_temp_allocator
+	finish_cell(cell)
 }
 
 main_executor_execute_cell :: proc(main: ^Main_Executor, cell: ^Task_Cell) {
+	if !begin_execute_cell(cell) {
+		return
+	}
+
 	previous_main_executor := current_main_executor
 	previous_temp_allocator := context.temp_allocator
 	current_main_executor = main
 	context.temp_allocator = main.temp_allocator
-	defer current_main_executor = previous_main_executor
-	defer context.temp_allocator = previous_temp_allocator
 
 	main.temp_depth += 1
 	temp := virtual.arena_temp_begin(&main.temp_arena)
 
-	execute_cell(cell)
+	invoke_cell(cell)
 
 	virtual.arena_temp_end(temp)
 	main.temp_depth -= 1
 	if main.temp_depth == 0 {
 		virtual.arena_free_all(&main.temp_arena)
 	}
+	current_main_executor = previous_main_executor
+	context.temp_allocator = previous_temp_allocator
+	finish_cell(cell)
 }
 
 help_or_yield :: proc(pool: ^Pool) {

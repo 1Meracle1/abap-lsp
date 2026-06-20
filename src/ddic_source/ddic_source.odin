@@ -131,13 +131,36 @@ dependency_source_from_definition :: proc(definition: ^Type_Definition, allocato
 			ddic.write_abap_name(&out, member.name)
 			strings.write_string(&out, " TYPE ")
 			write_type_ref(&out, member.type_ref)
-			strings.write_string(&out, ",\n")
+			if member.key {
+				strings.write_string(&out, `, " key`)
+			} else {
+				strings.write_string(&out, ",")
+			}
+			strings.write_string(&out, "\n")
 		}
 	}
 	strings.write_string(&out, "       END OF ")
 	ddic.write_abap_name(&out, definition.name)
-	strings.write_string(&out, ".\n")
+	strings.write_string(&out, ".")
+	write_key_summary_comment(&out, definition.members[:])
+	strings.write_string(&out, "\n")
 	return strings.to_string(out)
+}
+
+write_key_summary_comment :: proc(out: ^strings.Builder, members: []Member) {
+	first := true
+	for member in members {
+		if member.kind != .Field || !member.key || member.name == "" {
+			continue
+		}
+		if first {
+			strings.write_string(out, ` " key fields: `)
+			first = false
+		} else {
+			strings.write_string(out, ", ")
+		}
+		ddic.write_abap_decl_name(out, member.name)
+	}
 }
 
 write_type_ref :: proc(out: ^strings.Builder, type_ref: Type_Ref) {

@@ -2,6 +2,7 @@ package abap_frontend_workspace
 
 import dep_store "src:dependency_store"
 import toml "src:encoding/toml"
+import lints "src:lints"
 import utils "src:utils"
 
 import "core:mem"
@@ -36,6 +37,7 @@ Workspace_Manifest :: struct {
 	has_dependency_store: bool,
 	local_export_roots:   [dynamic]string,
 	dependency_source:    string,
+	lints:                lints.Config,
 	units:                [dynamic]Manifest_Unit,
 }
 
@@ -53,6 +55,7 @@ parse_workspace_manifest_text :: proc(
 		manifest_path      = strings.clone(manifest_path, allocator),
 		connection         = "default",
 		dependency_source  = "local-first",
+		lints              = lints.config_default(allocator),
 		local_export_roots = make([dynamic]string, 0, 2, allocator),
 		units              = make([dynamic]Manifest_Unit, 0, 4, allocator),
 	}
@@ -81,6 +84,9 @@ parse_workspace_manifest_text :: proc(
 		if dependency_source, source_ok := toml.table_get_string(table, "source"); source_ok {
 			manifest.dependency_source = strings.to_lower(strings.trim_space(dependency_source), allocator)
 		}
+	}
+	if table, ok := toml.table_get_table(result.root, "lints"); ok {
+		manifest.lints = decode_lint_config(table, allocator)
 	}
 
 	unit_tables, ok := toml.table_get_array(result.root, "unit")
@@ -124,6 +130,132 @@ parse_workspace_manifest_text :: proc(
 	}
 
 	return manifest, true, ""
+}
+
+decode_lint_config :: proc(table: toml.Table, allocator: mem.Allocator) -> lints.Config {
+	config := lints.config_default(allocator)
+	if profile, ok := toml.table_get_string(table, "profile"); ok {
+		config.profile = strings.clone(lints.normalize_profile(profile), allocator)
+	}
+	if report, ok := toml.table_get_bool(table, "report_suppressed"); ok {
+		config.report_suppressed = report
+	}
+	if groups_table, ok := toml.table_get_table(table, "groups"); ok {
+		for key, value in groups_table.entries {
+			level, level_ok := decode_lint_level_value(value)
+			group, group_ok := lints.group_from_key(key)
+			if group_ok && level_ok {
+				append(&config.groups, lints.Group_Level{group = group, level = level})
+			} else if !group_ok {
+				append(
+					&config.diagnostics,
+					lints.Config_Diagnostic {
+						kind = .Unknown_Group,
+						section = "lints.groups",
+						key = strings.clone(key, allocator),
+						message = lint_config_unknown_group_message(key, allocator),
+					},
+				)
+			}
+		}
+	}
+	if rules_table, ok := toml.table_get_table(table, "rules"); ok {
+		for key, value in rules_table.entries {
+			level, level_ok := decode_lint_level_value(value)
+			normalized := lints.normalized_id(key, context.temp_allocator)
+			if _, native_ok := lints.metadata_for(normalized); native_ok {
+				if level_ok {
+					append(
+						&config.rules,
+						lints.Rule_Level {
+							id = strings.clone(normalized, allocator),
+							level = level,
+						},
+					)
+				}
+			} else if lints.id_is_external_provider(normalized) {
+				if level_ok {
+					append(
+						&config.rules,
+						lints.Rule_Level {
+							id = strings.clone(normalized, allocator),
+							level = level,
+						},
+					)
+				}
+			} else {
+				kind := lints.Config_Diagnostic_Kind.Unknown_Rule
+				message := lint_config_unknown_rule_message(key, allocator)
+				if lints.id_is_native_namespace(normalized) {
+					kind = .Unknown_Native_Rule
+					message = lint_config_unknown_native_rule_message(key, allocator)
+				}
+				append(
+					&config.diagnostics,
+					lints.Config_Diagnostic {
+						kind = kind,
+						section = "lints.rules",
+						key = strings.clone(key, allocator),
+						message = message,
+					},
+				)
+			}
+		}
+	}
+	if sap_atc_table, ok := toml.table_get_table(table, "sap_atc"); ok {
+		if mode, mode_ok := toml.table_get_string(sap_atc_table, "mode"); mode_ok {
+			config.sap_atc.mode = decode_sap_atc_lint_mode(mode)
+		}
+		if variant, variant_ok := toml.table_get_string(sap_atc_table, "check_variant"); variant_ok {
+			config.sap_atc.check_variant = strings.clone(strings.trim_space(variant), allocator)
+		}
+		if configuration, configuration_ok := toml.table_get_string(sap_atc_table, "configuration"); configuration_ok {
+			config.sap_atc.configuration = strings.clone(strings.trim_space(configuration), allocator)
+		}
+	}
+	return config
+}
+
+decode_lint_level_value :: proc(value: toml.Value) -> (lints.Level, bool) {
+	#partial switch v in value {
+	case toml.String:
+		return lints.level_from_key(v)
+	}
+	return {}, false
+}
+
+decode_sap_atc_lint_mode :: proc(value: string) -> lints.Sap_Atc_Mode {
+	switch lints.normalized_id(value, context.temp_allocator) {
+	case "manual":
+		return .Manual
+	case "on-save":
+		return .On_Save
+	}
+	return .Off
+}
+
+lint_config_unknown_group_message :: proc(group: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "unknown lint group '")
+	strings.write_string(&out, group)
+	strings.write_string(&out, "'; expected one of: correctness, performance, security, style, modernization, package, experimental")
+	return strings.to_string(out)
+}
+
+lint_config_unknown_native_rule_message :: proc(id: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "unknown native lint rule '")
+	strings.write_string(&out, id)
+	strings.write_string(&out, "'; check docs/reference/lints.md for supported native lint IDs")
+	return strings.to_string(out)
+}
+
+lint_config_unknown_rule_message :: proc(id: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "unknown lint rule '")
+	strings.write_string(&out, id)
+	strings.write_string(&out, "'; external/provider lint IDs must use '<provider>:<id>' such as 'sap-atc:<check>/<message>'")
+	return strings.to_string(out)
 }
 
 manifest_root_keys :: proc(manifest: ^Workspace_Manifest, allocator: mem.Allocator) -> [dynamic]string {
