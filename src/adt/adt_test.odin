@@ -58,7 +58,7 @@ parses_repository_node_structure :: proc(t: ^testing.T) {
 }
 
 @(test)
-dotenv_and_connection_sources_match_rust_keys :: proc(t: ^testing.T) {
+dotenv_and_connection_sources_accept_environment_aliases :: proc(t: ^testing.T) {
 	dotenv, parse_err, ok := parse_dotenv_contents(
 		`
 export ABAP_ADT_URL = https://host.example.com/

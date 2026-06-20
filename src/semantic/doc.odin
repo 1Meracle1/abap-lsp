@@ -69,7 +69,7 @@ Top-level usage:
    - `semantic_query_completion` reads the lexical scope chain and, when
      supplied, the workspace provider index for completions.
 
-   The package intentionally does not expose stable semantic IDs or legacy
+   The package intentionally does not expose stable semantic IDs or persistent
    provider handles. LSP/workspace consumers should replace whole snapshots after
    edits and use pointers within the active snapshot.
 

@@ -855,8 +855,8 @@ remote_dependency_typepool_cache_uses_pool_for_multiple_records :: proc(t: ^test
 }
 
 @(test)
-remote_dependency_store_paths_clear_legacy_summary_payload :: proc(t: ^testing.T) {
-	path := remote_dependency_test_store_path("store_paths_clear_legacy_summary_payload.sqlite3")
+remote_dependency_store_paths_clear_stale_summary_payload :: proc(t: ^testing.T) {
+	path := remote_dependency_test_store_path("store_paths_clear_stale_summary_payload.sqlite3")
 	store, store_err := dep_store.dependency_store_from_override_path(path, context.allocator)
 	testing.expect_value(t, store_err, dep_store.Store_Error.None)
 	profile := standalone_dependency_profile()
@@ -866,7 +866,7 @@ remote_dependency_store_paths_clear_legacy_summary_payload :: proc(t: ^testing.T
 		object_name      = "zcl_summary_clear",
 		object_uri       = "/sap/bc/adt/oo/classes/zcl_summary_clear",
 		object_type      = "CLAS/OC",
-		description      = "Legacy summary",
+		description      = "Stale summary",
 		file_extension   = "abap",
 		source_text      = "CLASS zcl_summary_clear DEFINITION. ENDCLASS.",
 		fetched_at       = "2026-06-05T00:00:00Z",

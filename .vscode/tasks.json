@@ -20,34 +20,6 @@
       "group": "test"
     },
     {
-      "label": "Build Legacy Rust Workspace",
-      "type": "shell",
-      "command": ".\\legacy\\build.bat",
-      "group": "build",
-      "problemMatcher": "$rustc"
-    },
-    {
-      "label": "Build Legacy Rust Server",
-      "type": "shell",
-      "command": ".\\legacy\\build.bat -p abap_lsp_server",
-      "group": "build",
-      "problemMatcher": "$rustc"
-    },
-    {
-      "label": "Build Legacy Rust Server (Release)",
-      "type": "shell",
-      "command": ".\\legacy\\build.bat release -p abap_lsp_server",
-      "group": "build",
-      "problemMatcher": "$rustc"
-    },
-    {
-      "label": "Test Legacy Rust Workspace",
-      "type": "shell",
-      "command": ".\\legacy\\test.bat",
-      "group": "test",
-      "problemMatcher": "$rustc"
-    },
-    {
       "label": "Build Extension",
       "type": "npm",
       "script": "compile",
@@ -69,16 +41,6 @@
     {
       "label": "Build Odin Language Server (Release) and Extension",
       "dependsOn": ["Build Odin Binaries (Release)", "Build Extension"],
-      "dependsOrder": "sequence"
-    },
-    {
-      "label": "Build Legacy Rust Server and Extension",
-      "dependsOn": ["Build Legacy Rust Server", "Build Extension"],
-      "dependsOrder": "sequence"
-    },
-    {
-      "label": "Build Legacy Rust Server (Release) and Extension",
-      "dependsOn": ["Build Legacy Rust Server (Release)", "Build Extension"],
       "dependsOrder": "sequence"
     }
   ]

@@ -1,5 +1,0 @@
-[local_export]
-roots = ["../../local-export-root"]
-
-[dependencies]
-source = "local-first"

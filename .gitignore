@@ -1,5 +1,4 @@
 target/
-legacy/target/
 coverage/
 logs.txt
 bin/
@@ -14,4 +13,3 @@ tree-sitter/node_modules/
 tmp
 *.zip
 tools/lsp_replay/__pycache__/
-legacy/tools/lsp_replay/__pycache__/

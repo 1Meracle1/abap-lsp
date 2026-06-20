@@ -1,33 +1,34 @@
 # ABAP LSP for Visual Studio Code
 
-ABAP LSP provides ABAP language support backed by the legacy Rust
-`abap_lsp_server` binary in this repository. The extension is source-first: it analyzes local
-ABAP workspaces, can request missing repository/DDIC dependencies through SAP
-ADT, and projects cached remote artifacts as read-only `abapls-cache:` documents.
+ABAP LSP provides ABAP language support backed by the Odin
+`abap_language_server` binary in this repository. The extension is source-first:
+it analyzes local ABAP workspaces, can request missing repository/DDIC
+dependencies through SAP ADT, and projects cached remote artifacts as read-only
+`abapls-cache:` documents.
 
 This extension is in preview. It is useful for local parsing, diagnostics,
-navigation, semantic tokens, folding, completion, rename, inlay hints, and
+navigation, semantic tokens, folding, completion, rename, code actions, and
 remote dependency discovery, but it is not a replacement for SAP ADT activation,
 debugging, transports, or repository administration.
 
 ## Requirements
 
 - VS Code 1.105 or newer.
-- A built legacy `abap_lsp_server` binary from this repository.
+- A built `abap_language_server` binary from this repository.
 - Optional: SAP ADT HTTP(S) access when remote dependency fetches or repository
   search are needed.
 
-Build the legacy server from the repository root:
+Build the language server from the repository root:
 
 ```bat
-.\legacy\build.bat -p abap_lsp_server
+.\build.bat
 ```
 
 Then point VS Code at the resulting binary, for example:
 
 ```json
 {
-  "abap-ls.serverExecutable": "D:\\dev\\rust\\abap-lsp\\legacy\\target\\debug\\abap_lsp_server.exe"
+  "abap-ls.serverExecutable": "D:\\dev\\rust\\abap-lsp\\bin\\debug\\abap_language_server.exe"
 }
 ```
 
@@ -35,15 +36,15 @@ Then point VS Code at the resulting binary, for example:
 
 ### Stdio
 
-`stdio` is the default and the normal editor mode. The extension spawns
-the legacy `abap_lsp_server` and talks LSP over standard input/output.
+`stdio` is the default and normal editor mode. The extension spawns
+`abap_language_server` and talks LSP over standard input/output.
 
 Configuration:
 
 ```json
 {
   "abap-ls.serverTransport": "stdio",
-  "abap-ls.serverExecutable": "D:\\dev\\rust\\abap-lsp\\legacy\\target\\debug\\abap_lsp_server.exe"
+  "abap-ls.serverExecutable": "D:\\dev\\rust\\abap-lsp\\bin\\debug\\abap_language_server.exe"
 }
 ```
 
@@ -58,22 +59,8 @@ extension.
 
 ### TCP
 
-Use TCP when you want to run the server yourself, usually under a debugger.
-
-Start the server:
-
-```bat
-cd legacy
-cargo run -p abap_lsp_server -- --listen 127.0.0.1:9472
-```
-
-Or start an existing binary:
-
-```bat
-abap_lsp_server --listen 127.0.0.1:9472
-```
-
-Then configure VS Code:
+The extension still supports connecting to an already-running compatible LSP
+server over TCP for development and debugging workflows. Configure:
 
 ```json
 {
@@ -82,11 +69,8 @@ Then configure VS Code:
 }
 ```
 
-Environment overrides:
-
-- `ABAP_LSP_LISTEN=127.0.0.1:9472` makes the server listen.
-- `__ABAP_LSP_CONNECT=127.0.0.1:9472` makes the extension connect over TCP
-  without changing VS Code settings.
+`__ABAP_LSP_CONNECT=127.0.0.1:9472` makes the extension connect over TCP without
+changing VS Code settings.
 
 ## Workspace Setup
 
@@ -107,11 +91,10 @@ workspace/
     includes/
 ```
 
-The server can also discover single `.abap` files under `src/`. Use
-`abapls-unit.toml` sidecars when a unit needs explicit members, include mappings,
-local exported SAP roots, or dependency source preferences.
-
-See `legacy/docs/workspace-layout.md` in the repository for the full workspace model.
+The server can also discover single `.abap` files under the workspace. Use
+manifest units when a source root needs explicit members, include mappings,
+local exported SAP roots, or dependency source preferences. See the root
+README for the current workspace model.
 
 ## SAP Connection
 
@@ -140,6 +123,7 @@ Accepted aliases:
 - Base URL: `ABAP_ADT_URL`, `ABAP_ADT_BASE_URL`, `SAPBASE_URL`
 - Username: `ABAP_ADT_USER`, `ABAP_ADT_USERNAME`, `SAPUSER`
 - Password: `ABAP_ADT_PASSWORD`, `SAPPASS`
+- SAP client: `ABAP_ADT_CLIENT`, `SAPCLIENT`
 
 Do not commit `.env` files containing credentials.
 
@@ -171,15 +155,12 @@ Override the location with:
 
 Remote dependency fetches require an `abapls.toml` manifest with
 `[dependency_store]` configured. SAP ADT credentials are read by the server from
-the process environment or a workspace/repository `.env` file using
-`ABAP_ADT_URL` / `ABAP_ADT_BASE_URL` / `SAPBASE_URL`,
-`ABAP_ADT_USER` / `ABAP_ADT_USERNAME` / `SAPUSER`,
-`ABAP_ADT_PASSWORD` / `SAPPASS`, and optionally
-`ABAP_ADT_CLIENT` / `SAPCLIENT`. Use `ABAP LSP: Refresh Dependency Cache` after
-changing cache paths, dependency source preferences, or local exported SAP roots.
+the process environment or a workspace/repository `.env` file using the accepted
+`ABAP_ADT_*` / `SAP*` aliases. Use `ABAP LSP: Refresh Dependency Cache` after
+changing cache paths, dependency source preferences, or local exported SAP
+roots.
 
-Local exported SAP source can be searched before or instead of ADT by setting
-sidecar configuration next to source files or in an ancestor folder:
+Local exported SAP source can be searched before or instead of ADT by setting:
 
 ```toml
 [local_export]
@@ -196,7 +177,7 @@ Supported dependency sources are `local-first`, `local-only`, and `adt-first`.
 | Setting | Default | Description |
 | --- | --- | --- |
 | `abap-ls.serverTransport` | `stdio` | Spawn the server over stdio or connect to an existing TCP server. |
-| `abap-ls.serverExecutable` | empty | Path to `abap_lsp_server` for stdio mode. |
+| `abap-ls.serverExecutable` | empty | Path to `abap_language_server` for stdio mode. |
 | `abap-ls.serverTcpAddress` | `127.0.0.1:9472` | TCP address used when `serverTransport` is `tcp`. |
 | `abap-ls.trace.server` | `verbose` | LSP protocol tracing level. |
 | `abap-ls.maxNumberOfProblems` | `100` | Maximum problems reported by the server. |
@@ -207,14 +188,13 @@ Supported dependency sources are `local-first`, `local-only`, and `adt-first`.
 ### No server starts in stdio mode
 
 Set `abap-ls.serverExecutable` or `__ABAP_LSP_SERVER_PATH` to a built
-`abap_lsp_server` binary. Check the `ABAP Language Server` output channel for
-the startup line and process errors.
+`abap_language_server` binary. Check the `ABAP Language Server` output channel
+for the startup line and process errors.
 
 ### TCP connection is refused
 
-Start the server with `--listen 127.0.0.1:9472` or set `ABAP_LSP_LISTEN` before
-switching the extension to TCP mode. Make sure `abap-ls.serverTcpAddress` or
-`__ABAP_LSP_CONNECT` matches the address the server printed.
+Make sure an LSP server is listening on the address configured by
+`abap-ls.serverTcpAddress` or `__ABAP_LSP_CONNECT`.
 
 ### SAP credentials are missing
 

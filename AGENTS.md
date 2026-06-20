@@ -32,27 +32,19 @@ tokenizer, AST, parser, semantic analysis, workspace, ADT, dependency store,
 runtime, and persistence code should depend only on the lower-level packages
 they actually use.
 
-The old Rust implementation is preserved under `legacy/`. The VS Code extension
-under `editors/vscode/` still launches the legacy Rust language server until an
-Odin language server replaces it, so server build and launch paths should point
-at `legacy/target/...`.
+The VS Code extension under `editors/vscode/` launches the Odin language server
+from `bin/<mode>/abap_language_server.exe` when configured for stdio mode.
 
 ## Build, Test, and Development Commands
 
 Use the root Odin wrapper scripts on Windows.
 
-- `.\build.bat`: debug build for `cmd/abap_frontend` and `cmd/adt_cli`.
+- `.\build.bat`: debug build for `cmd/abap_frontend`, `cmd/adt_cli`, and `cmd/abap_language_server`.
 - `.\build.bat release`: optimized Odin build.
 - `.\build.bat trace`: build with trace logging enabled.
-- `.\run.bat [debug|release] [abap_frontend|adt_cli] ...`: build and run a root Odin executable.
+- `.\run.bat [debug|release] [abap_frontend|adt_cli|abap_language_server|lsp|adt] ...`: build and run a root Odin executable.
 - `.\test.bat`: check and test the Odin packages.
 - `.\test.bat --no-leak-warnings`: run tests with quieter leak logging.
-
-For the legacy Rust server only:
-
-- `.\legacy\build.bat -p abap_lsp_server`: build the legacy debug server.
-- `.\legacy\build.bat release -p abap_lsp_server`: build the legacy release server.
-- `.\legacy\test.bat`: run the legacy Rust workspace tests.
 
 ## Odin Coding Style & Naming Conventions
 
@@ -77,8 +69,7 @@ semantic-analysis, workspace, ADT, dependency-store, and runtime fixes. Keep
 test fixtures under `bin/test-data/` when they are generated or temporary.
 
 Run the smallest relevant package check/test while iterating, then use
-`.\test.bat` before handing off broad changes. Use `.\legacy\test.bat` only
-when changing files under `legacy/`.
+`.\test.bat` before handing off broad changes.
 
 ## Commit & Pull Request Guidelines
 
@@ -86,7 +77,7 @@ Use short, imperative, lower-case subjects focused on behavior, for example
 `resolve includes from manifest members`. Keep commits narrow and explain the
 user-visible, parser-visible, or tooling-visible change. Pull requests should
 include a concise summary and the exact validation performed, such as
-`.\test.bat` or `.\legacy\test.bat`.
+`.\test.bat`.
 
 ## Configuration & Environment Notes
 

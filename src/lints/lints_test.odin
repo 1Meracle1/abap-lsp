@@ -94,7 +94,7 @@ test_policy_with_report_suppressed :: proc() -> Policy {
 }
 
 @(test)
-registry_contains_legacy_native_lints_with_unique_ids :: proc(t: ^testing.T) {
+registry_contains_native_lints_with_unique_ids :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(REGISTRY), 15)
 	for metadata, i in REGISTRY {
 		testing.expect(t, metadata.id != "")
@@ -206,7 +206,7 @@ ENDFORM.
 }
 
 @(test)
-call_function_result_lint_matches_legacy_evidence :: proc(t: ^testing.T) {
+call_function_result_lint_stays_conservative_without_evidence :: proc(t: ^testing.T) {
 	no_proof_source := `
 FORM run.
   CALL FUNCTION 'Z_DEMO'
