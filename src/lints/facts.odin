@@ -32,6 +32,13 @@ Select_Projection_Target_Info :: struct {
 	field: ^semantic.Entity,
 }
 
+For_All_Entries_In_Usage :: struct {
+	table_fields: [dynamic]string,
+	sql_fields:   [dynamic]string,
+	range:        tokenizer.Range,
+	invalid:      bool,
+}
+
 Value_Flow_Target_Kind :: enum {
 	Assignment,
 	Call_Parameter,
@@ -1377,20 +1384,239 @@ collect_for_all_entries_lints :: proc(
 		return
 	}
 	entity := lint_entity_for_access(out, access)
-	if guard_data_list_contains(guarded_tables, access.base_name, entity) {
+	if !guard_data_list_contains(guarded_tables, access.base_name, entity) {
+		if metadata, ok := metadata_for(FOR_ALL_ENTRIES_WITHOUT_GUARD); ok {
+			builder := strings.builder_make(context.temp_allocator)
+			strings.write_string(&builder, "FOR ALL ENTRIES on '")
+			strings.write_string(&builder, access.base_name)
+			strings.write_string(&builder, "' is not guarded by an initial-table check")
+			range := query.for_all_entries_clause
+			if range.end <= range.start {
+				range = query.for_all_entries.range
+			}
+			emit_diagnostic(out, metadata, range, strings.to_string(builder), policy, allocator)
+		}
+	}
+	collect_for_all_entries_in_replacement_lint(out, query, access, entity, policy, allocator)
+}
+
+collect_for_all_entries_in_replacement_lint :: proc(
+	out: ^Unit_Lints,
+	query: ^ast.Select_Query_Clause,
+	table_access: Value_Access,
+	table_entity: ^semantic.Entity,
+	policy: ^Policy,
+	allocator: mem.Allocator,
+) {
+	if query == nil || query.dynamic_where || query.where_cond == nil {
 		return
 	}
-	if metadata, ok := metadata_for(FOR_ALL_ENTRIES_WITHOUT_GUARD); ok {
+	usage := For_All_Entries_In_Usage {
+		table_fields = make([dynamic]string, 0, 2, allocator),
+		sql_fields   = make([dynamic]string, 0, 2, allocator),
+	}
+	collect_for_all_entries_where_usage(out, query.where_cond, table_access, table_entity, &usage, allocator)
+	if usage.invalid || len(usage.table_fields) != 1 || len(usage.sql_fields) != 1 {
+		return
+	}
+	if metadata, ok := metadata_for(FOR_ALL_ENTRIES_CAN_USE_IN); ok {
 		builder := strings.builder_make(context.temp_allocator)
 		strings.write_string(&builder, "FOR ALL ENTRIES on '")
-		strings.write_string(&builder, access.base_name)
-		strings.write_string(&builder, "' is not guarded by an initial-table check")
+		strings.write_string(&builder, table_access.base_name)
+		strings.write_string(&builder, "' only compares SQL field '")
+		strings.write_string(&builder, usage.sql_fields[0])
+		strings.write_string(&builder, "' with table field '")
+		strings.write_string(&builder, usage.table_fields[0])
+		strings.write_string(&builder, "'; prefer a range table with Open SQL IN")
 		range := query.for_all_entries_clause
 		if range.end <= range.start {
-			range = query.for_all_entries.range
+			range = usage.range
 		}
 		emit_diagnostic(out, metadata, range, strings.to_string(builder), policy, allocator)
 	}
+}
+
+collect_for_all_entries_where_usage :: proc(
+	out: ^Unit_Lints,
+	expr: ^ast.Expr,
+	table_access: Value_Access,
+	table_entity: ^semantic.Entity,
+	usage: ^For_All_Entries_In_Usage,
+	allocator: mem.Allocator,
+) {
+	if expr == nil || usage == nil || usage.invalid {
+		return
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Binary_Expr:
+		if n.op == .Equal &&
+		   record_for_all_entries_equal_usage(out, n.left, n.right, table_access, table_entity, usage, allocator) {
+			return
+		}
+		collect_for_all_entries_where_usage(out, n.left, table_access, table_entity, usage, allocator)
+		collect_for_all_entries_where_usage(out, n.right, table_access, table_entity, usage, allocator)
+	case ^ast.Unary_Expr:
+		collect_for_all_entries_where_usage(out, n.expr, table_access, table_entity, usage, allocator)
+	case ^ast.Paren_Expr:
+		collect_for_all_entries_where_usage(out, n.expr, table_access, table_entity, usage, allocator)
+	case ^ast.Host_Expr:
+		if expr_references_for_all_entries_table(out, expr, table_access, table_entity, allocator) {
+			usage.invalid = true
+			return
+		}
+		collect_for_all_entries_where_usage(out, n.value, table_access, table_entity, usage, allocator)
+	case ^ast.Selector_Expr:
+		if expr_references_for_all_entries_table(out, expr, table_access, table_entity, allocator) {
+			usage.invalid = true
+			return
+		}
+		collect_for_all_entries_where_usage(out, n.base, table_access, table_entity, usage, allocator)
+		collect_for_all_entries_where_usage(out, n.field, table_access, table_entity, usage, allocator)
+	case ^ast.Table_Expr:
+		collect_for_all_entries_where_usage(out, n.table, table_access, table_entity, usage, allocator)
+		for selector in n.selectors {
+			collect_for_all_entries_where_usage(out, selector, table_access, table_entity, usage, allocator)
+		}
+	case ^ast.Sql_Call_Expr:
+		for arg in n.args {
+			collect_for_all_entries_where_usage(out, arg, table_access, table_entity, usage, allocator)
+		}
+	case ^ast.Call_Expr:
+		collect_for_all_entries_where_usage(out, n.callee, table_access, table_entity, usage, allocator)
+		collect_for_all_entries_where_usage(out, n.args, table_access, table_entity, usage, allocator)
+	case ^ast.Call_Arg_List_Expr:
+		for arg in n.args {
+			collect_for_all_entries_where_usage(out, arg, table_access, table_entity, usage, allocator)
+		}
+	case ^ast.Call_Named_Arg_Expr:
+		collect_for_all_entries_where_usage(out, n.value, table_access, table_entity, usage, allocator)
+	case ^ast.Call_Positional_Arg_Expr:
+		collect_for_all_entries_where_usage(out, n.value, table_access, table_entity, usage, allocator)
+	case ^ast.Between_Expr:
+		collect_for_all_entries_where_usage(out, n.subject, table_access, table_entity, usage, allocator)
+		collect_for_all_entries_where_usage(out, n.low, table_access, table_entity, usage, allocator)
+		collect_for_all_entries_where_usage(out, n.high, table_access, table_entity, usage, allocator)
+	case ^ast.Is_Predicate_Expr:
+		collect_for_all_entries_where_usage(out, n.subject, table_access, table_entity, usage, allocator)
+	case ^ast.Instance_Of_Predicate_Expr:
+		collect_for_all_entries_where_usage(out, n.subject, table_access, table_entity, usage, allocator)
+	}
+}
+
+record_for_all_entries_equal_usage :: proc(
+	out: ^Unit_Lints,
+	left: ^ast.Expr,
+	right: ^ast.Expr,
+	table_access: Value_Access,
+	table_entity: ^semantic.Entity,
+	usage: ^For_All_Entries_In_Usage,
+	allocator: mem.Allocator,
+) -> bool {
+	left_field, left_field_ok := for_all_entries_table_field(out, left, table_access, table_entity, allocator)
+	right_field, right_field_ok := for_all_entries_table_field(out, right, table_access, table_entity, allocator)
+	if !left_field_ok && !right_field_ok {
+		return false
+	}
+	if left_field_ok && right_field_ok {
+		usage.invalid = true
+		return true
+	}
+	sql_expr := right if left_field_ok else left
+	sql_field, sql_range, sql_ok := sql_column_usage_name(sql_expr, allocator)
+	if !sql_ok {
+		usage.invalid = true
+		return true
+	}
+	table_field := left_field if left_field_ok else right_field
+	record_for_all_entries_in_usage(usage, table_field, sql_field, sql_range)
+	return true
+}
+
+for_all_entries_table_field :: proc(
+	out: ^Unit_Lints,
+	expr: ^ast.Expr,
+	table_access: Value_Access,
+	table_entity: ^semantic.Entity,
+	allocator: mem.Allocator,
+) -> (string, bool) {
+	access, access_ok := value_access_from_expr(expr, allocator)
+	if !access_ok || !for_all_entries_table_matches(out, access, table_access, table_entity) {
+		return "", false
+	}
+	field := value_access_field_path(access, allocator)
+	return field, field != ""
+}
+
+expr_references_for_all_entries_table :: proc(
+	out: ^Unit_Lints,
+	expr: ^ast.Expr,
+	table_access: Value_Access,
+	table_entity: ^semantic.Entity,
+	allocator: mem.Allocator,
+) -> bool {
+	access, access_ok := value_access_from_expr(expr, allocator)
+	return access_ok && for_all_entries_table_matches(out, access, table_access, table_entity)
+}
+
+for_all_entries_table_matches :: proc(
+	out: ^Unit_Lints,
+	access: Value_Access,
+	table_access: Value_Access,
+	table_entity: ^semantic.Entity,
+) -> bool {
+	return guard_data_matches(
+		Guard_Data{name = table_access.base_name, entity = table_entity},
+		access.base_name,
+		lint_entity_for_access(out, access),
+	)
+}
+
+sql_column_usage_name :: proc(expr: ^ast.Expr, allocator: mem.Allocator) -> (string, tokenizer.Range, bool) {
+	if expr == nil {
+		return "", tokenizer.Range{}, false
+	}
+	if column, ok := expr.derived_expr.(^ast.Sql_Column_Expr); ok && column.name.text != "" {
+		return utils.to_lower_ascii(column.name.text, allocator), column.name.range, true
+	}
+	return "", tokenizer.Range{}, false
+}
+
+record_for_all_entries_in_usage :: proc(
+	usage: ^For_All_Entries_In_Usage,
+	table_field: string,
+	sql_field: string,
+	range: tokenizer.Range,
+) {
+	if usage == nil {
+		return
+	}
+	if table_field == "" || sql_field == "" {
+		usage.invalid = true
+		return
+	}
+	if !guard_list_contains(usage.table_fields[:], table_field) {
+		append(&usage.table_fields, table_field)
+	}
+	if !guard_list_contains(usage.sql_fields[:], sql_field) {
+		append(&usage.sql_fields, sql_field)
+	}
+	if usage.range.end <= usage.range.start {
+		usage.range = range
+	}
+}
+
+value_access_field_path :: proc(access: Value_Access, allocator: mem.Allocator) -> string {
+	if len(access.fields) == 0 {
+		return ""
+	}
+	builder := strings.builder_make(allocator)
+	for field, i in access.fields {
+		if i > 0 {
+			strings.write_byte(&builder, '-')
+		}
+		strings.write_string(&builder, field)
+	}
+	return strings.to_string(builder)
 }
 
 collect_call_stmt_lints :: proc(out: ^Unit_Lints, stmt: ^ast.Call_Stmt, allocator: mem.Allocator, fact_scope: int) {

@@ -68,6 +68,7 @@ array, flattened workspace-level `findings` and `hard_errors`, and `summary.file
 | `abap-lsp.select-in-loop` | `info` | `performance` | `sap-code-inspector` | `CI_SEL_NESTED` |
 | `abap-lsp.select-single-without-full-key` | `info` | `correctness` | `abap-lsp` | none |
 | `abap-lsp.for-all-entries-without-guard` | `info` | `correctness` | `sap-code-inspector` | `CI_FAE_LINES_ENSURED` |
+| `abap-lsp.for-all-entries-can-use-in` | `info` | `modernization` | `abap-lsp` | none |
 | `abap-lsp.dynamic-open-sql` | `info` | `security` | `sap-code-inspector` | none |
 | `abap-lsp.ignored-authority-check` | `info` | `security` | `sap-atc` | none |
 | `abap-lsp.ignored-call-function-result` | `info` | `correctness` | `abap-lsp` | none |
@@ -120,6 +121,12 @@ without key metadata.
 Flags `FOR ALL ENTRIES` without a visible non-empty-table guard. Defaults to `info` because guard
 patterns can be hidden behind helper routines or generated control flow.
 
+### `abap-lsp.for-all-entries-can-use-in`
+
+Flags `FOR ALL ENTRIES` queries where the static `WHERE` clause uses the entries table only through
+equality comparisons between one SQL column and one entries-table field. These cases can usually be
+simplified by building a range table and using Open SQL `IN`.
+
 ### `abap-lsp.dynamic-open-sql`
 
 Flags dynamic Open SQL source, projection, and `WHERE` fragments that cannot be statically checked.
@@ -161,6 +168,9 @@ The first local pack uses facts already produced by `abap_symbols`.
 - `abap-lsp.for-all-entries-without-guard`: flags `FOR ALL ENTRIES` when the entries table is not
   protected by an enclosing `IS NOT INITIAL` guard, the `ELSE` branch of an `IS INITIAL` guard, or
   a prior `IF table IS INITIAL. RETURN. ENDIF.` guard in the same flow.
+- `abap-lsp.for-all-entries-can-use-in`: flags `FOR ALL ENTRIES` queries that only use one
+  entries-table field in a simple SQL-column equality condition and can be expressed with a range
+  table plus Open SQL `IN`.
 - `abap-lsp.dynamic-open-sql`: flags dynamic Open SQL source, projection, and `WHERE` fragments.
 - `abap-lsp.ignored-authority-check`: flags `AUTHORITY-CHECK` when its `sy-subrc` result is not
   observed before another `sy-subrc` update becomes the latest checkable result.

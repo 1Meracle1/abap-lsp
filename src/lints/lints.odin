@@ -22,6 +22,7 @@ SELECT_SINGLE_WITHOUT_FULL_KEY :: "abap-lsp.select-single-without-full-key"
 SELECT_INTO_FIELD_NAME_MISMATCH :: "abap-lsp.select-into-field-name-mismatch"
 SELECT_INTO_FIELD_LENGTH_NARROWING :: "abap-lsp.select-into-field-length-narrowing"
 FOR_ALL_ENTRIES_WITHOUT_GUARD :: "abap-lsp.for-all-entries-without-guard"
+FOR_ALL_ENTRIES_CAN_USE_IN :: "abap-lsp.for-all-entries-can-use-in"
 DYNAMIC_OPEN_SQL :: "abap-lsp.dynamic-open-sql"
 IGNORED_AUTHORITY_CHECK :: "abap-lsp.ignored-authority-check"
 IGNORED_CALL_FUNCTION_RESULT :: "abap-lsp.ignored-call-function-result"
@@ -283,6 +284,15 @@ REGISTRY :: [?]Metadata {
 		tag_count = 2,
 		sap_aliases = [4]string{"CI_FAE_LINES_ENSURED", "", "", ""},
 		sap_alias_count = 1,
+	},
+	{
+		id = FOR_ALL_ENTRIES_CAN_USE_IN,
+		group = .Modernization,
+		origin = .Abap_Lsp,
+		default_level = .Info,
+		summary = "FOR ALL ENTRIES filters by one table field and can use Open SQL IN over a range table",
+		tags = [4]string{"open-sql", "for-all-entries", "range-table", ""},
+		tag_count = 3,
 	},
 	{
 		id = DYNAMIC_OPEN_SQL,

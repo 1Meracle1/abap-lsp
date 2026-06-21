@@ -95,7 +95,7 @@ test_policy_with_report_suppressed :: proc() -> Policy {
 
 @(test)
 registry_contains_native_lints_with_unique_ids :: proc(t: ^testing.T) {
-	testing.expect_value(t, len(REGISTRY), 17)
+	testing.expect_value(t, len(REGISTRY), 18)
 	for metadata, i in REGISTRY {
 		testing.expect(t, metadata.id != "")
 		testing.expect(t, metadata.summary != "")
@@ -171,6 +171,7 @@ ENDFORM.
 	testing.expect(t, test_has_diagnostic(analysis_result, SELECT_IN_LOOP))
 	testing.expect(t, test_has_diagnostic(analysis_result, DYNAMIC_OPEN_SQL))
 	testing.expect(t, test_has_diagnostic(analysis_result, FOR_ALL_ENTRIES_WITHOUT_GUARD))
+	testing.expect(t, test_has_diagnostic(analysis_result, FOR_ALL_ENTRIES_CAN_USE_IN))
 	testing.expect(t, test_has_diagnostic(analysis_result, IGNORED_AUTHORITY_CHECK))
 	testing.expect(t, test_has_diagnostic(analysis_result, IGNORED_CALL_FUNCTION_RESULT))
 }
@@ -348,6 +349,94 @@ ENDFORM.
 	analysis_result := run_analysis(&semantic_analysis)
 	defer analysis_destroy(&analysis_result)
 
+	testing.expect(t, !test_has_diagnostic(analysis_result, FOR_ALL_ENTRIES_WITHOUT_GUARD))
+}
+
+@(test)
+for_all_entries_single_field_suggests_range_in :: proc(t: ^testing.T) {
+	source := `
+TYPES: BEGIN OF zrow,
+         matnr TYPE string,
+         spras TYPE string,
+       END OF zrow.
+DATA lt_keys TYPE STANDARD TABLE OF zrow WITH EMPTY KEY.
+DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+IF lt_keys IS NOT INITIAL.
+  SELECT matnr
+    FROM zrow
+    INTO TABLE @lt_rows
+    FOR ALL ENTRIES IN @lt_keys
+    WHERE matnr = @lt_keys-matnr
+      AND spras = @sy-langu.
+ENDIF.
+`
+	semantic_analysis := test_analysis(source, "mem://fae_single_field_in.abap")
+	defer semantic.semantic_workspace_analysis_destroy(&semantic_analysis)
+
+	analysis_result := run_analysis(&semantic_analysis)
+	defer analysis_destroy(&analysis_result)
+
+	found := false
+	for diagnostic in analysis_result.diagnostics {
+		if diagnostic.id != FOR_ALL_ENTRIES_CAN_USE_IN {
+			continue
+		}
+		found = true
+		testing.expect_value(
+			t,
+			source[diagnostic.range.start:diagnostic.range.end],
+			"FOR ALL ENTRIES IN @lt_keys",
+		)
+		testing.expect_value(
+			t,
+			diagnostic.message,
+			"FOR ALL ENTRIES on 'lt_keys' only compares SQL field 'matnr' with table field 'matnr'; prefer a range table with Open SQL IN",
+		)
+	}
+	testing.expect(t, found)
+	testing.expect(t, !test_has_diagnostic(analysis_result, FOR_ALL_ENTRIES_WITHOUT_GUARD))
+}
+
+@(test)
+for_all_entries_in_replacement_stays_conservative :: proc(t: ^testing.T) {
+	source := `
+TYPES: BEGIN OF zrow,
+         matnr TYPE string,
+         spras TYPE string,
+       END OF zrow.
+DATA lt_keys TYPE STANDARD TABLE OF zrow WITH EMPTY KEY.
+DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+IF lt_keys IS NOT INITIAL.
+  SELECT matnr
+    FROM zrow
+    INTO TABLE @lt_rows
+    FOR ALL ENTRIES IN @lt_keys
+    WHERE matnr = @lt_keys-matnr
+      AND spras = @lt_keys-spras.
+
+  SELECT matnr
+    FROM zrow
+    INTO TABLE @lt_rows
+    FOR ALL ENTRIES IN @lt_keys
+    WHERE matnr LIKE @lt_keys-matnr.
+
+  SELECT matnr
+    FROM zrow
+    INTO TABLE @lt_rows
+    FOR ALL ENTRIES IN @lt_keys
+    WHERE matnr = @lt_keys-matnr
+       OR spras = @lt_keys-matnr.
+ENDIF.
+`
+	semantic_analysis := test_analysis(source, "mem://fae_in_conservative.abap")
+	defer semantic.semantic_workspace_analysis_destroy(&semantic_analysis)
+
+	analysis_result := run_analysis(&semantic_analysis)
+	defer analysis_destroy(&analysis_result)
+
+	testing.expect(t, !test_has_diagnostic(analysis_result, FOR_ALL_ENTRIES_CAN_USE_IN))
 	testing.expect(t, !test_has_diagnostic(analysis_result, FOR_ALL_ENTRIES_WITHOUT_GUARD))
 }
 

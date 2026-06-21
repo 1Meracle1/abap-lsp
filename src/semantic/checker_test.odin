@@ -550,11 +550,22 @@ root_semantic_type_checker_diagnoses_unresolved_structure_component_type_refs ::
 		checker_test_unresolved_candidate_namespace_count(
 			&checker,
 			&project,
-			.Global_Symbol,
+			.DDIC_Table,
 			.Type,
 			"ekpo",
 		),
 		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Global_Symbol,
+			.Type,
+			"ekpo",
+		),
+		0,
 	)
 	testing.expect_value(
 		t,
@@ -583,6 +594,44 @@ root_semantic_type_checker_diagnoses_unresolved_structure_component_type_refs ::
 	}
 	testing.expect(t, ekpo_diag)
 	testing.expect(t, docnum_diag)
+}
+
+@(test)
+root_semantic_type_checker_diagnoses_unknown_structure_component_type_ref_field :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_source,
+         known TYPE string,
+       END OF ty_source.
+TYPES ty_alias TYPE ty_source-missing.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://unknown_structure_component_type_ref_field.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Type), 0)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.DDIC_Table,
+			.Type,
+			"ty_source",
+		),
+		0,
+	)
+
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unknown_Field {
+			continue
+		}
+		found = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "missing")
+		testing.expect_value(t, diagnostic.message, "unknown structure field missing")
+	}
+	testing.expect(t, found)
 }
 
 @(test)

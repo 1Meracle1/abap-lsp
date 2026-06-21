@@ -246,6 +246,7 @@ checker_type_from_ref_data :: proc(
 	if type_ref.base_name == "" {
 		return project_type_unknown(ctx.project), nil
 	}
+	external_kind := checker_type_ref_preferred_external_kind(type_ref, preferred_external_kind)
 	skip_current := checker_type_ref_should_skip_current_decl(type_ref, current_decl_entity)
 	entity: ^Entity
 	ok: bool
@@ -254,20 +255,20 @@ checker_type_from_ref_data :: proc(
 			ctx,
 			type_ref.namespace,
 			type_ref.base_name,
-			preferred_external_kind,
+			external_kind,
 			excluded = current_decl_entity,
 		)
 	} else {
-		_, entity, ok = checker_lookup_reference(ctx, type_ref.namespace, type_ref.base_name, preferred_external_kind)
+		_, entity, ok = checker_lookup_reference(ctx, type_ref.namespace, type_ref.base_name, external_kind)
 	}
 	if !ok && type_ref.namespace == .Value && type_ref.allow_type_lookup {
-		_, entity, ok = checker_lookup_reference(ctx, .Type, type_ref.base_name, preferred_external_kind)
+		_, entity, ok = checker_lookup_reference(ctx, .Type, type_ref.base_name, external_kind)
 		if !ok {
 			checker_add_unresolved_candidate(
 				ctx,
 				type_ref.base_name,
 				.Type,
-				preferred_external_kind,
+				external_kind,
 				.Type_Reference,
 				.Unresolved_Type,
 				type_ref.base_range,
@@ -286,7 +287,7 @@ checker_type_from_ref_data :: proc(
 			ctx,
 			type_ref.base_name,
 			type_ref.namespace,
-			preferred_external_kind if preferred_external_kind != .Global_Symbol else kind,
+			external_kind if external_kind != .Global_Symbol else kind,
 			.Type_Reference,
 			reason,
 			type_ref.base_range,
@@ -353,6 +354,12 @@ checker_type_from_ref_data :: proc(
 		if structure := checker_type_structure(current); structure != nil {
 			field, field_ok := checker_lookup_structure_field(structure, name)
 			if !field_ok {
+				checker_add_diagnostic(
+					ctx,
+					.Unknown_Field,
+					range,
+					checker_table_component_message(ctx, "unknown structure field ", name),
+				)
 				return project_type_unknown(ctx.project), current_entity
 			}
 			current_entity = field
@@ -366,6 +373,21 @@ checker_type_from_ref_data :: proc(
 		current = project_type_ref(ctx.project, current)
 	}
 	return current, current_entity
+}
+
+checker_type_ref_preferred_external_kind :: proc(
+	type_ref: Field_Type_Ref_Data,
+	fallback: External_Candidate_Kind,
+) -> External_Candidate_Kind {
+	if fallback != .Global_Symbol {
+		return fallback
+	}
+	if type_ref.namespace == .Type &&
+	   len(type_ref.field_path) > 0 &&
+	   checker_type_selector_at(type_ref.field_selectors[:], 0) == .Dash {
+		return .DDIC_Table
+	}
+	return fallback
 }
 
 checker_add_unresolved_type_diagnostic :: proc(

@@ -1493,6 +1493,161 @@ semantic_workspace_resolves_like_clause_against_external_ddic_table :: proc(t: ^
 }
 
 @(test)
+semantic_workspace_requests_ddic_table_for_unresolved_type_selector_base :: proc(t: ^testing.T) {
+	files := [?]Workspace_File_Input {
+		workspace_test_file(
+			t,
+			"mem://zmain.report.abap",
+			"REPORT zmain. DATA lv_trkorr TYPE e070-tr1korr_smt.",
+		),
+	}
+
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:]})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	checker := analysis.project_results[0].checker
+	testing.expect_value(t, workspace_test_candidate_count(&analysis, .DDIC_Table, "e070"), 1)
+	testing.expect_value(t, workspace_test_candidate_count(&analysis, .Global_Symbol, "e070"), 0)
+	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Unresolved_Type), 1)
+
+	record := workspace_test_record_for_project(t, &analysis, analysis.project_results[0].project)
+	testing.expect(t, record != nil)
+	if record != nil {
+		testing.expect_value(t, workspace_test_dependency_edge_count(record.unresolved_dependencies[:], .DDIC_Table, "e070"), 1)
+		testing.expect_value(
+			t,
+			workspace_test_reverse_project_count(
+				analysis.external_index.unresolved_waiters_by_object,
+				.DDIC_Table,
+				"e070",
+				record.id,
+			),
+			1,
+		)
+	}
+}
+
+@(test)
+semantic_workspace_resolves_type_clause_against_external_ddic_table_field :: proc(t: ^testing.T) {
+
+	external_inputs := [?]External_Interface_Input {
+		workspace_test_external_interface_input(
+			t,
+			.DDIC_Table,
+			.DDIC_Table,
+			"e070",
+			"adt://e070.ddic_table.abap",
+			`TYPES: BEGIN OF e070,
+         tr1korr_smt TYPE string,
+         trfunction TYPE c,
+         trstatus TYPE c,
+       END OF e070.`,
+			9,
+		),
+	}
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", `REPORT zmain.
+TYPES:
+  BEGIN OF ty_transp,
+    trkorr TYPE e070-tr1korr_smt,
+    trfunction TYPE e070-trfunction,
+    trstatus TYPE e070-trstatus,
+  END OF ty_transp.`),
+	}
+
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external_interfaces = external_inputs[:]})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	checker := analysis.project_results[0].checker
+	testing.expect_value(t, workspace_test_candidate_count(&analysis, .DDIC_Table, "e070"), 0)
+	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Unresolved_Type), 0)
+	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Unknown_Field), 0)
+
+	ty_transp := workspace_test_lookup(t, &analysis, analysis.project_results[0].files[0].root_scope, .Type, "ty_transp", .Type_Def)
+	testing.expect(t, ty_transp != nil && ty_transp.type != nil)
+	if ty_transp != nil && ty_transp.type != nil {
+		structure := checker_type_structure(ty_transp.type)
+		testing.expect(t, structure != nil)
+		if structure != nil {
+			query := semantic_query(
+				analysis.project_results[0].project,
+				checker,
+				analysis.project_results[0].files[0],
+			)
+			trkorr := semantic_decl_structure_field(
+				semantic_query_decls(query),
+				structure,
+				"trkorr",
+			)
+			testing.expect(t, trkorr != nil && trkorr.type != nil)
+			if trkorr != nil && trkorr.type != nil {
+				testing.expect_value(t, trkorr.type.name, "string")
+			}
+		}
+	}
+
+	key := Semantic_Object_Key{kind = .DDIC_Table, name = "e070"}
+	binding, provider_ok := analysis.external_index.providers[key]
+	testing.expect(t, provider_ok)
+	if provider_ok && binding.entity != nil {
+		structure := checker_type_structure(binding.entity.type)
+		testing.expect(t, structure != nil)
+		if structure != nil {
+			field_name := project_intern_lower_ascii(
+				analysis.project_results[0].project,
+				"tr1korr_smt",
+			)
+			field, ok := checker_lookup_structure_field(structure, field_name)
+			testing.expect(t, ok)
+			if ok {
+				testing.expect(t, .Used in field.flags)
+			}
+		}
+	}
+}
+
+@(test)
+semantic_workspace_diagnoses_unknown_type_selector_field_against_external_ddic_table :: proc(t: ^testing.T) {
+
+	external_inputs := [?]External_Interface_Input {
+		workspace_test_external_interface_input(
+			t,
+			.DDIC_Table,
+			.DDIC_Table,
+			"e070",
+			"adt://e070.ddic_table.abap",
+			`TYPES: BEGIN OF e070,
+         trkorr TYPE string,
+       END OF e070.`,
+			10,
+		),
+	}
+	source := "REPORT zmain. DATA lv_trkorr TYPE e070-tr1korr_smt."
+	files := [?]Workspace_File_Input {
+		workspace_test_file(t, "mem://zmain.report.abap", source),
+	}
+
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:], external_interfaces = external_inputs[:]})
+	defer semantic_workspace_analysis_destroy(&analysis)
+
+	checker := analysis.project_results[0].checker
+	testing.expect_value(t, workspace_test_candidate_count(&analysis, .DDIC_Table, "e070"), 0)
+	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Unresolved_Type), 0)
+	testing.expect_value(t, workspace_test_diagnostic_count(checker, .Unknown_Field), 1)
+
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Unknown_Field {
+			continue
+		}
+		found = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "tr1korr_smt")
+		testing.expect_value(t, diagnostic.message, "unknown structure field tr1korr_smt")
+	}
+	testing.expect(t, found)
+}
+
+@(test)
 semantic_workspace_builds_per_root_projects_and_indexes_shared_include :: proc(t: ^testing.T) {
 	files := [?]Workspace_File_Input {
 		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. INCLUDE zshared. FORM run. gv_shared = 1. ENDFORM."),
