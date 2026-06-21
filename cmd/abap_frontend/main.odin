@@ -64,42 +64,42 @@ Lint_Cli_Options :: struct {
 	path:              string,
 }
 
-Lint_Cli_Target_JSON :: struct {
-	uri:           string     `json:"uri"`,
-	path:          json.Value `json:"path"`,
-	object_name:   json.Value `json:"object_name"`,
-	is_dependency: bool       `json:"is_dependency"`,
+Lint_Cli_Target :: struct {
+	uri:           string `json:"uri"`,
+	path:          Maybe(string) `json:"path"`,
+	object_name:   Maybe(string) `json:"object_name"`,
+	is_dependency: bool `json:"is_dependency"`,
 }
 
-Lint_Cli_Workspace_JSON :: struct {
-	with_project:          bool       `json:"with_project"`,
-	all_files:             bool       `json:"all_files,omitempty"`,
-	root_uri:              json.Value `json:"root_uri"`,
-	manifest_present:      bool       `json:"manifest_present"`,
-	project_unit_count:    json.Value `json:"project_unit_count"`,
-	dependency_unit_count: json.Value `json:"dependency_unit_count"`,
-	editable_file_count:   json.Value `json:"editable_file_count,omitempty"`,
+Lint_Cli_Workspace :: struct {
+	with_project:          bool `json:"with_project"`,
+	all_files:             bool `json:"all_files,omitempty"`,
+	root_uri:              Maybe(string) `json:"root_uri"`,
+	manifest_present:      bool `json:"manifest_present"`,
+	project_unit_count:    Maybe(int) `json:"project_unit_count"`,
+	dependency_unit_count: Maybe(int) `json:"dependency_unit_count"`,
+	editable_file_count:   Maybe(int) `json:"editable_file_count,omitempty"`,
 }
 
-Lint_Cli_Suppression_JSON :: struct {
+Lint_Cli_Suppression :: struct {
 	kind:  string `json:"kind"`,
 	range: [2]int `json:"range"`,
 	token: string `json:"token"`,
 }
 
-Lint_Cli_Finding_JSON :: struct {
-	uri:         string     `json:"uri"`,
-	lint_id:     string     `json:"lint_id"`,
-	level:       string     `json:"level"`,
-	group:       string     `json:"group"`,
-	origin:      string     `json:"origin"`,
-	message:     string     `json:"message"`,
-	range:       [2]int     `json:"range"`,
-	suppressed:  bool       `json:"suppressed"`,
-	suppression: json.Value `json:"suppression"`,
+Lint_Cli_Finding :: struct {
+	uri:         string `json:"uri"`,
+	lint_id:     string `json:"lint_id"`,
+	level:       string `json:"level"`,
+	group:       string `json:"group"`,
+	origin:      string `json:"origin"`,
+	message:     string `json:"message"`,
+	range:       [2]int `json:"range"`,
+	suppressed:  bool `json:"suppressed"`,
+	suppression: Maybe(Lint_Cli_Suppression) `json:"suppression"`,
 }
 
-Lint_Cli_Hard_Error_JSON :: struct {
+Lint_Cli_Hard_Error :: struct {
 	uri:     string `json:"uri,omitempty"`,
 	path:    string `json:"path,omitempty"`,
 	phase:   string `json:"phase"`,
@@ -107,14 +107,14 @@ Lint_Cli_Hard_Error_JSON :: struct {
 	range:   [2]int `json:"range"`,
 }
 
-Lint_Cli_Level_Summary_JSON :: struct {
+Lint_Cli_Level_Summary :: struct {
 	allow: int `json:"allow"`,
 	info:  int `json:"info"`,
 	warn:  int `json:"warn"`,
 	deny:  int `json:"deny"`,
 }
 
-Lint_Cli_Group_Summary_JSON :: struct {
+Lint_Cli_Group_Summary :: struct {
 	correctness:   int `json:"correctness"`,
 	performance:   int `json:"performance"`,
 	security:      int `json:"security"`,
@@ -124,35 +124,35 @@ Lint_Cli_Group_Summary_JSON :: struct {
 	experimental:  int `json:"experimental"`,
 }
 
-Lint_Cli_Summary_JSON :: struct {
-	total:            int                         `json:"total"`,
-	suppressed:       int                         `json:"suppressed"`,
-	by_level:         Lint_Cli_Level_Summary_JSON `json:"by_level"`,
-	by_group:         Lint_Cli_Group_Summary_JSON `json:"by_group"`,
-	file_count:       int                         `json:"file_count,omitempty"`,
-	hard_error_count: int                         `json:"hard_error_count,omitempty"`,
+Lint_Cli_Summary :: struct {
+	total:            int `json:"total"`,
+	suppressed:       int `json:"suppressed"`,
+	by_level:         Lint_Cli_Level_Summary `json:"by_level"`,
+	by_group:         Lint_Cli_Group_Summary `json:"by_group"`,
+	file_count:       int `json:"file_count,omitempty"`,
+	hard_error_count: int `json:"hard_error_count,omitempty"`,
 }
 
-Lint_Cli_File_JSON :: struct {
-	uri:              string                `json:"uri"`,
-	path:             json.Value            `json:"path"`,
-	object_name:      json.Value            `json:"object_name"`,
-	is_dependency:    bool                  `json:"is_dependency"`,
-	finding_count:    int                   `json:"finding_count"`,
-	hard_error_count: int                   `json:"hard_error_count"`,
-	summary:          Lint_Cli_Summary_JSON `json:"summary"`,
+Lint_Cli_File :: struct {
+	uri:              string `json:"uri"`,
+	path:             Maybe(string) `json:"path"`,
+	object_name:      Maybe(string) `json:"object_name"`,
+	is_dependency:    bool `json:"is_dependency"`,
+	finding_count:    int `json:"finding_count"`,
+	hard_error_count: int `json:"hard_error_count"`,
+	summary:          Lint_Cli_Summary `json:"summary"`,
 }
 
-Lint_Cli_Report_JSON :: struct {
-	schema:      string                     `json:"schema"`,
-	version:     int                        `json:"version"`,
-	phase:       string                     `json:"phase"`,
-	target:      Lint_Cli_Target_JSON       `json:"target"`,
-	workspace:   Lint_Cli_Workspace_JSON    `json:"workspace"`,
-	files:       []Lint_Cli_File_JSON       `json:"files,omitempty"`,
-	findings:    []Lint_Cli_Finding_JSON    `json:"findings"`,
-	hard_errors: []Lint_Cli_Hard_Error_JSON `json:"hard_errors"`,
-	summary:     Lint_Cli_Summary_JSON      `json:"summary"`,
+Lint_Cli_Report :: struct {
+	schema:      string `json:"schema"`,
+	version:     int `json:"version"`,
+	phase:       string `json:"phase"`,
+	target:      Lint_Cli_Target `json:"target"`,
+	workspace:   Lint_Cli_Workspace `json:"workspace"`,
+	files:       []Lint_Cli_File `json:"files,omitempty"`,
+	findings:    []Lint_Cli_Finding `json:"findings"`,
+	hard_errors: []Lint_Cli_Hard_Error `json:"hard_errors"`,
+	summary:     Lint_Cli_Summary `json:"summary"`,
 }
 
 Tree_State :: struct {
@@ -427,7 +427,8 @@ run_lint :: proc(args: []string, allocator: mem.Allocator) {
 	defer workspace.analysis_result_destroy(&result, context.allocator)
 	defer execution.pool_destroy(&pool)
 
-	path_filter := "" if options.all_files else analyze_diagnostic_path_filter(target_path, context.temp_allocator)
+	path_filter :=
+		"" if options.all_files else analyze_diagnostic_path_filter(target_path, context.temp_allocator)
 	hard_errors := lint_cli_hard_errors(&result, path_filter, context.temp_allocator)
 	policy := result.lint_policy
 	if options.show_suppressed {
@@ -463,17 +464,20 @@ run_lint :: proc(args: []string, allocator: mem.Allocator) {
 	}
 
 	if len(hard_errors) > 0 ||
-	   (have_lint_analysis && lint_cli_findings_should_fail(
-	   	&lint_analysis,
-	   	options.fail_on_warnings,
-	   	path_filter,
-	   )) {
+	   (have_lint_analysis &&
+			   lint_cli_findings_should_fail(
+				   &lint_analysis,
+				   options.fail_on_warnings,
+				   path_filter,
+			   )) {
 		os.exit(1)
 	}
 }
 
 lint_parse_options :: proc(args: []string) -> (Lint_Cli_Options, bool) {
-	options := Lint_Cli_Options{path = "."}
+	options := Lint_Cli_Options {
+		path = ".",
+	}
 	had_path := false
 	for i := 2; i < len(args); {
 		arg := args[i]
@@ -527,20 +531,33 @@ lint_analyze_cli_path :: proc(
 	if options.disable_adt_fetch {
 		workspace_flags += {.Disable_ADT_Dependency_Fetch}
 	}
-	workspace_options := workspace.Options{flags = workspace_flags}
+	workspace_options := workspace.Options {
+		flags = workspace_flags,
+	}
 
 	if info.type == .Directory {
-		opened, workspace_ok, workspace_error := workspace.open(abs_path, workspace_options, allocator)
+		opened, workspace_ok, workspace_error := workspace.open(
+			abs_path,
+			workspace_options,
+			allocator,
+		)
 		if !workspace_ok {
-			return workspace.Analysis_Result{ok = false, error = workspace_error}, abs_path, abs_path
+			return workspace.Analysis_Result{ok = false, error = workspace_error},
+				abs_path,
+				abs_path
 		}
 		defer workspace.workspace_destroy(&opened, allocator)
-		return workspace.analyze_workspace(&opened, nil, pool, workspace_options, allocator), abs_path, abs_path
+		return workspace.analyze_workspace(&opened, nil, pool, workspace_options, allocator),
+			abs_path,
+			abs_path
 	}
 
 	if options.with_project || options.all_files {
 		root := os.dir(abs_path)
-		if nearest_root, _, found := workspace.find_nearest_manifest(abs_path, context.temp_allocator); found {
+		if nearest_root, _, found := workspace.find_nearest_manifest(
+			abs_path,
+			context.temp_allocator,
+		); found {
 			root = nearest_root
 		}
 		opened, workspace_ok, workspace_error := workspace.open(root, workspace_options, allocator)
@@ -549,9 +566,13 @@ lint_analyze_cli_path :: proc(
 		}
 		defer workspace.workspace_destroy(&opened, allocator)
 		if options.all_files {
-			return workspace.analyze_workspace(&opened, nil, pool, workspace_options, allocator), root, abs_path
+			return workspace.analyze_workspace(&opened, nil, pool, workspace_options, allocator),
+				root,
+				abs_path
 		}
-		return workspace.analyze_path(&opened, abs_path, nil, pool, workspace_options, allocator), root, abs_path
+		return workspace.analyze_path(&opened, abs_path, nil, pool, workspace_options, allocator),
+			root,
+			abs_path
 	}
 
 	opened, workspace_ok, workspace_error := workspace.open_standalone(
@@ -565,7 +586,9 @@ lint_analyze_cli_path :: proc(
 	defer workspace.workspace_destroy(&opened, allocator)
 	input, input_ok := workspace.workspace_file_input_from_path(abs_path, allocator)
 	if !input_ok {
-		return workspace.Analysis_Result{ok = false, error = "failed to read target file"}, "", abs_path
+		return workspace.Analysis_Result{ok = false, error = "failed to read target file"},
+			"",
+			abs_path
 	}
 	files := make([dynamic]semantic.Workspace_File_Input, 0, 1, allocator)
 	append(&files, input)
@@ -597,8 +620,8 @@ lint_cli_hard_errors :: proc(
 	result: ^workspace.Analysis_Result,
 	path_filter: string,
 	allocator: mem.Allocator,
-) -> [dynamic]Lint_Cli_Hard_Error_JSON {
-	out := make([dynamic]Lint_Cli_Hard_Error_JSON, 0, 4, allocator)
+) -> [dynamic]Lint_Cli_Hard_Error {
+	out := make([dynamic]Lint_Cli_Hard_Error, 0, 4, allocator)
 	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
 	if analysis == nil {
 		return out
@@ -634,7 +657,7 @@ lint_cli_hard_errors :: proc(
 		path := analyze_diagnostic_output_path(item)
 		append(
 			&out,
-			Lint_Cli_Hard_Error_JSON {
+			Lint_Cli_Hard_Error {
 				uri = lint_cli_file_uri(path, allocator),
 				path = path,
 				phase = "parse",
@@ -657,7 +680,7 @@ lint_cli_lint_outputs :: proc(
 	}
 	for diagnostic in analysis.diagnostics {
 		item := Analyze_Lint_Diagnostic_Output {
-			diagnostic = diagnostic,
+			diagnostic    = diagnostic,
 			fallback_path = diagnostic.file.path if diagnostic.file != nil else "",
 		}
 		if analyze_lint_diagnostic_output_matches_filter(item, path_filter) {
@@ -679,8 +702,7 @@ lint_cli_findings_should_fail :: proc(
 		if diagnostic.suppressed {
 			continue
 		}
-		if diagnostic.level == .Deny ||
-		   (fail_on_warnings && diagnostic.level == .Warn) {
+		if diagnostic.level == .Deny || (fail_on_warnings && diagnostic.level == .Warn) {
 			return true
 		}
 	}
@@ -691,18 +713,18 @@ lint_cli_report :: proc(
 	options: ^Lint_Cli_Options,
 	result: ^workspace.Analysis_Result,
 	analysis: ^lints.Analysis,
-	hard_errors: []Lint_Cli_Hard_Error_JSON,
+	hard_errors: []Lint_Cli_Hard_Error,
 	target_path: string,
 	root_path: string,
 	path_filter: string,
 	allocator: mem.Allocator,
-) -> Lint_Cli_Report_JSON {
+) -> Lint_Cli_Report {
 	outputs := lint_cli_lint_outputs(analysis, path_filter, allocator)
-	findings := make([]Lint_Cli_Finding_JSON, len(outputs), allocator)
+	findings := make([]Lint_Cli_Finding, len(outputs), allocator)
 	for item, i in outputs {
 		findings[i] = lint_cli_finding_json(item, allocator)
 	}
-	files := make([]Lint_Cli_File_JSON, 0, allocator)
+	files := make([]Lint_Cli_File, 0, allocator)
 	if options.all_files {
 		files = lint_cli_file_reports(result, outputs[:], hard_errors, target_path, allocator)
 	}
@@ -714,29 +736,35 @@ lint_cli_report :: proc(
 	}
 
 	project_count := lint_cli_project_unit_count(result)
-	project_count_json := lint_json_optional_int(project_count, options.with_project || options.all_files)
-	dependency_count_json := lint_json_optional_int(0, options.with_project || options.all_files)
-	editable_count_json := lint_json_optional_int(len(result.session.editable_files), options.all_files)
-	root_uri_json := lint_json_optional_string(lint_cli_file_uri(root_path, allocator))
+	project_count_value := lint_cli_optional_int(
+		project_count,
+		options.with_project || options.all_files,
+	)
+	dependency_count_value := lint_cli_optional_int(0, options.with_project || options.all_files)
+	editable_count_value := lint_cli_optional_int(
+		len(result.session.editable_files),
+		options.all_files,
+	)
+	root_uri_value := lint_cli_optional_string(lint_cli_file_uri(root_path, allocator))
 
-	return Lint_Cli_Report_JSON {
+	return Lint_Cli_Report {
 		schema = "abap-lsp.lint",
 		version = 1,
 		phase = "lint",
-		target = Lint_Cli_Target_JSON {
+		target = Lint_Cli_Target {
 			uri = lint_cli_file_uri(target_path, allocator),
-			path = lint_json_optional_string(target_path),
-			object_name = lint_json_optional_string(""),
+			path = lint_cli_optional_string(target_path),
+			object_name = lint_cli_optional_string(""),
 			is_dependency = false,
 		},
-		workspace = Lint_Cli_Workspace_JSON {
+		workspace = Lint_Cli_Workspace {
 			with_project = options.with_project || options.all_files,
 			all_files = options.all_files,
-			root_uri = root_uri_json,
+			root_uri = root_uri_value,
 			manifest_present = result.used_manifest,
-			project_unit_count = project_count_json,
-			dependency_unit_count = dependency_count_json,
-			editable_file_count = editable_count_json,
+			project_unit_count = project_count_value,
+			dependency_unit_count = dependency_count_value,
+			editable_file_count = editable_count_value,
 		},
 		files = files,
 		findings = findings,
@@ -748,10 +776,10 @@ lint_cli_report :: proc(
 lint_cli_file_reports :: proc(
 	result: ^workspace.Analysis_Result,
 	findings: []Analyze_Lint_Diagnostic_Output,
-	hard_errors: []Lint_Cli_Hard_Error_JSON,
+	hard_errors: []Lint_Cli_Hard_Error,
 	target_path: string,
 	allocator: mem.Allocator,
-) -> []Lint_Cli_File_JSON {
+) -> []Lint_Cli_File {
 	paths := make([dynamic]string, 0, len(result.session.editable_files), allocator)
 	for input in result.session.editable_files {
 		lint_cli_add_report_path(&paths, input.path)
@@ -767,7 +795,7 @@ lint_cli_file_reports :: proc(
 	}
 	slice.sort_by(paths[:], lint_cli_path_less)
 
-	files := make([]Lint_Cli_File_JSON, len(paths), allocator)
+	files := make([]Lint_Cli_File, len(paths), allocator)
 	for path, i in paths {
 		finding_count := 0
 		for item in findings {
@@ -781,14 +809,14 @@ lint_cli_file_reports :: proc(
 				hard_error_count += 1
 			}
 		}
-		files[i] = Lint_Cli_File_JSON {
-			uri = lint_cli_file_uri(path, allocator),
-			path = lint_json_optional_string(path),
-			object_name = lint_json_optional_string(""),
-			is_dependency = false,
-			finding_count = finding_count,
+		files[i] = Lint_Cli_File {
+			uri              = lint_cli_file_uri(path, allocator),
+			path             = lint_cli_optional_string(path),
+			object_name      = lint_cli_optional_string(""),
+			is_dependency    = false,
+			finding_count    = finding_count,
 			hard_error_count = hard_error_count,
-			summary = lint_cli_summary_for_path(findings, path),
+			summary          = lint_cli_summary_for_path(findings, path),
 		}
 	}
 	return files
@@ -820,9 +848,9 @@ lint_cli_same_path :: proc(a, b: string) -> bool {
 lint_cli_finding_json :: proc(
 	item: Analyze_Lint_Diagnostic_Output,
 	allocator: mem.Allocator,
-) -> Lint_Cli_Finding_JSON {
+) -> Lint_Cli_Finding {
 	diagnostic := item.diagnostic
-	return Lint_Cli_Finding_JSON {
+	return Lint_Cli_Finding {
 		uri = lint_cli_file_uri(analyze_lint_diagnostic_output_path(item), allocator),
 		lint_id = diagnostic.id,
 		level = lints.level_string(diagnostic.level),
@@ -831,29 +859,23 @@ lint_cli_finding_json :: proc(
 		message = diagnostic.message,
 		range = [2]int{diagnostic.range.start, diagnostic.range.end},
 		suppressed = diagnostic.suppressed,
-		suppression = lint_cli_suppression_json(diagnostic, allocator),
+		suppression = lint_cli_suppression_json(diagnostic),
 	}
 }
 
-lint_cli_suppression_json :: proc(
-	diagnostic: lints.Diagnostic,
-	allocator: mem.Allocator,
-) -> json.Value {
+lint_cli_suppression_json :: proc(diagnostic: lints.Diagnostic) -> Maybe(Lint_Cli_Suppression) {
 	if !diagnostic.has_suppression {
-		return json.Value(json.Null(nil))
+		return nil
 	}
-	object := make(map[string]json.Value, 3, allocator)
-	object["kind"] = json.Value(json.String(lints.suppression_kind_string(diagnostic.suppression.kind)))
-	object["token"] = json.Value(json.String(diagnostic.suppression.token))
-	range_values := make([dynamic]json.Value, 0, 2, allocator)
-	append(&range_values, json.Value(json.Integer(diagnostic.suppression.range.start)))
-	append(&range_values, json.Value(json.Integer(diagnostic.suppression.range.end)))
-	object["range"] = json.Value(json.Array(range_values))
-	return json.Value(json.Object(object))
+	return Lint_Cli_Suppression {
+		kind = lints.suppression_kind_string(diagnostic.suppression.kind),
+		range = [2]int{diagnostic.suppression.range.start, diagnostic.suppression.range.end},
+		token = diagnostic.suppression.token,
+	}
 }
 
-lint_cli_summary :: proc(findings: []Analyze_Lint_Diagnostic_Output) -> Lint_Cli_Summary_JSON {
-	summary: Lint_Cli_Summary_JSON
+lint_cli_summary :: proc(findings: []Analyze_Lint_Diagnostic_Output) -> Lint_Cli_Summary {
+	summary: Lint_Cli_Summary
 	summary.total = len(findings)
 	for item in findings {
 		lint_cli_summary_add(&summary, item.diagnostic)
@@ -864,8 +886,8 @@ lint_cli_summary :: proc(findings: []Analyze_Lint_Diagnostic_Output) -> Lint_Cli
 lint_cli_summary_for_path :: proc(
 	findings: []Analyze_Lint_Diagnostic_Output,
 	path: string,
-) -> Lint_Cli_Summary_JSON {
-	summary: Lint_Cli_Summary_JSON
+) -> Lint_Cli_Summary {
+	summary: Lint_Cli_Summary
 	for item in findings {
 		if !lint_cli_same_path(path, analyze_lint_diagnostic_output_path(item)) {
 			continue
@@ -876,7 +898,7 @@ lint_cli_summary_for_path :: proc(
 	return summary
 }
 
-lint_cli_summary_add :: proc(summary: ^Lint_Cli_Summary_JSON, diagnostic: lints.Diagnostic) {
+lint_cli_summary_add :: proc(summary: ^Lint_Cli_Summary, diagnostic: lints.Diagnostic) {
 	if diagnostic.suppressed {
 		summary.suppressed += 1
 	}
@@ -934,22 +956,24 @@ lint_cli_file_uri :: proc(path: string, allocator: mem.Allocator) -> string {
 	return display
 }
 
-lint_json_optional_string :: proc(value: string) -> json.Value {
+lint_cli_optional_string :: proc(value: string) -> Maybe(string) {
 	if value == "" {
-		return json.Value(json.Null(nil))
+		return nil
 	}
-	return json.Value(json.String(value))
+	return value
 }
 
-lint_json_optional_int :: proc(value: int, present: bool) -> json.Value {
+lint_cli_optional_int :: proc(value: int, present: bool) -> Maybe(int) {
 	if !present {
-		return json.Value(json.Null(nil))
+		return nil
 	}
-	return json.Value(json.Integer(value))
+	return value
 }
 
 lint_cli_emit_json :: proc(value: any, pretty: bool, allocator: mem.Allocator) {
-	options := json.Marshal_Options{spec = .JSON}
+	options := json.Marshal_Options {
+		spec = .JSON,
+	}
 	if pretty {
 		options.pretty = true
 		options.use_spaces = true
@@ -1362,10 +1386,7 @@ analyze_lint_diagnostic_output_matches_filter :: proc(
 	)
 }
 
-analyze_lint_diagnostic_output_less :: proc(
-	left,
-	right: Analyze_Lint_Diagnostic_Output,
-) -> bool {
+analyze_lint_diagnostic_output_less :: proc(left, right: Analyze_Lint_Diagnostic_Output) -> bool {
 	left_path := analyze_lint_diagnostic_output_path(left)
 	right_path := analyze_lint_diagnostic_output_path(right)
 	path_cmp := strings.compare(left_path, right_path)
