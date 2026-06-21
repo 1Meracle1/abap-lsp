@@ -1363,6 +1363,7 @@ checker_check_read_table_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Read_Tab
 		checker_check_table_line_target(ctx, entry.reference_into, row_type, .Reference_Into)
 		checker_check_expr(ctx, entry.index)
 		checker_check_table_key_selector(ctx, entry.using_key)
+		checker_check_loop_transporting_fields(ctx, entry.transporting_fields[:], row_type, row_structure)
 		checker_check_read_table_comparing(ctx, entry.comparing[:], row_type, row_structure)
 		for key in entry.key_values {
 			checker_check_read_table_key_value(ctx, row_type, row_structure, key)

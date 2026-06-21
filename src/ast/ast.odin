@@ -2673,6 +2673,7 @@ Read_Table_Entry_Clause :: struct {
 	key_values:             [dynamic]Read_Table_Key_Value_Clause,
 	index:                  ^Expr,
 	using_key:              Table_Key_Selector,
+	transporting_fields:    [dynamic]Transporting_Field_Clause,
 	transporting_no_fields: bool,
 	binary_search:          bool,
 	binary_search_clause:   tokenizer.Range,

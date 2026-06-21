@@ -3839,6 +3839,9 @@ emit_read_table_stmt :: proc(p: ^Printer, stmt: ^Read_Table_Stmt) {
 		}
 		if entry.transporting_no_fields {
 			emit(p, " TRANSPORTING NO FIELDS")
+		} else if len(entry.transporting_fields) > 0 {
+			emit(p, " TRANSPORTING ")
+			emit_transporting_field_list(p, entry.transporting_fields)
 		}
 		if entry.binary_search {
 			emit(p, " BINARY SEARCH")

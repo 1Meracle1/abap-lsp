@@ -2317,6 +2317,7 @@ parse_read_table_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_read_table_entry :: proc(p: ^Parser, body_start: int) -> ast.Read_Table_Entry_Clause {
 	entry := ast.Read_Table_Entry_Clause{}
 	entry.key_values = make([dynamic]ast.Read_Table_Key_Value_Clause, 0, 2, p.allocator)
+	entry.transporting_fields = make([dynamic]ast.Transporting_Field_Clause, 0, 2, p.allocator)
 	entry.comparing = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	entry.table = data_expr(
 		p,
@@ -2391,11 +2392,7 @@ parse_read_table_entry :: proc(p: ^Parser, body_start: int) -> ast.Read_Table_En
 			if allow_keyword(p, "NO") {
 				entry.transporting_no_fields = allow_keyword(p, "FIELDS")
 			} else {
-				_ = data_exprs_until(
-					p,
-					body_start,
-					[]string{"WITH", "INDEX", "USING", "COMPARING", "BINARY"},
-				)
+				parse_read_table_transporting_fields(p, body_start, &entry.transporting_fields)
 			}
 			continue
 		}
@@ -2423,6 +2420,35 @@ parse_read_table_entry :: proc(p: ^Parser, body_start: int) -> ast.Read_Table_En
 		bump_token(p)
 	}
 	return entry
+}
+
+parse_read_table_transporting_fields :: proc(
+	p: ^Parser,
+	body_start: int,
+	fields: ^[dynamic]ast.Transporting_Field_Clause,
+) {
+	stop_keywords := []string {
+		"WITH",
+		"INDEX",
+		"USING",
+		"COMPARING",
+		"BINARY",
+		"INTO",
+		"ASSIGNING",
+		"REFERENCE",
+	}
+	for !data_stmt_done(p, body_start) &&
+	    current_token(p).kind != .Comma &&
+	    !data_current_keyword_in(p, stop_keywords) {
+		start := p.index
+		if field, ok := parse_transporting_field(p); ok {
+			append(fields, field)
+		} else {
+			error_current(p, "syntax error: expected READ TABLE TRANSPORTING component path")
+			bump_token(p)
+		}
+		ensure_forward_progress(p, start)
+	}
 }
 
 read_table_result_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.Expr {

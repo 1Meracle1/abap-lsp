@@ -1829,6 +1829,7 @@ clone_read_table_entries :: proc(list: [dynamic]Read_Table_Entry_Clause, allocat
 			key_values             = clone_read_table_key_values(clause.key_values, allocator),
 			index                  = clone(clause.index, allocator),
 			using_key              = clone_table_key_selector(clause.using_key, allocator),
+			transporting_fields    = clone_transporting_fields(clause.transporting_fields, allocator),
 			transporting_no_fields = clause.transporting_no_fields,
 			binary_search          = clause.binary_search,
 			binary_search_clause   = clause.binary_search_clause,

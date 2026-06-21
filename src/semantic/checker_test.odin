@@ -6504,10 +6504,12 @@ READ TABLE mt_event WITH KEY nested-part = lv_part ASSIGNING <ls_event> BINARY S
 READ TABLE mt_event WITH KEY (lv_component) = lv_trnid TRANSPORTING NO FIELDS.
 READ TABLE mt_refs WITH KEY table_line->part = lv_part TRANSPORTING NO FIELDS.
 READ TABLE mt_event WITH KEY trnid = lv_trnid INTO DATA(ls_all) COMPARING ALL FIELDS.
+READ TABLE mt_event INTO DATA(ls_transporting) INDEX lv_index TRANSPORTING docnum nested-part.
 DATA lv_text TYPE string.
 lv_text = ls_by_key-docnum.
 lv_text = ls_by_index-trnid.
-lv_text = ls_all-docpos.`
+lv_text = ls_all-docpos.
+lv_text = ls_transporting-docnum.`
 
 	project := project_make()
 	defer project_destroy(&project)
@@ -6572,17 +6574,18 @@ READ TABLE lt_rows WITH KEY missing = lv_id INTO DATA(ls_missing).
 READ TABLE lt_rows WITH KEY date = lv_time TRANSPORTING NO FIELDS.
 READ TABLE lt_rows WITH KEY nested-missing = lv_id TRANSPORTING NO FIELDS.
 READ TABLE lt_rows WITH KEY id = lv_missing TRANSPORTING NO FIELDS.
-READ TABLE lt_rows INTO DATA(ls_cmp) INDEX 1 COMPARING gone.`
+READ TABLE lt_rows INTO DATA(ls_cmp) INDEX 1 COMPARING gone.
+READ TABLE lt_rows INTO DATA(ls_transporting) INDEX 1 TRANSPORTING transporting_missing.`
 
 	project := project_make()
 	defer project_destroy(&project)
 
 	checker, _ := checker_test_check_source(t, &project, source, "mem://read_table_key_errors.abap")
 
-	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 3)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 4)
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 1)
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
-	missing_names := [?]string{"missing", "gone"}
+	missing_names := [?]string{"missing", "gone", "transporting_missing"}
 	for name in missing_names {
 		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 0)
 	}

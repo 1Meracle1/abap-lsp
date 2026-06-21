@@ -491,6 +491,26 @@ read_table_table_key_components_keeps_key_name :: proc(t: ^testing.T) {
 }
 
 @(test)
+read_table_transporting_keeps_component_paths :: proc(t: ^testing.T) {
+	source := `READ TABLE lt_rows INTO ls_row INDEX lv_idx TRANSPORTING id nested-part.`
+	parsed := parse(source, "read_table_transporting.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	read := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
+	entry := read.entries[0]
+
+	testing.expect(t, !entry.transporting_no_fields)
+	testing.expect_value(t, len(entry.transporting_fields), 2)
+	testing.expect_value(t, entry.transporting_fields[0].name.text, "id")
+	testing.expect_value(t, len(entry.transporting_fields[0].path), 1)
+	testing.expect_value(t, entry.transporting_fields[1].name.text, "nested-part")
+	testing.expect_value(t, len(entry.transporting_fields[1].path), 2)
+	testing.expect_value(t, entry.transporting_fields[1].path[0].name.text, "nested")
+	testing.expect_value(t, entry.transporting_fields[1].path[1].name.text, "part")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 read_table_key_keeps_nested_component_path :: proc(t: ^testing.T) {
 	source := `READ TABLE rt_item_status REFERENCE INTO lr_item_status WITH KEY item-obj_type = ls_item_status-item-obj_type item-obj_name = ls_item_status-item-obj_name.`
 	parsed := parse(source, "read_table_nested_key.abap", context.allocator)
