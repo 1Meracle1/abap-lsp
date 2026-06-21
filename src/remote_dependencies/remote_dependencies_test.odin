@@ -638,6 +638,33 @@ remote_dependency_ddic_xml_with_include_cache_entry_is_not_stale :: proc(t: ^tes
 }
 
 @(test)
+remote_dependency_cached_ddic_domain_preserves_char_length_source :: proc(t: ^testing.T) {
+	artifact := Artifact {
+		request        = Request{name = "trkorr", kind = .Type},
+		source_kind    = .Cache,
+		object_kind    = "ddic-domain",
+		object_name    = "trkorr",
+		object_uri     = "/sap/bc/adt/ddic/domains/trkorr",
+		object_type    = "DOMA/D",
+		file_extension = "xml",
+		source_text    = `<blue:wbobj adtcore:name="trkorr" adtcore:type="DOMA/D" xmlns:blue="http://www.sap.com/wbobj/dictionary/doma" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:doma="http://www.sap.com/adt/dictionary/domains">
+  <doma:domain>
+    <doma:dataType>CHAR</doma:dataType>
+    <doma:dataTypeLength>20</doma:dataTypeLength>
+    <doma:dataTypeDecimals>0</doma:dataTypeDecimals>
+  </doma:domain>
+</blue:wbobj>`,
+	}
+
+	source := open_source_from_artifact(&artifact, context.allocator)
+	lower := strings.to_lower(source.source_text, context.allocator)
+	defer delete(lower, context.allocator)
+
+	testing.expect(t, strings.contains(lower, "types trkorr type c length 20"))
+	testing.expect(t, !source.has_parse_errors)
+}
+
+@(test)
 remote_dependency_ddic_source_cache_entry_is_not_stale_and_converts :: proc(t: ^testing.T) {
 	source := `define type zrow {
   value : abap.int4;

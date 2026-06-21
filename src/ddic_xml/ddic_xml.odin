@@ -4,6 +4,7 @@ import ddic "src:ddic"
 import ddic_source "src:ddic_source"
 import xml_doc "core:encoding/xml"
 import "core:mem"
+import "core:strconv"
 import "core:strings"
 
 Ddic_Xml_Kind :: enum {
@@ -21,6 +22,7 @@ Ddic_Xml_Field :: struct {
 Ddic_Xml_Type_Ref :: struct {
 	name:   string,
 	is_ref: bool,
+	length: string,
 }
 
 dependency_source :: proc(
@@ -127,8 +129,28 @@ ddic_xml_type_alias_source :: proc(
 		strings.write_string(&out, "REF TO ")
 	}
 	ddic.write_abap_name(&out, type_ref.name)
+	write_type_ref_length(&out, type_ref)
 	strings.write_string(&out, ".\n")
 	return strings.to_string(out)
+}
+
+write_type_ref_length :: proc(out: ^strings.Builder, type_ref: Ddic_Xml_Type_Ref) {
+	if !ddic_xml_type_ref_supports_length(type_ref.name) {
+		return
+	}
+	length, ok := strconv.parse_int(strings.trim_space(type_ref.length), 10)
+	if !ok || length <= 0 {
+		return
+	}
+	buf: [32]byte
+	strings.write_string(out, " LENGTH ")
+	strings.write_string(out, strconv.write_int(buf[:], i64(length), 10))
+}
+
+ddic_xml_type_ref_supports_length :: proc(name: string) -> bool {
+	return strings.equal_fold(name, "c") ||
+	       strings.equal_fold(name, "n") ||
+	       strings.equal_fold(name, "x")
 }
 
 ddic_xml_table_type_source :: proc(
@@ -244,30 +266,48 @@ ddic_xml_table_line_type :: proc(doc: ^xml_doc.Document) -> Ddic_Xml_Type_Ref {
 ddic_xml_data_element_type :: proc(doc: ^xml_doc.Document) -> Ddic_Xml_Type_Ref {
 	if doc == nil ||
 	   len(doc.elements) == 0 ||
-	   !ddic_xml_name_equal(doc.elements[0].ident, "wbobj") ||
-	   !strings.equal_fold(ddic_xml_attr_value(doc, 0, "type"), "DTEL/DE") {
+	   !ddic_xml_name_equal(doc.elements[0].ident, "wbobj") {
 		return {}
 	}
-	data_element_id, ok := ddic_xml_direct_child(doc, 0, "dataElement")
+	root_type := ddic_xml_attr_value(doc, 0, "type")
+	alias_child_name := ""
+	switch {
+	case strings.equal_fold(root_type, "DTEL/DE"):
+		alias_child_name = "dataElement"
+	case ddic_xml_starts_with_ignore_case(root_type, "DOMA/"):
+		alias_child_name = "domain"
+	}
+	if alias_child_name == "" {
+		return {}
+	}
+	alias_id, ok := ddic_xml_direct_child(doc, 0, alias_child_name)
 	if !ok {
 		return {}
 	}
-	type_kind := ddic_xml_direct_child_text(doc, data_element_id, "typeKind")
+	type_kind := ddic_xml_direct_child_text(doc, alias_id, "typeKind")
 	if strings.equal_fold(type_kind, "refToClifType") {
 		return Ddic_Xml_Type_Ref {
-			name = ddic_xml_direct_child_text(doc, data_element_id, "typeName"),
+			name = ddic_xml_direct_child_text(doc, alias_id, "typeName"),
 			is_ref = true,
 		}
 	}
 	if strings.equal_fold(type_kind, "refToDictionaryType") {
 		return Ddic_Xml_Type_Ref {
-			name = ddic_xml_direct_child_text(doc, data_element_id, "typeName"),
+			name = ddic_xml_direct_child_text(doc, alias_id, "typeName"),
 			is_ref = true,
 		}
 	}
 	return Ddic_Xml_Type_Ref {
-		name = ddic.builtin_type(ddic_xml_direct_child_text(doc, data_element_id, "dataType")),
+		name   = ddic.builtin_type(ddic_xml_direct_child_text(doc, alias_id, "dataType")),
+		length = ddic_xml_alias_type_length(doc, alias_id),
 	}
+}
+
+ddic_xml_alias_type_length :: proc(doc: ^xml_doc.Document, id: xml_doc.Element_ID) -> string {
+	if length := ddic_xml_direct_child_text(doc, id, "dataTypeLength"); length != "" {
+		return length
+	}
+	return ddic_xml_direct_child_text(doc, id, "length")
 }
 
 ddic_xml_entry_text :: proc(
@@ -356,4 +396,8 @@ ddic_xml_name_equal :: proc(name, candidate: string) -> bool {
 		return true
 	}
 	return false
+}
+
+ddic_xml_starts_with_ignore_case :: proc(value, prefix: string) -> bool {
+	return len(value) >= len(prefix) && strings.equal_fold(value[:len(prefix)], prefix)
 }

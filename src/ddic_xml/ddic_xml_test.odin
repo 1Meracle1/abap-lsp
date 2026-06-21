@@ -224,6 +224,37 @@ data_element_dependency_source_uses_dtel_data_type :: proc(t: ^testing.T) {
 }
 
 @(test)
+data_element_dependency_source_preserves_builtin_char_length :: proc(t: ^testing.T) {
+	xml := `<blue:wbobj adtcore:name="trkorr" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+  <dtel:dataElement>
+    <dtel:typeKind>domain</dtel:typeKind>
+    <dtel:dataType>CHAR</dtel:dataType>
+    <dtel:dataTypeLength>20</dtel:dataTypeLength>
+    <dtel:dataTypeDecimals>0</dtel:dataTypeDecimals>
+  </dtel:dataElement>
+</blue:wbobj>`
+	source := dependency_source("TRKORR", "ddic-data-element", xml, context.allocator)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "types trkorr type c length 20")
+}
+
+@(test)
+domain_dependency_source_preserves_builtin_char_length :: proc(t: ^testing.T) {
+	xml := `<blue:wbobj adtcore:name="trkorr" adtcore:type="DOMA/D" xmlns:blue="http://www.sap.com/wbobj/dictionary/doma" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:doma="http://www.sap.com/adt/dictionary/domains">
+  <doma:domain>
+    <doma:dataType>CHAR</doma:dataType>
+    <doma:dataTypeLength>20</doma:dataTypeLength>
+    <doma:dataTypeDecimals>0</doma:dataTypeDecimals>
+  </doma:domain>
+</blue:wbobj>`
+	source := dependency_source("TRKORR", "ddic-domain", xml, context.allocator)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "types trkorr type c length 20")
+}
+
+@(test)
 data_element_dependency_source_trims_formatted_decfloat_type :: proc(t: ^testing.T) {
 	xml := `<blue:wbobj adtcore:name="zde_decfloat" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
   <dtel:dataElement>
