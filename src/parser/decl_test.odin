@@ -363,6 +363,43 @@ TYPES ty_code_ranges TYPE SORTED TABLE OF ty_code_range WITH UNIQUE KEY begin.`
 }
 
 @(test)
+table_type_key_components_allow_value_keyword :: proc(t: ^testing.T) {
+	source := `TYPES ty_rows TYPE SORTED TABLE OF ty_row WITH UNIQUE KEY value.`
+	parsed := parse(source, "keyword_value_key_component.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	ref := decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect(t, ref.key != nil)
+	if ref.key != nil {
+		testing.expect_value(t, ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
+		testing.expect_value(t, len(ref.key.components), 1)
+		testing.expect_value(t, ref.key.components[0].text, "value")
+	}
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+table_type_secondary_key_allows_value_keyword_name_and_component :: proc(t: ^testing.T) {
+	source := `TYPES ty_rows TYPE HASHED TABLE OF ty_row WITH UNIQUE KEY sid WITH NON-UNIQUE SORTED KEY value COMPONENTS value.`
+	parsed := parse(source, "keyword_value_secondary_key.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	ref := decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect_value(t, len(ref.keys), 2)
+	secondary := ref.keys[1]
+	testing.expect_value(t, secondary.kind, ast.Type_Ref_Key_Kind.Non_Unique)
+	testing.expect(t, secondary.sorted)
+	testing.expect_value(t, secondary.name.text, "value")
+	testing.expect_value(t, len(secondary.components), 1)
+	testing.expect_value(t, secondary.components[0].text, "value")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 table_type_key_clause_keeps_precise_identifier_ranges :: proc(t: ^testing.T) {
 	source := `TYPES:
   BEGIN OF ty_order_map,

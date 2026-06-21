@@ -1299,7 +1299,8 @@ parse_type_ref_key_clause :: proc(p: ^Parser) -> ^ast.Type_Ref_Key_Clause {
 	clause.hashed = allow_keyword(p, "HASHED")
 	allow_keyword(p, "KEY")
 	in_components := false
-	for !decl_clause_boundary(p) && !type_ref_stop_keyword(p) {
+	for !decl_clause_boundary(p) &&
+	    (!type_ref_stop_keyword(p) || type_ref_stop_keyword_is_key_component(p)) {
 		if allow_token(p, .Comma) {
 			continue
 		}
@@ -1321,6 +1322,20 @@ parse_type_ref_key_clause :: proc(p: ^Parser) -> ^ast.Type_Ref_Key_Clause {
 		bump_token(p)
 	}
 	return clause
+}
+
+type_ref_stop_keyword_is_key_component :: proc(p: ^Parser) -> bool {
+	tok := current_token(p)
+	if !type_ref_path_token(tok) || !type_ref_stop_keyword(p) {
+		return false
+	}
+	next := p.index + 1
+	return(
+		decl_clause_boundary_index(p, next) ||
+		at_keyword_index(p, next, "COMPONENTS") ||
+		type_ref_key_clause_starts(p, next) ||
+		type_ref_stop_keyword_index(p, next) \
+	)
 }
 
 type_ref_plain_tail_starts :: proc(p: ^Parser, start: int) -> bool {
@@ -1830,35 +1845,50 @@ parse_required_addition_token_text :: proc(
 }
 
 at_length_keyword :: proc(p: ^Parser) -> bool {
-	return at_keyword(p, "LENGTH") || at_keyword(p, "DECIMALS")
+	return at_length_keyword_index(p, p.index)
+}
+
+at_length_keyword_index :: proc(p: ^Parser, index: int) -> bool {
+	return at_keyword_index(p, index, "LENGTH") || at_keyword_index(p, index, "DECIMALS")
 }
 
 type_ref_stop_keyword :: proc(p: ^Parser) -> bool {
+	return type_ref_stop_keyword_index(p, p.index)
+}
+
+type_ref_stop_keyword_index :: proc(p: ^Parser, index: int) -> bool {
 	return(
-		at_length_keyword(p) ||
-		at_keyword(p, "VALUE") ||
-		at_keyword(p, "DEFAULT") ||
-		at_keyword(p, "FOR") ||
-		at_keyword(p, "INITIAL") ||
-		at_keyword(p, "AS") ||
-		at_keyword(p, "LOWER") ||
-		at_keyword(p, "MATCHCODE") ||
-		at_keyword(p, "MEMORY") ||
-		at_keyword(p, "MODIF") ||
-		at_keyword(p, "NO") ||
-		at_keyword(p, "OBLIGATORY") ||
-		at_keyword(p, "OCCURS") ||
-		at_keyword(p, "RADIOBUTTON") ||
-		at_keyword(p, "USER") ||
-		at_keyword(p, "USING") ||
-		at_keyword(p, "VISIBLE") ||
-		at_keyword_phrase(p, "READ-ONLY") ||
-		at_keyword(p, "WITH") \
+		at_length_keyword_index(p, index) ||
+		at_keyword_index(p, index, "VALUE") ||
+		at_keyword_index(p, index, "DEFAULT") ||
+		at_keyword_index(p, index, "FOR") ||
+		at_keyword_index(p, index, "INITIAL") ||
+		at_keyword_index(p, index, "AS") ||
+		at_keyword_index(p, index, "LOWER") ||
+		at_keyword_index(p, index, "MATCHCODE") ||
+		at_keyword_index(p, index, "MEMORY") ||
+		at_keyword_index(p, index, "MODIF") ||
+		at_keyword_index(p, index, "NO") ||
+		at_keyword_index(p, index, "OBLIGATORY") ||
+		at_keyword_index(p, index, "OCCURS") ||
+		at_keyword_index(p, index, "RADIOBUTTON") ||
+		at_keyword_index(p, index, "USER") ||
+		at_keyword_index(p, index, "USING") ||
+		at_keyword_index(p, index, "VISIBLE") ||
+		keyword_phrase_at(p, index, "READ-ONLY") ||
+		at_keyword_index(p, index, "WITH") \
 	)
 }
 
 decl_clause_boundary :: proc(p: ^Parser) -> bool {
-	tok := current_token(p)
+	return decl_clause_boundary_index(p, p.index)
+}
+
+decl_clause_boundary_index :: proc(p: ^Parser, index: int) -> bool {
+	if index >= len(p.tokens) {
+		return true
+	}
+	tok := p.tokens[index]
 	return tok.kind == .Comma || tok.kind == .Period || tok.kind == .Eof
 }
 
@@ -1907,7 +1937,12 @@ decl_clause_tail_starts :: proc(p: ^Parser) -> bool {
 
 parse_unexpected_decl_addition :: proc(p: ^Parser, clause_start: int) {
 	start := current_token(p)
+	consumed := false
 	for !decl_clause_end(p, clause_start) && !decl_clause_tail_starts(p) {
+		bump_token(p)
+		consumed = true
+	}
+	if !consumed && !decl_clause_end(p, clause_start) && !at_eof(p) {
 		bump_token(p)
 	}
 	end := start.range.end
