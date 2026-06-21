@@ -811,6 +811,7 @@ OPEN_SQL_UP_TO_COMBINATION_MESSAGE :: "syntax error: Open SQL UP TO cannot be us
 OPEN_SQL_OFFSET_COMBINATION_MESSAGE :: "syntax error: Open SQL OFFSET requires ORDER BY and cannot be used with SINGLE, FOR ALL ENTRIES, or set operators"
 OPEN_SQL_SINGLE_TABLE_RESULT_MESSAGE :: "syntax error: SELECT SINGLE cannot use INTO TABLE or APPENDING TABLE"
 OPEN_SQL_PACKAGE_SIZE_RESULT_MESSAGE :: "syntax error: SELECT PACKAGE SIZE requires INTO TABLE or APPENDING TABLE"
+OPEN_SQL_MISSING_FROM_MESSAGE :: "syntax error: expected SELECT FROM clause"
 
 SELECT_RESULT_TARGET_STOP_KEYWORDS :: []string {
 	"PACKAGE",
@@ -1422,6 +1423,11 @@ validate_select_query_required_shape :: proc(
 	   len(p.errors) == query_error_count {
 		error(p, select_missing_projection_range(query), "syntax error: expected SELECT field")
 	}
+	if query.source == nil &&
+	   query.source_clause == nil &&
+	   len(p.errors) == query_error_count {
+		error(p, select_missing_source_range(query), OPEN_SQL_MISSING_FROM_MESSAGE)
+	}
 	if query.single && select_result_clause_is_table_like(query.result) {
 		error(p, query.result.range, OPEN_SQL_SINGLE_TABLE_RESULT_MESSAGE)
 	}
@@ -1438,6 +1444,16 @@ select_missing_projection_range :: proc(query: ^ast.Select_Query_Clause) -> toke
 		return query.into_clause
 	}
 	return query.projection_clause
+}
+
+select_missing_source_range :: proc(query: ^ast.Select_Query_Clause) -> tokenizer.Range {
+	if select_range_valid(query.projection_clause) {
+		return query.projection_clause
+	}
+	if select_range_valid(query.into_clause) {
+		return query.into_clause
+	}
+	return select_missing_projection_range(query)
 }
 
 select_result_clause_is_table_like :: proc(result: ^ast.Select_Result_Clause) -> bool {
@@ -3241,6 +3257,9 @@ parse_generate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 }
 
 select_query_has_loop_body :: proc(query: ast.Select_Query_Clause) -> bool {
+	if query.source == nil && query.source_clause == nil {
+		return false
+	}
 	if query.single {
 		return false
 	}

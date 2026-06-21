@@ -1993,6 +1993,23 @@ SELECT FROM mara FIELDS matnr INTO TABLE @lt_rows.`
 }
 
 @(test)
+open_sql_select_requires_from_clause :: proc(t: ^testing.T) {
+	source := `SELECT matnr INTO @DATA(lv_matnr).
+SELECT SINGLE matnr INTO @DATA(lv_old) FROM mara.
+SELECT FROM mara FIELDS matnr INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_from_required.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, OPEN_SQL_MISSING_FROM_MESSAGE), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, OPEN_SQL_MISSING_ENDSELECT_MESSAGE), 0)
+
+	old_style := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt)
+	new_style := parsed.root.stmts[2].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(t, source[old_style.query.from_clause.start:old_style.query.from_clause.end], "mara")
+	testing.expect_value(t, source[new_style.query.from_clause.start:new_style.query.from_clause.end], "mara")
+	testing.expect_value(t, len(new_style.query.projection_clauses), 1)
+}
+
+@(test)
 open_sql_select_result_and_package_combinations_are_diagnosed :: proc(t: ^testing.T) {
 	source := `SELECT SINGLE matnr FROM mara INTO TABLE @lt_rows.
 SELECT SINGLE matnr FROM mara APPENDING TABLE @lt_rows.
