@@ -207,13 +207,15 @@ parse_table_key_selector :: proc(
 		open := p.index
 		close := matching_group_index(p, open, .LParen, .RParen)
 		if close > open {
-			selector.dynamic_name = parse_complete_logical_expr(p, open + 1, close)
-			range := tokenizer.text_range(p.tokens[open].range.start, p.tokens[close].range.end)
+			selector.dynamic_name = parse_required_complete_expr_with(
+				p,
+				open + 1,
+				close,
+				parse_logical_expr,
+				"syntax error: expected dynamic table key expression",
+			)
 			for p.index <= close {
 				bump_token(p)
-			}
-			if selector.dynamic_name == nil {
-				error(p, range, "syntax error: expected dynamic table key expression")
 			}
 			return selector
 		}
@@ -647,7 +649,7 @@ parse_exec_sql_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	)
 	stmt.header_range = tokenizer.text_range(start.range.start, header_period.range.end)
 	if header_period.range.end < body_end {
-		stmt.body = source_range_text(p, tokenizer.text_range(header_period.range.end, body_end))
+		stmt.body = parser_clone_range_text(p, tokenizer.text_range(header_period.range.end, body_end))
 	}
 	return stmt
 }
@@ -2322,7 +2324,13 @@ parse_read_table_key_values :: proc(
 		if name_end := read_table_dynamic_key_name_end(p); name_end >= 0 {
 			name_start := current_token(p).range.start
 			name_end_byte := p.tokens[name_end].range.end
-			dynamic_name := parse_complete_logical_expr(p, p.index + 1, name_end)
+			dynamic_name := parse_required_complete_expr_with(
+				p,
+				p.index + 1,
+				name_end,
+				parse_logical_expr,
+				"syntax error: expected dynamic READ TABLE key expression",
+			)
 			for p.index <= name_end {
 				bump_token(p)
 			}
@@ -2343,6 +2351,9 @@ parse_read_table_key_values :: proc(
 					"REFERENCE",
 				},
 			)
+			if value == nil {
+				error_current(p, "syntax error: expected READ TABLE key value")
+			}
 			append(
 				&entry.key_values,
 				ast.Read_Table_Key_Value_Clause {

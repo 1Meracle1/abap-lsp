@@ -459,11 +459,9 @@ parse_raw_operand_to_period :: proc(
 	start := p.index
 	first := current_token(p)
 	last := first
-	paren := 0
-	bracket := 0
-	brace := 0
+	group := Raw_Group_State{}
 	for !raw_period_done(p) {
-		top := paren == 0 && bracket == 0 && brace == 0
+		top := raw_group_top(group)
 		if top && (current_token(p).kind == .Comma ||
 		           current_token(p).kind == .Colon ||
 		           ((!allow_leading_stop || p.index > start) &&
@@ -472,30 +470,12 @@ parse_raw_operand_to_period :: proc(
 		}
 		tok := bump_token(p)
 		last = tok
-		#partial switch tok.kind {
-		case .LParen:
-			paren += 1
-		case .RParen:
-			if paren > 0 {
-				paren -= 1
-			}
-		case .LBracket:
-			bracket += 1
-		case .RBracket:
-			if bracket > 0 {
-				bracket -= 1
-			}
-		case .LBrace:
-			brace += 1
-		case .RBrace:
-			if brace > 0 {
-				brace -= 1
-			}
-		}
+		raw_group_note_token(p, &group, tok)
 	}
 	if first.kind == .Eof || last.kind == .Eof || first.range.start >= last.range.end {
 		return nil
 	}
+	raw_group_report_unclosed(p, group)
 	value := type_ref_expr_from_tokens(p, start, p.index, -1, set_name, fill_parts)
 	if raw_facts {
 		populate_raw_operand_facts(
@@ -785,10 +765,6 @@ raw_operand_skip_keyword :: proc(text: string) -> bool {
 		}
 	}
 	return false
-}
-
-source_range_text :: proc(p: ^Parser, range: tokenizer.Range) -> string {
-	return parser_clone_range_text(p, range)
 }
 
 flow_stmt_starts :: proc(p: ^Parser) -> bool {
@@ -2071,7 +2047,7 @@ parse_selection_screen_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	stmt.range = simple_stmt_range(p, start)
 	if stmt.kind == .Unknown || stmt.raw_text != "" {
-		stmt.raw_text = source_range_text(p, stmt.range)
+		stmt.raw_text = parser_clone_range_text(p, stmt.range)
 	}
 	return stmt
 }
@@ -2945,7 +2921,13 @@ parse_oop_parameter_default_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if start >= end {
 		return nil
 	}
-	value := parse_complete_concat_expr(p, start, end)
+	value := parse_required_complete_expr_with(
+		p,
+		start,
+		end,
+		parse_concat_expr,
+		"syntax error: expected default expression",
+	)
 	if value == nil {
 		value = cast(^ast.Expr)type_ref_expr_from_tokens(p, start, end, -1, false, false)
 	}
@@ -4433,16 +4415,23 @@ parse_call_function_named_arg :: proc(
 	value_range := tokenizer.text_range(eq.range.end, eq.range.end)
 	raw_decls := make([dynamic]ast.Raw_Operand_Inline_Decl, 0, 1, p.allocator)
 	raw_refs := make([dynamic]ast.Raw_Operand_Ref, 0, 2, p.allocator)
+	value: ^ast.Expr
 	if value_start < value_end {
 		value_range = tokenizer.text_range(
 			p.tokens[value_start].range.start,
 			p.tokens[value_end - 1].range.end,
 		)
 		populate_raw_operand_fact_lists(p, value_start, value_end, &raw_decls, &raw_refs)
+		value = parse_required_complete_expr_with(
+			p,
+			value_start,
+			value_end,
+			parse_logical_expr,
+			"syntax error: expected CALL FUNCTION parameter value",
+		)
 	} else {
 		error_current(p, "syntax error: expected CALL FUNCTION parameter value")
 	}
-	value := parse_complete_logical_expr(p, value_start, value_end)
 	for p.index < value_end {
 		bump_token(p)
 	}
@@ -4464,7 +4453,13 @@ parse_call_function_named_arg :: proc(
 				p.tokens[message_start].range.start,
 				p.tokens[message_end - 1].range.end,
 			)
-			message = parse_complete_logical_expr(p, message_start, message_end)
+			message = parse_required_complete_expr_with(
+				p,
+				message_start,
+				message_end,
+				parse_logical_expr,
+				"syntax error: expected message variable after MESSAGE",
+			)
 		} else {
 			error_current(p, "syntax error: expected message variable after MESSAGE")
 		}
@@ -4776,7 +4771,7 @@ call_method_of_value_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
 	if end <= start {
 		return nil
 	}
-	if expr := parse_complete_logical_expr(p, start, end); expr != nil {
+	if expr := parse_complete_expr_with(p, start, end, parse_logical_expr); expr != nil {
 		return expr
 	}
 	raw := type_ref_expr_from_tokens(p, start, end, -1, false, true)
@@ -4931,7 +4926,7 @@ call_method_target_receiver_part_expr :: proc(
 	if is_dynamic {
 		return call_method_target_part_expr(p, start, end)
 	}
-	if expr := parse_complete_logical_expr(p, start, end); expr != nil {
+	if expr := parse_complete_expr_with(p, start, end, parse_logical_expr); expr != nil {
 		return expr, false
 	}
 	return call_method_target_part_expr(p, start, end)
@@ -5235,14 +5230,23 @@ parse_raw_call_arguments :: proc(
 		value_range := tokenizer.text_range(eq.range.end, eq.range.end)
 		raw_decls := make([dynamic]ast.Raw_Operand_Inline_Decl, 0, 1, p.allocator)
 		raw_refs := make([dynamic]ast.Raw_Operand_Ref, 0, 2, p.allocator)
+		value: ^ast.Expr
 		if value_start < value_end {
 			value_range = tokenizer.text_range(
 				p.tokens[value_start].range.start,
 				p.tokens[value_end - 1].range.end,
 			)
 			populate_raw_operand_fact_lists(p, value_start, value_end, &raw_decls, &raw_refs)
+			value = parse_required_complete_expr_with(
+				p,
+				value_start,
+				value_end,
+				parse_logical_expr,
+				"syntax error: expected call argument value",
+			)
+		} else {
+			error_current(p, "syntax error: expected call argument value")
 		}
-		value := parse_complete_logical_expr(p, value_start, value_end)
 		append(
 			named_args,
 			ast.Call_Stmt_Named_Arg {

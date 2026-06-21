@@ -360,6 +360,45 @@ missing_rhs_recovery_preserves_following_statement :: proc(t: ^testing.T) {
 }
 
 @(test)
+raw_operands_report_delimiter_failures :: proc(t: ^testing.T) {
+	unmatched := parse("ASSIGN ) TO <fs>.", "raw_unmatched_close.abap", context.allocator)
+	unclosed := parse("ASSIGN (lv_name TO <fs>.", "raw_unclosed_open.abap", context.allocator)
+	raise := parse(
+		"RAISE EVENT changed EXPORTING value = ( lv_bad.",
+		"raw_raise_unclosed.abap",
+		context.allocator,
+	)
+
+	expect_error_contains(t, unmatched, "unmatched closing ')'")
+	expect_error_contains(t, unclosed, "expected ')' before end of raw operand")
+	expect_error_contains(t, raise, "expected ')' before end of raw operand")
+}
+
+@(test)
+committed_call_argument_values_report_nested_parse_failures :: proc(t: ^testing.T) {
+	method := parse(
+		"CALL METHOD lo->run EXPORTING iv_value = get_value( )1.",
+		"bad_call_method_arg.abap",
+		context.allocator,
+	)
+	function := parse(
+		"CALL FUNCTION 'Z_FM' EXPORTING iv_input = get_value( )1.",
+		"bad_call_function_arg.abap",
+		context.allocator,
+	)
+
+	expect_error_contains(t, method, "unexpected token")
+	expect_error_contains(t, function, "unexpected token")
+}
+
+@(test)
+string_template_bad_expr_reports_syntax_error :: proc(t: ^testing.T) {
+	parsed := parse("lv_text = |{ WIDTH = 5 }|.", "template_bad_expr.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected expression")
+}
+
+@(test)
 method_call_missing_period_leaves_next_statement_token :: proc(t: ^testing.T) {
 	parsed := parse(
 		"lo_prog->add_statement( lo_item )\nDATA lv_after TYPE i.",

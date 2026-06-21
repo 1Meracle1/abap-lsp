@@ -51,10 +51,6 @@ expr_stop_keyword_at :: proc(p: ^Parser, index: int) -> bool {
 	return false
 }
 
-expr_stop_keyword :: proc(p: ^Parser) -> bool {
-	return expr_stop_keyword_at(p, p.index)
-}
-
 parse_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	left := parse_and_expr(p)
 	if left == nil {
@@ -355,7 +351,7 @@ parse_postfix_expr :: proc(p: ^Parser) -> ^ast.Expr {
 }
 
 parse_primary_expr :: proc(p: ^Parser) -> ^ast.Expr {
-	if expr_stop_keyword(p) {
+	if expr_stop_keyword_at(p, p.index) {
 		return nil
 	}
 	if p.open_sql_expr && sql_case_keyword(p) {
@@ -595,7 +591,7 @@ parse_substring_with_offset_expr :: proc(p: ^Parser, base: ^ast.Expr) -> ^ast.Ex
 	offset_start := p.index
 	lparen := find_tight_lparen_for_substring(p, offset_start)
 	if lparen >= 0 {
-		if offset := parse_complete_concat_expr(p, offset_start, lparen); offset != nil {
+		if offset := parse_complete_expr_with(p, offset_start, lparen, parse_concat_expr); offset != nil {
 			p.index = lparen
 			p.previous_index = lparen - 1
 			bump_token(p)
@@ -638,7 +634,7 @@ parse_substring_with_offset_expr :: proc(p: ^Parser, base: ^ast.Expr) -> ^ast.Ex
 		p.previous_index = save_prev
 		return nil
 	}
-	offset := parse_complete_concat_expr(p, offset_start, offset_end)
+	offset := parse_complete_expr_with(p, offset_start, offset_end, parse_concat_expr)
 	if offset == nil {
 		p.index = save_index
 		p.previous_index = save_prev
@@ -789,7 +785,7 @@ parse_call_named_arg_value_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	start := p.index
 	end := call_named_arg_value_end(p, start)
 	if end > start {
-		if value := parse_complete_logical_expr(p, start, end); value != nil {
+		if value := parse_complete_expr_with(p, start, end, parse_logical_expr); value != nil {
 			p.index = end
 			p.previous_index = end - 1
 			return value
@@ -1123,14 +1119,6 @@ parse_constructor_value_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	return expr
 }
 
-parse_complete_concat_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
-	return parse_complete_expr_with(p, start, end, parse_concat_expr)
-}
-
-parse_complete_logical_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
-	return parse_complete_expr_with(p, start, end, parse_logical_expr)
-}
-
 parse_complete_expr_with :: proc(
 	p: ^Parser,
 	start,
@@ -1161,6 +1149,59 @@ parse_complete_expr_with :: proc(
 	}
 	expr := parse_proc(&nested)
 	if expr == nil || current_token(&nested).kind != .Eof || len(nested.errors) > 0 {
+		return nil
+	}
+	return expr
+}
+
+parse_required_complete_expr_with :: proc(
+	p: ^Parser,
+	start,
+	end: int,
+	parse_proc: proc(^Parser) -> ^ast.Expr,
+	message: string,
+) -> ^ast.Expr {
+	if start >= end {
+		range := current_token(p).range
+		if start >= 0 && start < len(p.tokens) {
+			range = p.tokens[start].range
+		}
+		error(p, range, message)
+		return nil
+	}
+	count := end - start
+	tokens := make([]tokenizer.Token, count + 1, context.temp_allocator)
+	for i in 0 ..< count {
+		tokens[i] = p.tokens[start + i]
+	}
+	eof_range := p.tokens[end].range if end < len(p.tokens) else p.tokens[len(p.tokens) - 1].range
+	tokens[count] = tokenizer.Token{kind = .Eof, range = eof_range}
+
+	nested := Parser {
+		source = p.source,
+		path = p.path,
+		tokens = tokens,
+		previous_index = -1,
+		expr_stop_keywords = p.expr_stop_keywords,
+		expr_extra_stop_keywords = p.expr_extra_stop_keywords,
+		open_sql_expr = p.open_sql_expr,
+		errors = make([dynamic]Parse_Error, 0, 1, context.temp_allocator),
+		names = p.names,
+		allocator = p.allocator,
+	}
+	expr := parse_proc(&nested)
+	for e in nested.errors {
+		error(p, e.range, e.message)
+	}
+	if len(nested.errors) > 0 {
+		return nil
+	}
+	if expr == nil {
+		error(p, p.tokens[start].range, message)
+		return nil
+	}
+	if current_token(&nested).kind != .Eof {
+		error_unexpected_token(p, current_token(&nested))
 		return nil
 	}
 	return expr
@@ -1918,10 +1959,14 @@ parse_template_interpolation_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	interp.format_specs = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 
 	body: ^ast.Expr
+	error_count := len(p.errors)
 	if !template_format_spec_starts(p) {
 		body = parse_expr(p)
 	}
 	if body == nil {
+		if len(p.errors) == error_count {
+			error_current(p, "syntax error: expected expression")
+		}
 		bad := ast.new(ast.Bad_Expr, current_token(p).range, p.allocator)
 		interp.expr = bad
 	} else {

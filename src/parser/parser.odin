@@ -204,10 +204,19 @@ parse_stmt_list_until :: proc(p: ^Parser, stop_keywords: []string) -> [dynamic]^
 
 parse_stmt :: proc(p: ^Parser, stop_keywords: []string) -> ^ast.Stmt {
 	mark := mark_statement_start(p)
+	error_count := len(p.errors)
 	stmt := parse_stmt_result(p, stop_keywords)
 	if stmt != nil {
 		attach_stmt_trivia(p, stmt, mark)
 		return stmt
+	}
+
+	if len(p.errors) == error_count {
+		if range, ok := consumed_range(p, mark.index, p.index); ok {
+			error(p, range, "syntax error: invalid statement")
+		} else {
+			error_current(p, "syntax error: unexpected token")
+		}
 	}
 
 	if !consumed_significant_since(p, mark) {
@@ -2211,6 +2220,82 @@ error :: proc(p: ^Parser, range: Range, message: string) {
 
 error_current :: proc(p: ^Parser, message: string) {
 	error(p, current_token(p).range, message)
+}
+
+error_unexpected_token :: proc(p: ^Parser, tok: Token) {
+	error(p, tok.range, "syntax error: unexpected token")
+}
+
+Raw_Group_State :: struct {
+	paren_depth:   int,
+	bracket_depth: int,
+	brace_depth:   int,
+	first_paren:   Token,
+	first_bracket: Token,
+	first_brace:   Token,
+}
+
+raw_group_top :: proc(state: Raw_Group_State) -> bool {
+	return state.paren_depth == 0 && state.bracket_depth == 0 && state.brace_depth == 0
+}
+
+raw_group_note_token :: proc(p: ^Parser, state: ^Raw_Group_State, tok: Token) {
+	#partial switch tok.kind {
+	case .LParen:
+		if state.paren_depth == 0 {
+			state.first_paren = tok
+		}
+		state.paren_depth += 1
+	case .RParen:
+		if state.paren_depth == 0 {
+			error(p, tok.range, "syntax error: unmatched closing ')'")
+		} else {
+			state.paren_depth -= 1
+			if state.paren_depth == 0 {
+				state.first_paren = Token{}
+			}
+		}
+	case .LBracket:
+		if state.bracket_depth == 0 {
+			state.first_bracket = tok
+		}
+		state.bracket_depth += 1
+	case .RBracket:
+		if state.bracket_depth == 0 {
+			error(p, tok.range, "syntax error: unmatched closing ']'")
+		} else {
+			state.bracket_depth -= 1
+			if state.bracket_depth == 0 {
+				state.first_bracket = Token{}
+			}
+		}
+	case .LBrace:
+		if state.brace_depth == 0 {
+			state.first_brace = tok
+		}
+		state.brace_depth += 1
+	case .RBrace:
+		if state.brace_depth == 0 {
+			error(p, tok.range, "syntax error: unmatched closing '}'")
+		} else {
+			state.brace_depth -= 1
+			if state.brace_depth == 0 {
+				state.first_brace = Token{}
+			}
+		}
+	}
+}
+
+raw_group_report_unclosed :: proc(p: ^Parser, state: Raw_Group_State) {
+	if state.paren_depth > 0 {
+		error(p, state.first_paren.range, "syntax error: expected ')' before end of raw operand")
+	}
+	if state.bracket_depth > 0 {
+		error(p, state.first_bracket.range, "syntax error: expected ']' before end of raw operand")
+	}
+	if state.brace_depth > 0 {
+		error(p, state.first_brace.range, "syntax error: expected '}' before end of raw operand")
+	}
 }
 
 ABAP_NAME_MAX_LENGTH :: 30

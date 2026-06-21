@@ -3,6 +3,7 @@ package abap_frontend_semantic2
 import "src:parser"
 import "src:utils"
 
+import "core:strings"
 import "core:testing"
 
 workspace_test_file :: proc(
@@ -281,6 +282,47 @@ APPEND VALUE #( field = 'hello'`
 		}
 	}
 	testing.expect_value(t, syntax_count, len(parsed.errors))
+}
+
+@(test)
+semantic_workspace_propagates_required_call_argument_parse_errors :: proc(t: ^testing.T) {
+	source := `REPORT zmain.
+CALL METHOD lo->run EXPORTING iv_value = get_value( )1.`
+	parsed := parser.parse(source, "mem://bad_call_arg.report.abap", context.allocator)
+	expect_parse_error := false
+	for err in parsed.errors {
+		if strings.contains(err.message, "unexpected token") {
+			expect_parse_error = true
+		}
+	}
+	testing.expect(t, expect_parse_error)
+
+	files := [?]Workspace_File_Input {
+		{
+			path = parsed.path,
+			root = parsed.root,
+			syntax_diagnostics = workspace_test_syntax_diagnostics_from_parse_errors(
+				parsed.errors,
+			),
+			has_syntax_errors = true,
+		},
+	}
+	analysis := semantic_workspace_analyze(Workspace_Input{files = files[:]})
+	defer semantic_workspace_analysis_destroy(&analysis)
+	testing.expect_value(t, len(analysis.project_results), 1)
+	if len(analysis.project_results) == 0 || analysis.project_results[0].checker == nil {
+		return
+	}
+	found := false
+	for diagnostic in analysis.project_results[0].checker.info.diagnostics {
+		if diagnostic.kind == .Syntax_Error &&
+		   diagnostic.file != nil &&
+		   diagnostic.file.path == parsed.path &&
+		   strings.contains(diagnostic.message, "unexpected token") {
+			found = true
+		}
+	}
+	testing.expect(t, found)
 }
 
 @(test)

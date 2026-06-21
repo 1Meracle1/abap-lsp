@@ -403,7 +403,7 @@ parse_loop_group_by :: proc(p: ^Parser, stmt: ^ast.Loop_Stmt, body_start: int, g
 	paren, bracket, brace := 0, 0, 0
 	for !data_stmt_done(p, body_start) {
 		top := paren == 0 && bracket == 0 && brace == 0
-		if top && loop_group_addition_starts(p, stops) {
+		if top && data_current_keyword_in(p, stops) {
 			break
 		}
 		tok := bump_token(p)
@@ -459,10 +459,6 @@ parse_loop_group_by :: proc(p: ^Parser, stmt: ^ast.Loop_Stmt, body_start: int, g
 		return parse_loop_group_target(p, stmt, body_start, .Reference_Into, "syntax error: expected group target after REFERENCE INTO")
 	}
 	return true
-}
-
-loop_group_addition_starts :: proc(p: ^Parser, stops: []string) -> bool {
-	return data_current_keyword_in(p, stops)
 }
 
 parse_loop_group_target :: proc(
@@ -1702,7 +1698,13 @@ parse_function_header_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
 	if start >= end {
 		return nil
 	}
-	value := parse_complete_concat_expr(p, start, end)
+	value := parse_required_complete_expr_with(
+		p,
+		start,
+		end,
+		parse_concat_expr,
+		"syntax error: expected expression",
+	)
 	if value == nil {
 		value = cast(^ast.Expr)type_ref_expr_from_tokens(p, start, end, -1, false, false)
 	}
@@ -1929,9 +1931,14 @@ parse_header_initial_size_addition :: proc(
 		error(p, p.tokens[i].range, "syntax error: expected initial size")
 		return nil, value_start, false
 	}
-	value := parse_complete_concat_expr(p, value_start, value_end)
+	value := parse_required_complete_expr_with(
+		p,
+		value_start,
+		value_end,
+		parse_concat_expr,
+		"syntax error: expected initial size",
+	)
 	if value == nil {
-		error(p, p.tokens[value_start].range, "syntax error: expected initial size")
 		return nil, value_end, false
 	}
 	return value, value_end, true
