@@ -11,11 +11,13 @@ expect_contains_fold :: proc(t: ^testing.T, source, needle: string) {
 
 @(test)
 table_dependency_source_uses_observed_element_info_fields :: proc(t: ^testing.T) {
-	xml := `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="ztab" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+	xml := `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="ztab" adtcore:description="Demo table" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
   <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="mandt">
     <abapsource:properties>
       <abapsource:entry abapsource:key="ddicDataElement">MANDT</abapsource:entry>
       <abapsource:entry abapsource:key="ddicDataType">clnt</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicKeyField">X</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDescription">Client</abapsource:entry>
     </abapsource:properties>
   </abapsource:elementInfo>
   <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="counter">
@@ -27,8 +29,10 @@ table_dependency_source_uses_observed_element_info_fields :: proc(t: ^testing.T)
 	source := dependency_source("ZTAB", "ddic-table", xml, context.allocator)
 	defer delete(source, context.allocator)
 
-	expect_contains_fold(t, source, "types: begin of ztab")
+	expect_contains_fold(t, source, `types:
+  begin of ztab, " demo table`)
 	expect_contains_fold(t, source, "mandt type mandt")
+	expect_contains_fold(t, source, `mandt type mandt, " key field; client`)
 	expect_contains_fold(t, source, "counter type i")
 }
 
@@ -65,7 +69,7 @@ structure_dependency_source_uses_observed_element_info_fields :: proc(t: ^testin
 	source := dependency_source("ZSTR", "ddic-structure", xml, context.allocator)
 	defer delete(source, context.allocator)
 
-	expect_contains_fold(t, source, "types: begin of zstr")
+	expect_contains_fold(t, source, "types:\n  begin of zstr")
 	expect_contains_fold(t, source, "id type zde_id")
 }
 
@@ -182,7 +186,7 @@ structure_dependency_source_ignores_ddic_source_include_extensions :: proc(t: ^t
 	)
 	defer delete(source, context.allocator)
 
-	expect_contains_fold(t, source, "types: begin of swd_snodes")
+	expect_contains_fold(t, source, "types:\n  begin of swd_snodes")
 	expect_contains_fold(t, source, "include type swd_rnodes")
 	expect_contains_fold(t, source, "crl_elem type swc_elem")
 	lower := strings.to_lower(source, context.allocator)
@@ -202,7 +206,7 @@ view_dependency_source_uses_observed_element_info_fields :: proc(t: ^testing.T) 
 	source := dependency_source("ZVIEW", "ddic-view", xml, context.allocator)
 	defer delete(source, context.allocator)
 
-	expect_contains_fold(t, source, "types: begin of zview")
+	expect_contains_fold(t, source, "types:\n  begin of zview")
 	expect_contains_fold(t, source, "text type string")
 }
 

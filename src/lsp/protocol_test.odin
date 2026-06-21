@@ -1,6 +1,8 @@
 package abap_frontend_lsp
 
+import dep_store "src:dependency_store"
 import "src:parser"
+import remote_deps "src:remote_dependencies"
 import "src:semantic"
 import workspace "src:workspace"
 
@@ -11,6 +13,7 @@ import virtual "core:mem/virtual"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
 
 Completion_Template_Prefix_Test_Case :: struct {
 	prefix:      string,
@@ -5415,6 +5418,237 @@ read_dependency_document_source_returns_open_virtual_document :: proc(t: ^testin
 }
 
 @(test)
+read_dependency_document_source_prefers_regenerated_dependency_source_for_cache_uri :: proc(
+	t: ^testing.T,
+) {
+	root_seed := strings.concatenate(
+		{
+			`tmp\lsp_dependency_document_source_refresh_`,
+			fmt.tprintf("%d", os.get_pid()),
+			"_",
+			fmt.tprintf("%d", time.time_to_unix_nano(time.now())),
+		},
+		context.allocator,
+	)
+	root := root_seed
+	if absolute, abs_err := os.get_absolute_path(root, context.allocator); abs_err == nil {
+		root = absolute
+	}
+	if cleaned, clean_err := os.clean_path(root, context.allocator); clean_err == nil {
+		root = cleaned
+	}
+	// Leave SQLite files on disk; deleting them in-process is order-sensitive on Windows.
+	testing.expect(t, os.make_directory_all(root) == nil)
+	store_path := lsp_test_join_path(t, root, "cache.sqlite3")
+	store, store_err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, store_err, dep_store.Store_Error.None)
+	if store_err != .None {
+		return
+	}
+	profile := remote_deps.standalone_dependency_profile()
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "ztab",
+		object_kind    = "ddic-table",
+		object_name    = "ztab",
+		object_uri     = "/sap/bc/adt/ddic/tables/ztab",
+		object_type    = "TABL/DT",
+		description    = "Demo table",
+		file_extension = "xml",
+		source_text    = `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="ztab" adtcore:description="Demo table" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="mandt">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">MANDT</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicKeyField">X</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDescription">Client</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`,
+		fetched_at     = "2026-06-21T00:00:00Z",
+	}
+	_, put_err := dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, put_err, dep_store.Store_Error.None)
+	if put_err != .None {
+		return
+	}
+
+	// Do not call lsp_test_state_destroy here; destroying this SQLite-backed
+	// fixture is order-sensitive under the Windows test runner.
+	state := lsp_test_empty_state()
+	append(
+		&state.workspaces,
+		Server_Workspace {
+			root = workspace.Workspace {
+				root_path = root,
+				store = store,
+				has_store = true,
+				standalone_profile = profile,
+			},
+		},
+	)
+
+	uri := "abapls-cache:/ddic-table/ztab.abap"
+	stale := "TYPES: BEGIN OF ztab, mandt TYPE mandt, END OF ztab."
+	state.documents[uri] = Document{uri = uri, text = stale, version = 1}
+
+	result, ok := read_dependency_document_source(&state, uri, context.allocator)
+
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	lower := strings.to_lower(result, context.allocator)
+	testing.expect(t, strings.contains(lower, `" demo table`))
+	testing.expect(t, strings.contains(lower, "types:\n  begin of ztab"))
+	testing.expect(t, strings.contains(lower, `mandt type mandt, " key field; client`))
+	testing.expect(t, !strings.contains(lower, "types: begin of ztab"))
+
+	file := semantic.Project_File{path = uri}
+	offset := strings.index(result, "mandt TYPE MANDT")
+	testing.expect(t, offset >= 0)
+	if offset < 0 {
+		return
+	}
+	location, location_ok := location_for_project_file_range(
+		&state,
+		Snapshot_Lookup{},
+		&file,
+		semantic.Range{start = offset, end = offset + len("mandt")},
+	)
+
+	testing.expect(t, location_ok)
+	testing.expect_value(t, location.uri, uri)
+	testing.expect_value(t, location.range.start.line, 3)
+	testing.expect_value(t, location.range.start.character, 4)
+}
+
+@(test)
+lsp_definition_materializes_cached_e070_with_documentation_comments_for_zed :: proc(
+	t: ^testing.T,
+) {
+	root_seed := strings.concatenate(
+		{
+			`tmp\lsp_definition_cached_e070_`,
+			fmt.tprintf("%d", os.get_pid()),
+			"_",
+			fmt.tprintf("%d", time.time_to_unix_nano(time.now())),
+		},
+		context.allocator,
+	)
+	root := root_seed
+	if absolute, abs_err := os.get_absolute_path(root, context.allocator); abs_err == nil {
+		root = absolute
+	}
+	if cleaned, clean_err := os.clean_path(root, context.allocator); clean_err == nil {
+		root = cleaned
+	}
+	// Leave SQLite files on disk; deleting them in-process is order-sensitive on Windows.
+	testing.expect(t, os.make_directory_all(root) == nil)
+	store_path := lsp_test_join_path(t, root, "cache.sqlite3")
+	store, store_err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, store_err, dep_store.Store_Error.None)
+	if store_err != .None {
+		return
+	}
+	profile := remote_deps.standalone_dependency_profile()
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "e070",
+		object_kind    = "ddic-table",
+		object_name    = "e070",
+		object_uri     = "/sap/bc/adt/ddic/tables/e070",
+		object_type    = "TABL/DT",
+		description    = "Change & Transport System: Header of Requests/Tasks",
+		file_extension = "xml",
+		source_text    = `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="e070" adtcore:description="Change &amp; Transport System: Header of Requests/Tasks" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="trkorr">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">TRKORR</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicKeyField">X</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDescription">Request/Task</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="trfunction">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">TRFUNCTION</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDescription">Function</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`,
+		fetched_at     = "2026-06-21T00:00:00Z",
+	}
+	_, put_err := dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, put_err, dep_store.Store_Error.None)
+	if put_err != .None {
+		return
+	}
+
+	// Do not call lsp_test_state_destroy here; destroying this SQLite-backed
+	// fixture is order-sensitive under the Windows test runner.
+	state := lsp_test_empty_state()
+	state.materialize_dependency_documents = true
+	state.options.dependency_store_path = store_path
+	append(
+		&state.workspaces,
+		Server_Workspace {
+			root = workspace.Workspace {
+				root_path = root,
+				flags = workspace.Option_Flags{.Enable_Dependency_Diagnostics},
+				store = store,
+				has_store = true,
+				standalone_profile = profile,
+			},
+		},
+	)
+
+	source := "REPORT zmain.\nDATA ls_e070 TYPE e070.\n"
+	source_path := lsp_test_join_path(t, root, "zmain.abap")
+	uri, uri_ok := file_uri_from_path(source_path, context.allocator)
+	testing.expect(t, uri_ok)
+	if !uri_ok {
+		return
+	}
+	testing.expect(t, update_document_from_open(&state, lsp_test_did_open_params(uri, source)))
+	server_reanalyze(&state)
+
+	cache_uri := "abapls-cache:/ddic-table/e070.abap"
+	stale := "TYPES: BEGIN OF e070, trkorr TYPE trkorr, END OF e070."
+	state.documents[cache_uri] = Document{uri = cache_uri, text = stale, version = 1}
+
+	offset := strings.index(source, "TYPE e070") + len("TYPE ")
+	testing.expect(t, offset >= len("TYPE "))
+	if offset < len("TYPE ") {
+		return
+	}
+	params := lsp_test_rename_position_params(uri, offset_to_position(source, offset), "")
+	location, location_ok := definition_location_for_params(&state, params)
+
+	testing.expect(t, location_ok)
+	if !location_ok {
+		return
+	}
+	testing.expect(t, strings.has_prefix(location.uri, "file://"))
+	testing.expect_value(t, location.range.start.line, 2)
+	testing.expect_value(t, location.range.start.character, 11)
+
+	path, path_ok := file_uri_to_path(location.uri, context.allocator)
+	testing.expect(t, path_ok)
+	if !path_ok {
+		return
+	}
+	written, written_ok := workspace.read_text_file(path, context.allocator)
+	testing.expect(t, written_ok)
+	if !written_ok {
+		return
+	}
+	lower := strings.to_lower(written, context.allocator)
+	testing.expect(t, strings.contains(lower, `" change &`))
+	testing.expect(t, strings.contains(lower, "transport system: header of requests/tasks"))
+	testing.expect(t, strings.contains(lower, "types:\n  begin of e070"))
+	testing.expect(t, strings.contains(lower, `trkorr type trkorr, " key field; request/task`))
+	testing.expect(t, strings.contains(lower, `trfunction type trfunction, " function`))
+	testing.expect(t, !strings.contains(lower, "types: begin of e070"))
+}
+
+@(test)
 rename_updates_type_structure_begin_and_end_names :: proc(t: ^testing.T) {
 	uri := "file:///D:/repo/rename_type_group.abap"
 	source := `TYPES: BEGIN OF ty_input_po,
@@ -6026,6 +6260,27 @@ lv_total = 1.`
 
 	testing.expect(t, strings.contains(text, "inline accumulator"))
 	testing.expect(t, !strings.contains(text, `" inline accumulator`))
+}
+
+@(test)
+lsp_hover_reports_chained_ddic_structure_comments :: proc(t: ^testing.T) {
+	source := `" Change & Transport System: Header of Requests/Tasks
+TYPES:
+  BEGIN OF e070, " Change & Transport System: Header of Requests/Tasks
+    trkorr TYPE trkorr, " key field; Request/Task
+    trfunction TYPE trfunction, " Function
+  END OF e070.
+
+DATA ls_e070 TYPE e070.
+ls_e070-trkorr = ls_e070-trkorr.`
+
+	type_text := lsp_test_hover_text(t, source, "TYPE e070", "e070")
+	field_text := lsp_test_hover_text(t, source, "ls_e070-trkorr", "trkorr")
+
+	testing.expect(t, strings.contains(type_text, "Change & Transport System: Header of Requests/Tasks"))
+	testing.expect(t, !strings.contains(type_text, `" Change & Transport`))
+	testing.expect(t, strings.contains(field_text, "key field; Request/Task"))
+	testing.expect(t, !strings.contains(field_text, `" key field`))
 }
 
 @(test)

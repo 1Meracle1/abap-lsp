@@ -621,11 +621,30 @@ attach_stmt_trivia :: proc(p: ^Parser, stmt: ^ast.Stmt, mark: Stmt_Mark) {
 	attach_leading_stmt_trivia(p, stmt, first)
 	attach_header_stmt_trivia(p, stmt, mark)
 	last := previous_token(p)
+	attach_internal_inline_stmt_comments(p, stmt, mark, last.index)
 	if last.kind == .Period && last.index > 0 {
 		before_period := p.tokens[last.index - 1]
 		attach_trailing_trivia_span(p, stmt, before_period.trailing_trivia, true)
 	}
 	attach_trailing_trivia_span(p, stmt, last.trailing_trivia, false)
+}
+
+attach_internal_inline_stmt_comments :: proc(
+	p: ^Parser,
+	stmt: ^ast.Stmt,
+	mark: Stmt_Mark,
+	end_token_index: int,
+) {
+	if end_token_index <= mark.index {
+		return
+	}
+	for i in mark.index ..< end_token_index {
+		token := p.tokens[i]
+		if !(.Has_Trailing_Inline_Comment in token.flags) {
+			continue
+		}
+		attach_trailing_comment_trivia_span(p, stmt, token.trailing_trivia)
+	}
 }
 
 attach_leading_stmt_trivia :: proc(p: ^Parser, stmt: ^ast.Stmt, first: Token) {
@@ -736,6 +755,23 @@ attach_trailing_trivia_span :: proc(
 ) {
 	for piece in p.trivia[span.start:span.end] {
 		if pragmas_only && piece.kind != .Pragma {
+			continue
+		}
+		trivia, ok := parser_ast_trivia(p, piece)
+		if !ok {
+			continue
+		}
+		append_node_trailing_trivia(p, stmt, trivia)
+	}
+}
+
+attach_trailing_comment_trivia_span :: proc(
+	p: ^Parser,
+	stmt: ^ast.Stmt,
+	span: tokenizer.Trivia_Span,
+) {
+	for piece in p.trivia[span.start:span.end] {
+		if piece.kind != .Comment {
 			continue
 		}
 		trivia, ok := parser_ast_trivia(p, piece)

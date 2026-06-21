@@ -31,6 +31,7 @@ define type dd03p {
 	testing.expect_value(t, parsed.definition.name, "dd03p")
 	testing.expect_value(t, len(parsed.definition.annotations), 1)
 	testing.expect_value(t, parsed.definition.annotations[0].name, "EndUserText.label")
+	testing.expect_value(t, parsed.definition.annotations[0].value, "Structure")
 	testing.expect_value(t, len(parsed.definition.members), 2)
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(t, parsed.definition.members[0].kind, Member_Kind.Field)
@@ -41,6 +42,33 @@ define type dd03p {
 	testing.expect_value(t, parsed.definition.members[0].name, "tabname")
 	testing.expect_value(t, parsed.definition.members[0].type_ref.name, "tabname")
 	testing.expect_value(t, parsed.definition.members[1].name, "fieldname")
+}
+
+@(test)
+dependency_source_formats_structure_with_descriptions_and_key_comments :: proc(t: ^testing.T) {
+	source := dependency_source(
+		`@EndUserText.label : 'Change & Transport System: Header of Requests/Tasks'
+define type e070 {
+  @EndUserText.label : 'Request/Task'
+  key trkorr : trkorr;
+  @EndUserText.label : 'Function'
+  trfunction : trfunction;
+}`,
+		context.allocator,
+	)
+	defer delete(source, context.allocator)
+
+	testing.expect_value(
+		t,
+		source,
+		`" Change & Transport System: Header of Requests/Tasks
+TYPES:
+  BEGIN OF e070, " Change & Transport System: Header of Requests/Tasks
+    trkorr TYPE trkorr, " key field; Request/Task
+    trfunction TYPE trfunction, " Function
+  END OF e070.
+`,
+	)
 }
 
 @(test)
@@ -57,7 +85,7 @@ define type /sttp/s_proc_evtt {
 	)
 	defer delete(source, context.allocator)
 
-	expect_contains_fold(t, source, "types: begin of /sttp/s_proc_evtt")
+	expect_contains_fold(t, source, "types:\n  begin of /sttp/s_proc_evtt")
 	expect_contains_fold(t, source, "include type /sttp/s_proc_evt as proc_evt")
 	expect_contains_fold(t, source, "parentobject type /sttp/e_objcode")
 	expect_contains_fold(t, source, "include type /sttp/s_extra_evt")
@@ -85,8 +113,11 @@ dependency_source_ignores_metadata_clauses_without_line_slicing :: proc(t: ^test
 	expect_contains_fold(t, source, "tabname type tabname")
 	expect_contains_fold(t, source, "rollname type rollname")
 	expect_contains_fold(t, source, "fieldname type fieldname")
-	expect_contains_fold(t, source, "key fields: tabname, rollname, fieldname")
+	expect_contains_fold(t, source, `tabname type tabname, " key field`)
+	expect_contains_fold(t, source, `rollname type rollname, " key field`)
+	expect_contains_fold(t, source, `fieldname type fieldname, " key field`)
 	expect_not_contains_fold(t, source, "key tabname")
+	expect_not_contains_fold(t, source, "key fields:")
 	expect_not_contains_fold(t, source, "foreign key")
 	expect_not_contains_fold(t, source, "value help")
 }

@@ -17,6 +17,7 @@ Type_Definition :: struct {
 
 Annotation :: struct {
 	name:  string,
+	value: string,
 	range: Range,
 }
 
@@ -109,57 +110,100 @@ dependency_source_from_definition :: proc(definition: ^Type_Definition, allocato
 		return ""
 	}
 	out := strings.builder_make(allocator)
-	strings.write_string(&out, "TYPES: BEGIN OF ")
+	description := annotation_description(definition.annotations[:])
+	write_comment_line(&out, description)
+	strings.write_string(&out, "TYPES:\n")
+	strings.write_string(&out, "  BEGIN OF ")
 	ddic.write_abap_name(&out, definition.name)
-	strings.write_string(&out, ",\n")
+	strings.write_string(&out, ",")
+	write_comment_suffix(&out, false, description)
+	strings.write_byte(&out, '\n')
 	for member in definition.members {
-		strings.write_string(&out, "         ")
+		strings.write_string(&out, "    ")
 		switch member.kind {
 		case .Include:
 			strings.write_string(&out, "INCLUDE TYPE ")
 			ddic.write_abap_name(&out, member.type_ref.name)
-			strings.write_string(&out, ",\n")
+			strings.write_string(&out, ",")
+			write_comment_suffix(&out, false, annotation_description(member.annotations[:]))
+			strings.write_byte(&out, '\n')
 		case .Field:
 			if member.type_ref.kind == .Include {
 				strings.write_string(&out, "INCLUDE TYPE ")
 				ddic.write_abap_name(&out, member.type_ref.name)
 				strings.write_string(&out, " AS ")
-				ddic.write_abap_name(&out, member.name)
-				strings.write_string(&out, ",\n")
+				ddic.write_abap_decl_name(&out, member.name)
+				strings.write_string(&out, ",")
+				write_comment_suffix(&out, member.key, annotation_description(member.annotations[:]))
+				strings.write_byte(&out, '\n')
 				continue
 			}
-			ddic.write_abap_name(&out, member.name)
+			ddic.write_abap_decl_name(&out, member.name)
 			strings.write_string(&out, " TYPE ")
 			write_type_ref(&out, member.type_ref)
-			if member.key {
-				strings.write_string(&out, `, " key`)
-			} else {
-				strings.write_string(&out, ",")
-			}
-			strings.write_string(&out, "\n")
+			strings.write_string(&out, ",")
+			write_comment_suffix(&out, member.key, annotation_description(member.annotations[:]))
+			strings.write_byte(&out, '\n')
 		}
 	}
-	strings.write_string(&out, "       END OF ")
+	strings.write_string(&out, "  END OF ")
 	ddic.write_abap_name(&out, definition.name)
 	strings.write_string(&out, ".")
-	write_key_summary_comment(&out, definition.members[:])
 	strings.write_string(&out, "\n")
 	return strings.to_string(out)
 }
 
-write_key_summary_comment :: proc(out: ^strings.Builder, members: []Member) {
-	first := true
-	for member in members {
-		if member.kind != .Field || !member.key || member.name == "" {
+annotation_description :: proc(annotations: []Annotation) -> string {
+	for annotation in annotations {
+		value := strings.trim_space(annotation.value)
+		if value == "" {
 			continue
 		}
-		if first {
-			strings.write_string(out, ` " key fields: `)
-			first = false
-		} else {
-			strings.write_string(out, ", ")
+		if strings.equal_fold(annotation.name, "EndUserText.label") ||
+		   strings.equal_fold(annotation.name, "EndUserText.quickInfo") {
+			return value
 		}
-		ddic.write_abap_decl_name(out, member.name)
+	}
+	return ""
+}
+
+write_comment_line :: proc(out: ^strings.Builder, description: string) {
+	desc := strings.trim_space(description)
+	if desc == "" {
+		return
+	}
+	strings.write_string(out, `" `)
+	write_comment_text(out, desc)
+	strings.write_byte(out, '\n')
+}
+
+write_comment_suffix :: proc(out: ^strings.Builder, key: bool, description: string) {
+	desc := strings.trim_space(description)
+	if !key && desc == "" {
+		return
+	}
+	strings.write_string(out, ` " `)
+	if key {
+		strings.write_string(out, "key field")
+		if desc != "" {
+			strings.write_string(out, "; ")
+		}
+	}
+	write_comment_text(out, desc)
+}
+
+write_comment_text :: proc(out: ^strings.Builder, text: string) {
+	space := false
+	for r in strings.trim_space(text) {
+		if r == '\r' || r == '\n' || r == '\t' {
+			space = true
+			continue
+		}
+		if space {
+			strings.write_byte(out, ' ')
+			space = false
+		}
+		strings.write_rune(out, r)
 	}
 }
 
@@ -439,6 +483,7 @@ parse_annotation :: proc(p: ^Parser) -> Annotation {
 	start := current_token(p).range.start
 	_ = allow_token(p, .At)
 	name := parse_name(p)
+	value := ""
 	for !at_eof(p) && !at_token(p, .RBrace) {
 		if current_has_newline_before(p) {
 			break
@@ -446,9 +491,50 @@ parse_annotation :: proc(p: ^Parser) -> Annotation {
 		if allow_semicolon(p) {
 			break
 		}
+		if value == "" && current_token(p).kind == .String {
+			value = annotation_string_value(p, current_token(p))
+		}
 		parse_balanced_suffix_token(p)
 	}
-	return Annotation{name = name, range = tokenizer.text_range(start, previous_token(p).range.end)}
+	return Annotation{name = name, value = value, range = tokenizer.text_range(start, previous_token(p).range.end)}
+}
+
+annotation_string_value :: proc(p: ^Parser, token: Token) -> string {
+	if token.range.start < len(p.source) {
+		quote := p.source[token.range.start]
+		if quote == '\'' || quote == '`' {
+			return scan_annotation_text_literal(p.source, token.range.start, quote, p.allocator)
+		}
+	}
+	raw := token_text(p, token)
+	if len(raw) >= 2 {
+		quote := raw[0]
+		if (quote == '\'' || quote == '`') && raw[len(raw) - 1] == quote {
+			return scan_annotation_text_literal(raw, 0, quote, p.allocator)
+		}
+	}
+	return strings.clone(raw, p.allocator)
+}
+
+scan_annotation_text_literal :: proc(source: string, start: int, quote: u8, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	i := start + 1
+	for i < len(source) {
+		if source[i] == '\r' || source[i] == '\n' {
+			break
+		}
+		if source[i] == quote {
+			if i + 1 < len(source) && source[i + 1] == quote {
+				strings.write_byte(&out, quote)
+				i += 2
+				continue
+			}
+			break
+		}
+		strings.write_byte(&out, source[i])
+		i += 1
+	}
+	return strings.to_string(out)
 }
 
 recover_to_definition_body :: proc(p: ^Parser) {

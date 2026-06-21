@@ -15,8 +15,10 @@ Ddic_Xml_Kind :: enum {
 }
 
 Ddic_Xml_Field :: struct {
-	name:      string,
-	type_name: string,
+	name:        string,
+	type_name:   string,
+	key:         bool,
+	description: string,
 }
 
 Ddic_Xml_Type_Ref :: struct {
@@ -40,7 +42,7 @@ dependency_source :: proc(
 	if kind == .Structure || kind == .Unknown {
 		fields := ddic_xml_fields(doc, allocator)
 		if len(fields) > 0 {
-			out = ddic_xml_structure_source(name, fields[:], allocator)
+			out = ddic_xml_structure_source(name, ddic_xml_description(doc, 0), fields[:], allocator)
 		}
 		delete(fields)
 	}
@@ -172,24 +174,44 @@ ddic_xml_table_type_source :: proc(
 
 ddic_xml_structure_source :: proc(
 	name: string,
+	description: string,
 	fields: []Ddic_Xml_Field,
 	allocator: mem.Allocator,
 ) -> string {
-	out := strings.builder_make(allocator)
-	strings.write_string(&out, "TYPES: BEGIN OF ")
-	ddic.write_abap_name(&out, name)
-	strings.write_string(&out, ",\n")
-	for field in fields {
-		strings.write_string(&out, "         ")
-		ddic.write_abap_decl_name(&out, field.name)
-		strings.write_string(&out, " TYPE ")
-		ddic.write_abap_name(&out, field.type_name)
-		strings.write_string(&out, ",\n")
+	definition := ddic_source.Type_Definition {
+		name        = name,
+		annotations = make([dynamic]ddic_source.Annotation, 0, 1, allocator),
+		members     = make([dynamic]ddic_source.Member, 0, len(fields), allocator),
 	}
-	strings.write_string(&out, "       END OF ")
-	ddic.write_abap_name(&out, name)
-	strings.write_string(&out, ".\n")
-	return strings.to_string(out)
+	if description != "" {
+		append(
+			&definition.annotations,
+			ddic_source.Annotation {
+				name  = "EndUserText.label",
+				value = description,
+			},
+		)
+	}
+	for field in fields {
+		member := ddic_source.Member {
+			kind     = .Field,
+			name     = field.name,
+			key      = field.key,
+			type_ref = ddic_source.Type_Ref{kind = .Named, name = field.type_name},
+			annotations = make([dynamic]ddic_source.Annotation, 0, 1, allocator),
+		}
+		if field.description != "" {
+			append(
+				&member.annotations,
+				ddic_source.Annotation {
+					name  = "EndUserText.label",
+					value = field.description,
+				},
+			)
+		}
+		append(&definition.members, member)
+	}
+	return ddic_source.dependency_source_from_definition(&definition, allocator)
 }
 
 ddic_xml_fields :: proc(
@@ -224,7 +246,15 @@ ddic_xml_fields :: proc(
 				}
 			}
 			if !duplicate {
-				append(&fields, Ddic_Xml_Field{name = name, type_name = type_name})
+				append(
+					&fields,
+					Ddic_Xml_Field {
+						name        = name,
+						type_name   = type_name,
+						key         = ddic_xml_field_is_key(doc, child_id),
+						description = ddic_xml_description(doc, child_id),
+					},
+				)
 			}
 		}
 	}
@@ -240,6 +270,78 @@ ddic_xml_field_type :: proc(doc: ^xml_doc.Document, id: xml_doc.Element_ID) -> s
 		return builtin
 	}
 	return data_type
+}
+
+ddic_xml_field_is_key :: proc(doc: ^xml_doc.Document, id: xml_doc.Element_ID) -> bool {
+	attrs := [?]string{"key", "isKey"}
+	for attr in attrs {
+		if ddic_xml_truthy(ddic_xml_attr_value(doc, id, attr)) {
+			return true
+		}
+	}
+	keys := [?]string {
+		"key",
+		"isKey",
+		"ddicIsKey",
+		"ddicKeyField",
+		"ddicKeyFlag",
+		"ddicIsKeyField",
+	}
+	for key in keys {
+		if ddic_xml_truthy(ddic_xml_entry_text(doc, id, key)) {
+			return true
+		}
+	}
+	return false
+}
+
+ddic_xml_truthy :: proc(value: string) -> bool {
+	trimmed := strings.trim_space(value)
+	return trimmed == "1" ||
+	       strings.equal_fold(trimmed, "x") ||
+	       strings.equal_fold(trimmed, "true") ||
+	       strings.equal_fold(trimmed, "yes") ||
+	       strings.equal_fold(trimmed, "key")
+}
+
+ddic_xml_description :: proc(doc: ^xml_doc.Document, id: xml_doc.Element_ID) -> string {
+	if doc == nil || int(id) < 0 || int(id) >= len(doc.elements) {
+		return ""
+	}
+	if value := strings.trim_space(ddic_xml_attr_value(doc, id, "description")); value != "" {
+		return value
+	}
+	keys := [?]string {
+		"description",
+		"shortDescription",
+		"quickInfo",
+		"ddicDescription",
+		"ddicShortText",
+		"ddicMediumText",
+		"ddicLongText",
+		"ddicHeading",
+		"ddicFieldText",
+		"ddicFieldLabel",
+		"ddicScrtextS",
+		"ddicScrtextM",
+		"ddicScrtextL",
+		"ddicReptext",
+		"ddtext",
+		"fieldtext",
+		"reptext",
+		"scrtext_s",
+		"scrtext_m",
+		"scrtext_l",
+	}
+	for key in keys {
+		if value := strings.trim_space(ddic_xml_entry_text(doc, id, key)); value != "" {
+			return value
+		}
+		if value := strings.trim_space(ddic_xml_direct_child_text(doc, id, key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 ddic_xml_table_line_type :: proc(doc: ^xml_doc.Document) -> Ddic_Xml_Type_Ref {

@@ -89,22 +89,31 @@ table_line_hover_text :: proc(project: ^semantic.Project, typ: ^semantic.Type) -
 }
 
 handle_definition :: proc(ctx: ^Request_Context, params: json.Value) {
-	found := entity_at_position(ctx.state, params)
-	if !found.ok {
-		send_success(ctx.output, ctx.id, json.Null(nil), ctx.state.allocator)
-		return
-	}
-	location, location_ok := location_for_project_file_range(
-		ctx.state,
-		found.snapshot,
-		found.entity.source_file,
-		found.entity.name_range,
-	)
+	location, location_ok := definition_location_for_params(ctx.state, params)
 	if !location_ok {
 		send_success(ctx.output, ctx.id, json.Null(nil), ctx.state.allocator)
 		return
 	}
 	send_success(ctx.output, ctx.id, location, ctx.state.allocator)
+}
+
+definition_location_for_params :: proc(
+	state: ^Server_State,
+	params: json.Value,
+) -> (
+	Location,
+	bool,
+) {
+	found := entity_at_position(state, params)
+	if !found.ok {
+		return {}, false
+	}
+	return location_for_project_file_range(
+		state,
+		found.snapshot,
+		found.entity.source_file,
+		found.entity.name_range,
+	)
 }
 
 handle_implementation :: proc(ctx: ^Request_Context, params: json.Value) {
@@ -1066,6 +1075,9 @@ source_for_project_file :: proc(state: ^Server_State, file: ^semantic.Project_Fi
 	if file == nil {
 		return ""
 	}
+	if source, ok := dependency_source_for_uri(state, file.path, context.temp_allocator); ok {
+		return source
+	}
 	if doc, ok := state.documents[file.path]; ok {
 		return doc.text
 	}
@@ -1075,9 +1087,6 @@ source_for_project_file :: proc(state: ^Server_State, file: ^semantic.Project_Fi
 		if source_ok {
 			return source
 		}
-	}
-	if source, ok := dependency_source_for_uri(state, file.path, context.temp_allocator); ok {
-		return source
 	}
 	if file.root != nil {
 		return ast.print_node(file.root, context.temp_allocator)
@@ -1133,11 +1142,11 @@ read_dependency_document_source :: proc(
 	string,
 	bool,
 ) {
-	if doc, ok := state.documents[uri]; ok {
-		return strings.clone(doc.text, allocator), true
-	}
 	if source, ok := dependency_source_for_uri(state, uri, allocator); ok {
 		return source, true
+	}
+	if doc, ok := state.documents[uri]; ok {
+		return strings.clone(doc.text, allocator), true
 	}
 	return dependency_ast_source_for_uri(state, uri, allocator)
 }
