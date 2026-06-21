@@ -803,6 +803,25 @@ checker_type_table_form :: proc(typ: ^Type, depth := 0) -> (ast.Data_Type_Form, 
 	return {}, false
 }
 
+checker_table_form_has_primary_index :: proc "contextless" (form: ast.Data_Type_Form) -> bool {
+	#partial switch form {
+	case .Any_Table,
+	     .Hashed_Table,
+	     .Like_Hashed_Table:
+		return false
+	}
+	return true
+}
+
+checker_table_form_is_sorted :: proc "contextless" (form: ast.Data_Type_Form) -> bool {
+	#partial switch form {
+	case .Sorted_Table,
+	     .Like_Sorted_Table:
+		return true
+	}
+	return false
+}
+
 Checker_Table_Key_Requirement :: enum {
 	Sorted,
 	Sorted_Or_Hashed,

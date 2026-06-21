@@ -3532,6 +3532,73 @@ APPEND lv_text TO lt_missing.`
 }
 
 @(test)
+root_semantic_stmt_checker_validates_append_insert_table_categories :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE i,
+       END OF ty_row.
+DATA ls_row TYPE ty_row.
+DATA lt_standard TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_sorted TYPE SORTED TABLE OF ty_row WITH UNIQUE KEY id.
+DATA lt_hashed TYPE HASHED TABLE OF ty_row WITH UNIQUE KEY id.
+FIELD-SYMBOLS <any_table> TYPE ANY TABLE.
+
+APPEND ls_row TO lt_standard.
+APPEND ls_row TO lt_sorted.
+APPEND ls_row TO lt_hashed.
+APPEND ls_row TO <any_table>.
+
+INSERT ls_row INTO TABLE lt_standard.
+INSERT ls_row INTO TABLE lt_sorted.
+INSERT ls_row INTO TABLE lt_hashed.
+INSERT ls_row INTO TABLE <any_table>.
+INSERT ls_row INTO TABLE lt_sorted INDEX 1.
+INSERT ls_row INTO TABLE lt_hashed INDEX 1.
+INSERT ls_row INTO TABLE <any_table> INDEX 1.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_append_insert_table_categories.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Append_Operand), 3)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Insert_Operand), 2)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 0)
+
+	seen_sorted_append := false
+	seen_hashed_append := false
+	seen_any_append := false
+	seen_hashed_index := false
+	seen_any_index := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Invalid_Append_Operand && text == "lt_sorted" {
+			seen_sorted_append = true
+			testing.expect_value(t, diagnostic.severity, Checker_Diagnostic_Severity.Warning)
+			testing.expect_value(t, diagnostic.message, "APPEND to a sorted table can fail at runtime; use INSERT INTO TABLE to preserve key order")
+		} else if diagnostic.kind == .Invalid_Append_Operand && text == "lt_hashed" {
+			seen_hashed_append = true
+			testing.expect_value(t, diagnostic.severity, Checker_Diagnostic_Severity.Error)
+			testing.expect_value(t, diagnostic.message, "APPEND target is not an index table; use INSERT INTO TABLE for hashed or generic tables")
+		} else if diagnostic.kind == .Invalid_Append_Operand && text == "<any_table>" {
+			seen_any_append = true
+			testing.expect_value(t, diagnostic.severity, Checker_Diagnostic_Severity.Error)
+			testing.expect_value(t, diagnostic.message, "APPEND target is not an index table; use INSERT INTO TABLE for hashed or generic tables")
+		} else if diagnostic.kind == .Invalid_Insert_Operand && text == "lt_hashed" {
+			seen_hashed_index = true
+			testing.expect_value(t, diagnostic.message, "INSERT INDEX requires a table with index access")
+		} else if diagnostic.kind == .Invalid_Insert_Operand && text == "<any_table>" {
+			seen_any_index = true
+			testing.expect_value(t, diagnostic.message, "INSERT INDEX requires a table with index access")
+		}
+	}
+	testing.expect(t, seen_sorted_append)
+	testing.expect(t, seen_hashed_append)
+	testing.expect(t, seen_any_append)
+	testing.expect(t, seen_hashed_index)
+	testing.expect(t, seen_any_index)
+}
+
+@(test)
 root_semantic_stmt_checker_validates_append_value_constructor_components :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF ty_row,
          sign TYPE string,
@@ -5412,7 +5479,7 @@ root_semantic_filter_accepts_plain_explicit_result_table_type :: proc(t: ^testin
 DATA lt_aif_job_header_existing TYPE tt_aif_job_header.
 
 DATA lt_docnum_wt_ship TYPE tt_docnum_sorted.
-APPEND '100123' TO lt_docnum_wt_ship.
+INSERT '100123' INTO TABLE lt_docnum_wt_ship.
 
 DATA(lt_delta_docnum_wt_ship) = FILTER tt_docnum(
   lt_docnum_wt_ship EXCEPT IN lt_aif_job_header_existing

@@ -1438,13 +1438,7 @@ checker_read_table_primary_index_access_supported :: proc(typ: ^Type) -> bool {
 	if !ok {
 		return true
 	}
-	#partial switch form {
-	case .Any_Table,
-	     .Hashed_Table,
-	     .Like_Hashed_Table:
-		return false
-	}
-	return true
+	return checker_table_form_has_primary_index(form)
 }
 
 checker_read_table_index_access_diagnostic_range :: proc(entry: ast.Read_Table_Entry_Clause) -> Range {
@@ -1568,6 +1562,7 @@ checker_check_read_table_key_name :: proc(
 checker_check_append_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Append_Stmt) {
 	target := checker_check_expr(ctx, stmt.target, .Value, true)
 	checker_check_append_target(ctx, stmt.target, target)
+	checker_warn_append_sorted_table(ctx, stmt.target, target)
 	row_type := checker_type_row(ctx, target.type)
 	if stmt.source != nil {
 		expected := row_type
@@ -1640,7 +1635,36 @@ checker_check_append_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, targ
 			checker_expr_range(expr),
 			"APPEND target is not an internal table",
 		)
+		return
 	}
+	form, ok := checker_type_table_form(target.type)
+	if ok && !checker_table_form_has_primary_index(form) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Append_Operand,
+			checker_expr_range(expr),
+			"APPEND target is not an index table; use INSERT INTO TABLE for hashed or generic tables",
+		)
+	}
+}
+
+checker_warn_append_sorted_table :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {
+	if checker_check_unresolved_variable_operand(ctx, expr, target) ||
+	   checker_type_is_unknown(target.type) ||
+	   !checker_type_is_table_like(ctx, target.type) {
+		return
+	}
+	form, ok := checker_type_table_form(target.type)
+	if !ok || !checker_table_form_is_sorted(form) {
+		return
+	}
+	checker_add_diagnostic(
+		ctx,
+		.Invalid_Append_Operand,
+		checker_expr_range(expr),
+		"APPEND to a sorted table can fail at runtime; use INSERT INTO TABLE to preserve key order",
+		severity = .Warning,
+	)
 }
 
 checker_check_sort_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Sort_Stmt) {
@@ -1701,6 +1725,7 @@ checker_check_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_Stmt)
 		expected := row_type if stmt.form == .Internal_Table && !stmt.from_table else target.type
 		checker_check_assignment_compatibility(ctx, source.type, expected, checker_expr_range(stmt.source))
 	}
+	checker_check_insert_index_access(ctx, stmt, target)
 	checker_check_expr(ctx, stmt.index)
 	checker_check_table_line_target(ctx, stmt.assigning, row_type, .Assigning)
 	checker_check_table_line_target(ctx, stmt.reference_into, row_type, .Reference_Into)
@@ -1731,6 +1756,31 @@ checker_check_insert_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, targ
 			"INSERT target is not an internal table",
 		)
 	}
+}
+
+checker_check_insert_index_access :: proc(
+	ctx: ^Checker_Context,
+	stmt: ^ast.Insert_Stmt,
+	target: Operand,
+) {
+	if stmt.index == nil {
+		return
+	}
+	if checker_check_unresolved_variable_operand(ctx, stmt.target, target) ||
+	   checker_type_is_unknown(target.type) ||
+	   !checker_type_is_table_like(ctx, target.type) {
+		return
+	}
+	form, ok := checker_type_table_form(target.type)
+	if !ok || checker_table_form_has_primary_index(form) {
+		return
+	}
+	checker_add_diagnostic(
+		ctx,
+		.Invalid_Insert_Operand,
+		checker_expr_range(stmt.target),
+		"INSERT INDEX requires a table with index access",
+	)
 }
 
 checker_check_modify_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt) {
