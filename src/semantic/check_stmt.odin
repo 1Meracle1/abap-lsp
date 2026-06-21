@@ -1581,10 +1581,43 @@ checker_check_append_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Append_Stmt)
 		source := checker_check_expr(&source_ctx, stmt.source)
 		if !checker_check_unresolved_variable_operand(ctx, stmt.source, source) {
 			checker_check_assignment_compatibility(ctx, source.type, expected, checker_expr_range(stmt.source))
+			checker_warn_append_source_category_mismatch(ctx, source.type, expected, checker_expr_range(stmt.source))
 		}
 	}
 	checker_check_table_line_target(ctx, stmt.assigning, row_type, .Assigning)
 	checker_check_table_line_target(ctx, stmt.reference_into, row_type, .Reference_Into)
+}
+
+checker_warn_append_source_category_mismatch :: proc(
+	ctx: ^Checker_Context,
+	actual: ^Type,
+	expected: ^Type,
+	range: Range,
+) {
+	if checker_type_is_unknown(actual) || checker_type_is_unknown(expected) {
+		return
+	}
+	if _, known := checker_type_assignment_compatible(ctx, actual, expected); known {
+		return
+	}
+	actual_table := checker_type_is_table_like(ctx, actual)
+	expected_table := checker_type_is_table_like(ctx, expected)
+	actual_structure := checker_type_structure(actual) != nil
+	expected_structure := checker_type_structure(expected) != nil
+	actual_ref := checker_type_is_ref(actual)
+	expected_ref := checker_type_is_ref(expected)
+	if actual_table == expected_table &&
+	   actual_structure == expected_structure &&
+	   actual_ref == expected_ref {
+		return
+	}
+	checker_add_diagnostic(
+		ctx,
+		.Incompatible_Assignment_Type,
+		range,
+		checker_type_mismatch_message(ctx, "APPEND source is not compatible", actual, expected),
+		severity = .Warning,
+	)
 }
 
 checker_check_append_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, target: Operand) {

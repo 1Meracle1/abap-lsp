@@ -3462,6 +3462,31 @@ APPEND ls_row TO lt_rows.`
 }
 
 @(test)
+root_semantic_stmt_checker_warns_append_source_type_category_mismatch :: proc(t: ^testing.T) {
+	source := `DATA lr_rng TYPE RANGE OF string.
+APPEND 'hello' TO lr_rng.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_append_range_mismatch.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 1)
+
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Incompatible_Assignment_Type {
+			continue
+		}
+		found = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "'hello'")
+		testing.expect_value(t, diagnostic.severity, Checker_Diagnostic_Severity.Warning)
+		testing.expect(t, strings.contains(diagnostic.message, "APPEND source is not compatible"))
+	}
+	testing.expect(t, found)
+}
+
+@(test)
 root_semantic_stmt_checker_diagnoses_invalid_append_operands :: proc(t: ^testing.T) {
 	source := `DATA lv_text TYPE string.
 DATA lv_not_table TYPE string.
