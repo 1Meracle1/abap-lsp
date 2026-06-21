@@ -1031,16 +1031,20 @@ parse_structural_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start_index := p.index
 	start := expect_keyword(p, "METHOD")
-	name, name_range, qualifier, qualifier_range, member_name, member_range, _ := first_qualified_name_parts_until_period(p)
-	validate_qualified_abap_name_length(
-		p,
-		name,
-		name_range,
-		qualifier,
-		qualifier_range,
-		member_name,
-		member_range,
-	)
+	name, name_range, qualifier, qualifier_range, member_name, member_range, name_ok := first_qualified_name_parts_until_period(p)
+	if name_ok {
+		validate_qualified_abap_name_length(
+			p,
+			name,
+			name_range,
+			qualifier,
+			qualifier_range,
+			member_name,
+			member_range,
+		)
+	} else {
+		error_current(p, "syntax error: expected METHOD name")
+	}
 	consume_raw_until_top_level_period(p)
 	period := expect_token(p, .Period)
 	if period.kind != .Period {
@@ -1234,8 +1238,12 @@ parse_named_block_stmt :: proc(
 ) -> ^ast.Stmt {
 	start_index := p.index
 	start := expect_keyword_phrase(p, start_keyword)
+	missing_name := named_block_header_starts_without_name(p, start_keyword)
+	if missing_name {
+		error_current(p, named_block_missing_name_message(start_keyword))
+	}
 	name := first_name_token_until_period(p)
-	if name.kind != .Eof && named_block_uses_abap_name_limit(start_keyword) {
+	if !missing_name && name.kind != .Eof && named_block_uses_abap_name_limit(start_keyword) {
 		validate_abap_name_length(p, name)
 	}
 	consume_raw_until_top_level_period(p)
@@ -1245,9 +1253,9 @@ parse_named_block_stmt :: proc(
 	}
 	stmt := ast.new(T, start.range, p.allocator)
 	when intrinsics.type_field_type(T, "name") == ast.Token_Text {
-		stmt.name = parser_ast_name_token(p, name) if name.kind != .Eof else ast.Token_Text{}
+		stmt.name = parser_ast_name_token(p, name) if !missing_name && name.kind != .Eof else ast.Token_Text{}
 	} else {
-		stmt.name = parser_intern_token_name(p, name) if name.kind != .Eof else ""
+		stmt.name = parser_intern_token_name(p, name) if !missing_name && name.kind != .Eof else ""
 	}
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
 	period_index := p.previous_index
@@ -1341,6 +1349,78 @@ parse_named_block_stmt :: proc(
 	}
 	stmt.range = tokenizer.text_range(start.range.start, period.range.end)
 	return stmt
+}
+
+named_block_header_starts_without_name :: proc(p: ^Parser, start_keyword: string) -> bool {
+	tok := current_token(p)
+	if tok.kind == .Eof || tok.kind == .Period {
+		return true
+	}
+	if tok.kind != .Ident && tok.kind != .String && tok.kind != .Number {
+		return true
+	}
+	if start_keyword == "CLASS" {
+		return at_keyword(p, "DEFINITION") ||
+		       at_keyword(p, "IMPLEMENTATION") ||
+		       at_keyword(p, "PUBLIC") ||
+		       at_keyword(p, "DEFERRED") ||
+		       at_keyword(p, "LOAD")
+	}
+	if start_keyword == "INTERFACE" {
+		return at_keyword(p, "PUBLIC") ||
+		       at_keyword(p, "DEFERRED") ||
+		       at_keyword(p, "LOAD")
+	}
+	if start_keyword == "FORM" {
+		return at_keyword(p, "TABLES") ||
+		       at_keyword(p, "USING") ||
+		       at_keyword(p, "CHANGING")
+	}
+	if start_keyword == "FUNCTION" {
+		return at_keyword(p, "IMPORTING") ||
+		       at_keyword(p, "EXPORTING") ||
+		       at_keyword(p, "CHANGING") ||
+		       at_keyword(p, "TABLES") ||
+		       at_keyword(p, "EXCEPTIONS")
+	}
+	if start_keyword == "MODULE" {
+		return at_keyword(p, "INPUT") || at_keyword(p, "OUTPUT")
+	}
+	if start_keyword == "ENHANCEMENT-SECTION" {
+		return at_keyword(p, "SPOTS")
+	}
+	return false
+}
+
+named_block_missing_name_message :: proc(start_keyword: string) -> string {
+	if start_keyword == "CLASS" {
+		return "syntax error: expected CLASS name"
+	}
+	if start_keyword == "INTERFACE" {
+		return "syntax error: expected INTERFACE name"
+	}
+	if start_keyword == "FORM" {
+		return "syntax error: expected FORM name"
+	}
+	if start_keyword == "FUNCTION" {
+		return "syntax error: expected FUNCTION name"
+	}
+	if start_keyword == "MODULE" {
+		return "syntax error: expected MODULE name"
+	}
+	if start_keyword == "ENHANCEMENT" {
+		return "syntax error: expected ENHANCEMENT name"
+	}
+	if start_keyword == "ENHANCEMENT-SECTION" {
+		return "syntax error: expected ENHANCEMENT-SECTION name"
+	}
+	if start_keyword == "TEST-SEAM" {
+		return "syntax error: expected TEST-SEAM name"
+	}
+	if start_keyword == "TEST-INJECTION" {
+		return "syntax error: expected TEST-INJECTION name"
+	}
+	return "syntax error: expected block name"
 }
 
 named_block_uses_abap_name_limit :: proc(start_keyword: string) -> bool {
@@ -1894,6 +1974,13 @@ parse_header_type_clause :: proc(
 		return clause, i
 	}
 	clause.type_ref, i = parse_header_type_ref_expr(p, i, period_index, stop_keywords)
+	if clause.type_ref == nil && !type_clause_allows_omitted_ref(clause) {
+		err_range := p.tokens[period_index].range
+		if i < period_index {
+			err_range = p.tokens[i].range
+		}
+		error(p, err_range, "syntax error: expected type name")
+	}
 	if i < period_index && at_keyword_index(p, i, "INITIAL") {
 		initial_size, next, ok := parse_header_initial_size_addition(
 			p,

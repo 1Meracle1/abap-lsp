@@ -1804,15 +1804,22 @@ open_sql_cte_and_set_operator_chain_is_modeled :: proc(t: ^testing.T) {
 @(test)
 open_sql_required_operands_report_missing_pieces :: proc(t: ^testing.T) {
 	source := `WITH +base AS ( SELECT matnr FROM mara ).
+WITH AS ( SELECT matnr FROM mara ) SELECT matnr FROM mara INTO TABLE @lt_rows.
+WITH +bad SELECT matnr FROM mara INTO TABLE @lt_rows.
 SELECT matnr FROM mara FOR ALL ENTRIES IN WHERE matnr = @lv_key INTO TABLE @lt_rows.
 SELECT matnr FROM mara PACKAGE SIZE INTO TABLE @lt_rows.
 SELECT matnr FROM mara UP TO ROWS INTO TABLE @lt_rows.
 SELECT FROM mara FIELDS INTO TABLE @lt_rows.
 SELECT matnr FROM mara GROUP BY INTO TABLE @lt_rows.
-SELECT matnr FROM mara ORDER BY INTO TABLE @lt_rows.`
+SELECT matnr FROM mara ORDER BY INTO TABLE @lt_rows.
+SELECT matnr FROM mara GROUP BY matnr HAVING INTO TABLE @lt_rows.
+SELECT matnr FROM mara OFFSET INTO TABLE @lt_rows.
+SELECT * FROM mara AS a INNER JOIN makt AS b INTO TABLE @lt_rows.`
 	parsed := parse(source, "sql_missing_required.abap", context.allocator)
 
 	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected SELECT"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected CTE name"), 1)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected AS in WITH clause"), 1)
 	testing.expect_value(
 		t,
 		parse_error_message_count(parsed.errors, "syntax error: expected table after FOR ALL ENTRIES IN"),
@@ -1841,6 +1848,21 @@ SELECT matnr FROM mara ORDER BY INTO TABLE @lt_rows.`
 	testing.expect_value(
 		t,
 		parse_error_message_count(parsed.errors, "syntax error: expected ORDER BY field"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected HAVING condition"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected OFFSET value"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected ON after SELECT JOIN"),
 		1,
 	)
 }
@@ -1879,6 +1901,56 @@ SELECT * FROM mara UNION.`
 	testing.expect_value(t, source[order_before_from.query.from_clause.start:order_before_from.query.from_clause.end], "mara")
 	testing.expect_value(t, len(missing_set_select.query.set_ops), 0)
 	testing.expect_value(t, missing_set_select.query.set_operator_clause.end, 0)
+}
+
+@(test)
+data_access_required_operands_report_missing_pieces :: proc(t: ^testing.T) {
+	source := `OPEN CURSOR FOR SELECT * FROM mara.
+FETCH NEXT CURSOR INTO wa.
+FETCH NEXT CURSOR cv PACKAGE SIZE.
+CLOSE CURSOR.
+READ TABLE INTO wa.
+READ TABLE itab WITH KEY id = .
+APPEND TO lt_rows.
+APPEND wa TO.
+APPEND INITIAL LINE TO lt_rows ASSIGNING.`
+	parsed := parse(source, "data_access_missing_required.abap", context.allocator)
+
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected cursor handle"),
+		3,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected PACKAGE SIZE value"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected READ TABLE source"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected READ TABLE key value"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected APPEND source"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected APPEND target"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected APPEND ASSIGNING target"),
+		1,
+	)
 }
 
 @(test)

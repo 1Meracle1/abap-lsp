@@ -2708,6 +2708,8 @@ parse_oop_preferred_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cla
 		validate_abap_name_length(p, name)
 		clause.preferred_parameter = parser_ast_raw_name_token(p, name)
 		bump_token(p)
+	} else {
+		error_current(p, "syntax error: expected preferred parameter name")
 	}
 	return true
 }
@@ -2808,6 +2810,9 @@ parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 		return clause
 	}
 	clause.type_ref = parse_oop_type_ref_expr(p)
+	if clause.type_ref == nil && !type_clause_allows_omitted_ref(clause) {
+		error_current(p, "syntax error: expected type name")
+	}
 	if at_keyword(p, "INITIAL") {
 		initial_size, ok := parse_type_clause_initial_size_addition(p, clause.form)
 		if !ok {
@@ -2830,7 +2835,9 @@ oop_parameter_type_clause_is_complex_definition :: proc(clause: ^ast.Data_Type_C
 		return false
 	}
 	return clause.form == .Range_Of ||
-	       (clause.table_has_of && type_clause_form_allows_missing_ref(clause.form))
+	       (clause.table_has_of &&
+	        clause.type_ref != nil &&
+	        type_clause_form_allows_missing_ref(clause.form))
 }
 
 parse_oop_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {

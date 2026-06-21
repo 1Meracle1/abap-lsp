@@ -616,6 +616,27 @@ corresponding_constructor_builds_mapping_and_except_clauses :: proc(t: ^testing.
 }
 
 @(test)
+constructor_required_clauses_report_missing_operands :: proc(t: ^testing.T) {
+	source := `DATA(a) = COND #( WHEN abap_true THEN ).
+DATA(b) = COND #( ELSE ).
+DATA(c) = VALUE #( BASE ).
+DATA(d) = VALUE #( ( field = ) ).
+DATA(e) = VALUE #( LINES OF ).
+DATA(f) = CORRESPONDING #( src MAPPING dst = DEFAULT ).
+DATA(g) = CORRESPONDING #( src EXCEPT ).
+DATA(h) = REDUCE i( INIT x = NEXT x = ).`
+	parsed := parse(source, "constructor_missing_required.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "syntax error: expected WHEN result")
+	expect_error_contains(t, parsed, "syntax error: expected ELSE result")
+	expect_error_contains(t, parsed, "syntax error: expected BASE value")
+	expect_error_contains(t, parsed, "syntax error: expected constructor assignment value")
+	expect_error_contains(t, parsed, "syntax error: expected LINES OF source")
+	expect_error_contains(t, parsed, "syntax error: expected expression")
+	expect_error_contains(t, parsed, "syntax error: expected EXCEPT component")
+}
+
+@(test)
 nested_template_and_double_ampersand_parse_as_expressions :: proc(t: ^testing.T) {
 	source := `rv_text = |prefix { |{ mv_inner }| } { mo_left->to_string( ) && mv_op }|.`
 	parsed := parse(source, "template_concat.abap", context.allocator)

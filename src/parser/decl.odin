@@ -1107,7 +1107,7 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 		clause.form = .Like_Table if is_like else .Table
 	}
 
-	if at_keyword(p, "INITIAL") {
+	if at_keyword(p, "INITIAL") && type_clause_allows_omitted_ref(clause) {
 		initial_size, ok := parse_type_clause_initial_size_addition(p, clause.form)
 		if !ok {
 			return nil
@@ -1117,8 +1117,8 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 	}
 
 	if decl_clause_boundary(p) ||
-	   (type_ref_stop_keyword(p) && type_clause_form_allows_missing_ref(clause.form)) {
-		if type_clause_form_allows_missing_ref(clause.form) {
+	   (type_ref_stop_keyword(p) && type_clause_allows_omitted_ref(clause)) {
+		if type_clause_allows_omitted_ref(clause) {
 			return clause
 		}
 		error_current(p, "syntax error: expected type name")
@@ -1127,7 +1127,7 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 
 	type_ref := parse_type_ref_expr(p)
 	if type_ref == nil {
-		if type_clause_form_allows_missing_ref(clause.form) {
+		if type_clause_allows_omitted_ref(clause) {
 			return clause
 		}
 		return nil
@@ -1141,6 +1141,12 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 		clause.initial_size = initial_size
 	}
 	return clause
+}
+
+type_clause_allows_omitted_ref :: proc(clause: ^ast.Data_Type_Clause) -> bool {
+	return clause != nil &&
+	       type_clause_form_allows_missing_ref(clause.form) &&
+	       !clause.table_has_of
 }
 
 type_clause_form_allows_missing_ref :: proc(form: ast.Data_Type_Form) -> bool {

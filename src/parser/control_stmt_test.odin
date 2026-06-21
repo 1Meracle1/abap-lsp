@@ -465,6 +465,30 @@ ENDFORM.`
 }
 
 @(test)
+routine_headers_report_missing_names_and_type_refs :: proc(t: ^testing.T) {
+	source := `CLASS DEFINITION.
+ENDCLASS.
+INTERFACE PUBLIC.
+ENDINTERFACE.
+FORM TABLES rows.
+ENDFORM.
+FUNCTION z_bad
+  IMPORTING iv_value TYPE.
+ENDFUNCTION.
+FORM f_bad USING it_rows TYPE STANDARD TABLE OF.
+ENDFORM.
+METHOD.
+ENDMETHOD.`
+	parsed := parse(source, "routine_missing_header_parts.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "syntax error: expected CLASS name")
+	expect_error_contains(t, parsed, "syntax error: expected INTERFACE name")
+	expect_error_contains(t, parsed, "syntax error: expected FORM name")
+	expect_error_contains(t, parsed, "syntax error: expected METHOD name")
+	expect_error_contains(t, parsed, "syntax error: expected type name")
+}
+
+@(test)
 form_raising_clause_is_not_a_parameter :: proc(t: ^testing.T) {
 	source := `FORM open_gui USING iv_value TYPE string RAISING zcx_abapgit_exception.
 ENDFORM.`

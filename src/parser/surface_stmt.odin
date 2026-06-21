@@ -603,6 +603,20 @@ required_data_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string)
 	return expr
 }
 
+required_data_expr_message :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_keywords: []string,
+	message: string,
+) -> ^ast.Expr {
+	error_count := len(p.errors)
+	expr := data_expr(p, body_start, stop_keywords)
+	if expr == nil && len(p.errors) == error_count {
+		error_current(p, message)
+	}
+	return expr
+}
+
 data_exprs_until :: proc(
 	p: ^Parser,
 	body_start: int,
@@ -721,12 +735,20 @@ parse_select_with_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_Wit
 		entry := ast.Select_Cte_Clause {
 			name = parse_cte_name(p),
 		}
+		if entry.name.text == "" {
+			error_current(p, "syntax error: expected CTE name")
+		}
 		if !allow_keyword(p, "AS") {
+			error_current(p, "syntax error: expected AS in WITH clause")
 			break
 		}
-		allow_token(p, .LParen)
+		if !allow_token(p, .LParen) {
+			error_current(p, "syntax error: expected '(' after CTE AS")
+		}
 		entry.query = parse_select_query_clause(p, body_start, true)
-		allow_token(p, .RParen)
+		if !allow_token(p, .RParen) {
+			error_current(p, "syntax error: expected ')' after CTE query")
+		}
 		append(&clause.entries, entry)
 		if !allow_token(p, .Comma) {
 			break
@@ -740,7 +762,11 @@ parse_select_with_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_Wit
 parse_cte_name :: proc(p: ^Parser) -> ast.Token_Text {
 	start_index := p.index
 	start := current_token(p)
-	for !at_eof(p) && !at_keyword(p, "AS") && current_token(p).kind != .Comma {
+	for !at_eof(p) &&
+	    !at_keyword(p, "AS") &&
+	    !at_keyword(p, "SELECT") &&
+	    current_token(p).kind != .Comma &&
+	    current_token(p).kind != .Period {
 		bump_token(p)
 	}
 	if p.index == start_index {
@@ -1169,7 +1195,13 @@ parse_select_query_clause :: proc(
 				)
 				continue
 			}
-			query.having_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
+			query.having_clause = select_skip_required_clause(
+				p,
+				start,
+				body_start,
+				stop_at_rparen,
+				"syntax error: expected HAVING condition",
+			)
 			state.having = true
 			continue
 		}
@@ -1286,7 +1318,13 @@ parse_select_query_clause :: proc(
 				)
 				continue
 			}
-			query.offset_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
+			query.offset_clause = select_skip_required_clause(
+				p,
+				start,
+				body_start,
+				stop_at_rparen,
+				"syntax error: expected OFFSET value",
+			)
 			state.offset = true
 			continue
 		}
@@ -1712,6 +1750,22 @@ select_skip_clause :: proc(
 	return tokenizer.text_range(start.range.start, previous_token(p).range.end)
 }
 
+select_skip_required_clause :: proc(
+	p: ^Parser,
+	start: Token,
+	body_start: int,
+	stop_at_rparen: bool,
+	message: string,
+) -> tokenizer.Range {
+	content_start := p.index
+	error_count := len(p.errors)
+	range := select_skip_clause(p, start, body_start, stop_at_rparen)
+	if p.index == content_start && len(p.errors) == error_count {
+		error_current(p, message)
+	}
+	return range
+}
+
 parse_select_order_by_clause :: proc(
 	p: ^Parser,
 	query: ^ast.Select_Query_Clause,
@@ -1933,6 +1987,8 @@ parse_select_source_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_S
 					"EXCEPT",
 				},
 			)
+		} else if join.kind != .Cross {
+			error_current(p, "syntax error: expected ON after SELECT JOIN")
 		}
 		append(&clause.joins, join)
 	}
@@ -2165,9 +2221,16 @@ parse_open_cursor_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if allow_keyword(p, "WITH") {
 		stmt.with_hold = allow_keyword(p, "HOLD")
 	}
-	stmt.handle = data_expr(p, body_start, []string{"FOR"})
+	stmt.handle = required_data_expr_message(
+		p,
+		body_start,
+		[]string{"FOR"},
+		"syntax error: expected cursor handle",
+	)
 	if allow_keyword(p, "FOR") {
 		stmt.query = parse_select_query_clause(p, body_start)
+	} else {
+		error_current(p, "syntax error: expected FOR after OPEN CURSOR")
 	}
 	stmt.range = data_stmt_range(p, start)
 	return stmt
@@ -2181,7 +2244,12 @@ parse_fetch_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if !allow_keyword(p, "CURSOR") {
 		error_current(p, "syntax error: expected keyword")
 	}
-	stmt.handle = data_expr(p, body_start, []string{"INTO", "APPENDING"})
+	stmt.handle = required_data_expr_message(
+		p,
+		body_start,
+		[]string{"INTO", "APPENDING"},
+		"syntax error: expected cursor handle",
+	)
 	for !data_stmt_done(p, body_start) {
 		if allow_keyword(p, "INTO") {
 			stmt.result = parse_select_result_tail(p, .Into, body_start)
@@ -2193,7 +2261,12 @@ parse_fetch_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 		if allow_keyword(p, "PACKAGE") {
 			allow_keyword(p, "SIZE")
-			stmt.package_size = data_expr(p, body_start, []string{})
+			stmt.package_size = required_data_expr_message(
+				p,
+				body_start,
+				[]string{},
+				"syntax error: expected PACKAGE SIZE value",
+			)
 			continue
 		}
 		bump_token(p)
@@ -2206,7 +2279,12 @@ parse_close_cursor_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword_phrase(p, "CLOSE CURSOR")
 	body_start := p.index
 	stmt := ast.new(ast.Close_Cursor_Stmt, start.range, p.allocator)
-	stmt.handle = data_expr(p, body_start, []string{})
+	stmt.handle = required_data_expr_message(
+		p,
+		body_start,
+		[]string{},
+		"syntax error: expected cursor handle",
+	)
 	consume_data_tail(p, body_start)
 	stmt.range = data_stmt_range(p, start)
 	return stmt
@@ -2218,6 +2296,9 @@ parse_read_table_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Read_Table_Stmt, start.range, p.allocator)
 	stmt.entries = make([dynamic]ast.Read_Table_Entry_Clause, 0, 2, p.allocator)
 	allow_token(p, .Colon)
+	if data_stmt_done(p, body_start) {
+		error_current(p, "syntax error: expected READ TABLE source")
+	}
 	for !data_stmt_done(p, body_start) {
 		if allow_token(p, .Comma) {
 			continue
@@ -2252,6 +2333,9 @@ parse_read_table_entry :: proc(p: ^Parser, body_start: int) -> ast.Read_Table_En
 			"REFERENCE",
 		},
 	)
+	if entry.table == nil {
+		error_current(p, "syntax error: expected READ TABLE source")
+	}
 	for !data_stmt_done(p, body_start) && current_token(p).kind != .Comma {
 		if allow_keyword(p, "INTO") {
 			entry.into = read_table_result_expr(
@@ -2459,6 +2543,9 @@ parse_read_table_key_values :: proc(
 					"REFERENCE",
 				},
 			)
+			if value == nil {
+				error_current(p, "syntax error: expected READ TABLE key value")
+			}
 			append(
 				&entry.key_values,
 				ast.Read_Table_Key_Value_Clause {
@@ -2886,22 +2973,42 @@ parse_append_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.initial_line = true
 	}
 	if !stmt.initial_line {
-		stmt.source = data_expr(p, body_start, []string{"TO", "ASSIGNING", "REFERENCE"})
+		stmt.source = required_data_expr_message(
+			p,
+			body_start,
+			[]string{"TO", "ASSIGNING", "REFERENCE"},
+			"syntax error: expected APPEND source",
+		)
 	}
 	for !data_stmt_done(p, body_start) {
 		if allow_keyword(p, "TO") {
 			stmt.sorted = allow_keyword(p, "SORTED")
 			allow_keyword(p, "TABLE")
-			stmt.target = data_expr(p, body_start, []string{"ASSIGNING", "REFERENCE"})
+			stmt.target = required_data_expr_message(
+				p,
+				body_start,
+				[]string{"ASSIGNING", "REFERENCE"},
+				"syntax error: expected APPEND target",
+			)
 			continue
 		}
 		if allow_keyword(p, "ASSIGNING") {
-			stmt.assigning = data_expr(p, body_start, []string{"REFERENCE"})
+			stmt.assigning = required_data_expr_message(
+				p,
+				body_start,
+				[]string{"REFERENCE"},
+				"syntax error: expected APPEND ASSIGNING target",
+			)
 			continue
 		}
 		if allow_keyword(p, "REFERENCE") {
 			allow_keyword(p, "INTO")
-			stmt.reference_into = data_expr(p, body_start, []string{})
+			stmt.reference_into = required_data_expr_message(
+				p,
+				body_start,
+				[]string{},
+				"syntax error: expected APPEND REFERENCE target",
+			)
 			continue
 		}
 		bump_token(p)

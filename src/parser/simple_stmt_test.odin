@@ -1556,6 +1556,18 @@ ENDCLASS.`
 }
 
 @(test)
+oop_signature_reports_missing_type_ref_and_preferred_parameter :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS choose IMPORTING !rows TYPE TABLE OF PREFERRED PARAMETER.
+ENDCLASS.`
+	parsed := parse(source, "oop_missing_signature_parts.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "syntax error: expected type name")
+	expect_error_contains(t, parsed, "syntax error: expected preferred parameter name")
+}
+
+@(test)
 oop_signature_accepts_unescaped_value_parameter_name :: proc(t: ^testing.T) {
 	source := `INTERFACE lif.
   METHODS run IMPORTING value TYPE numeric.

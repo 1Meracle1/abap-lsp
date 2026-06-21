@@ -1258,16 +1258,20 @@ parse_constructor_let_binding_expr :: proc(p: ^Parser) -> ^ast.Expr {
 
 parse_constructor_when_clause_expr :: proc(p: ^Parser, is_switch: bool, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "WHEN")
+	error_count := len(p.errors)
 	condition := parse_concat_expr(p) if is_switch else parse_logical_expr(p)
 	if condition == nil {
+		constructor_error_if_no_new_error(p, error_count, "syntax error: expected WHEN condition")
 		return nil
 	}
 	if !allow_keyword(p, "THEN") {
 		error_current(p, "syntax error: expected keyword")
 		return nil
 	}
+	error_count = len(p.errors)
 	result := parse_constructor_result_expr(p, body_start)
 	if result == nil {
+		constructor_error_if_no_new_error(p, error_count, "syntax error: expected WHEN result")
 		return nil
 	}
 	expr := ast.new(
@@ -1282,8 +1286,10 @@ parse_constructor_when_clause_expr :: proc(p: ^Parser, is_switch: bool, body_sta
 
 parse_constructor_else_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "ELSE")
+	error_count := len(p.errors)
 	result := parse_constructor_result_expr(p, body_start)
 	if result == nil {
+		constructor_error_if_no_new_error(p, error_count, "syntax error: expected ELSE result")
 		return nil
 	}
 	expr := ast.new(
@@ -1321,9 +1327,19 @@ parse_constructor_for_clause_expr :: proc(
 	expr.body = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 
 	if allow_token(p, .Eq) {
+		error_count := len(p.errors)
 		expr.init = parse_expr(p)
+		if expr.init == nil {
+			constructor_error_if_no_new_error(p, error_count, "syntax error: expected FOR init expression")
+			return nil
+		}
 		if allow_keyword(p, "THEN") {
+			error_count = len(p.errors)
 			expr.then_expr = parse_expr(p)
+			if expr.then_expr == nil {
+				constructor_error_if_no_new_error(p, error_count, "syntax error: expected FOR THEN expression")
+				return nil
+			}
 		}
 		if allow_keyword(p, "WHILE") {
 			expr.kind = .For_Then_While
@@ -1334,7 +1350,12 @@ parse_constructor_for_clause_expr :: proc(
 			}
 			expr.kind = .For_Then_Until
 		}
+		error_count = len(p.errors)
 		expr.condition = parse_logical_expr(p)
+		if expr.condition == nil {
+			constructor_error_if_no_new_error(p, error_count, "syntax error: expected FOR condition")
+			return nil
+		}
 	} else if allow_keyword(p, "IN") {
 		expr.kind = .For_In
 		if allow_keyword(p, "GROUP") {
@@ -1345,7 +1366,12 @@ parse_constructor_for_clause_expr :: proc(
 			group.range = parser_token_name_range(p, group)
 			expr.group_source = parser_ast_raw_name_token(p, group)
 		} else {
+			error_count := len(p.errors)
 			expr.source = parse_expr(p)
+			if expr.source == nil {
+				constructor_error_if_no_new_error(p, error_count, "syntax error: expected FOR source")
+				return nil
+			}
 		}
 		if expr.source != nil && at_keyword(p, "WHERE") {
 			expr.where_clause = parse_constructor_where_clause_expr(p)
@@ -1392,8 +1418,10 @@ parse_constructor_for_groups_clause_expr :: proc(
 		error_current(p, "syntax error: expected keyword")
 		return nil
 	}
+	error_count := len(p.errors)
 	expr.source = parse_expr(p)
 	if expr.source == nil {
+		constructor_error_if_no_new_error(p, error_count, "syntax error: expected FOR GROUPS source")
 		return nil
 	}
 
@@ -1401,8 +1429,10 @@ parse_constructor_for_groups_clause_expr :: proc(
 		error_current(p, "syntax error: expected GROUP BY in FOR GROUPS clause")
 		return nil
 	}
+	error_count = len(p.errors)
 	expr.group_by = parse_constructor_group_by_expr(p, body_start)
 	if expr.group_by == nil {
+		constructor_error_if_no_new_error(p, error_count, "syntax error: expected FOR GROUPS group key")
 		return nil
 	}
 
@@ -1461,6 +1491,7 @@ parse_constructor_assignment_list :: proc(p: ^Parser, body_start: int, out: ^[dy
 		if constructor_named_assignment_starts(p) {
 			append_if_expr(out, parse_constructor_named_assignment_expr(p, body_start))
 		} else {
+			error_current(p, "syntax error: expected constructor assignment")
 			bump_token(p)
 		}
 		ensure_forward_progress(p, start)
@@ -1474,8 +1505,10 @@ parse_constructor_named_assignment_expr :: proc(p: ^Parser, body_start: int) -> 
 	}
 	name := parser_ast_token(parser_clone_range_text(p, target.range), target.range)
 	expect_token(p, .Eq)
+	error_count := len(p.errors)
 	value := parse_constructor_value_expr(p, body_start)
 	if value == nil {
+		constructor_error_if_no_new_error(p, error_count, "syntax error: expected constructor assignment value")
 		return nil
 	}
 	expr := ast.new(
@@ -1524,8 +1557,10 @@ constructor_named_assignment_starts :: proc(p: ^Parser) -> bool {
 
 parse_constructor_base_clause_expr :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
 	start := expect_keyword(p, "BASE")
+	error_count := len(p.errors)
 	value := parse_constructor_value_expr(p, body_start)
 	if value == nil {
+		constructor_error_if_no_new_error(p, error_count, "syntax error: expected BASE value")
 		return nil
 	}
 	expr := ast.new(
@@ -1544,12 +1579,37 @@ parse_constructor_lines_of_clause_expr :: proc(p: ^Parser, body_start: int) -> ^
 		return nil
 	}
 	expr := ast.new(ast.Constructor_Lines_Of_Clause_Expr, start.range, p.allocator)
+	if constructor_args_done(p, body_start) || constructor_clause_boundary(p) {
+		error_current(p, "syntax error: expected LINES OF source")
+		return nil
+	}
+	error_count := len(p.errors)
 	expr.source = parse_expr(p)
+	if expr.source == nil {
+		constructor_error_if_no_new_error(p, error_count, "syntax error: expected LINES OF source")
+		return nil
+	}
 	for !constructor_args_done(p, body_start) && !constructor_clause_boundary(p) {
 		if allow_keyword(p, "FROM") {
+			if constructor_args_done(p, body_start) || constructor_clause_boundary(p) {
+				error_current(p, "syntax error: expected LINES OF FROM expression")
+				continue
+			}
+			error_count = len(p.errors)
 			expr.from = parse_expr(p)
+			if expr.from == nil {
+				constructor_error_if_no_new_error(p, error_count, "syntax error: expected LINES OF FROM expression")
+			}
 		} else if allow_keyword(p, "TO") {
+			if constructor_args_done(p, body_start) || constructor_clause_boundary(p) {
+				error_current(p, "syntax error: expected LINES OF TO expression")
+				continue
+			}
+			error_count = len(p.errors)
 			expr.to = parse_expr(p)
+			if expr.to == nil {
+				constructor_error_if_no_new_error(p, error_count, "syntax error: expected LINES OF TO expression")
+			}
 		} else if allow_keyword(p, "USING") {
 			allow_keyword(p, "KEY")
 			key := expect_token(p, .Ident)
@@ -1592,16 +1652,28 @@ parse_constructor_mapping_assignment_expr :: proc(p: ^Parser, body_start: int) -
 	expr.target = parser_ast_name_token(p, name)
 
 	if allow_keyword(p, "DEFAULT") {
+		error_count := len(p.errors)
 		expr.default_value = parse_expr(p)
+		if expr.default_value == nil {
+			constructor_error_if_no_new_error(p, error_count, "syntax error: expected DEFAULT expression")
+		}
 	} else if !constructor_args_done(p, body_start) && !constructor_mapping_tail_starts(p) {
+		error_count := len(p.errors)
 		expr.source = parse_expr(p)
+		if expr.source == nil {
+			constructor_error_if_no_new_error(p, error_count, "syntax error: expected MAPPING source")
+		}
 	}
 	if allow_keyword(p, "DISCARDING") {
 		allow_keyword(p, "DUPLICATES")
 		expr.discarding_duplicates = true
 	}
 	if allow_keyword(p, "DEFAULT") {
+		error_count := len(p.errors)
 		expr.default_value = parse_expr(p)
+		if expr.default_value == nil {
+			constructor_error_if_no_new_error(p, error_count, "syntax error: expected DEFAULT expression")
+		}
 	}
 	if at_keyword(p, "MAPPING") {
 		expr.mapping = parse_constructor_mapping_clause_expr(p, body_start)
@@ -1626,6 +1698,9 @@ parse_constructor_except_clause_expr :: proc(p: ^Parser, body_start: int) -> ^as
 		name := ast.new(ast.Ident_Expr, tok.range, p.allocator)
 		name.name = parser_intern_token_name(p, tok)
 		append(&expr.names, name)
+	}
+	if len(expr.names) == 0 {
+		error_current(p, "syntax error: expected EXCEPT component")
 	}
 	expr.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 	return expr
@@ -1798,6 +1873,12 @@ sql_case_keyword :: proc(p: ^Parser) -> bool {
 append_if_expr :: proc(list: ^[dynamic]^ast.Expr, expr: ^ast.Expr) {
 	if expr != nil {
 		append(list, expr)
+	}
+}
+
+constructor_error_if_no_new_error :: proc(p: ^Parser, error_count: int, message: string) {
+	if len(p.errors) == error_count {
+		error_current(p, message)
 	}
 }
 
