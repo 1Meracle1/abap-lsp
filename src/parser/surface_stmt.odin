@@ -805,6 +805,10 @@ OPEN_SQL_ORDER_BY_ALIAS_MESSAGE :: "syntax error: Open SQL ORDER BY fields canno
 OPEN_SQL_UNEXPECTED_TOKEN_MESSAGE :: "syntax error: unexpected token in Open SQL SELECT statement"
 OPEN_SQL_ORDER_BY_DIRECTION_MESSAGE :: "syntax error: expected ASCENDING or DESCENDING in ORDER BY"
 OPEN_SQL_ORDER_BY_COMMA_MESSAGE :: "syntax error: expected ',' between ORDER BY fields"
+OPEN_SQL_ORDER_BY_PRIMARY_KEY_MESSAGE :: "syntax error: expected KEY after ORDER BY PRIMARY"
+OPEN_SQL_SET_ALL_MESSAGE :: "syntax error: ALL is only valid with UNION in Open SQL set operators"
+OPEN_SQL_UP_TO_COMBINATION_MESSAGE :: "syntax error: Open SQL UP TO cannot be used with SINGLE or set operators"
+OPEN_SQL_OFFSET_COMBINATION_MESSAGE :: "syntax error: Open SQL OFFSET requires ORDER BY and cannot be used with SINGLE, FOR ALL ENTRIES, or set operators"
 
 SELECT_RESULT_TARGET_STOP_KEYWORDS :: []string {
 	"PACKAGE",
@@ -848,6 +852,7 @@ parse_select_query_clause :: proc(
 	body_start: int,
 	stop_at_rparen := false,
 	required := true,
+	in_set_query := false,
 ) -> ast.Select_Query_Clause {
 	query := ast.Select_Query_Clause{}
 	query.projections = make([dynamic]^ast.Expr, 0, 4, p.allocator)
@@ -1360,7 +1365,16 @@ parse_select_query_clause :: proc(
 		if kind, ok := select_set_kind(p); ok {
 			set_start := current_token(p)
 			bump_token(p)
-			all := allow_keyword(p, "ALL")
+			all := false
+			is_distinct := false
+			if allow_keyword(p, "ALL") {
+				all = true
+				if kind != .Union {
+					error(p, previous_token(p).range, OPEN_SQL_SET_ALL_MESSAGE)
+				}
+			} else {
+				is_distinct = allow_keyword(p, "DISTINCT")
+			}
 			if !state.from || !at_keyword(p, "SELECT") {
 				error(
 					p,
@@ -1379,7 +1393,8 @@ parse_select_query_clause :: proc(
 				ast.Select_Set_Clause {
 					kind = kind,
 					all = all,
-					query = parse_select_query_clause(p, body_start, stop_at_rparen),
+					is_distinct = is_distinct,
+					query = parse_select_query_clause(p, body_start, stop_at_rparen, true, true),
 				},
 			)
 			continue
@@ -1387,8 +1402,31 @@ parse_select_query_clause :: proc(
 		select_reject_unexpected_tail(p, body_start, stop_at_rparen)
 	}
 	validate_select_query_for_all_entries_aggregates(p, &query)
+	validate_select_query_clause_combinations(p, &query, in_set_query)
 	validate_select_query_host_escapes(p, &query)
 	return query
+}
+
+validate_select_query_clause_combinations :: proc(
+	p: ^Parser,
+	query: ^ast.Select_Query_Clause,
+	in_set_query: bool,
+) {
+	set_context := in_set_query || len(query.set_ops) > 0
+	if query.up_to_rows != nil && (query.single || set_context) {
+		error(p, query.up_to_clause, OPEN_SQL_UP_TO_COMBINATION_MESSAGE)
+	}
+	if select_range_valid(query.offset_clause) &&
+	   (query.single ||
+	    query.for_all_entries != nil ||
+	    set_context ||
+	    !select_query_has_order_by(query)) {
+		error(p, query.offset_clause, OPEN_SQL_OFFSET_COMBINATION_MESSAGE)
+	}
+}
+
+select_query_has_order_by :: proc(query: ^ast.Select_Query_Clause) -> bool {
+	return query.order_by_primary_key || len(query.order_by_fields) > 0
 }
 
 select_reject_unexpected_tail :: proc(p: ^Parser, body_start: int, stop_at_rparen: bool) {
@@ -1779,7 +1817,11 @@ parse_select_order_by_clause :: proc(
 		return
 	}
 	if allow_keyword(p, "PRIMARY") {
-		query.order_by_primary_key = allow_keyword(p, "KEY")
+		if allow_keyword(p, "KEY") {
+			query.order_by_primary_key = true
+		} else {
+			error_current(p, OPEN_SQL_ORDER_BY_PRIMARY_KEY_MESSAGE)
+		}
 		query.order_by_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
 		return
 	}

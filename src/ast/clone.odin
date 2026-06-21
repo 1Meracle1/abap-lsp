@@ -1811,7 +1811,7 @@ clone_select_joins :: proc(list: [dynamic]Select_Join_Clause, allocator: mem.All
 clone_select_set_ops :: proc(list: [dynamic]Select_Set_Clause, allocator: mem.Allocator) -> [dynamic]Select_Set_Clause {
 	res := make([dynamic]Select_Set_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Select_Set_Clause{kind = clause.kind, all = clause.all, query = clone_select_query(clause.query, allocator)})
+		append(&res, Select_Set_Clause{kind = clause.kind, all = clause.all, is_distinct = clause.is_distinct, query = clone_select_query(clause.query, allocator)})
 	}
 	return res
 }

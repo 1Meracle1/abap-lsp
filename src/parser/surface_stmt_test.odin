@@ -1854,6 +1854,61 @@ open_sql_cte_and_set_operator_chain_is_modeled :: proc(t: ^testing.T) {
 }
 
 @(test)
+open_sql_set_operator_distinct_is_preserved :: proc(t: ^testing.T) {
+	source := `SELECT matnr FROM mara UNION DISTINCT SELECT matnr FROM makt INTERSECT DISTINCT SELECT matnr FROM zkeep EXCEPT DISTINCT SELECT matnr FROM zskip INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_set_distinct.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	union_set := stmt.query.set_ops[0]
+	intersect_set := union_set.query.set_ops[0]
+	except_set := intersect_set.query.set_ops[0]
+	testing.expect_value(t, union_set.kind, ast.Select_Set_Kind.Union)
+	testing.expect(t, union_set.is_distinct)
+	testing.expect_value(t, intersect_set.kind, ast.Select_Set_Kind.Intersect)
+	testing.expect(t, intersect_set.is_distinct)
+	testing.expect_value(t, except_set.kind, ast.Select_Set_Kind.Except)
+	testing.expect(t, except_set.is_distinct)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+open_sql_set_operator_all_is_only_valid_for_union :: proc(t: ^testing.T) {
+	source := `SELECT matnr FROM mara INTERSECT ALL SELECT matnr FROM makt INTO TABLE @lt_rows.
+SELECT matnr FROM mara EXCEPT ALL SELECT matnr FROM makt INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_set_all_invalid.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, OPEN_SQL_SET_ALL_MESSAGE), 2)
+}
+
+@(test)
+open_sql_order_by_primary_requires_key :: proc(t: ^testing.T) {
+	source := `SELECT matnr FROM mara ORDER BY PRIMARY INTO TABLE @lt_rows.
+SELECT matnr FROM mara ORDER BY PRIMARY KEY INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_order_by_primary_key.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, OPEN_SQL_ORDER_BY_PRIMARY_KEY_MESSAGE), 1)
+	missing_key := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	valid := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, !missing_key.query.order_by_primary_key)
+	testing.expect(t, valid.query.order_by_primary_key)
+}
+
+@(test)
+open_sql_up_to_and_offset_combination_rules_are_diagnosed :: proc(t: ^testing.T) {
+	source := `SELECT SINGLE matnr FROM mara UP TO 1 ROWS INTO @DATA(lv_matnr).
+SELECT matnr FROM mara UNION SELECT matnr FROM makt UP TO 1 ROWS INTO TABLE @lt_rows.
+SELECT matnr FROM mara OFFSET 1 INTO TABLE @lt_rows.
+SELECT SINGLE matnr FROM mara ORDER BY matnr OFFSET 1 INTO @DATA(lv_matnr).
+SELECT matnr FROM mara FOR ALL ENTRIES IN @lt_keys WHERE matnr = @lt_keys-matnr ORDER BY matnr OFFSET 1 INTO TABLE @lt_rows.
+SELECT matnr FROM mara ORDER BY matnr OFFSET 1 UNION SELECT matnr FROM makt INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_up_to_offset_combinations.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, OPEN_SQL_UP_TO_COMBINATION_MESSAGE), 2)
+	testing.expect_value(t, parse_error_message_count(parsed.errors, OPEN_SQL_OFFSET_COMBINATION_MESSAGE), 4)
+}
+
+@(test)
 open_sql_required_operands_report_missing_pieces :: proc(t: ^testing.T) {
 	source := `WITH +base AS ( SELECT matnr FROM mara ).
 WITH AS ( SELECT matnr FROM mara ) SELECT matnr FROM mara INTO TABLE @lt_rows.

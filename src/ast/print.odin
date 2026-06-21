@@ -3687,6 +3687,8 @@ emit_select_query :: proc(p: ^Printer, query: Select_Query_Clause) {
 		emit(p, select_set_kind_text(set_op.kind))
 		if set_op.all {
 			emit(p, " ALL")
+		} else if set_op.is_distinct {
+			emit(p, " DISTINCT")
 		}
 		emit_space(p)
 		emit_select_query(p, set_op.query)

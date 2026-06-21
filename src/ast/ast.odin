@@ -2586,9 +2586,10 @@ Select_Set_Kind :: enum {
 
 // ABAP syntax: `UNION`, `INTERSECT`, or `EXCEPT` followed by another SELECT query.
 Select_Set_Clause :: struct {
-	kind:  Select_Set_Kind,
-	all:   bool,
-	query: Select_Query_Clause,
+	kind:        Select_Set_Kind,
+	all:         bool,
+	is_distinct: bool,
+	query:       Select_Query_Clause,
 }
 
 // ABAP syntax: one `WITH name AS ( SELECT ... )` common table expression.
