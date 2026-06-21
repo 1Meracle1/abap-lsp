@@ -201,8 +201,17 @@
     "identifier": {
       "type": "TOKEN",
       "content": {
-        "type": "PATTERN",
-        "value": "[A-Za-z_][A-Za-z0-9_]*"
+        "type": "CHOICE",
+        "members": [
+          {
+            "type": "PATTERN",
+            "value": "[A-Za-z_][A-Za-z0-9_]*"
+          },
+          {
+            "type": "PATTERN",
+            "value": "\\d+[A-Za-z_][A-Za-z0-9_]*"
+          }
+        ]
       }
     },
     "escaped_identifier": {

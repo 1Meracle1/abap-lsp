@@ -576,6 +576,22 @@ read_table_rejects_spaced_key_component_selector :: proc(t: ^testing.T) {
 }
 
 @(test)
+read_table_index_keeps_digit_prefixed_symbol_operand :: proc(t: ^testing.T) {
+	source := `READ TABLE lt_rows INDEX 1sdf INTO DATA(ls_row).`
+	parsed := parse(source, "read_table_bad_index.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+
+	read := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
+	testing.expect_value(t, len(read.entries), 1)
+	index, index_ok := read.entries[0].index.derived_expr.(^ast.Ident_Expr)
+	testing.expect(t, index_ok)
+	testing.expect_value(t, index.name, "1sdf")
+	testing.expect_value(t, source[index.range.start:index.range.end], "1sdf")
+	testing.expect(t, read.entries[0].into != nil)
+}
+
+@(test)
 read_table_binary_search_stores_range :: proc(t: ^testing.T) {
 	source := `READ TABLE itab INTO wa WITH KEY id = lv_id BINARY SEARCH.`
 	parsed := parse(source, "read_table_binary_search_clause.abap", context.allocator)

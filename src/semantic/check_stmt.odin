@@ -1361,7 +1361,8 @@ checker_check_read_table_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Read_Tab
 		checker_check_table_line_target(ctx, entry.into, row_type, .Into)
 		checker_check_table_line_target(ctx, entry.assigning, row_type, .Assigning)
 		checker_check_table_line_target(ctx, entry.reference_into, row_type, .Reference_Into)
-		checker_check_expr(ctx, entry.index)
+		checker_check_read_table_index(ctx, entry.index)
+		checker_check_read_table_index_access(ctx, entry, table)
 		checker_check_table_key_selector(ctx, entry.using_key)
 		checker_check_loop_transporting_fields(ctx, entry.transporting_fields[:], row_type, row_structure)
 		checker_check_read_table_comparing(ctx, entry.comparing[:], row_type, row_structure)
@@ -1369,6 +1370,88 @@ checker_check_read_table_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Read_Tab
 			checker_check_read_table_key_value(ctx, row_type, row_structure, key)
 		}
 	}
+}
+
+checker_check_read_table_index :: proc(ctx: ^Checker_Context, expr: ^ast.Expr) -> Operand {
+	if expr == nil {
+		return checker_invalid_operand()
+	}
+	int_type := checker_builtin_type_from_name(ctx.checker, "i")
+	local := ctx^
+	local.type_hint = int_type
+	local.type_hint_expr = expr
+	local.diagnose_unresolved_value_refs = true
+	operand := checker_check_expr(&local, expr)
+	if checker_check_unresolved_variable_operand(ctx, expr, operand) {
+		return operand
+	}
+	checker_check_integer_compatible_type(
+		ctx,
+		operand.type,
+		checker_expr_range(expr),
+		"READ TABLE INDEX operand is not integer-compatible",
+	)
+	return operand
+}
+
+checker_check_read_table_index_access :: proc(
+	ctx: ^Checker_Context,
+	entry: ast.Read_Table_Entry_Clause,
+	table: Operand,
+) {
+	if entry.index == nil {
+		return
+	}
+	if checker_check_unresolved_variable_operand(ctx, entry.table, table) ||
+	   checker_type_is_unknown(table.type) ||
+	   !checker_type_is_table_like(ctx, table.type) {
+		return
+	}
+	if checker_read_table_index_access_supported(ctx, table, entry.using_key) {
+		return
+	}
+	checker_add_diagnostic(
+		ctx,
+		.Invalid_Syntax_Form,
+		checker_read_table_index_access_diagnostic_range(entry),
+		"READ TABLE INDEX requires a table key with index access",
+	)
+}
+
+checker_read_table_index_access_supported :: proc(
+	ctx: ^Checker_Context,
+	table: Operand,
+	using_key: ast.Table_Key_Selector,
+) -> bool {
+	if using_key.dynamic_name != nil {
+		return true
+	}
+	key_name := project_intern_lower_ascii(ctx.project, using_key.name.text)
+	if key_name == "" || checker_table_key_name_is_primary(key_name) {
+		return checker_read_table_primary_index_access_supported(table.type)
+	}
+	return checker_table_secondary_key_is_suitable(ctx, table.entity, table.type, key_name, .Sorted)
+}
+
+checker_read_table_primary_index_access_supported :: proc(typ: ^Type) -> bool {
+	form, ok := checker_type_table_form(typ)
+	if !ok {
+		return true
+	}
+	#partial switch form {
+	case .Any_Table,
+	     .Hashed_Table,
+	     .Like_Hashed_Table:
+		return false
+	}
+	return true
+}
+
+checker_read_table_index_access_diagnostic_range :: proc(entry: ast.Read_Table_Entry_Clause) -> Range {
+	if entry.using_key.name.text != "" {
+		return entry.using_key.name.range
+	}
+	return checker_expr_range(entry.table)
 }
 
 checker_check_read_table_source :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, source: Operand) {

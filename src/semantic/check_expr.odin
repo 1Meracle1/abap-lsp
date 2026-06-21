@@ -1646,10 +1646,10 @@ checker_filter_table_key_is_suitable :: proc(
 		if key_name == "" {
 			return true
 		}
-		if checker_filter_key_name_is_primary(key_name) {
+		if checker_table_key_name_is_primary(key_name) {
 			return checker_filter_primary_key_is_suitable(typ)
 		}
-		return checker_filter_secondary_key_is_suitable(ctx, entity, typ, key_name)
+		return checker_table_secondary_key_is_suitable(ctx, entity, typ, key_name, .Sorted_Or_Hashed)
 	}
 	return checker_filter_primary_key_is_suitable(typ)
 }
@@ -1667,102 +1667,6 @@ checker_filter_primary_key_is_suitable :: proc(typ: ^Type) -> bool {
 		return true
 	}
 	return false
-}
-
-checker_filter_secondary_key_is_suitable :: proc(
-	ctx: ^Checker_Context,
-	entity: ^Entity,
-	typ: ^Type,
-	key_name: string,
-) -> bool {
-	if checker_filter_entity_has_secondary_key(ctx, entity, key_name) {
-		return true
-	}
-	type_entity := checker_filter_table_type_entity(typ)
-	return type_entity != nil &&
-	       type_entity != entity &&
-	       checker_filter_entity_has_secondary_key(ctx, type_entity, key_name)
-}
-
-checker_filter_entity_has_secondary_key :: proc(
-	ctx: ^Checker_Context,
-	entity: ^Entity,
-	key_name: string,
-	depth := 0,
-) -> bool {
-	if depth > 16 || entity == nil {
-		return false
-	}
-	if checker_filter_decl_has_secondary_key(ctx, entity.decl_info, key_name) {
-		return true
-	}
-	next := checker_filter_next_type_entity(entity.type, entity)
-	return next != nil && checker_filter_entity_has_secondary_key(ctx, next, key_name, depth + 1)
-}
-
-checker_filter_decl_has_secondary_key :: proc(
-	ctx: ^Checker_Context,
-	decl: ^Decl_Info,
-	key_name: string,
-) -> bool {
-	if decl == nil || decl.type_clause == nil || decl.type_clause.type_ref == nil {
-		return false
-	}
-	ref, ok := decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
-	if !ok {
-		return false
-	}
-	if len(ref.keys) > 0 {
-		for key in ref.keys {
-			if checker_filter_key_clause_matches(ctx, key, key_name) {
-				return true
-			}
-		}
-		return false
-	}
-	return checker_filter_key_clause_matches(ctx, ref.key, key_name)
-}
-
-checker_filter_key_clause_matches :: proc(
-	ctx: ^Checker_Context,
-	key: ^ast.Type_Ref_Key_Clause,
-	key_name: string,
-) -> bool {
-	return key != nil &&
-	       (key.sorted || key.hashed) &&
-	       project_intern_lower_ascii(ctx.project, key.name.text) == key_name
-}
-
-checker_filter_table_type_entity :: proc(typ: ^Type, depth := 0) -> ^Entity {
-	if depth > 16 || typ == nil {
-		return nil
-	}
-	#partial switch typ.kind {
-	case .Named:
-		if typ.entity != nil {
-			return typ.entity
-		}
-		return checker_filter_table_type_entity(typ.base, depth + 1)
-	}
-	return nil
-}
-
-checker_filter_next_type_entity :: proc(typ: ^Type, current: ^Entity, depth := 0) -> ^Entity {
-	if depth > 16 || typ == nil {
-		return nil
-	}
-	#partial switch typ.kind {
-	case .Named:
-		if typ.entity != nil && typ.entity != current {
-			return typ.entity
-		}
-		return checker_filter_next_type_entity(typ.base, current, depth + 1)
-	}
-	return nil
-}
-
-checker_filter_key_name_is_primary :: #force_inline proc "contextless" (name: string) -> bool {
-	return name == "primary_key"
 }
 
 checker_filter_key_diagnostic_range :: proc(

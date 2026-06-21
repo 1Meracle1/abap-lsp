@@ -6485,8 +6485,12 @@ TYPES: BEGIN OF ty_row,
          nested TYPE ty_nested,
        END OF ty_row.
 TYPES ty_ref_rows TYPE STANDARD TABLE OF REF TO ty_nested WITH EMPTY KEY.
+TYPES ty_indexed_events TYPE STANDARD TABLE OF ty_row
+  WITH EMPTY KEY
+  WITH NON-UNIQUE SORTED KEY by_id COMPONENTS id.
 DATA mt_event TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
 DATA mt_refs TYPE ty_ref_rows.
+DATA mt_indexed TYPE ty_indexed_events.
 DATA lv_id TYPE i.
 DATA lv_trnid TYPE string.
 DATA lv_docnum TYPE string.
@@ -6505,11 +6509,13 @@ READ TABLE mt_event WITH KEY (lv_component) = lv_trnid TRANSPORTING NO FIELDS.
 READ TABLE mt_refs WITH KEY table_line->part = lv_part TRANSPORTING NO FIELDS.
 READ TABLE mt_event WITH KEY trnid = lv_trnid INTO DATA(ls_all) COMPARING ALL FIELDS.
 READ TABLE mt_event INTO DATA(ls_transporting) INDEX lv_index TRANSPORTING docnum nested-part.
+READ TABLE mt_indexed INTO DATA(ls_by_secondary) INDEX lv_index USING KEY by_id.
 DATA lv_text TYPE string.
 lv_text = ls_by_key-docnum.
 lv_text = ls_by_index-trnid.
 lv_text = ls_all-docpos.
-lv_text = ls_transporting-docnum.`
+lv_text = ls_transporting-docnum.
+lv_text = ls_by_secondary-docnum.`
 
 	project := project_make()
 	defer project_destroy(&project)
@@ -6554,6 +6560,88 @@ READ TABLE lv_text INTO DATA(ls_row) INDEX 1.`
 		}
 		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "lv_text")
 	}
+}
+
+@(test)
+root_semantic_read_table_index_reports_invalid_operands_and_access_paths :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         id TYPE i,
+       END OF ty_row.
+TYPES ty_keyed_rows TYPE STANDARD TABLE OF ty_row
+  WITH EMPTY KEY
+  WITH UNIQUE HASHED KEY by_hash COMPONENTS id
+  WITH NON-UNIQUE SORTED KEY by_sorted COMPONENTS id.
+TYPES ty_hashed_indexed_rows TYPE HASHED TABLE OF ty_row
+  WITH UNIQUE KEY id
+  WITH NON-UNIQUE SORTED KEY by_sorted COMPONENTS id.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+DATA lt_hashed TYPE HASHED TABLE OF ty_row WITH UNIQUE KEY id.
+DATA lt_keyed TYPE ty_keyed_rows.
+DATA lt_hashed_indexed TYPE ty_hashed_indexed_rows.
+DATA lv_index TYPE i.
+DATA lv_text TYPE string.
+
+READ TABLE lt_rows INDEX lv_text TRANSPORTING NO FIELDS.
+READ TABLE lt_rows INDEX lv_missing TRANSPORTING NO FIELDS.
+READ TABLE lt_rows INDEX 1sdf TRANSPORTING NO FIELDS.
+READ TABLE lt_hashed INDEX lv_index TRANSPORTING NO FIELDS.
+READ TABLE lt_keyed INDEX lv_index USING KEY by_hash TRANSPORTING NO FIELDS.
+READ TABLE lt_keyed INDEX lv_index USING KEY by_sorted TRANSPORTING NO FIELDS.
+READ TABLE lt_hashed_indexed INDEX lv_index USING KEY by_sorted TRANSPORTING NO FIELDS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://read_table_index_errors.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"READ TABLE INDEX operand is not integer-compatible",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"READ TABLE INDEX requires a table key with index access",
+		),
+		2,
+	)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "lv_missing"), 1)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "1sdf"), 1)
+
+	seen_text_index := false
+	seen_bad_index := false
+	seen_hashed_primary := false
+	seen_hashed_secondary := false
+	for diagnostic in checker.info.diagnostics {
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if diagnostic.kind == .Unresolved_Reference {
+			if text == "1sdf" {
+				seen_bad_index = true
+			}
+		} else if diagnostic.kind == .Invalid_Syntax_Form {
+			if diagnostic.message == "READ TABLE INDEX operand is not integer-compatible" {
+				seen_text_index = text == "lv_text"
+			} else if diagnostic.message == "READ TABLE INDEX requires a table key with index access" {
+				if text == "lt_hashed" {
+					seen_hashed_primary = true
+				} else if text == "by_hash" {
+					seen_hashed_secondary = true
+				}
+			}
+		}
+	}
+	testing.expect(t, seen_text_index)
+	testing.expect(t, seen_bad_index)
+	testing.expect(t, seen_hashed_primary)
+	testing.expect(t, seen_hashed_secondary)
 }
 
 @(test)

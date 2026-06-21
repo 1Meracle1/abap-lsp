@@ -67,6 +67,21 @@ escaped_identifier_is_one_token :: proc(t: ^testing.T) {
 }
 
 @(test)
+digit_prefixed_identifier_is_one_token :: proc(t: ^testing.T) {
+	source := `1sdf 123`
+	result := tokenize(source, context.allocator)
+	defer delete(result.tokens, context.allocator)
+	defer delete(result.trivia, context.allocator)
+	defer delete(result.errors, context.allocator)
+
+	testing.expect_value(t, len(result.errors), 0)
+	testing.expect_value(t, result.tokens[0].kind, Token_Kind.Ident)
+	testing.expect_value(t, token_lexeme(result.tokens[0], source), "1sdf")
+	testing.expect_value(t, result.tokens[1].kind, Token_Kind.Number)
+	testing.expect_value(t, token_lexeme(result.tokens[1], source), "123")
+}
+
+@(test)
 pragma_arguments_are_trivia_not_tokens :: proc(t: ^testing.T) {
 	source := `LOOP AT lt WHERE field = lv ##PRIMKEY[FILE_PATH].`
 	result := tokenize(source, context.allocator)

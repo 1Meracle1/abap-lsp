@@ -781,6 +781,118 @@ checker_type_table_form :: proc(typ: ^Type, depth := 0) -> (ast.Data_Type_Form, 
 	return {}, false
 }
 
+Checker_Table_Key_Requirement :: enum {
+	Sorted,
+	Sorted_Or_Hashed,
+}
+
+checker_table_secondary_key_is_suitable :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	typ: ^Type,
+	key_name: string,
+	requirement: Checker_Table_Key_Requirement,
+) -> bool {
+	if checker_table_entity_has_secondary_key(ctx, entity, key_name, requirement) {
+		return true
+	}
+	type_entity := checker_table_type_entity(typ)
+	return type_entity != nil &&
+	       type_entity != entity &&
+	       checker_table_entity_has_secondary_key(ctx, type_entity, key_name, requirement)
+}
+
+checker_table_entity_has_secondary_key :: proc(
+	ctx: ^Checker_Context,
+	entity: ^Entity,
+	key_name: string,
+	requirement: Checker_Table_Key_Requirement,
+	depth := 0,
+) -> bool {
+	if depth > 16 || entity == nil {
+		return false
+	}
+	if checker_table_decl_has_secondary_key(ctx, entity.decl_info, key_name, requirement) {
+		return true
+	}
+	next := checker_table_next_type_entity(entity.type, entity)
+	return next != nil && checker_table_entity_has_secondary_key(ctx, next, key_name, requirement, depth + 1)
+}
+
+checker_table_decl_has_secondary_key :: proc(
+	ctx: ^Checker_Context,
+	decl: ^Decl_Info,
+	key_name: string,
+	requirement: Checker_Table_Key_Requirement,
+) -> bool {
+	if decl == nil || decl.type_clause == nil || decl.type_clause.type_ref == nil {
+		return false
+	}
+	ref, ok := decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	if !ok {
+		return false
+	}
+	if len(ref.keys) > 0 {
+		for key in ref.keys {
+			if checker_table_key_clause_matches(ctx, key, key_name, requirement) {
+				return true
+			}
+		}
+		return false
+	}
+	return checker_table_key_clause_matches(ctx, ref.key, key_name, requirement)
+}
+
+checker_table_key_clause_matches :: proc(
+	ctx: ^Checker_Context,
+	key: ^ast.Type_Ref_Key_Clause,
+	key_name: string,
+	requirement: Checker_Table_Key_Requirement,
+) -> bool {
+	if key == nil || project_intern_lower_ascii(ctx.project, key.name.text) != key_name {
+		return false
+	}
+	#partial switch requirement {
+	case .Sorted:
+		return key.sorted
+	case .Sorted_Or_Hashed:
+		return key.sorted || key.hashed
+	}
+	return false
+}
+
+checker_table_key_name_is_primary :: #force_inline proc "contextless" (name: string) -> bool {
+	return name == "primary_key"
+}
+
+checker_table_type_entity :: proc(typ: ^Type, depth := 0) -> ^Entity {
+	if depth > 16 || typ == nil {
+		return nil
+	}
+	#partial switch typ.kind {
+	case .Named:
+		if typ.entity != nil {
+			return typ.entity
+		}
+		return checker_table_type_entity(typ.base, depth + 1)
+	}
+	return nil
+}
+
+checker_table_next_type_entity :: proc(typ: ^Type, current: ^Entity, depth := 0) -> ^Entity {
+	if depth > 16 || typ == nil {
+		return nil
+	}
+	#partial switch typ.kind {
+	case .Named:
+		if typ.entity != nil && typ.entity != current {
+			return typ.entity
+		}
+		return checker_table_next_type_entity(typ.base, current, depth + 1)
+	}
+	return nil
+}
+
 checker_type_row :: proc(ctx: ^Checker_Context, typ: ^Type, depth := 0) -> ^Type {
 	if depth > 16 || typ == nil {
 		return project_type_unknown(ctx.project)

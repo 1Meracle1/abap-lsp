@@ -90,3 +90,27 @@ DATA /STTP/value TYPE /STTP/type.
     (keyword)
     (qualified_name
       (identifier))))
+
+==================
+Digit-prefixed symbols are identifiers
+==================
+
+READ TABLE lt_rows INDEX 1sdf INTO DATA(ls_row).
+
+---
+
+(source_file
+  (simple_statement
+    (keyword)
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (qualified_name
+      (identifier))
+    (keyword)
+    (call_expression
+      (keyword)
+      (argument_list
+        (qualified_name
+          (identifier))))))

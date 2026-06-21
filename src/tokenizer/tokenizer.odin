@@ -102,6 +102,10 @@ scan_next_token :: proc(lexer: ^Lexer) -> Token {
 
 	if is_digit(ch) {
 		scan_number(lexer)
+		if is_letter(lexer.ch) {
+			scan_identifier(lexer)
+			return token_new(.Ident, text_range(start, lexer.offset))
+		}
 		return token_new(.Number, text_range(start, lexer.offset))
 	}
 

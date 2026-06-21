@@ -694,7 +694,7 @@ module.exports = grammar({
 
     pragma: (_) => token(prec(3, /##[A-Za-z0-9_]+(\[[^\]\r\n]*\])?/)),
 
-    identifier: (_) => token(/[A-Za-z_][A-Za-z0-9_]*/),
+    identifier: (_) => token(choice(/[A-Za-z_][A-Za-z0-9_]*/, /\d+[A-Za-z_][A-Za-z0-9_]*/)),
     escaped_identifier: (_) => token(/![A-Za-z_][A-Za-z0-9_]*/),
     field_symbol: (_) => token(/<[A-Za-z_][A-Za-z0-9_]*>/),
     field_symbol_path: (_) =>
