@@ -10,6 +10,32 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 
+print_usage :: proc() {
+	fmt.println(`ABAP ADT query CLI.`)
+	fmt.println("")
+	fmt.println(`Usage:`)
+	fmt.println(`  adt_cli [connection options] search <query> [--max-results N]`)
+	fmt.println(`  adt_cli [connection options] get source <kind> <name> [--group <function-group>] [--raw]`)
+	fmt.println(`  adt_cli [connection options] get ddic <kind> <name> [--raw]`)
+	fmt.println(`  adt_cli [connection options] children <kind> <name>`)
+	fmt.println("")
+	fmt.println(`Connection options:`)
+	fmt.println(`  --url <URL>              SAP host root or full ADT root`)
+	fmt.println(`  --user <USER>            SAP username`)
+	fmt.println(`  --password <PASSWORD>    SAP password`)
+	fmt.println(`  --sap-client <CLIENT>    Optional SAP client, also read from ABAP_ADT_CLIENT / SAPCLIENT`)
+	fmt.println(`  --env-dir <DIR>          Start .env discovery from this directory`)
+	fmt.println("")
+	fmt.println(`The same connection values can come from:`)
+	fmt.println(`  ABAP_ADT_URL / ABAP_ADT_BASE_URL / SAPBASE_URL`)
+	fmt.println(`  ABAP_ADT_USER / ABAP_ADT_USERNAME / SAPUSER`)
+	fmt.println(`  ABAP_ADT_PASSWORD / SAPPASS`)
+	fmt.println(`  ABAP_TYPEPOOL_RESOLVER_URL`)
+	fmt.println("")
+	fmt.println(`Commands emit JSON by default. Use --raw on get source or get ddic`)
+	fmt.println(`to print only the fetched source/XML.`)
+}
+
 Parse_Status :: enum u8 {
 	Ok,
 	Help,
@@ -705,30 +731,4 @@ adt_error_message :: proc(err: adt.Error) -> string {
 		return "SAP ADT session bootstrap did not return a CSRF token"
 	}
 	return "unknown error"
-}
-
-print_usage :: proc() {
-	fmt.println(`ABAP ADT query CLI.`)
-	fmt.println("")
-	fmt.println(`Usage:`)
-	fmt.println(`  adt_cli [connection options] search <query> [--max-results N]`)
-	fmt.println(`  adt_cli [connection options] get source <kind> <name> [--group <function-group>] [--raw]`)
-	fmt.println(`  adt_cli [connection options] get ddic <kind> <name> [--raw]`)
-	fmt.println(`  adt_cli [connection options] children <kind> <name>`)
-	fmt.println("")
-	fmt.println(`Connection options:`)
-	fmt.println(`  --url <URL>              SAP host root or full ADT root`)
-	fmt.println(`  --user <USER>            SAP username`)
-	fmt.println(`  --password <PASSWORD>    SAP password`)
-	fmt.println(`  --sap-client <CLIENT>    Optional SAP client, also read from ABAP_ADT_CLIENT / SAPCLIENT`)
-	fmt.println(`  --env-dir <DIR>          Start .env discovery from this directory`)
-	fmt.println("")
-	fmt.println(`The same connection values can come from:`)
-	fmt.println(`  ABAP_ADT_URL / ABAP_ADT_BASE_URL / SAPBASE_URL`)
-	fmt.println(`  ABAP_ADT_USER / ABAP_ADT_USERNAME / SAPUSER`)
-	fmt.println(`  ABAP_ADT_PASSWORD / SAPPASS`)
-	fmt.println(`  ABAP_TYPEPOOL_RESOLVER_URL`)
-	fmt.println("")
-	fmt.println(`Commands emit JSON by default. Use --raw on get source or get ddic`)
-	fmt.println(`to print only the fetched source/XML.`)
 }

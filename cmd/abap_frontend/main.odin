@@ -23,6 +23,19 @@ import "core:terminal"
 import ansi "core:terminal/ansi"
 import "core:time"
 
+print_usage :: proc() {
+	fmt.println("abap_frontend")
+	fmt.println("usage: abap_frontend --help")
+	fmt.println("       abap_frontend parse <file>")
+	fmt.println("       abap_frontend tree <file>")
+	fmt.println(
+		"       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors] [--enable-dependency-diagnostics] [--enable-lints] [--disable-adt-dependency-fetch]",
+	)
+	fmt.println(
+		"       abap_frontend lint [--json] [--pretty] [--with-project] [--all-files] [--show-suppressed] [--fail-on-warnings] [--disable-adt-dependency-fetch] [file-or-folder]",
+	)
+}
+
 Node_Count :: struct {
 	name:  string,
 	count: int,
@@ -216,19 +229,6 @@ main :: proc() {
 
 	print_usage()
 	os.exit(1)
-}
-
-print_usage :: proc() {
-	fmt.println("abap_frontend")
-	fmt.println("usage: abap_frontend --help")
-	fmt.println("       abap_frontend parse <file>")
-	fmt.println("       abap_frontend tree <file>")
-	fmt.println(
-		"       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors] [--enable-dependency-diagnostics] [--enable-lints] [--disable-adt-dependency-fetch]",
-	)
-	fmt.println(
-		"       abap_frontend lint [--json] [--pretty] [--with-project] [--all-files] [--show-suppressed] [--fail-on-warnings] [--disable-adt-dependency-fetch] [file-or-folder]",
-	)
 }
 
 read_source :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
