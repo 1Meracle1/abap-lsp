@@ -42,6 +42,39 @@ lo->run( ).`
 }
 
 @(test)
+simple_statements_report_unexpected_tails :: proc(t: ^testing.T) {
+	source := `COMMIT nonsense.
+RETURN nonsense.
+SUBMIT zrep VIA nonsense.
+MESSAGE e001(zmsg) GARBAGE.
+SET LOCALE FOO bar.`
+	parsed := parse(source, "simple_unexpected_tails.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "unexpected token in transaction statement")
+	expect_error_contains(t, parsed, "unexpected token in flow statement")
+	expect_error_contains(t, parsed, "unexpected token in SUBMIT statement")
+	expect_error_contains(t, parsed, "unexpected token in MESSAGE statement")
+	expect_error_contains(t, parsed, "unexpected token in LOCALE statement")
+}
+
+@(test)
+simple_statements_report_missing_required_operands :: proc(t: ^testing.T) {
+	source := `CREATE DATA.
+CREATE OBJECT.
+SET HANDLER FOR sender.
+SET CURSOR.
+AUTHORITY-CHECK OBJECT ID FIELD.
+DESCRIBE TABLE.`
+	parsed := parse(source, "simple_missing_operands.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected CREATE DATA target")
+	expect_error_contains(t, parsed, "expected CREATE OBJECT target")
+	expect_error_contains(t, parsed, "expected handler after SET HANDLER")
+	expect_error_contains(t, parsed, "expected expression")
+	expect_error_contains(t, parsed, "expected DESCRIBE source")
+}
+
+@(test)
 keyword_like_complex_lhs_assignments_parse :: proc(t: ^testing.T) {
 	source := `interface-unicode = 'X'.
 method-alias = seox_true.

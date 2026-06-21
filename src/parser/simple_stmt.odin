@@ -380,6 +380,19 @@ consume_simple_entry_tail :: proc(p: ^Parser, body_start: int) {
 	}
 }
 
+reject_simple_statement_tail :: proc(p: ^Parser, body_start: int, message: string) {
+	if simple_stmt_done(p, body_start) {
+		return
+	}
+	start := current_token(p)
+	group := Raw_Group_State{}
+	for !simple_stmt_done(p, body_start) {
+		raw_group_note_token(p, &group, bump_token(p))
+	}
+	raw_group_report_unclosed(p, group)
+	error(p, tokenizer.text_range(start.range.start, previous_token(p).range.end), message)
+}
+
 simple_chained_entry_recovery_head_starts :: proc(p: ^Parser, body_start: int) -> bool {
 	tok := current_token(p)
 	return(
@@ -807,7 +820,7 @@ parse_flow_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		body_start := p.index
 		stmt := ast.new(ast.Flow_Stmt, start.range, p.allocator)
 		stmt.kind = .Leave_List_Processing
-		consume_simple_entry_tail(p, body_start)
+		reject_simple_statement_tail(p, body_start, "syntax error: unexpected token in flow statement")
 		stmt.range = simple_stmt_range(p, start)
 		return stmt
 	}
@@ -822,11 +835,8 @@ parse_flow_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.kind = .Exit
 	} else {
 		stmt.kind = .Stop
-		if !simple_stmt_done(p, body_start) {
-			error_current(p, "syntax error: STOP does not allow additions")
-		}
 	}
-	consume_simple_entry_tail(p, body_start)
+	reject_simple_statement_tail(p, body_start, "syntax error: unexpected token in flow statement")
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
@@ -840,7 +850,7 @@ parse_transaction_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if allow_keyword(p, "AND") {
 		stmt.wait = allow_keyword(p, "WAIT")
 	}
-	consume_simple_entry_tail(p, body_start)
+	reject_simple_statement_tail(p, body_start, "syntax error: unexpected token in transaction statement")
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
@@ -870,25 +880,32 @@ parse_describe_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				entry.field = true
 			}
 		}
+		source_error_count := len(p.errors)
 		entry.source = simple_expr(
 			p,
 			body_start,
 			[]string{"LINES", "TYPE", "LENGTH", "DECIMALS", "COMPONENTS", "KIND"},
 		)
+		if entry.source == nil && len(p.errors) == source_error_count {
+			error_current(p, "syntax error: expected DESCRIBE source")
+		}
 		if allow_keyword(p, "LINES") {
 			entry.target_kind = .Lines
-			entry.target = simple_expr(p, body_start, []string{})
+			entry.target = required_simple_expr(p, body_start, []string{})
 		} else if allow_keyword(p, "LENGTH") {
 			entry.target_kind = .Length
-			entry.target = simple_expr(p, body_start, []string{"IN", "TYPE", "DECIMALS", "COMPONENTS", "KIND"})
+			entry.target = required_simple_expr(p, body_start, []string{"IN", "TYPE", "DECIMALS", "COMPONENTS", "KIND"})
 		} else if allow_keyword(p, "TYPE") {
 			entry.target_kind = .Type
-			entry.target = simple_expr(p, body_start, []string{"LENGTH", "DECIMALS", "COMPONENTS", "KIND"})
+			entry.target = required_simple_expr(p, body_start, []string{"LENGTH", "DECIMALS", "COMPONENTS", "KIND"})
 		}
 		if entry.source != nil || entry.target != nil {
 			append(&stmt.entries, entry)
 		}
 		consume_simple_entry_tail(p, body_start)
+	}
+	if len(stmt.entries) == 0 {
+		error_current(p, "syntax error: expected DESCRIBE source")
 	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
@@ -1267,16 +1284,19 @@ parse_set_handler_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Set_Handler_Stmt, start.range, p.allocator)
 	body_start := p.index
 	stmt.handlers = parse_exprs_until(p, body_start, []string{"FOR", "ACTIVATION"})
+	if len(stmt.handlers) == 0 {
+		error_current(p, "syntax error: expected handler after SET HANDLER")
+	}
 	if allow_keyword(p, "FOR") {
 		if allow_keyword(p, "ALL") {
 			allow_keyword(p, "INSTANCES")
 			stmt.all_instances = true
 		} else {
-			stmt.sender = simple_expr(p, body_start, []string{"ACTIVATION"})
+			stmt.sender = required_simple_expr(p, body_start, []string{"ACTIVATION"})
 		}
 	}
 	if allow_keyword(p, "ACTIVATION") {
-		stmt.activation = simple_expr(p, body_start, []string{})
+		stmt.activation = required_simple_expr(p, body_start, []string{})
 	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
@@ -1301,18 +1321,18 @@ parse_locale_tail :: proc(p: ^Parser, stmt: ^ast.Locale_Stmt) {
 	body_start := p.index
 	for !simple_stmt_done(p, body_start) {
 		if allow_keyword(p, "LANGUAGE") {
-			stmt.language = simple_expr(p, body_start, []string{"COUNTRY", "MODIFIER"})
+			stmt.language = required_simple_expr(p, body_start, []string{"COUNTRY", "MODIFIER"})
 			continue
 		}
 		if allow_keyword(p, "COUNTRY") {
-			stmt.country = simple_expr(p, body_start, []string{"LANGUAGE", "MODIFIER"})
+			stmt.country = required_simple_expr(p, body_start, []string{"LANGUAGE", "MODIFIER"})
 			continue
 		}
 		if allow_keyword(p, "MODIFIER") {
-			stmt.modifier = simple_expr(p, body_start, []string{"LANGUAGE", "COUNTRY"})
+			stmt.modifier = required_simple_expr(p, body_start, []string{"LANGUAGE", "COUNTRY"})
 			continue
 		}
-		bump_token(p)
+		reject_simple_statement_tail(p, body_start, "syntax error: unexpected token in LOCALE statement")
 	}
 }
 
@@ -1322,12 +1342,12 @@ parse_set_cursor_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	body_start := p.index
 	stmt := ast.new(ast.Set_Cursor_Stmt, start.range, p.allocator)
 	if allow_keyword(p, "FIELD") {
-		stmt.field = simple_expr(p, body_start, []string{"OFFSET"})
+		stmt.field = required_simple_expr(p, body_start, []string{"OFFSET"})
 		if allow_keyword(p, "OFFSET") {
-			stmt.offset = simple_expr(p, body_start, []string{})
+			stmt.offset = required_simple_expr(p, body_start, []string{})
 		}
 	} else {
-		stmt.line = simple_expr(p, body_start, []string{})
+		stmt.line = required_simple_expr(p, body_start, []string{})
 		stmt.column = simple_expr(p, body_start, []string{})
 	}
 	stmt.range = simple_stmt_range(p, start)
@@ -1405,18 +1425,20 @@ parse_authority_check_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.operands = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	stmt.ids = make([dynamic]ast.Authority_Check_ID_Clause, 0, 2, p.allocator)
 	if allow_keyword(p, "OBJECT") {
-		stmt.object = simple_expr(p, body_start, []string{"ID"})
+		stmt.object = required_simple_expr(p, body_start, []string{"ID"})
 		for !simple_stmt_done(p, body_start) {
 			if allow_keyword(p, "ID") {
-				id := simple_expr(p, body_start, []string{"FIELD", "ID"})
+				id := required_simple_expr(p, body_start, []string{"FIELD", "ID"})
 				field: ^ast.Expr
 				if allow_keyword(p, "FIELD") {
-					field = simple_expr(p, body_start, []string{"ID"})
+					field = required_simple_expr(p, body_start, []string{"ID"})
+				} else {
+					error_current(p, "syntax error: expected FIELD after AUTHORITY-CHECK ID")
 				}
 				append(&stmt.ids, ast.Authority_Check_ID_Clause{id = id, field = field})
 				continue
 			}
-			bump_token(p)
+			reject_simple_statement_tail(p, body_start, "syntax error: unexpected token in AUTHORITY-CHECK statement")
 		}
 	} else {
 		stmt.operands = parse_generic_operands_to_period(p, []string{})
@@ -1552,6 +1574,9 @@ parse_create_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_create_object_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 	stmt := ast.new(ast.Create_Object_Stmt, start.range, p.allocator)
 	stmt.target = parse_raw_operand_to_period(p, []string{"TYPE", "EXPORTING", "EXCEPTIONS"})
+	if stmt.target == nil {
+		error_current(p, "syntax error: expected CREATE OBJECT target")
+	}
 	stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr =
 		parse_create_type_addition(p, []string{"EXPORTING", "EXCEPTIONS"})
 	stmt.operands = parse_call_operands_to_period(p)
@@ -1562,10 +1587,16 @@ parse_create_object_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 parse_create_data_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 	stmt := ast.new(ast.Create_Data_Stmt, start.range, p.allocator)
 	stmt.target = parse_raw_operand_to_period(p, []string{"TYPE", "EXPORTING", "EXCEPTIONS"})
+	if stmt.target == nil {
+		error_current(p, "syntax error: expected CREATE DATA target")
+	}
 	if at_keyword(p, "TYPE") && at_keyword_index(p, p.index + 1, "HANDLE") {
 		bump_token(p)
 		bump_token(p)
 		stmt.type_handle = parse_raw_operand_to_period(p, []string{"EXPORTING", "EXCEPTIONS"})
+		if stmt.type_handle == nil {
+			error_current(p, "syntax error: expected TYPE HANDLE operand")
+		}
 	} else {
 		stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr =
 			parse_create_type_addition(p, []string{"EXPORTING", "EXCEPTIONS"})
@@ -5510,7 +5541,7 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			append(&stmt.options, ast.Submit_Option_Clause{kind = .Language, value = value})
 			continue
 		}
-		bump_token(p)
+		reject_simple_statement_tail(p, body_start, "syntax error: unexpected token in SUBMIT statement")
 	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
@@ -5667,6 +5698,13 @@ message_head_compact_class :: proc(p: ^Parser, head: ^ast.Message_Head_Clause, s
 		   p.tokens[i + 2].kind == .RParen {
 			head.compact_class_name = parser_ast_raw_name_token(p, name)
 			head.has_compact_class = true
+			if i + 3 < end {
+				error(
+					p,
+					tokenizer.text_range(p.tokens[i + 3].range.start, p.tokens[end - 1].range.end),
+					"syntax error: unexpected token in MESSAGE statement",
+				)
+			}
 			return
 		}
 	}
@@ -5697,7 +5735,7 @@ parse_message_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			stmt.raising = required_simple_expr(p, body_start, []string{})
 			continue
 		}
-		bump_token(p)
+		reject_simple_statement_tail(p, body_start, "syntax error: unexpected token in MESSAGE statement")
 	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt

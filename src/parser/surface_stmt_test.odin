@@ -47,6 +47,22 @@ READ TEXTPOOL prog INTO lt LANGUAGE sy-langu.`
 }
 
 @(test)
+dml_statements_report_missing_targets_and_bad_tails :: proc(t: ^testing.T) {
+	source := `UPDATE SET field = value.
+UPDATE ztab SET a = b c.
+UPDATE ztab GARBAGE.
+DELETE WHERE id = value.
+DELETE itab GARBAGE.`
+	parsed := parse(source, "dml_missing_targets.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected UPDATE target")
+	expect_error_contains(t, parsed, "expected '=' in SQL assignment")
+	expect_error_contains(t, parsed, "unexpected token in UPDATE statement")
+	expect_error_contains(t, parsed, "expected DELETE target")
+	expect_error_contains(t, parsed, "unexpected token in DELETE statement")
+}
+
+@(test)
 insert_statements_keep_parser_table_facts :: proc(t: ^testing.T) {
 	source := `INSERT zinsert_tab FROM TABLE lt_rows ACCEPTING DUPLICATE KEYS.
 INSERT INTO zinto_tab VALUES ls_row.

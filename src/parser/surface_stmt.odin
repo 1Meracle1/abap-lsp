@@ -2607,6 +2607,8 @@ dml_range_valid :: #force_inline proc(range: tokenizer.Range) -> bool {
 	return range.end > range.start
 }
 
+DML_UNEXPECTED_TOKEN_MESSAGE :: "syntax error: unexpected token in DML statement"
+
 dml_skip_clause :: proc(
 	p: ^Parser,
 	start: Token,
@@ -2617,6 +2619,20 @@ dml_skip_clause :: proc(
 		bump_token(p)
 	}
 	return tokenizer.text_range(start.range.start, previous_token(p).range.end)
+}
+
+dml_reject_unexpected_tail :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_keywords: []string,
+	message := DML_UNEXPECTED_TOKEN_MESSAGE,
+) {
+	if data_stmt_done(p, body_start) || data_current_keyword_in(p, stop_keywords) {
+		return
+	}
+	start := current_token(p)
+	range := dml_skip_clause(p, start, body_start, stop_keywords)
+	error(p, range, message)
 }
 
 dml_reject_clause :: proc(
@@ -3578,10 +3594,12 @@ parse_sql_assignments :: proc(
 		}
 		name := sql_data_expr(p, p.index, stop_keywords)
 		if name == nil {
+			error_current(p, "syntax error: expected SQL assignment")
 			bump_token(p)
 			continue
 		}
 		if !allow_token(p, .Eq) {
+			error_current(p, "syntax error: expected '=' in SQL assignment")
 			continue
 		}
 		value := sql_data_expr(p, p.index, stop_keywords)
@@ -3628,6 +3646,8 @@ parse_update_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if stmt.target != nil {
 		stmt.db_source_range = stmt.target.range
 		stmt.dynamic_source = dml_dynamic_source(stmt.target)
+	} else {
+		error_current(p, "syntax error: expected UPDATE target")
 	}
 	for !data_stmt_done(p, body_start) {
 		if allow_keyword(p, "FROM") {
@@ -3650,6 +3670,9 @@ parse_update_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				body_start,
 				[]string{"FROM", "SET", "WHERE", "USING", "CLIENT", "CONNECTION"},
 			)
+			if stmt.source == nil {
+				error_current(p, "syntax error: expected UPDATE source after FROM")
+			}
 			continue
 		}
 		if allow_keyword(p, "SET") {
@@ -3767,7 +3790,12 @@ parse_update_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			}
 			continue
 		}
-		bump_token(p)
+		dml_reject_unexpected_tail(
+			p,
+			body_start,
+			[]string{"FROM", "SET", "WHERE", "USING", "CLIENT", "CONNECTION"},
+			"syntax error: unexpected token in UPDATE statement",
+		)
 	}
 	stmt.range = data_stmt_range(p, start)
 	return stmt
@@ -3783,6 +3811,9 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		allow_keyword(p, "DUPLICATES")
 		allow_keyword(p, "FROM")
 		stmt.target = data_expr(p, body_start, []string{"COMPARING"})
+		if stmt.target == nil {
+			error_current(p, "syntax error: expected DELETE target")
+		}
 	} else if allow_keyword(p, "FROM") {
 		stmt.form = .Db_Table
 		stmt.explicit_from = true
@@ -3790,6 +3821,8 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		if stmt.target != nil {
 			stmt.db_source_range = stmt.target.range
 			stmt.dynamic_source = dml_dynamic_source(stmt.target)
+		} else {
+			error_current(p, "syntax error: expected DELETE target")
 		}
 	} else {
 		stmt.form = .Internal_Table
@@ -3799,6 +3832,9 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			body_start,
 			[]string{"FROM", "WHERE", "INDEX", "USING", "COMPARING"},
 		)
+		if stmt.target == nil {
+			error_current(p, "syntax error: expected DELETE target")
+		}
 	}
 	for !data_stmt_done(p, body_start) {
 		if allow_keyword(p, "FROM") {
@@ -3826,6 +3862,9 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				body_start,
 				[]string{"WHERE", "INDEX", "USING", "COMPARING", "CLIENT", "CONNECTION"},
 			)
+			if stmt.source == nil {
+				error_current(p, "syntax error: expected DELETE source after FROM")
+			}
 			continue
 		}
 		if allow_keyword(p, "WHERE") {
@@ -3855,7 +3894,12 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			continue
 		}
 		if allow_keyword(p, "INDEX") {
-			stmt.index = data_expr(p, body_start, []string{"USING", "COMPARING"})
+			stmt.index = required_data_expr_message(
+				p,
+				body_start,
+				[]string{"USING", "COMPARING"},
+				"syntax error: expected DELETE INDEX value",
+			)
 			continue
 		}
 		if allow_keyword(p, "USING") {
@@ -3922,7 +3966,12 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			}
 			continue
 		}
-		bump_token(p)
+		dml_reject_unexpected_tail(
+			p,
+			body_start,
+			[]string{"FROM", "WHERE", "INDEX", "USING", "COMPARING", "CLIENT", "CONNECTION"},
+			"syntax error: unexpected token in DELETE statement",
+		)
 	}
 	stmt.range = data_stmt_range(p, start)
 	return stmt
