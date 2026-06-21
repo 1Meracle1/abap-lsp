@@ -234,6 +234,20 @@ sql_data_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^
 	return data_expr(p, body_start, stop_keywords)
 }
 
+sql_required_data_expr :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_keywords: []string,
+	message: string,
+) -> ^ast.Expr {
+	error_count := len(p.errors)
+	value := sql_data_expr(p, body_start, stop_keywords)
+	if value == nil && len(p.errors) == error_count {
+		error_current(p, message)
+	}
+	return value
+}
+
 sql_logical_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.Expr {
 	if data_stmt_done(p, body_start) || data_current_keyword_in(p, stop_keywords) {
 		error_current(p, "syntax error: expected expression")
@@ -807,6 +821,7 @@ parse_select_query_clause :: proc(
 	p: ^Parser,
 	body_start: int,
 	stop_at_rparen := false,
+	required := true,
 ) -> ast.Select_Query_Clause {
 	query := ast.Select_Query_Clause{}
 	query.projections = make([dynamic]^ast.Expr, 0, 4, p.allocator)
@@ -815,6 +830,9 @@ parse_select_query_clause :: proc(
 	query.set_ops = make([dynamic]ast.Select_Set_Clause, 0, 1, p.allocator)
 	query.order_by_fields = make([dynamic]ast.Token_Text, 0, 2, p.allocator)
 	if !allow_keyword(p, "SELECT") {
+		if required {
+			error_current(p, "syntax error: expected SELECT")
+		}
 		return query
 	}
 	query.single = allow_keyword(p, "SINGLE")
@@ -1035,7 +1053,7 @@ parse_select_query_clause :: proc(
 					)
 					continue
 				}
-				query.for_all_entries = sql_data_expr(
+				query.for_all_entries = sql_required_data_expr(
 					p,
 					body_start,
 					[]string {
@@ -1056,6 +1074,7 @@ parse_select_query_clause :: proc(
 						"INTERSECT",
 						"EXCEPT",
 					},
+					"syntax error: expected table after FOR ALL ENTRIES IN",
 				)
 				query.for_all_entries = sql_implicit_host_expr(p, query.for_all_entries)
 				query.for_all_entries_clause = select_clause_expr_range(
@@ -1134,7 +1153,7 @@ parse_select_query_clause :: proc(
 				)
 				continue
 			}
-			parse_select_fields_clause(p, &query, body_start, stop_at_rparen)
+			parse_select_fields_clause(p, &query, start, body_start, stop_at_rparen)
 			state.fields = true
 			continue
 		}
@@ -1172,7 +1191,9 @@ parse_select_query_clause :: proc(
 		}
 		if allow_keyword(p, "PACKAGE") {
 			start := previous_token(p)
-			allow_keyword(p, "SIZE")
+			if !allow_keyword(p, "SIZE") {
+				error_current(p, "syntax error: expected SIZE after PACKAGE")
+			}
 			if !state.from || state.package_size {
 				select_reject_clause(
 					p,
@@ -1183,7 +1204,7 @@ parse_select_query_clause :: proc(
 				)
 				continue
 			}
-			query.package_size = sql_data_expr(
+			query.package_size = sql_required_data_expr(
 				p,
 				body_start,
 				[]string {
@@ -1203,6 +1224,7 @@ parse_select_query_clause :: proc(
 					"INTERSECT",
 					"EXCEPT",
 				},
+				"syntax error: expected PACKAGE SIZE value",
 			)
 			query.package_size_clause = select_clause_expr_range(p, start, query.package_size)
 			state.package_size = true
@@ -1210,7 +1232,9 @@ parse_select_query_clause :: proc(
 		}
 		if allow_keyword(p, "UP") {
 			start := previous_token(p)
-			allow_keyword(p, "TO")
+			if !allow_keyword(p, "TO") {
+				error_current(p, "syntax error: expected TO after UP")
+			}
 			if state.up_to {
 				select_reject_clause(
 					p,
@@ -1221,7 +1245,7 @@ parse_select_query_clause :: proc(
 				)
 				continue
 			}
-			query.up_to_rows = sql_data_expr(
+			query.up_to_rows = sql_required_data_expr(
 				p,
 				body_start,
 				[]string {
@@ -1241,8 +1265,11 @@ parse_select_query_clause :: proc(
 					"INTERSECT",
 					"EXCEPT",
 				},
+				"syntax error: expected row count after UP TO",
 			)
-			allow_keyword(p, "ROWS")
+			if !allow_keyword(p, "ROWS") && query.up_to_rows != nil {
+				error_current(p, "syntax error: expected ROWS after UP TO")
+			}
 			query.up_to_clause = select_clause_expr_range(p, start, query.up_to_rows)
 			state.up_to = true
 			continue
@@ -1535,9 +1562,12 @@ select_visit_host_escapes :: proc(
 parse_select_fields_clause :: proc(
 	p: ^Parser,
 	query: ^ast.Select_Query_Clause,
+	start: Token,
 	body_start: int,
 	stop_at_rparen: bool,
 ) {
+	error_count := len(p.errors)
+	field_count := 0
 	for !select_query_done(p, body_start, stop_at_rparen) && !select_clause_starts(p) {
 		if allow_token(p, .Comma) {
 			continue
@@ -1583,10 +1613,15 @@ parse_select_fields_clause :: proc(
 				},
 			)
 			query.projection_clause = select_merge_range(query.projection_clause, projection_range)
+			field_count += 1
 		} else {
+			error_current(p, "syntax error: expected SELECT field")
 			bump_token(p)
 		}
 		ensure_forward_progress(p, start)
+	}
+	if field_count == 0 && len(p.errors) == error_count {
+		error(p, start.range, "syntax error: expected SELECT field")
 	}
 }
 
@@ -1602,6 +1637,8 @@ parse_select_group_by_clause :: proc(
 		query.group_by_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
 		return
 	}
+	error_count := len(p.errors)
+	field_count := 0
 	for !select_query_done(p, body_start, stop_at_rparen) && !select_clause_starts(p) {
 		if allow_token(p, .Comma) {
 			continue
@@ -1640,10 +1677,15 @@ parse_select_group_by_clause :: proc(
 					range = value.range,
 				},
 			)
+			field_count += 1
 		} else {
+			error_current(p, "syntax error: expected GROUP BY field")
 			bump_token(p)
 		}
 		ensure_forward_progress(p, expr_start)
+	}
+	if field_count == 0 && len(p.errors) == error_count {
+		error(p, start.range, "syntax error: expected GROUP BY field")
 	}
 	query.group_by_clause = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 }
@@ -1662,9 +1704,11 @@ select_skip_clause :: proc(
 	body_start: int,
 	stop_at_rparen: bool,
 ) -> tokenizer.Range {
+	group := Raw_Group_State{}
 	for !select_query_done(p, body_start, stop_at_rparen) && !select_clause_starts(p) {
-		bump_token(p)
+		raw_group_note_token(p, &group, bump_token(p))
 	}
+	raw_group_report_unclosed(p, group)
 	return tokenizer.text_range(start.range.start, previous_token(p).range.end)
 }
 
@@ -1686,6 +1730,8 @@ parse_select_order_by_clause :: proc(
 		return
 	}
 	needs_comma := false
+	error_count := len(p.errors)
+	field_count := 0
 	for !select_query_done(p, body_start, stop_at_rparen) && !select_clause_starts(p) {
 		if allow_token(p, .Comma) {
 			needs_comma = false
@@ -1733,9 +1779,14 @@ parse_select_order_by_clause :: proc(
 				bump_token(p)
 			}
 			needs_comma = true
+			field_count += 1
 			continue
 		}
+		error_current(p, "syntax error: expected ORDER BY field")
 		bump_token(p)
+	}
+	if field_count == 0 && len(p.errors) == error_count {
+		error(p, start.range, "syntax error: expected ORDER BY field")
 	}
 	query.order_by_clause = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 }

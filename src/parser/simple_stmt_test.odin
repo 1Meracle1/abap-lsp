@@ -375,6 +375,26 @@ raw_operands_report_delimiter_failures :: proc(t: ^testing.T) {
 }
 
 @(test)
+generic_simple_operands_report_delimiter_failures :: proc(t: ^testing.T) {
+	unmatched := parse("FIELD group ).", "generic_raw_unmatched.abap", context.allocator)
+	unclosed := parse("FIELD group [.", "generic_raw_unclosed.abap", context.allocator)
+
+	expect_error_contains(t, unmatched, "unmatched closing ')'")
+	expect_error_contains(t, unclosed, "expected ']' before end of raw operand")
+}
+
+@(test)
+call_method_targets_report_delimiter_failures :: proc(t: ^testing.T) {
+	parsed := parse(
+		"CALL METHOD lo->(method EXPORTING iv_value = lv_value.",
+		"call_method_bad_target_delimiter.abap",
+		context.allocator,
+	)
+
+	expect_error_contains(t, parsed, "expected ')' before end of raw operand")
+}
+
+@(test)
 committed_call_argument_values_report_nested_parse_failures :: proc(t: ^testing.T) {
 	method := parse(
 		"CALL METHOD lo->run EXPORTING iv_value = get_value( )1.",

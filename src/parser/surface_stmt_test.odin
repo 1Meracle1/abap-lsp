@@ -1802,6 +1802,50 @@ open_sql_cte_and_set_operator_chain_is_modeled :: proc(t: ^testing.T) {
 }
 
 @(test)
+open_sql_required_operands_report_missing_pieces :: proc(t: ^testing.T) {
+	source := `WITH +base AS ( SELECT matnr FROM mara ).
+SELECT matnr FROM mara FOR ALL ENTRIES IN WHERE matnr = @lv_key INTO TABLE @lt_rows.
+SELECT matnr FROM mara PACKAGE SIZE INTO TABLE @lt_rows.
+SELECT matnr FROM mara UP TO ROWS INTO TABLE @lt_rows.
+SELECT FROM mara FIELDS INTO TABLE @lt_rows.
+SELECT matnr FROM mara GROUP BY INTO TABLE @lt_rows.
+SELECT matnr FROM mara ORDER BY INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_missing_required.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected SELECT"), 1)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected table after FOR ALL ENTRIES IN"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected PACKAGE SIZE value"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected row count after UP TO"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected SELECT field"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected GROUP BY field"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: expected ORDER BY field"),
+		1,
+	)
+}
+
+@(test)
 open_sql_state_machine_rejects_invalid_clause_placements :: proc(t: ^testing.T) {
 	source := `SELECT * FROM mara INTO @wa INTO @wb.
 SELECT * FROM mara HAVING COUNT( * ) > 0 INTO TABLE @lt_rows.

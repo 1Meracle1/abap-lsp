@@ -759,3 +759,44 @@ table_initial_size_shape_is_validated :: proc(t: ^testing.T) {
 	expect_error_contains(t, missing_size, "expected SIZE after INITIAL")
 	expect_error_contains(t, non_table, "INITIAL SIZE only valid for table types")
 }
+
+@(test)
+declaration_unknown_additions_are_diagnosed :: proc(t: ^testing.T) {
+	source := `DATA lv TYPE i BOGUS VALUE 1.
+TYPES ty TYPE string UNKNOWN.
+PARAMETERS p_text TYPE string LOWERCASE.`
+	parsed := parse(source, "decl_unknown_additions.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "unexpected declaration addition")
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: unexpected declaration addition"),
+		3,
+	)
+}
+
+@(test)
+non_data_chained_declarations_recover_missing_commas :: proc(t: ^testing.T) {
+	source := `CONSTANTS: c_one TYPE i VALUE 1
+  c_two TYPE i VALUE 2.
+FIELD-SYMBOLS: <one> TYPE any
+  <two> TYPE any.`
+	parsed := parse(source, "decl_missing_commas.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	expect_error_contains(t, parsed, "expected ',' between CONSTANTS declarations")
+	expect_error_contains(t, parsed, "expected ',' between FIELD-SYMBOLS declarations")
+	testing.expect_value(t, counts.constants, 1)
+	testing.expect_value(t, counts.field_symbols, 1)
+	constants := parsed.root.stmts[0].derived_stmt.(^ast.Constants_Decl)
+	field_symbols := parsed.root.stmts[1].derived_stmt.(^ast.Field_Symbols_Decl)
+	testing.expect_value(t, len(constants.constants), 2)
+	testing.expect_value(t, len(field_symbols.field_symbols), 2)
+}
+
+@(test)
+type_references_report_unclosed_delimiters :: proc(t: ^testing.T) {
+	parsed := parse("DATA lv TYPE (string.", "decl_bad_type_ref_delimiter.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected ')' before end of raw operand")
+}

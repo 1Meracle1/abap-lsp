@@ -830,6 +830,17 @@ if_and_while_header_unmatched_delimiters_fail_the_statement :: proc(t: ^testing.
 }
 
 @(test)
+raw_block_headers_report_unclosed_delimiters :: proc(t: ^testing.T) {
+	parsed := parse(
+		"CLASS lcl IMPLEMENTATION.\n  METHOD run(.\n  ENDMETHOD.\nENDCLASS.",
+		"bad_raw_header_delimiter.abap",
+		context.allocator,
+	)
+
+	expect_error_contains(t, parsed, "expected ')' before end of raw operand")
+}
+
+@(test)
 case_bad_when_header_does_not_scan_case_body :: proc(t: ^testing.T) {
 	parsed := parse(
 		"CASE lv_kind. WHEN = 1. DATA lv_inside TYPE i. ENDCASE. DATA lv_after TYPE i.",

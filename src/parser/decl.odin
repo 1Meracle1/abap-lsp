@@ -92,14 +92,10 @@ parse_data_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	append(&stmt.decls, branch)
 	if has_colon {
 		for {
-			if allow_token(p, .Comma) {
-				if current_token(p).kind == .Period || current_token(p).kind == .Eof {
-					error_current(p, "syntax error: expected declaration after ','")
-					break
-				}
-			} else if decl_clause_recovery_head_starts(p, p.index) {
-				error_current(p, "syntax error: expected ',' between DATA declarations")
-			} else {
+			if !parse_decl_clause_separator(
+				p,
+				"syntax error: expected ',' between DATA declarations",
+			) {
 				break
 			}
 			next_branch, next_ok := parse_data_or_class_data_clause(p)
@@ -178,18 +174,17 @@ parse_types_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		if clause.kind == .Begin_Group {
 			open_groups += 1
 		}
-		if !allow_token(p, .Comma) {
-			if open_groups > 0 && types_structured_period_continues(p) {
-				expect_token(p, .Period)
-				if allow_keyword(p, "TYPES") {
-					allow_token(p, .Colon)
-				}
-				continue
+		if open_groups > 0 && types_structured_period_continues(p) {
+			expect_token(p, .Period)
+			if allow_keyword(p, "TYPES") {
+				allow_token(p, .Colon)
 			}
-			if decl_clause_recovery_head_starts(p, p.index) {
-				error_current(p, "syntax error: expected ',' between TYPES clauses")
-				continue
-			}
+			continue
+		}
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between TYPES clauses",
+		) {
 			break
 		}
 	}
@@ -247,7 +242,10 @@ parse_constants_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		append(&stmt.constants, clause)
-		if !allow_token(p, .Comma) {
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between CONSTANTS declarations",
+		) {
 			break
 		}
 	}
@@ -268,7 +266,10 @@ parse_field_symbols_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		append(&stmt.field_symbols, clause)
-		if !allow_token(p, .Comma) {
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between FIELD-SYMBOLS declarations",
+		) {
 			break
 		}
 	}
@@ -288,7 +289,10 @@ parse_statics_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		append(&stmt.statics, clause)
-		if !allow_token(p, .Comma) {
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between STATICS declarations",
+		) {
 			break
 		}
 	}
@@ -309,7 +313,10 @@ parse_tables_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		append(&stmt.tables, clause)
-		if !allow_token(p, .Comma) {
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between TABLES declarations",
+		) {
 			break
 		}
 	}
@@ -329,7 +336,10 @@ parse_ranges_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		append(&stmt.ranges, clause)
-		if !allow_token(p, .Comma) {
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between RANGES declarations",
+		) {
 			break
 		}
 	}
@@ -351,7 +361,10 @@ parse_parameters_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		append(&stmt.parameters, clause)
-		if !allow_token(p, .Comma) {
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between PARAMETERS declarations",
+		) {
 			break
 		}
 	}
@@ -371,7 +384,10 @@ parse_select_options_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		append(&stmt.options, clause)
-		if !allow_token(p, .Comma) {
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between SELECT-OPTIONS declarations",
+		) {
 			break
 		}
 	}
@@ -391,7 +407,10 @@ parse_controls_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		append(&stmt.controls, clause)
-		if !allow_token(p, .Comma) {
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between CONTROLS declarations",
+		) {
 			break
 		}
 	}
@@ -411,7 +430,10 @@ parse_class_data_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		append(&stmt.decls, clause)
-		if !allow_token(p, .Comma) {
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between CLASS-DATA declarations",
+		) {
 			break
 		}
 	}
@@ -432,7 +454,10 @@ parse_type_pools_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		append(&stmt.pools, parser_ast_name_token(p, name))
-		if !allow_token(p, .Comma) {
+		if !parse_decl_clause_separator(
+			p,
+			"syntax error: expected ',' between TYPE-POOLS declarations",
+		) {
 			break
 		}
 	}
@@ -461,7 +486,7 @@ parse_standalone_include_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_function_pool_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword_phrase(p, "FUNCTION-POOL")
 	stmt := ast.new(ast.Function_Pool_Decl, start.range, p.allocator)
-	name, _, ok := parse_decl_name(p)
+	name, name_index, ok := parse_decl_name(p)
 	if !ok {
 		return nil
 	}
@@ -476,7 +501,7 @@ parse_function_pool_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			stmt.message_id = id
 			continue
 		}
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	period := expect_token(p, .Period)
 	stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
@@ -550,7 +575,7 @@ parse_data_or_class_data_clause :: proc(p: ^Parser) -> (ast.Data_Decl_Clause, bo
 			clause.flags += {.Read_Only}
 			continue
 		}
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	return clause, true
 }
@@ -716,7 +741,7 @@ parse_types_clause :: proc(p: ^Parser) -> (ast.Types_Clause, bool) {
 			}
 			continue
 		}
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	return clause, true
 }
@@ -770,7 +795,7 @@ parse_constants_clause :: proc(p: ^Parser) -> (ast.Constants_Clause, bool) {
 			}
 			continue
 		}
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	return clause, true
 }
@@ -791,7 +816,7 @@ parse_field_symbols_clause :: proc(p: ^Parser) -> (ast.Field_Symbols_Clause, boo
 			}
 			continue
 		}
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	return clause, true
 }
@@ -845,7 +870,7 @@ parse_statics_clause :: proc(p: ^Parser) -> (ast.Statics_Clause, bool) {
 			}
 			continue
 		}
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	return clause, true
 }
@@ -859,7 +884,7 @@ parse_tables_clause :: proc(p: ^Parser) -> (ast.Tables_Clause, bool) {
 		name = parser_ast_raw_name_token(p, name),
 	}
 	for !decl_clause_end(p, name_index) {
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	return clause, true
 }
@@ -880,7 +905,7 @@ parse_ranges_clause :: proc(p: ^Parser) -> (ast.Ranges_Clause, bool) {
 			}
 			continue
 		}
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	return clause, true
 }
@@ -929,7 +954,7 @@ parse_parameters_clause :: proc(p: ^Parser) -> (ast.Parameters_Clause, bool) {
 			}
 			continue
 		}
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	return clause, true
 }
@@ -968,7 +993,7 @@ parse_select_options_clause :: proc(p: ^Parser) -> (ast.Select_Options_Clause, b
 			}
 			continue
 		}
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	return clause, true
 }
@@ -996,7 +1021,7 @@ parse_controls_clause :: proc(p: ^Parser) -> (ast.Controls_Clause, bool) {
 			}
 			continue
 		}
-		bump_token(p)
+		parse_unexpected_decl_addition(p, name_index)
 	}
 	return clause, true
 }
@@ -1170,7 +1195,8 @@ parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		error_current(p, "syntax error: expected type name")
 		return nil
 	}
-	paren, bracket, brace := 0, 0, 0
+	error_count := len(p.errors)
+	group := Raw_Group_State{}
 	name_end := -1
 	key_clause: ^ast.Type_Ref_Key_Clause
 	key_clauses := make([dynamic]^ast.Type_Ref_Key_Clause, 0, 1, p.allocator)
@@ -1179,7 +1205,7 @@ parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		if tok.kind == .Eof {
 			break
 		}
-		top := paren == 0 && bracket == 0 && brace == 0
+		top := raw_group_top(group)
 		if top {
 			if decl_clause_boundary(p) {
 				break
@@ -1201,6 +1227,9 @@ parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			if p.index > start && type_ref_stop_keyword(p) && !type_ref_selector_field(p) {
 				break
 			}
+			if type_ref_plain_tail_starts(p, start) {
+				break
+			}
 			if p.index > start &&
 			   .Has_Newline_Before in tok.flags &&
 			   !type_ref_selector_field(p) &&
@@ -1212,36 +1241,20 @@ parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			   at_keyword_index(p, p.index + 1, "OF") {
 				break
 			}
+			if tok.kind == .RParen || tok.kind == .RBracket || tok.kind == .RBrace {
+				raw_group_note_token(p, &group, tok)
+				break
+			}
 		}
-		#partial switch tok.kind {
-		case .LParen:
-			paren += 1
-		case .RParen:
-			if paren == 0 {
-				break
-			}
-			paren -= 1
-		case .LBracket:
-			bracket += 1
-		case .RBracket:
-			if bracket == 0 {
-				break
-			}
-			bracket -= 1
-		case .LBrace:
-			brace += 1
-		case .RBrace:
-			if brace == 0 {
-				break
-			}
-			brace -= 1
-		}
-		bump_token(p)
+		raw_group_note_token(p, &group, bump_token(p))
 	}
 	if p.index <= start {
-		error_current(p, "syntax error: expected type name")
+		if len(p.errors) == error_count {
+			error_current(p, "syntax error: expected type name")
+		}
 		return nil
 	}
+	raw_group_report_unclosed(p, group)
 	if name_end < 0 {
 		name_end = p.tokens[p.index - 1].range.end
 	}
@@ -1302,6 +1315,31 @@ parse_type_ref_key_clause :: proc(p: ^Parser) -> ^ast.Type_Ref_Key_Clause {
 		bump_token(p)
 	}
 	return clause
+}
+
+type_ref_plain_tail_starts :: proc(p: ^Parser, start: int) -> bool {
+	if p.index <= start {
+		return false
+	}
+	tok := current_token(p)
+	if tok.kind != .Ident && tok.kind != .Number && tok.kind != .Star {
+		return false
+	}
+	if type_ref_selector_field(p) || type_ref_ref_to_prefix_continues(p, start) {
+		return false
+	}
+	prev := previous_token(p)
+	return !tokens_touch(prev, tok)
+}
+
+type_ref_ref_to_prefix_continues :: proc(p: ^Parser, start: int) -> bool {
+	if !at_keyword_index(p, start, "REF") {
+		return false
+	}
+	return(
+		(p.index == start + 1 && at_keyword(p, "TO")) ||
+		(p.index == start + 2 && at_keyword_index(p, start + 1, "TO")) \
+	)
 }
 
 parse_with_header_line_addition :: proc(p: ^Parser, flags: ^ast.Decl_Clause_Flags) -> bool {
@@ -1816,6 +1854,61 @@ type_ref_stop_keyword :: proc(p: ^Parser) -> bool {
 decl_clause_boundary :: proc(p: ^Parser) -> bool {
 	tok := current_token(p)
 	return tok.kind == .Comma || tok.kind == .Period || tok.kind == .Eof
+}
+
+parse_decl_clause_separator :: proc(p: ^Parser, message: string) -> bool {
+	if allow_token(p, .Comma) {
+		if current_token(p).kind == .Period || current_token(p).kind == .Eof {
+			error_current(p, "syntax error: expected declaration after ','")
+			return false
+		}
+		return true
+	}
+	if decl_clause_recovery_head_starts(p, p.index) {
+		error_current(p, message)
+		return true
+	}
+	return false
+}
+
+decl_clause_tail_starts :: proc(p: ^Parser) -> bool {
+	return(
+		type_ref_stop_keyword(p) ||
+		at_keyword(p, "TYPE") ||
+		at_keyword(p, "LIKE") ||
+		at_keyword(p, "TO") ||
+		at_keyword(p, "OPTION") ||
+		at_keyword(p, "SIGN") ||
+		at_keyword(p, "RENAMING") ||
+		at_keyword_phrase(p, "AS CHECKBOX") ||
+		at_keyword_phrase(p, "LOWER CASE") ||
+		at_keyword_phrase(p, "VALUE CHECK") ||
+		at_keyword_phrase(p, "HELP-REQUEST") ||
+		at_keyword_phrase(p, "VALUE-REQUEST") ||
+		at_keyword_phrase(p, "RADIOBUTTON GROUP") ||
+		at_keyword_phrase(p, "USER-COMMAND") ||
+		at_keyword_phrase(p, "MODIF ID") ||
+		at_keyword_phrase(p, "MEMORY ID") ||
+		at_keyword_phrase(p, "MATCHCODE OBJECT") ||
+		at_keyword_phrase(p, "VISIBLE LENGTH") ||
+		at_keyword_phrase(p, "NO-DISPLAY") ||
+		at_keyword_phrase(p, "NO-EXTENSION") ||
+		at_keyword_phrase(p, "NO INTERVALS") ||
+		at_keyword_phrase(p, "NO DATABASE SELECTION") ||
+		at_keyword_phrase(p, "MESSAGE-ID") \
+	)
+}
+
+parse_unexpected_decl_addition :: proc(p: ^Parser, clause_start: int) {
+	start := current_token(p)
+	for !decl_clause_end(p, clause_start) && !decl_clause_tail_starts(p) {
+		bump_token(p)
+	}
+	end := start.range.end
+	if previous_token(p).kind != .Eof && previous_token(p).range.end > start.range.start {
+		end = previous_token(p).range.end
+	}
+	error(p, tokenizer.text_range(start.range.start, end), "syntax error: unexpected declaration addition")
 }
 
 types_clause_end :: proc(p: ^Parser, clause_start: int) -> bool {

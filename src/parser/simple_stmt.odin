@@ -77,9 +77,12 @@ simple_stmt_starts :: proc(p: ^Parser) -> bool {
 parse_simple_stmt :: proc(p: ^Parser, stop_keywords: []string = nil) -> ^ast.Stmt {
 	if !simple_full_period_stmt_starts(p) &&
 	   !stmt_period_before_boundary(p, p.index, stop_keywords) {
-		error_current(p, "syntax error: expected '.' to end statement")
-		recover_to_statement_boundary(p, stop_keywords, false)
-		return nil
+		if !generic_raw_simple_stmt_starts(p) ||
+		   !stmt_period_before_boundary_any_group(p, p.index, stop_keywords) {
+			error_current(p, "syntax error: expected '.' to end statement")
+			recover_to_statement_boundary(p, stop_keywords, false)
+			return nil
+		}
 	}
 	if at_keyword(p, "CLEAR") {
 		return parse_clear_stmt(p)
@@ -229,6 +232,15 @@ parse_simple_stmt :: proc(p: ^Parser, stop_keywords: []string = nil) -> ^ast.Stm
 		return parse_macro_def_stmt(p)
 	}
 	return parse_oop_simple_stmt(p)
+}
+
+generic_raw_simple_stmt_starts :: proc(p: ^Parser) -> bool {
+	return(
+		at_keyword_phrase(p, "FIELD-GROUPS") ||
+		at_keyword(p, "FIELD") ||
+		text_transform_stmt_starts(p) ||
+		list_control_stmt_starts(p) \
+	)
 }
 
 simple_full_period_stmt_starts :: proc(p: ^Parser) -> bool {
@@ -392,11 +404,9 @@ parse_generic_simple_operands :: proc(
 		value_start := p.index
 		first := current_token(p)
 		last := first
-		paren := 0
-		bracket := 0
-		brace := 0
+		group := Raw_Group_State{}
 		for !simple_stmt_done(p, body_start) {
-			top := paren == 0 && bracket == 0 && brace == 0
+			top := raw_group_top(group)
 			if top && (current_token(p).kind == .Comma ||
 			           current_token(p).kind == .Colon ||
 			           simple_current_keyword_in(p, stop_keywords)) {
@@ -404,28 +414,10 @@ parse_generic_simple_operands :: proc(
 			}
 			tok := bump_token(p)
 			last = tok
-			#partial switch tok.kind {
-			case .LParen:
-				paren += 1
-			case .RParen:
-				if paren > 0 {
-					paren -= 1
-				}
-			case .LBracket:
-				bracket += 1
-			case .RBracket:
-				if bracket > 0 {
-					bracket -= 1
-				}
-			case .LBrace:
-				brace += 1
-			case .RBrace:
-				if brace > 0 {
-					brace -= 1
-				}
-			}
+			raw_group_note_token(p, &group, tok)
 		}
 		if first.kind != .Eof && last.kind != .Eof && first.range.start < last.range.end {
+			raw_group_report_unclosed(p, group)
 			value := type_ref_expr_from_tokens(p, value_start, p.index, -1, false, false)
 			populate_raw_operand_facts(p, value, value_start, p.index)
 			append(&values, value)
@@ -4781,10 +4773,10 @@ call_method_of_value_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
 
 call_method_target_end :: proc(p: ^Parser, start: int, stop_keywords: []string) -> int {
 	i := start
-	paren, bracket, brace := 0, 0, 0
+	group := Raw_Group_State{}
 	for i < len(p.tokens) {
 		tok := p.tokens[i]
-		top := paren == 0 && bracket == 0 && brace == 0
+		top := raw_group_top(group)
 		if top {
 			if tok.kind == .Period || tok.kind == .Eof || tok.kind == .Comma || tok.kind == .Colon ||
 			   (i > start && token_in_keywords(p, tok, stop_keywords) && !type_ref_selector_field_at(p, i)) ||
@@ -4792,28 +4784,10 @@ call_method_target_end :: proc(p: ^Parser, start: int, stop_keywords: []string) 
 				break
 			}
 		}
-		#partial switch tok.kind {
-		case .LParen:
-			paren += 1
-		case .RParen:
-			if paren > 0 {
-				paren -= 1
-			}
-		case .LBracket:
-			bracket += 1
-		case .RBracket:
-			if bracket > 0 {
-				bracket -= 1
-			}
-		case .LBrace:
-			brace += 1
-		case .RBrace:
-			if brace > 0 {
-				brace -= 1
-			}
-		}
+		raw_group_note_token(p, &group, tok)
 		i += 1
 	}
+	raw_group_report_unclosed(p, group)
 	return i
 }
 

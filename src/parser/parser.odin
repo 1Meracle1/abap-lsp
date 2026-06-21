@@ -384,82 +384,43 @@ keyword_phrase_ahead :: proc(p: ^Parser, keyword: string) -> bool {
 
 consume_raw_until_period :: proc(p: ^Parser) {
 	start := p.index
-	paren := 0
-	bracket := 0
-	brace := 0
+	group := Raw_Group_State{}
 	for {
 		tok := current_token(p)
 		if tok.kind == .Eof {
+			raw_group_report_unclosed(p, group)
 			return
 		}
-		top := paren == 0 && bracket == 0 && brace == 0
+		top := raw_group_top(group)
 		if top && tok.kind == .Period {
+			raw_group_report_unclosed(p, group)
 			return
 		}
 		if top &&
 		   p.index > start &&
 		   .Has_Newline_Before in tok.flags &&
 		   statement_lead_starts(p, p.index) {
+			raw_group_report_unclosed(p, group)
 			return
 		}
-		#partial switch tok.kind {
-		case .LParen:
-			paren += 1
-		case .RParen:
-			if paren > 0 {
-				paren -= 1
-			}
-		case .LBracket:
-			bracket += 1
-		case .RBracket:
-			if bracket > 0 {
-				bracket -= 1
-			}
-		case .LBrace:
-			brace += 1
-		case .RBrace:
-			if brace > 0 {
-				brace -= 1
-			}
-		}
-		bump_token(p)
+		raw_group_note_token(p, &group, bump_token(p))
 	}
 }
 
 consume_raw_until_top_level_period :: proc(p: ^Parser) {
-	paren := 0
-	bracket := 0
-	brace := 0
+	group := Raw_Group_State{}
 	for {
 		tok := current_token(p)
 		if tok.kind == .Eof {
+			raw_group_report_unclosed(p, group)
 			return
 		}
-		top := paren == 0 && bracket == 0 && brace == 0
+		top := raw_group_top(group)
 		if top && tok.kind == .Period {
+			raw_group_report_unclosed(p, group)
 			return
 		}
-		#partial switch tok.kind {
-		case .LParen:
-			paren += 1
-		case .RParen:
-			if paren > 0 {
-				paren -= 1
-			}
-		case .LBracket:
-			bracket += 1
-		case .RBracket:
-			if bracket > 0 {
-				bracket -= 1
-			}
-		case .LBrace:
-			brace += 1
-		case .RBrace:
-			if brace > 0 {
-				brace -= 1
-			}
-		}
-		bump_token(p)
+		raw_group_note_token(p, &group, bump_token(p))
 	}
 }
 
@@ -962,6 +923,37 @@ stmt_period_before_boundary :: proc(
 				brace -= 1
 			}
 		}
+	}
+	return false
+}
+
+stmt_period_before_boundary_any_group :: proc(
+	p: ^Parser,
+	start: int,
+	stop_keywords: []string = nil,
+) -> bool {
+	group := Raw_Group_State{}
+	for i in start ..< len(p.tokens) {
+		tok := p.tokens[i]
+		if tok.kind == .Eof {
+			return false
+		}
+		top := raw_group_top(group)
+		if top {
+			if i > start && keyword_phrase_at_any(p, i, stop_keywords) {
+				return false
+			}
+			if i > start &&
+			   .Has_Newline_Before in tok.flags &&
+			   statement_lead_starts(p, i) &&
+			   !line_continuation_starts(p, i) {
+				return false
+			}
+		}
+		if tok.kind == .Period {
+			return true
+		}
+		raw_group_note_token_silent(&group, tok)
 	}
 	return false
 }
@@ -2278,6 +2270,47 @@ raw_group_note_token :: proc(p: ^Parser, state: ^Raw_Group_State, tok: Token) {
 		if state.brace_depth == 0 {
 			error(p, tok.range, "syntax error: unmatched closing '}'")
 		} else {
+			state.brace_depth -= 1
+			if state.brace_depth == 0 {
+				state.first_brace = Token{}
+			}
+		}
+	}
+}
+
+raw_group_note_token_silent :: proc(state: ^Raw_Group_State, tok: Token) {
+	#partial switch tok.kind {
+	case .LParen:
+		if state.paren_depth == 0 {
+			state.first_paren = tok
+		}
+		state.paren_depth += 1
+	case .RParen:
+		if state.paren_depth > 0 {
+			state.paren_depth -= 1
+			if state.paren_depth == 0 {
+				state.first_paren = Token{}
+			}
+		}
+	case .LBracket:
+		if state.bracket_depth == 0 {
+			state.first_bracket = tok
+		}
+		state.bracket_depth += 1
+	case .RBracket:
+		if state.bracket_depth > 0 {
+			state.bracket_depth -= 1
+			if state.bracket_depth == 0 {
+				state.first_bracket = Token{}
+			}
+		}
+	case .LBrace:
+		if state.brace_depth == 0 {
+			state.first_brace = tok
+		}
+		state.brace_depth += 1
+	case .RBrace:
+		if state.brace_depth > 0 {
 			state.brace_depth -= 1
 			if state.brace_depth == 0 {
 				state.first_brace = Token{}
