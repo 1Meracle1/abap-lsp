@@ -809,6 +809,8 @@ OPEN_SQL_ORDER_BY_PRIMARY_KEY_MESSAGE :: "syntax error: expected KEY after ORDER
 OPEN_SQL_SET_ALL_MESSAGE :: "syntax error: ALL is only valid with UNION in Open SQL set operators"
 OPEN_SQL_UP_TO_COMBINATION_MESSAGE :: "syntax error: Open SQL UP TO cannot be used with SINGLE or set operators"
 OPEN_SQL_OFFSET_COMBINATION_MESSAGE :: "syntax error: Open SQL OFFSET requires ORDER BY and cannot be used with SINGLE, FOR ALL ENTRIES, or set operators"
+OPEN_SQL_SINGLE_TABLE_RESULT_MESSAGE :: "syntax error: SELECT SINGLE cannot use INTO TABLE or APPENDING TABLE"
+OPEN_SQL_PACKAGE_SIZE_RESULT_MESSAGE :: "syntax error: SELECT PACKAGE SIZE requires INTO TABLE or APPENDING TABLE"
 
 SELECT_RESULT_TARGET_STOP_KEYWORDS :: []string {
 	"PACKAGE",
@@ -868,6 +870,7 @@ parse_select_query_clause :: proc(
 	}
 	query.single = allow_keyword(p, "SINGLE")
 	query.is_distinct = allow_keyword(p, "DISTINCT")
+	query_error_count := len(p.errors)
 	for !select_query_done(p, body_start, stop_at_rparen) && !select_clause_starts(p) {
 		if allow_token(p, .Comma) {
 			continue
@@ -1171,6 +1174,7 @@ parse_select_query_clause :: proc(
 			start := previous_token(p)
 			if !state.from ||
 			   state.fields ||
+			   len(query.projection_clauses) > 0 ||
 			   state.has_where ||
 			   state.group_by ||
 			   state.having ||
@@ -1401,10 +1405,43 @@ parse_select_query_clause :: proc(
 		}
 		select_reject_unexpected_tail(p, body_start, stop_at_rparen)
 	}
+	validate_select_query_required_shape(p, &query, query_error_count)
 	validate_select_query_for_all_entries_aggregates(p, &query)
 	validate_select_query_clause_combinations(p, &query, in_set_query)
 	validate_select_query_host_escapes(p, &query)
 	return query
+}
+
+validate_select_query_required_shape :: proc(
+	p: ^Parser,
+	query: ^ast.Select_Query_Clause,
+	query_error_count: int,
+) {
+	if len(query.projection_clauses) == 0 &&
+	   len(query.projections) == 0 &&
+	   len(p.errors) == query_error_count {
+		error(p, select_missing_projection_range(query), "syntax error: expected SELECT field")
+	}
+	if query.single && select_result_clause_is_table_like(query.result) {
+		error(p, query.result.range, OPEN_SQL_SINGLE_TABLE_RESULT_MESSAGE)
+	}
+	if query.package_size != nil && !select_result_clause_is_table_like(query.result) {
+		error(p, query.package_size_clause, OPEN_SQL_PACKAGE_SIZE_RESULT_MESSAGE)
+	}
+}
+
+select_missing_projection_range :: proc(query: ^ast.Select_Query_Clause) -> tokenizer.Range {
+	if select_range_valid(query.from_clause) {
+		return query.from_clause
+	}
+	if select_range_valid(query.into_clause) {
+		return query.into_clause
+	}
+	return query.projection_clause
+}
+
+select_result_clause_is_table_like :: proc(result: ^ast.Select_Result_Clause) -> bool {
+	return result != nil && (result.table || result.kind == .Appending)
 }
 
 validate_select_query_clause_combinations :: proc(

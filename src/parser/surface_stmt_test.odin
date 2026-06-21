@@ -1975,6 +1975,48 @@ SELECT * FROM mara AS a INNER JOIN makt AS b INTO TABLE @lt_rows.`
 }
 
 @(test)
+open_sql_select_requires_projection_or_fields_clause :: proc(t: ^testing.T) {
+	source := `SELECT FROM mara INTO TABLE @lt_rows.
+SELECT matnr FROM mara FIELDS mtart INTO TABLE @lt_rows.
+SELECT FROM mara FIELDS matnr INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_projection_required.abap", context.allocator)
+
+	testing.expect_value(t, parse_error_message_count(parsed.errors, "syntax error: expected SELECT field"), 1)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, "syntax error: invalid SELECT FIELDS clause placement"),
+		1,
+	)
+	valid := parsed.root.stmts[2].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(t, len(valid.query.projection_clauses), 1)
+	testing.expect_value(t, source[valid.query.projection_clause.start:valid.query.projection_clause.end], "matnr")
+}
+
+@(test)
+open_sql_select_result_and_package_combinations_are_diagnosed :: proc(t: ^testing.T) {
+	source := `SELECT SINGLE matnr FROM mara INTO TABLE @lt_rows.
+SELECT SINGLE matnr FROM mara APPENDING TABLE @lt_rows.
+SELECT matnr FROM mara INTO @lv_matnr PACKAGE SIZE 10.
+ENDSELECT.
+SELECT matnr FROM mara INTO TABLE @lt_rows PACKAGE SIZE 10.`
+	parsed := parse(source, "sql_result_package_combinations.abap", context.allocator)
+
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, OPEN_SQL_SINGLE_TABLE_RESULT_MESSAGE),
+		2,
+	)
+	testing.expect_value(
+		t,
+		parse_error_message_count(parsed.errors, OPEN_SQL_PACKAGE_SIZE_RESULT_MESSAGE),
+		1,
+	)
+	valid := parsed.root.stmts[3].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, valid.query.result.table)
+	testing.expect(t, valid.query.package_size != nil)
+}
+
+@(test)
 open_sql_state_machine_rejects_invalid_clause_placements :: proc(t: ^testing.T) {
 	source := `SELECT * FROM mara INTO @wa INTO @wb.
 SELECT * FROM mara HAVING COUNT( * ) > 0 INTO TABLE @lt_rows.
