@@ -6021,6 +6021,48 @@ SELECT SINGLE as4date FROM e070 INTO @lv_time.`
 }
 
 @(test)
+root_semantic_sql_checker_reports_too_many_select_fields_for_target_structure :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF e070,
+         trkorr TYPE string,
+         trfunction TYPE string,
+         trstatus TYPE string,
+         as4user TYPE string,
+       END OF e070.
+TYPES: BEGIN OF ty_transp,
+         trkorr TYPE string,
+         trfunction TYPE string,
+         trstatus TYPE string,
+       END OF ty_transp.
+DATA lt_rows TYPE TABLE OF ty_transp WITH EMPTY KEY.
+
+SELECT trkorr, trfunction, trstatus, as4user
+  FROM e070
+  INTO TABLE @lt_rows
+  WHERE trstatus = '1'.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://sql_too_many_fields.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Open_Sql_Into_Target), 1)
+	found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Open_Sql_Into_Target {
+			continue
+		}
+		found = true
+		testing.expect_value(t, source[diagnostic.range.start:diagnostic.range.end], "as4user")
+		testing.expect_value(
+			t,
+			diagnostic.message,
+			"Open SQL SELECT returns 4 fields, but target has 3 fields",
+		)
+	}
+	testing.expect(t, found)
+}
+
+@(test)
 root_semantic_sql_checker_infers_aggregate_alias_inline_structure :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF zrel,
          evtid TYPE string,

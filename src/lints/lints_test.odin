@@ -95,7 +95,7 @@ test_policy_with_report_suppressed :: proc() -> Policy {
 
 @(test)
 registry_contains_native_lints_with_unique_ids :: proc(t: ^testing.T) {
-	testing.expect_value(t, len(REGISTRY), 15)
+	testing.expect_value(t, len(REGISTRY), 17)
 	for metadata, i in REGISTRY {
 		testing.expect(t, metadata.id != "")
 		testing.expect(t, metadata.summary != "")
@@ -203,6 +203,58 @@ ENDFORM.
 		}
 	}
 	testing.expect(t, found)
+}
+
+@(test)
+select_into_positional_target_lints_report_name_and_length_mismatch :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES ty_long TYPE c LENGTH 10.
+  TYPES: BEGIN OF zsrc,
+           id TYPE ty_long,
+           name TYPE c LENGTH 5,
+         END OF zsrc.
+  TYPES: BEGIN OF ty_row,
+           id TYPE zsrc-name,
+           title TYPE c LENGTH 5,
+         END OF ty_row.
+  DATA lt_rows TYPE TABLE OF ty_row WITH EMPTY KEY.
+
+  SELECT id, name
+    FROM zsrc
+    INTO TABLE @lt_rows.
+ENDFORM.
+`
+	semantic_analysis := test_analysis(source, "mem://select_into_target_lints.abap")
+	defer semantic.semantic_workspace_analysis_destroy(&semantic_analysis)
+
+	analysis_result := run_analysis(&semantic_analysis)
+	defer analysis_destroy(&analysis_result)
+
+	testing.expect_value(t, test_diagnostic_count(analysis_result, SELECT_INTO_FIELD_NAME_MISMATCH), 1)
+	testing.expect_value(t, test_diagnostic_count(analysis_result, SELECT_INTO_FIELD_LENGTH_NARROWING), 1)
+	name_message_seen := false
+	length_message_seen := false
+	for diagnostic in analysis_result.diagnostics {
+		if diagnostic.id == SELECT_INTO_FIELD_NAME_MISMATCH {
+			name_message_seen = true
+			testing.expect_value(
+				t,
+				diagnostic.message,
+				"Open SQL SELECT field 'name' is assigned by position to target field 'title'",
+			)
+		}
+		if diagnostic.id == SELECT_INTO_FIELD_LENGTH_NARROWING {
+			length_message_seen = true
+			testing.expect_value(
+				t,
+				diagnostic.message,
+				"Open SQL SELECT field 'id' has backing length 10, but target field 'id' has length 5",
+			)
+		}
+	}
+	testing.expect(t, name_message_seen)
+	testing.expect(t, length_message_seen)
 }
 
 @(test)

@@ -951,6 +951,7 @@ checker_check_sql_select_result :: proc(
 	if result.corresponding_fields || checker_type_is_unknown(expected) || checker_type_is_unknown(target.type) {
 		return
 	}
+	checker_check_sql_select_result_field_count(ctx, result, target.type, shape)
 	if ok, known := checker_type_assignment_compatible(ctx, expected, target.type); known && !ok {
 		checker_add_diagnostic(
 			ctx,
@@ -959,6 +960,71 @@ checker_check_sql_select_result :: proc(
 			checker_type_mismatch_message(ctx, "Open SQL target is not compatible", expected, target.type),
 		)
 	}
+}
+
+checker_check_sql_select_result_field_count :: proc(
+	ctx: ^Checker_Context,
+	result: ^ast.Select_Result_Clause,
+	target_type: ^Type,
+	shape: Sql_Query_Shape,
+) {
+	if result == nil || result.corresponding_fields || len(shape.fields) <= 1 {
+		return
+	}
+	capacity, ok := checker_sql_select_target_field_capacity(ctx, result, target_type)
+	if !ok || len(shape.fields) <= capacity {
+		return
+	}
+	range := checker_expr_range(result.target)
+	if capacity >= 0 && capacity < len(shape.fields) {
+		field_range := shape.fields[capacity].range
+		if field_range.end > field_range.start {
+			range = field_range
+		}
+	}
+	checker_add_diagnostic(
+		ctx,
+		.Invalid_Open_Sql_Into_Target,
+		range,
+		checker_sql_field_count_message(len(shape.fields), capacity),
+	)
+}
+
+checker_sql_select_target_field_capacity :: proc(
+	ctx: ^Checker_Context,
+	result: ^ast.Select_Result_Clause,
+	target_type: ^Type,
+) -> (int, bool) {
+	if result == nil || checker_type_is_unknown(target_type) {
+		return 0, false
+	}
+	if result.table {
+		if !checker_type_is_table_like(ctx, target_type) {
+			return 0, false
+		}
+		row_type := checker_type_row(ctx, target_type)
+		if checker_type_is_unknown(row_type) {
+			return 0, false
+		}
+		if structure := checker_type_structure(row_type); structure != nil {
+			return len(structure.fields), true
+		}
+		return 1, true
+	}
+	if structure := checker_type_structure(target_type); structure != nil {
+		return len(structure.fields), true
+	}
+	return 1, true
+}
+
+checker_sql_field_count_message :: proc(select_count, target_count: int) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "Open SQL SELECT returns ")
+	strings.write_int(&builder, select_count)
+	strings.write_string(&builder, " fields, but target has ")
+	strings.write_int(&builder, target_count)
+	strings.write_string(&builder, " fields")
+	return strings.to_string(builder)
 }
 
 checker_sql_expected_result_type :: proc(

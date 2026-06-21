@@ -6,6 +6,7 @@ import "src:tokenizer"
 import "src:utils"
 
 import "core:mem"
+import "core:strconv"
 import "core:strings"
 
 Value_Flow_Kind :: enum {
@@ -23,6 +24,12 @@ Fact_Scope_Data :: struct {
 Guard_Data :: struct {
 	name:   string,
 	entity: ^semantic.Entity,
+}
+
+Select_Projection_Target_Info :: struct {
+	name:  string,
+	range: tokenizer.Range,
+	field: ^semantic.Entity,
 }
 
 Value_Flow_Target_Kind :: enum {
@@ -740,8 +747,387 @@ collect_select_lints :: proc(
 		}
 	}
 	collect_select_single_without_full_key_lints(out, query, policy, allocator)
+	collect_select_target_shape_lints(out, query, policy, allocator)
 	collect_dynamic_open_sql_lints(out, query, policy, allocator)
 	collect_for_all_entries_lints(out, query, guarded_tables, policy, allocator)
+}
+
+collect_select_target_shape_lints :: proc(
+	out: ^Unit_Lints,
+	query: ^ast.Select_Query_Clause,
+	policy: ^Policy,
+	allocator: mem.Allocator,
+) {
+	if query == nil ||
+	   query.result == nil ||
+	   query.result.target == nil ||
+	   query.result.kind == .None ||
+	   query.result.corresponding_fields ||
+	   select_query_has_dynamic_source(query) {
+		return
+	}
+	target_structure, target_ok := select_target_structure(out, query.result)
+	if !target_ok || target_structure == nil || len(target_structure.fields) == 0 {
+		return
+	}
+	projections, projections_ok := select_projection_target_infos(out, query, context.temp_allocator)
+	if !projections_ok || len(projections) == 0 {
+		return
+	}
+	limit := len(projections)
+	if len(target_structure.fields) < limit {
+		limit = len(target_structure.fields)
+	}
+	if limit <= 0 {
+		return
+	}
+	name_metadata, name_metadata_ok := metadata_for(SELECT_INTO_FIELD_NAME_MISMATCH)
+	length_metadata, length_metadata_ok := metadata_for(SELECT_INTO_FIELD_LENGTH_NARROWING)
+	for i in 0 ..< limit {
+		projection := projections[i]
+		target := target_structure.fields[i]
+		if target == nil {
+			continue
+		}
+		if name_metadata_ok &&
+		   projection.name != "" &&
+		   target.name != "" &&
+		   !strings.equal_fold(projection.name, target.name) {
+			emit_diagnostic(
+				out,
+				name_metadata,
+				projection.range,
+				select_target_name_mismatch_message(projection.name, target.name),
+				policy,
+				allocator,
+			)
+		}
+		if length_metadata_ok && projection.field != nil {
+			source_length, source_ok := entity_backing_length(out, projection.field)
+			target_length, target_length_ok := entity_backing_length(out, target)
+			if source_ok && target_length_ok && source_length > target_length {
+				emit_diagnostic(
+					out,
+					length_metadata,
+					projection.range,
+					select_target_length_narrowing_message(
+						projection.name,
+						source_length,
+						target.name,
+						target_length,
+					),
+					policy,
+					allocator,
+				)
+			}
+		}
+	}
+}
+
+select_projection_target_infos :: proc(
+	out: ^Unit_Lints,
+	query: ^ast.Select_Query_Clause,
+	allocator: mem.Allocator,
+) -> ([dynamic]Select_Projection_Target_Info, bool) {
+	projections := make([dynamic]Select_Projection_Target_Info, 0, 4, allocator)
+	if query == nil {
+		return projections, false
+	}
+	if len(query.projection_clauses) > 0 {
+		for projection in query.projection_clauses {
+			if projection.is_dynamic || projection.value == nil || expr_is_sql_star(projection.value) {
+				return projections, false
+			}
+			name, range := select_projection_output_name(projection.value, projection.alias, projection.range, allocator)
+			if name == "" {
+				return projections, false
+			}
+			append(
+				&projections,
+				Select_Projection_Target_Info {
+					name = name,
+					range = range,
+					field = select_projection_field_entity(out, projection.value),
+				},
+			)
+		}
+		return projections, true
+	}
+	for projection in query.projections {
+		if projection == nil || expr_is_sql_star(projection) {
+			return projections, false
+		}
+		name, range := select_projection_output_name(projection, {}, projection.range, allocator)
+		if name == "" {
+			return projections, false
+		}
+		append(
+			&projections,
+			Select_Projection_Target_Info {
+				name = name,
+				range = range,
+				field = select_projection_field_entity(out, projection),
+			},
+		)
+	}
+	return projections, len(projections) > 0
+}
+
+select_query_has_dynamic_source :: proc(query: ^ast.Select_Query_Clause) -> bool {
+	if query == nil {
+		return true
+	}
+	if query.source_clause != nil {
+		if query.source_clause.dynamic_source || source_is_dynamic_sql_fragment(query.source_clause.source) {
+			return true
+		}
+		for join in query.source_clause.joins {
+			if source_is_dynamic_sql_fragment(join.source) {
+				return true
+			}
+		}
+		return false
+	}
+	return source_is_dynamic_sql_fragment(query.source)
+}
+
+select_projection_output_name :: proc(
+	expr: ^ast.Expr,
+	alias: ast.Token_Text,
+	fallback_range: tokenizer.Range,
+	allocator: mem.Allocator,
+) -> (string, tokenizer.Range) {
+	if alias.text != "" {
+		return utils.to_lower_ascii(alias.text, allocator), alias.range
+	}
+	if expr == nil {
+		return "", fallback_range
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Sql_Column_Expr:
+		return utils.to_lower_ascii(n.name.text, allocator), n.name.range
+	case ^ast.Sql_Call_Expr:
+		return utils.to_lower_ascii(n.name.text, allocator), n.name.range
+	case ^ast.Ident_Expr:
+		return utils.to_lower_ascii(n.name, allocator), n.range
+	case ^ast.Type_Ref_Expr:
+		return utils.to_lower_ascii(n.name.text, allocator), n.name.range
+	case ^ast.Selector_Expr:
+		if n.op == .Tilde {
+			return select_projection_output_name(n.field, {}, expr.range, allocator)
+		}
+	}
+	return "", fallback_range
+}
+
+select_projection_field_entity :: proc(out: ^Unit_Lints, expr: ^ast.Expr) -> ^semantic.Entity {
+	if out == nil || out.project == nil || out.checker == nil || out.file == nil || expr == nil {
+		return nil
+	}
+	if !expr_is_direct_sql_field(expr) {
+		return nil
+	}
+	query := semantic.semantic_query(out.project, out.checker, out.file)
+	ref_query := semantic.semantic_query_refs(query)
+	if use := semantic.semantic_ref_use_at_range(ref_query, expr.range); use != nil &&
+	   use.entity != nil &&
+	   use.entity.kind == .Field {
+		return use.entity
+	}
+	if expr.range.end > expr.range.start {
+		if use := semantic.semantic_ref_use_at_offset(ref_query, expr.range.start); use != nil &&
+		   use.entity != nil &&
+		   use.entity.kind == .Field {
+			return use.entity
+		}
+	}
+	return nil
+}
+
+expr_is_direct_sql_field :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Sql_Column_Expr:
+		return true
+	case ^ast.Selector_Expr:
+		return n.op == .Tilde
+	}
+	return false
+}
+
+expr_is_sql_star :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	_, ok := expr.derived_expr.(^ast.Sql_Star_Expr)
+	return ok
+}
+
+select_target_structure :: proc(
+	out: ^Unit_Lints,
+	result: ^ast.Select_Result_Clause,
+) -> (^semantic.Structure, bool) {
+	if out == nil || out.checker == nil || result == nil || result.target == nil {
+		return nil, false
+	}
+	typ, type_ok := expr_type_for_exact_node(out, result.target)
+	if !type_ok || typ == nil {
+		return nil, false
+	}
+	if result.table {
+		if !semantic.checker_type_is_table_like(&out.checker.builtin_context, typ) {
+			return nil, false
+		}
+		row_type := semantic.checker_type_row(&out.checker.builtin_context, typ)
+		structure := semantic.checker_type_structure(row_type)
+		return structure, structure != nil
+	}
+	structure := semantic.checker_type_structure(typ)
+	return structure, structure != nil
+}
+
+expr_type_for_exact_node :: proc(out: ^Unit_Lints, expr: ^ast.Expr) -> (^semantic.Type, bool) {
+	if out == nil || out.checker == nil || expr == nil {
+		return nil, false
+	}
+	for record in out.checker.info.expr_infos {
+		if record.node == &expr.expr_base &&
+		   (out.file == nil || record.file == out.file) {
+			return record.info.type, record.info.type != nil
+		}
+	}
+	return nil, false
+}
+
+entity_backing_length :: proc(out: ^Unit_Lints, entity: ^semantic.Entity, depth := 0) -> (int, bool) {
+	if entity == nil || depth > 16 {
+		return 0, false
+	}
+	if length, ok := decl_info_length(entity.decl_info); ok {
+		return length, true
+	}
+	if entity.kind == .Field {
+		if payload, payload_ok := entity.payload.(^semantic.Entity_Field_Payload);
+		   payload_ok && payload != nil {
+			if backing := type_ref_backing_entity(out, payload.type_ref); backing != nil && backing != entity {
+				if length, ok := entity_backing_length(out, backing, depth + 1); ok {
+					return length, true
+				}
+			}
+		}
+	}
+	return type_backing_length(out, entity.type, entity, depth + 1)
+}
+
+type_backing_length :: proc(
+	out: ^Unit_Lints,
+	typ: ^semantic.Type,
+	current: ^semantic.Entity,
+	depth: int,
+) -> (int, bool) {
+	if typ == nil || depth > 16 {
+		return 0, false
+	}
+	if typ.entity != nil && typ.entity != current {
+		if length, ok := entity_backing_length(out, typ.entity, depth + 1); ok {
+			return length, true
+		}
+	}
+	return type_backing_length(out, typ.base, current, depth + 1)
+}
+
+type_ref_backing_entity :: proc(
+	out: ^Unit_Lints,
+	type_ref: semantic.Field_Type_Ref_Data,
+) -> ^semantic.Entity {
+	if out == nil ||
+	   out.project == nil ||
+	   out.checker == nil ||
+	   out.file == nil ||
+	   type_ref.base_name == "" {
+		return nil
+	}
+	query := semantic.semantic_query(out.project, out.checker, out.file)
+	ref_query := semantic.semantic_query_refs(query)
+	if len(type_ref.field_ranges) > 0 {
+		range := type_ref.field_ranges[len(type_ref.field_ranges) - 1]
+		if use := semantic.semantic_ref_use_at_range(ref_query, range); use != nil &&
+		   use.entity != nil {
+			return use.entity
+		}
+	}
+	if type_ref.base_range.end > type_ref.base_range.start {
+		if use := semantic.semantic_ref_use_at_range(ref_query, type_ref.base_range); use != nil &&
+		   use.entity != nil {
+			return use.entity
+		}
+	}
+	return nil
+}
+
+decl_info_length :: proc(info: ^semantic.Decl_Info) -> (int, bool) {
+	if info == nil {
+		return 0, false
+	}
+	if info.paren_length != nil {
+		if length, ok := integer_literal_expr_value(info.paren_length.expr); ok {
+			return length, true
+		}
+	}
+	for clause in info.length_clauses {
+		if clause.kind != .Length {
+			continue
+		}
+		if length, ok := integer_literal_expr_value(clause.expr); ok {
+			return length, true
+		}
+	}
+	return 0, false
+}
+
+integer_literal_expr_value :: proc(expr: ^ast.Expr) -> (int, bool) {
+	if expr == nil {
+		return 0, false
+	}
+	lit, ok := expr.derived_expr.(^ast.Literal_Expr)
+	if !ok || lit.value == "" {
+		return 0, false
+	}
+	parsed, parse_ok := strconv.parse_int(lit.value, 10)
+	if !parse_ok {
+		return 0, false
+	}
+	return int(parsed), true
+}
+
+select_target_name_mismatch_message :: proc(select_name, target_name: string) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "Open SQL SELECT field '")
+	strings.write_string(&builder, select_name)
+	strings.write_string(&builder, "' is assigned by position to target field '")
+	strings.write_string(&builder, target_name)
+	strings.write_byte(&builder, '\'')
+	return strings.to_string(builder)
+}
+
+select_target_length_narrowing_message :: proc(
+	select_name: string,
+	select_length: int,
+	target_name: string,
+	target_length: int,
+) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "Open SQL SELECT field '")
+	strings.write_string(&builder, select_name)
+	strings.write_string(&builder, "' has backing length ")
+	strings.write_int(&builder, select_length)
+	strings.write_string(&builder, ", but target field '")
+	strings.write_string(&builder, target_name)
+	strings.write_string(&builder, "' has length ")
+	strings.write_int(&builder, target_length)
+	return strings.to_string(builder)
 }
 
 loop_kind_string :: proc "contextless" (kind: Routine_Loop_Kind) -> string {

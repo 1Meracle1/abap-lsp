@@ -19,6 +19,8 @@ UNSORTED_READ_TABLE_BINARY_SEARCH :: "abap-lsp.unsorted-read-table-binary-search
 SELECT_STAR :: "abap-lsp.select-star"
 SELECT_IN_LOOP :: "abap-lsp.select-in-loop"
 SELECT_SINGLE_WITHOUT_FULL_KEY :: "abap-lsp.select-single-without-full-key"
+SELECT_INTO_FIELD_NAME_MISMATCH :: "abap-lsp.select-into-field-name-mismatch"
+SELECT_INTO_FIELD_LENGTH_NARROWING :: "abap-lsp.select-into-field-length-narrowing"
 FOR_ALL_ENTRIES_WITHOUT_GUARD :: "abap-lsp.for-all-entries-without-guard"
 DYNAMIC_OPEN_SQL :: "abap-lsp.dynamic-open-sql"
 IGNORED_AUTHORITY_CHECK :: "abap-lsp.ignored-authority-check"
@@ -251,6 +253,24 @@ REGISTRY :: [?]Metadata {
 		default_level = .Info,
 		summary = "Open SQL SELECT SINGLE does not restrict all known primary-key fields",
 		tags = [4]string{"open-sql", "primary-key", "", ""},
+		tag_count = 2,
+	},
+	{
+		id = SELECT_INTO_FIELD_NAME_MISMATCH,
+		group = .Correctness,
+		origin = .Abap_Lsp,
+		default_level = .Info,
+		summary = "Open SQL SELECT field name differs from the positional target field",
+		tags = [4]string{"open-sql", "projection", "", ""},
+		tag_count = 2,
+	},
+	{
+		id = SELECT_INTO_FIELD_LENGTH_NARROWING,
+		group = .Correctness,
+		origin = .Abap_Lsp,
+		default_level = .Info,
+		summary = "Open SQL SELECT field has a longer backing length than the positional target field",
+		tags = [4]string{"open-sql", "projection", "", ""},
 		tag_count = 2,
 	},
 	{
