@@ -1590,6 +1590,7 @@ checker_collect_oop_simple_stmt :: proc(
 					payload.event_range = member.event_handler.event_name.range
 					payload.event_source_type = checker_type_ref_data_from_expr(ctx, member.event_handler.source_type, .Type)
 				}
+				checker_check_oop_method_returning_parameter_form(ctx, member)
 				checker_check_oop_constructor_definition_form(ctx, stmt, member, entity)
 			}
 		}
@@ -1652,6 +1653,38 @@ checker_collect_oop_routine_member :: proc(
 	}
 	checker_collect_oop_signature(ctx, entity, member.signatures[:], kind)
 	return entity
+}
+
+checker_check_oop_method_returning_parameter_form :: proc(
+	ctx: ^Checker_Context,
+	member: ast.Oop_Member_Clause,
+) {
+	for sig in member.signatures {
+		if sig.kind != .Returning {
+			continue
+		}
+		for param in sig.parameters {
+			if param.passing == .Value {
+				continue
+			}
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				param.name.range,
+				checker_method_returning_parameter_form_message(param.name.text),
+			)
+		}
+	}
+}
+
+checker_method_returning_parameter_form_message :: proc(name: string) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "RETURNING parameter '")
+	strings.write_string(&builder, name)
+	strings.write_string(&builder, "' must be declared as VALUE(")
+	strings.write_string(&builder, name)
+	strings.write_string(&builder, ")")
+	return strings.to_string(builder)
 }
 
 checker_collect_oop_aliases :: proc(

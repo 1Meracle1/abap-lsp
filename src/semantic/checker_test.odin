@@ -4440,6 +4440,59 @@ lcl_demo=>run( lv_str 1 ).`
 }
 
 @(test)
+root_semantic_checker_requires_value_returning_method_parameters :: proc(t: ^testing.T) {
+	source := `CLASS lcl_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS valid_method RETURNING VALUE(rv_valid) TYPE i.
+    METHODS bad_direct RETURNING rv_value TYPE i.
+    CLASS-METHODS bad_ref RETURNING REFERENCE(rv_ref) TYPE i.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD valid_method.
+  ENDMETHOD.
+  METHOD bad_direct.
+  ENDMETHOD.
+  METHOD bad_ref.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://returning_value_required.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 2)
+	direct_diagnostic_found := false
+	reference_diagnostic_found := false
+	for diagnostic in checker.info.diagnostics {
+		if diagnostic.kind != .Invalid_Syntax_Form {
+			continue
+		}
+		text := source[diagnostic.range.start:diagnostic.range.end]
+		if text == "rv_value" {
+			direct_diagnostic_found = true
+			testing.expect_value(
+				t,
+				diagnostic.message,
+				"RETURNING parameter 'rv_value' must be declared as VALUE(rv_value)",
+			)
+		} else if text == "rv_ref" {
+			reference_diagnostic_found = true
+			testing.expect_value(
+				t,
+				diagnostic.message,
+				"RETURNING parameter 'rv_ref' must be declared as VALUE(rv_ref)",
+			)
+		} else {
+			testing.expect(t, false)
+		}
+	}
+	testing.expect(t, direct_diagnostic_found)
+	testing.expect(t, reference_diagnostic_found)
+}
+
+@(test)
 root_semantic_checker_diagnoses_invalid_constructor_definition_forms :: proc(t: ^testing.T) {
 	source := `CLASS lcl_static DEFINITION.
   PUBLIC SECTION.
