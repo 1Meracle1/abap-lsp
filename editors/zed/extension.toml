@@ -11,6 +11,6 @@ name = "ABAP Language Server"
 languages = ["ABAP"]
 
 [grammars.abap]
-repository = "file:///D:/dev/rust/abap-lsp"
+repository = "https://github.com/1Meracle1/abap-lsp"
 rev = "7ee5c1164c7d754bdd434551a6bae4d4c9749d70"
 path = "tree-sitter"
