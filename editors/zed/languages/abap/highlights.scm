@@ -22,6 +22,90 @@
 (dynamic_name) @variable
 (sql_wildcard_selector) @variable
 (identifier) @variable
+((method_definition
+  name: (routine_name
+    (component_name (identifier) @function)))
+  (#set! priority 110))
+((method_definition
+  name: (routine_name
+    (qualified_name
+      (identifier) @function
+      .)))
+  (#set! priority 110))
+((method_definition
+  name: (routine_name
+    (qualified_name
+      (component_name (identifier) @function)
+      .)))
+  (#set! priority 110))
+((method_signature
+  name: (routine_name
+    (component_name (identifier) @function)))
+  (#set! priority 110))
+((method_signature
+  name: (routine_name
+    (qualified_name
+      (identifier) @function
+      .)))
+  (#set! priority 110))
+((method_signature
+  name: (routine_name
+    (qualified_name
+      (component_name (identifier) @function)
+      .)))
+  (#set! priority 110))
+((call_expression
+  function: (qualified_name
+    (identifier) @function
+    .))
+  (#set! priority 110))
+((call_expression
+  function: (qualified_name
+    (component_name (identifier) @function)
+    .))
+  (#set! priority 110))
+((call_expression
+  (static_type_path) @function)
+  (#set! priority 110))
+((call_expression
+  (selector_expression
+    property: (component_name (identifier) @function)))
+  (#set! priority 110))
+((call_expression
+  (interface_selector_expression
+    property: (component_name (identifier) @function)))
+  (#set! priority 110))
+((call_statement
+  (keyword) @_call
+  .
+  (keyword) @_method
+  .
+  (qualified_name
+    (identifier) @function
+    .))
+  (#match? @_call "(?i)^CALL$")
+  (#match? @_method "(?i)^METHOD$")
+  (#set! priority 110))
+((call_statement
+  (keyword) @_call
+  .
+  (keyword) @_method
+  .
+  (qualified_name
+    (component_name (identifier) @function)
+    .))
+  (#match? @_call "(?i)^CALL$")
+  (#match? @_method "(?i)^METHOD$")
+  (#set! priority 110))
+((call_statement
+  (keyword) @_call
+  .
+  (keyword) @_method
+  .
+  (static_type_path) @function)
+  (#match? @_call "(?i)^CALL$")
+  (#match? @_method "(?i)^METHOD$")
+  (#set! priority 110))
 ((sort_statement
   (keyword)
   .
