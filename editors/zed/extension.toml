@@ -12,5 +12,5 @@ languages = ["ABAP"]
 
 [grammars.abap]
 repository = "https://github.com/1Meracle1/abap-lsp"
-rev = "7037f945a96a444aab0d400c7c37f0f53122d338"
+rev = "42be48d245aaecd62f95b1a12c3c8fc7c0bf1802"
 path = "tree-sitter"
