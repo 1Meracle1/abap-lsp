@@ -5,6 +5,12 @@ schema_version = 1
 authors = ["ABAP LSP contributors"]
 description = "ABAP syntax and language server support for Zed."
 repository = "https://github.com/1Meracle1/abap-lsp"
+themes = ["themes/source-midnight.json"]
+languages = ["languages/abap"]
+
+[lib]
+kind = "Rust"
+version = "0.7.0"
 
 [language_servers.abap-language-server]
 name = "ABAP Language Server"
@@ -12,5 +18,5 @@ languages = ["ABAP"]
 
 [grammars.abap]
 repository = "https://github.com/1Meracle1/abap-lsp"
-rev = "42be48d245aaecd62f95b1a12c3c8fc7c0bf1802"
+rev = "dc440f585ec46a8fd255070424f877eeb333e009"
 path = "tree-sitter"
