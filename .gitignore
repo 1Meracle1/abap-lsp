@@ -3,6 +3,7 @@ coverage/
 logs.txt
 bin/
 .env*
+!/.env.example
 editors/vscode/node_modules/
 editors/vscode/client/node_modules/
 editors/zed/extension.wasm

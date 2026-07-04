@@ -45,10 +45,10 @@ impl AbapExtension {
     ) -> Result<ServerBinary> {
         let settings = self.server_settings(language_server_id, worktree);
 
-        let path = if let Some(path) = settings.path.clone() {
-            path
+        let path = if let Some(path) = settings.path.clone().and_then(non_empty_string) {
+            self.command_path_for_worktree(worktree, path)
         } else if let Some(path) = self.shell_env_var(worktree, ENV_SERVER_PATH) {
-            path
+            self.command_path_for_worktree(worktree, path)
         } else if let Some(path) = worktree.which(binary_name()) {
             path
         } else {
@@ -72,6 +72,15 @@ impl AbapExtension {
             .shell_env()
             .into_iter()
             .find_map(|(key, value)| (key == name).then_some(value))
+            .and_then(non_empty_string)
+    }
+
+    fn command_path_for_worktree(&self, worktree: &zed::Worktree, path: String) -> String {
+        if path_is_absolute(&path) || !path_has_separator(&path) {
+            path
+        } else {
+            worktree_relative_path(worktree, &path)
+        }
     }
 }
 
@@ -109,6 +118,36 @@ fn binary_name() -> &'static str {
     match os {
         zed::Os::Windows => "abap_language_server.exe",
         _ => "abap_language_server",
+    }
+}
+
+fn non_empty_string(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn path_is_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with('/')
+        || path.starts_with("\\\\")
+        || (bytes.len() >= 3 && bytes[1] == b':' && (bytes[2] == b'/' || bytes[2] == b'\\'))
+}
+
+fn path_has_separator(path: &str) -> bool {
+    path.contains('/') || path.contains('\\')
+}
+
+fn worktree_relative_path(worktree: &zed::Worktree, path: &str) -> String {
+    let root = worktree.root_path();
+    let path = path.trim_start_matches(|ch| ch == '/' || ch == '\\');
+    if root.ends_with('/') || root.ends_with('\\') {
+        format!("{root}{path}")
+    } else {
+        format!("{root}/{path}")
     }
 }
 

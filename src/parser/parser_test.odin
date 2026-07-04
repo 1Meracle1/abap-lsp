@@ -653,6 +653,37 @@ rv_value = lo_obj->method( EXPORTING iv_value = DATA(lv_inline) CHANGING cv_any 
 }
 
 @(test)
+nested_expr_name_interner_growth_keeps_outer_parser_map_valid :: proc(t: ^testing.T) {
+	source_builder := strings.builder_make(context.allocator)
+	strings.write_string(&source_builder, "CALL METHOD lo->run EXPORTING first = ")
+	for i in 0 ..< 160 {
+		if i > 0 {
+			strings.write_string(&source_builder, " + ")
+		}
+		strings.write_string(&source_builder, "lv_first_")
+		strings.write_int(&source_builder, i)
+	}
+	strings.write_string(&source_builder, " second = ")
+	for i in 0 ..< 160 {
+		if i > 0 {
+			strings.write_string(&source_builder, " + ")
+		}
+		strings.write_string(&source_builder, "lv_second_")
+		strings.write_int(&source_builder, i)
+	}
+	strings.write_string(&source_builder, ".")
+	source := strings.to_string(source_builder)
+
+	parsed := parse(source, "nested_interner_growth.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	testing.expect_value(t, len(stmt.named_args), 2)
+	testing.expect_value(t, stmt.named_args[0].name.text, "first")
+	testing.expect_value(t, stmt.named_args[1].name.text, "second")
+}
+
+@(test)
 parsed_type_ref_key_strings_survive_source_overwrite :: proc(t: ^testing.T) {
 	source := `DATA lv_date LIKE sy-datum.
 TYPES ty_tab TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line.`

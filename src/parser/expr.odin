@@ -1148,6 +1148,7 @@ parse_complete_expr_with :: proc(
 		allocator = p.allocator,
 	}
 	expr := parse_proc(&nested)
+	p.names = nested.names
 	if expr == nil || current_token(&nested).kind != .Eof || len(nested.errors) > 0 {
 		return nil
 	}
@@ -1190,6 +1191,7 @@ parse_required_complete_expr_with :: proc(
 		allocator = p.allocator,
 	}
 	expr := parse_proc(&nested)
+	p.names = nested.names
 	for e in nested.errors {
 		error(p, e.range, e.message)
 	}
