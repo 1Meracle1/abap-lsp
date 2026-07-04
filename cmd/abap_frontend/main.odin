@@ -18,6 +18,7 @@ import "core:mem"
 import "core:mem/virtual"
 import "core:os"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 import "core:terminal"
 import ansi "core:terminal/ansi"
@@ -30,6 +31,9 @@ print_usage :: proc() {
 	fmt.println("       abap_frontend tree <file>")
 	fmt.println(
 		"       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors] [--enable-dependency-diagnostics] [--enable-lints] [--disable-adt-dependency-fetch]",
+	)
+	fmt.println(
+		"       abap_frontend perf-edit <workspace-folder> <file> [--iterations <count>] [--enable-lints]",
 	)
 	fmt.println(
 		"       abap_frontend lint [--json] [--pretty] [--with-project] [--all-files] [--show-suppressed] [--fail-on-warnings] [--disable-adt-dependency-fetch] [file-or-folder]",
@@ -75,6 +79,13 @@ Lint_Cli_Options :: struct {
 	fail_on_warnings:  bool,
 	disable_adt_fetch: bool,
 	path:              string,
+}
+
+Perf_Edit_Options :: struct {
+	workspace_path: string,
+	file_path:      string,
+	iterations:     int,
+	enable_lints:   bool,
 }
 
 Lint_Cli_Target :: struct {
@@ -206,6 +217,10 @@ main :: proc() {
 			os.exit(1)
 		}
 		run_analyze(args, allocator)
+		return
+	}
+	if command == "perf-edit" {
+		run_perf_edit(args, allocator)
 		return
 	}
 	if command == "lint" {
@@ -1243,6 +1258,207 @@ print_source_highlight :: proc(
 		}
 		fmt.printf("    %s\n", line_text)
 		print_caret_line(caret_start, caret_end - caret_start, color)
+	}
+}
+
+run_perf_edit :: proc(args: []string, allocator: mem.Allocator) {
+	assert(
+		context.temp_allocator.procedure == virtual.arena_allocator_proc &&
+		context.temp_allocator.data != nil,
+	)
+	temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
+	defer virtual.arena_temp_end(temp_arena)
+
+	options, options_ok := perf_edit_parse_options(args)
+	if !options_ok {
+		print_usage()
+		os.exit(1)
+	}
+	context.allocator = allocator
+
+	root_path, root_ok := workspace.absolute_clean_path(options.workspace_path, context.temp_allocator)
+	target_path, target_ok := workspace.absolute_clean_path(options.file_path, context.temp_allocator)
+	if !root_ok || !target_ok {
+		fmt.eprintln("error: invalid perf-edit path")
+		os.exit(1)
+	}
+	source, source_ok := read_source(target_path, allocator)
+	if !source_ok {
+		os.exit(1)
+	}
+
+	workspace_flags := workspace.Option_Flags {
+		.Enable_Dependency_Diagnostics,
+		.Disable_ADT_Dependency_Fetch,
+	}
+	if options.enable_lints {
+		workspace_flags += {.Enable_Lints}
+	}
+	workspace_options := workspace.Options{flags = workspace_flags}
+	opened, workspace_ok, workspace_error := workspace.open(
+		root_path,
+		workspace_options,
+		allocator,
+	)
+	if !workspace_ok {
+		fmt.printf("error\tperf-edit\t%s\n", workspace_error)
+		os.exit(1)
+	}
+	defer workspace.workspace_destroy(&opened, allocator)
+
+	pool: execution.Pool
+	execution.pool_init(
+		&pool,
+		execution.Options {
+			worker_count = execution.AUTO_WORKER_COUNT,
+			queue_capacity = 128,
+			deque_capacity = 128,
+		},
+		context.allocator,
+	)
+	defer execution.pool_destroy(&pool)
+	if pool.options.worker_count > 0 {
+		execution.pool_start(&pool)
+	}
+
+	initial_start := time.now()
+	result := workspace.analyze_workspace(
+		&opened,
+		nil,
+		&pool,
+		workspace_options,
+		context.allocator,
+	)
+	if !result.ok {
+		fmt.printf("error\tperf-edit\t%s\n", result.error)
+		os.exit(1)
+	}
+	defer workspace.analysis_result_destroy(&result, context.allocator)
+	fmt.printf(
+		"perf-edit\tworkspace\t%s\tfile\t%s\titerations\t%d\tinitial_ms\t%.3f\tinitial_files\t%d\n",
+		root_path,
+		target_path,
+		options.iterations,
+		time.duration_milliseconds(time.since(initial_start)),
+		result.last_stats.semantic.workspace_rebuild_input_files,
+	)
+	fmt.println(
+		"iteration\ttotal_ms\tparse_ms\tupdate_ms\tlint_ms\tchanged_files\tremote_requests\tremote_sources\tworkspace_rebuilds\tincremental_rebuilds\trebuild_input_files\tfull_rebuilds\trebuilt_editable\tnew_fetch_requests\tlint_diagnostics",
+	)
+
+	for iteration in 1 ..= options.iterations {
+		iteration_start := time.now()
+		parse_start := time.now()
+		edited_source := perf_edit_source(source, iteration, allocator)
+		input := perf_workspace_input_from_source(target_path, edited_source, allocator)
+		changed := [?]semantic.Workspace_File_Input{input}
+		parse_ms := time.duration_milliseconds(time.since(parse_start))
+
+		update_start := time.now()
+		update_ok := workspace.analysis_result_update_inputs(
+			&result,
+			&opened,
+			changed[:],
+			nil,
+			&pool,
+			context.allocator,
+			workspace.Analysis_Update_Options {
+				suspend_external_dependency_acquisition = true,
+			},
+		)
+		update_ms := time.duration_milliseconds(time.since(update_start))
+		if !update_ok {
+			fmt.eprintln("error: perf-edit update failed")
+			os.exit(1)
+		}
+
+		lint_ms := 0.0
+		lint_diagnostics := -1
+		if options.enable_lints {
+			lint_start := time.now()
+			lint_analysis := run_analyze_lints(&result, &pool)
+			lint_ms = time.duration_milliseconds(time.since(lint_start))
+			lint_diagnostics = len(lint_analysis.diagnostics)
+			lints.analysis_destroy(&lint_analysis)
+		}
+
+		stats := result.last_stats
+		fmt.printf(
+			"%d\t%.3f\t%.3f\t%.3f\t%.3f\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+			iteration,
+			time.duration_milliseconds(time.since(iteration_start)),
+			parse_ms,
+			update_ms,
+			lint_ms,
+			stats.changed_files,
+			stats.remote_resolution_requests,
+			stats.remote_sources,
+			stats.semantic.workspace_rebuilds,
+			stats.semantic.incremental_workspace_rebuilds,
+			stats.semantic.workspace_rebuild_input_files,
+			stats.semantic.full_editable_rebuilds,
+			stats.semantic.rebuilt_editable_projects,
+			stats.semantic.new_fetch_requests,
+			lint_diagnostics,
+		)
+	}
+}
+
+perf_edit_parse_options :: proc(args: []string) -> (Perf_Edit_Options, bool) {
+	if len(args) < 4 {
+		return {}, false
+	}
+	options := Perf_Edit_Options {
+		workspace_path = args[2],
+		file_path = args[3],
+		iterations = 5,
+	}
+	for i := 4; i < len(args); {
+		if args[i] == "--iterations" && i + 1 < len(args) {
+			parsed, parse_ok := strconv.parse_int(args[i + 1], 10)
+			if !parse_ok || parsed < 1 {
+				fmt.eprintf("invalid value for --iterations: %q\n", args[i + 1])
+				return {}, false
+			}
+			options.iterations = parsed
+			i += 2
+		} else if args[i] == "--enable-lints" {
+			options.enable_lints = true
+			i += 1
+		} else {
+			return {}, false
+		}
+	}
+	return options, true
+}
+
+perf_edit_source :: proc(source: string, iteration: int, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, source)
+	if len(source) == 0 || source[len(source) - 1] != '\n' {
+		strings.write_byte(&out, '\n')
+	}
+	strings.write_string(&out, `" perf-edit iteration `)
+	strings.write_string(&out, fmt.tprintf("%d", iteration))
+	strings.write_byte(&out, '\n')
+	return strings.to_string(out)
+}
+
+perf_workspace_input_from_source :: proc(
+	path: string,
+	source: string,
+	allocator: mem.Allocator,
+) -> semantic.Workspace_File_Input {
+	parsed := parser.parse(source, path, allocator)
+	return semantic.Workspace_File_Input {
+		path = strings.clone(path, allocator),
+		root = parsed.root,
+		kind = .Unknown,
+		syntax_diagnostics = workspace.syntax_diagnostics_from_parse_errors(
+			parsed.errors,
+			allocator,
+		),
+		has_syntax_errors = len(parsed.errors) > 0,
 	}
 }
 

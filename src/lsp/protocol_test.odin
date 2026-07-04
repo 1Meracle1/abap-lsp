@@ -1,6 +1,8 @@
 package abap_frontend_lsp
 
 import dep_store "src:dependency_store"
+import execution "src:execution"
+import lints "src:lints"
 import "src:parser"
 import remote_deps "src:remote_dependencies"
 import "src:semantic"
@@ -12,6 +14,7 @@ import "core:mem"
 import virtual "core:mem/virtual"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import "core:time"
 
@@ -364,6 +367,234 @@ lsp_reanalysis_suspends_dependency_fetches_for_unsaved_document :: proc(t: ^test
 	doc = state.documents[uri]
 	testing.expect(t, !doc.has_unsaved_changes)
 	testing.expect(t, len(state.workspaces[0].analysis.remote_result.misses) > 0)
+}
+
+@(test)
+lsp_did_change_keeps_typing_path_off_lints_and_disk_workspace_inputs :: proc(t: ^testing.T) {
+	root := lsp_test_temp_root(t, `tmp\lsp_incremental_perf_workspace`)
+	defer os.remove_all(root)
+	target_path := lsp_test_join_path(t, root, "zcl_target.abap")
+	target_source := lsp_test_class_source("zcl_target", "lv_value")
+	testing.expect(t, os.write_entire_file(target_path, target_source) == nil)
+	for i in 0 ..< 24 {
+		name := fmt.tprintf("zcl_peer_%02d", i)
+		path := lsp_test_join_path(t, root, fmt.tprintf("%s.abap", name))
+		testing.expect(t, os.write_entire_file(path, lsp_test_class_source(name, "lv_peer")) == nil)
+	}
+
+	uri, uri_ok := file_uri_from_path(target_path, context.allocator)
+	testing.expect(t, uri_ok)
+	if !uri_ok {
+		return
+	}
+	opened, workspace_ok, _ := workspace.open(
+		root,
+		workspace.Options {
+			flags = workspace.Option_Flags {
+				.Enable_Dependency_Diagnostics,
+				.Enable_Lints,
+				.Disable_ADT_Dependency_Fetch,
+			},
+		},
+		context.allocator,
+	)
+	testing.expect(t, workspace_ok)
+	if !workspace_ok {
+		return
+	}
+
+	output_path := `tmp\lsp_incremental_perf_workspace.out`
+	os.remove(output_path)
+	output, output_err := os.create(output_path)
+	testing.expect(t, output_err == nil)
+	if output_err != nil {
+		workspace.workspace_destroy(&opened, context.allocator)
+		return
+	}
+	defer os.close(output)
+	defer os.remove(output_path)
+
+	state: Server_State
+	server_init_with_options(
+		&state,
+		context.allocator,
+		workspace.Options {
+			flags = workspace.Option_Flags {
+				.Enable_Dependency_Diagnostics,
+				.Enable_Lints,
+				.Disable_ADT_Dependency_Fetch,
+			},
+		},
+	)
+	append(&state.workspaces, Server_Workspace{root = opened})
+	defer server_destroy(&state)
+
+	testing.expect(t, update_document_from_open(&state, lsp_test_did_open_params(uri, target_source)))
+	server_reanalyze(&state)
+	testing.expect(t, state.workspaces[0].has_analysis)
+	testing.expect(t, state.last_reanalysis_stats.workspace_disk_inputs >= 25)
+
+	pending_lint_graph := execution.graph_create(&state.pool, state.allocator)
+	_ = execution.submit_value(
+		pending_lint_graph,
+		execution.worker_executor(&state.pool),
+		1,
+		lsp_test_pending_lint_work,
+	)
+	state.active_lint_graph = pending_lint_graph
+
+	insert_offset := strings.index(target_source, "lv_value")
+	testing.expect(t, insert_offset >= 0)
+	if insert_offset < 0 {
+		state.active_lint_graph = nil
+		execution.graph_destroy(pending_lint_graph)
+		free(pending_lint_graph, state.allocator)
+		return
+	}
+	edit_range := range_from_offsets(target_source, insert_offset, insert_offset)
+	handle_notification(
+		&state,
+		output,
+		METHOD_DID_CHANGE,
+		lsp_test_did_incremental_change_params(uri, edit_range, "new_", 2),
+	)
+
+	stats := state.last_reanalysis_stats
+	testing.expect(t, stats.skipped_active_lint_wait)
+	testing.expect(t, stats.retained_analysis_for_active_lints)
+	testing.expect_value(t, stats.reparsed_documents, 1)
+	testing.expect_value(t, stats.opened_document_inputs, 1)
+	testing.expect_value(t, stats.workspace_disk_inputs, 0)
+	testing.expect_value(t, stats.disk_refresh_inputs, 0)
+	testing.expect_value(t, stats.remote_resolution_requests, 0)
+	testing.expect_value(t, stats.lint_start_attempts, 0)
+	testing.expect_value(t, stats.diagnostic_publish_documents, 1)
+	testing.expect(t, stats.semantic_rebuilt_editable_projects <= 1)
+	testing.expect(t, state.active_lint_graph == pending_lint_graph)
+
+	state.active_lint_graph = nil
+	execution.graph_destroy(pending_lint_graph)
+	free(pending_lint_graph, state.allocator)
+	semantic.semantic_graph_session_clear_retired_analyses(&state.workspaces[0].analysis.session)
+}
+
+@(test)
+lsp_did_change_rebuilds_only_changed_independent_project :: proc(t: ^testing.T) {
+	root := lsp_test_temp_root(t, `tmp\lsp_incremental_semantic_workspace`)
+	defer os.remove_all(root)
+	target_path := lsp_test_join_path(t, root, "zcl_target.abap")
+	target_source := lsp_test_class_source("zcl_target", "lv_value")
+	testing.expect(t, os.write_entire_file(target_path, target_source) == nil)
+	for i in 0 ..< 24 {
+		name := fmt.tprintf("zcl_independent_%02d", i)
+		path := lsp_test_join_path(t, root, fmt.tprintf("%s.abap", name))
+		testing.expect(t, os.write_entire_file(path, lsp_test_class_source(name, "lv_peer")) == nil)
+	}
+
+	uri, uri_ok := file_uri_from_path(target_path, context.allocator)
+	testing.expect(t, uri_ok)
+	if !uri_ok {
+		return
+	}
+	opened, workspace_ok, _ := workspace.open(
+		root,
+		workspace.Options {
+			flags = workspace.Option_Flags {
+				.Enable_Dependency_Diagnostics,
+				.Disable_ADT_Dependency_Fetch,
+			},
+		},
+		context.allocator,
+	)
+	testing.expect(t, workspace_ok)
+	if !workspace_ok {
+		return
+	}
+
+	output_path := `tmp\lsp_incremental_semantic_workspace.out`
+	os.remove(output_path)
+	output, output_err := os.create(output_path)
+	testing.expect(t, output_err == nil)
+	if output_err != nil {
+		workspace.workspace_destroy(&opened, context.allocator)
+		return
+	}
+	defer os.close(output)
+	defer os.remove(output_path)
+
+	state: Server_State
+	server_init_with_options(
+		&state,
+		context.allocator,
+		workspace.Options {
+			flags = workspace.Option_Flags {
+				.Enable_Dependency_Diagnostics,
+				.Disable_ADT_Dependency_Fetch,
+			},
+		},
+	)
+	append(&state.workspaces, Server_Workspace{root = opened})
+	defer server_destroy(&state)
+
+	testing.expect(t, update_document_from_open(&state, lsp_test_did_open_params(uri, target_source)))
+	server_reanalyze(&state)
+	testing.expect(t, state.workspaces[0].has_analysis)
+	testing.expect(t, state.last_reanalysis_stats.workspace_disk_inputs >= 25)
+
+	insert_offset := strings.index(target_source, "lv_value")
+	testing.expect(t, insert_offset >= 0)
+	if insert_offset < 0 {
+		return
+	}
+	edit_range := range_from_offsets(target_source, insert_offset, insert_offset)
+	handle_notification(
+		&state,
+		output,
+		METHOD_DID_CHANGE,
+		lsp_test_did_incremental_change_params(uri, edit_range, "new_", 2),
+	)
+
+	stats := state.last_reanalysis_stats
+	testing.expect_value(t, stats.reparsed_documents, 1)
+	testing.expect_value(t, stats.opened_document_inputs, 1)
+	testing.expect_value(t, stats.workspace_disk_inputs, 0)
+	testing.expect_value(t, stats.disk_refresh_inputs, 0)
+	testing.expect_value(t, stats.remote_resolution_requests, 0)
+	testing.expect_value(t, stats.lint_start_attempts, 0)
+	testing.expect_value(t, stats.semantic_workspace_rebuilds, 1)
+	testing.expect_value(t, stats.semantic_incremental_workspace_rebuilds, 1)
+	testing.expect_value(t, stats.semantic_workspace_rebuild_inputs, 1)
+	testing.expect_value(t, stats.semantic_rebuilt_editable_projects, 1)
+}
+
+@(test)
+lsp_stale_lint_publish_is_discarded_by_generation :: proc(t: ^testing.T) {
+	state := lsp_test_empty_state()
+	defer lsp_test_state_destroy(&state)
+	sync.atomic_store_explicit(&state.diagnostic_generation, u64(2), .Release)
+
+	result: Server_Lint_Run_Result
+	arena_err := virtual.arena_init_growing(&result.arena)
+	testing.expect(t, arena_err == .None)
+	if arena_err != .None {
+		return
+	}
+	allocator := virtual.arena_allocator(&result.arena)
+	result.analyses = make([dynamic]lints.Analysis, 0, 0, allocator)
+
+	_ = server_publish_lint_result(
+		result,
+		Server_Lint_Publish_Payload {
+			state = &state,
+			generation = 1,
+		},
+	)
+
+	testing.expect_value(
+		t,
+		sync.atomic_load_explicit(&state.stale_lint_publish_count, .Acquire),
+		u64(1),
+	)
 }
 
 @(test)
@@ -6411,6 +6642,27 @@ lsp_test_completion_item_index :: proc(items: []Completion_Item, label: string) 
 	return -1
 }
 
+lsp_test_pending_lint_work :: proc(value: int) -> int {
+	return value
+}
+
+lsp_test_class_source :: proc(class_name, local_name: string) -> string {
+	return fmt.tprintf(
+		`CLASS %s DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS %s IMPLEMENTATION.
+  METHOD run.
+    DATA %s TYPE i.
+  ENDMETHOD.
+ENDCLASS.`,
+		class_name,
+		class_name,
+		local_name,
+	)
+}
+
 lsp_test_empty_state :: proc() -> Server_State {
 	return Server_State {
 		allocator         = context.allocator,
@@ -6434,6 +6686,7 @@ lsp_test_state_with_open_document :: proc(uri, source: string) -> Server_State {
 }
 
 lsp_test_state_destroy :: proc(state: ^Server_State) {
+	server_finish_active_lints(state)
 	for &slot in state.workspaces {
 		if slot.has_analysis {
 			workspace.analysis_result_destroy(&slot.analysis, state.allocator)

@@ -3,11 +3,13 @@ package abap_frontend_lsp
 import execution "src:execution"
 import lints "src:lints"
 import "src:semantic"
+import trace "src:trace"
 
 import "core:mem"
 import "core:mem/virtual"
 import "core:os"
 import "core:strings"
+import "core:sync"
 
 LINT_REFERENCE_DOCS_URL :: "https://github.com/1Meracle1/abap-lsp/blob/main/docs/reference/lints.md"
 
@@ -34,16 +36,35 @@ Server_Lint_Run_Result :: struct {
 
 Server_Lint_Publish_Payload :: struct {
 	output:    ^os.File,
+	state:     ^Server_State,
+	generation: u64,
 	documents: []Server_Lint_Document_Snapshot,
 }
 
-server_start_lints_async :: proc(state: ^Server_State, output: ^os.File) {
+server_start_lints_async :: proc(state: ^Server_State, output: ^os.File) -> bool {
+	when trace.ENABLED {
+		trace_start := trace.now()
+	}
+	if state != nil {
+		state.last_reanalysis_stats.lint_start_attempts += 1
+	}
 	if state == nil ||
 	   output == nil ||
 	   !(.Enable_Lints in state.options.flags) ||
 	   state.active_lint_graph != nil ||
 	   len(state.documents) == 0 {
-		return
+		if state != nil && state.active_lint_graph != nil {
+			state.last_reanalysis_stats.lint_start_skipped_active += 1
+		}
+		when trace.ENABLED {
+			trace.eprintf(
+				"[trace - lsp] lint start skipped active=%v documents=%d elapsed_ms=%.3f\n",
+				state != nil && state.active_lint_graph != nil,
+				len(state.documents) if state != nil else 0,
+				trace.duration_ms_since(trace_start),
+			)
+		}
+		return false
 	}
 
 	graph := execution.graph_create(&state.pool, state.allocator)
@@ -71,7 +92,14 @@ server_start_lints_async :: proc(state: ^Server_State, output: ^os.File) {
 	if len(analyses) == 0 {
 		execution.graph_destroy(graph)
 		free(graph, state.allocator)
-		return
+		when trace.ENABLED {
+			trace.eprintf(
+				"[trace - lsp] lint start skipped analyses=0 documents=%d elapsed_ms=%.3f\n",
+				len(state.documents),
+				trace.duration_ms_since(trace_start),
+			)
+		}
+		return false
 	}
 
 	documents := make(
@@ -103,25 +131,65 @@ server_start_lints_async :: proc(state: ^Server_State, output: ^os.File) {
 		graph,
 		root,
 		execution.worker_executor(&state.pool),
-		Server_Lint_Publish_Payload{output = output, documents = documents[:]},
+		Server_Lint_Publish_Payload {
+			output     = output,
+			state      = state,
+			generation = sync.atomic_load_explicit(&state.diagnostic_generation, .Acquire),
+			documents  = documents[:],
+		},
 		server_publish_lint_result,
 	)
 	state.active_lint_graph = graph
+	state.last_reanalysis_stats.lint_started += 1
 	execution.graph_start(graph)
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace - lsp] lint start generation=%d analyses=%d documents=%d elapsed_ms=%.3f\n",
+			sync.atomic_load_explicit(&state.diagnostic_generation, .Acquire),
+			len(analyses),
+			len(documents),
+			trace.duration_ms_since(trace_start),
+		)
+	}
+	return true
 }
 
-server_finish_active_lints :: proc(state: ^Server_State) {
+server_finish_active_lints :: proc(state: ^Server_State, wait: bool = true) -> bool {
 	if state == nil || state.active_lint_graph == nil {
-		return
+		return false
 	}
 	graph := state.active_lint_graph
+	if !wait && !execution.graph_completed(graph) {
+		return false
+	}
+	when trace.ENABLED {
+		trace_start := trace.now()
+	}
 	state.active_lint_graph = nil
-	execution.graph_wait(graph)
+	if wait {
+		execution.graph_wait(graph)
+	}
 	execution.graph_destroy(graph)
 	free(graph, state.allocator)
+	for &slot in state.workspaces {
+		if slot.has_analysis {
+			semantic.semantic_graph_session_clear_retired_analyses(&slot.analysis.session)
+		}
+	}
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace - lsp] lint finish waited=%v elapsed_ms=%.3f\n",
+			wait,
+			trace.duration_ms_since(trace_start),
+		)
+	}
+	return true
 }
 
 server_run_lints :: proc(payload: Server_Lint_Run_Payload) -> Server_Lint_Run_Result {
+	when trace.ENABLED {
+		trace_start := trace.now()
+	}
 	result: Server_Lint_Run_Result
 	arena_err := virtual.arena_init_growing(&result.arena)
 	assert(arena_err == .None)
@@ -131,6 +199,13 @@ server_run_lints :: proc(payload: Server_Lint_Run_Payload) -> Server_Lint_Run_Re
 		policy := input.policy
 		append(&result.analyses, lints.run_analysis_with_policy(input.analysis, &policy))
 	}
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace - lsp] lint run analyses=%d elapsed_ms=%.3f\n",
+			len(payload.analyses),
+			trace.duration_ms_since(trace_start),
+		)
+	}
 	return result
 }
 
@@ -138,9 +213,39 @@ server_publish_lint_result :: proc(
 	result: Server_Lint_Run_Result,
 	payload: Server_Lint_Publish_Payload,
 ) -> execution.No_Result {
+	when trace.ENABLED {
+		trace_start := trace.now()
+	}
 	lint_result := result
 	defer server_lint_run_result_destroy(&lint_result)
 
+	if payload.state != nil {
+		current_generation := sync.atomic_load_explicit(
+			&payload.state.diagnostic_generation,
+			.Acquire,
+		)
+		if current_generation != payload.generation {
+			stale_before := sync.atomic_add_explicit(
+				&payload.state.stale_lint_publish_count,
+				u64(1),
+				.Acq_Rel,
+			)
+			_ = stale_before
+			when trace.ENABLED {
+				trace.eprintf(
+					"[trace - lsp] lint publish skipped stale generation=%d current=%d stale_count=%d elapsed_ms=%.3f\n",
+					payload.generation,
+					current_generation,
+					stale_before + 1,
+					trace.duration_ms_since(trace_start),
+				)
+			}
+			return execution.No_Result{}
+		}
+	}
+
+	published_documents := 0
+	published_diagnostics := 0
 	for document in payload.documents {
 		diagnostics := make(
 			[dynamic]Diagnostic,
@@ -167,7 +272,18 @@ server_publish_lint_result :: proc(
 			version = document.version,
 			diagnostics = diagnostics[:],
 		}
+		published_documents += 1
+		published_diagnostics += len(diagnostics)
 		send_notification(payload.output, METHOD_PUBLISH_DIAGNOSTICS, params, context.temp_allocator)
+	}
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace - lsp] lint publish generation=%d documents=%d diagnostics=%d elapsed_ms=%.3f\n",
+			payload.generation,
+			published_documents,
+			published_diagnostics,
+			trace.duration_ms_since(trace_start),
+		)
 	}
 	return execution.No_Result{}
 }

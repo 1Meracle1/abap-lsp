@@ -1,6 +1,7 @@
 package abap_frontend_semantic2
 
 import "src:ast"
+import trace "src:trace"
 
 import "core:mem"
 import "core:strings"
@@ -223,10 +224,6 @@ semantic_workspace_import_external_interface_records :: proc(
 	if analysis == nil || external == nil {
 		return
 	}
-	external_semantic_index_import_external_project_records(
-		&analysis.external_index,
-		&external.index,
-	)
 	unresolved_seen := checker_unresolved_candidate_set_make(
 		analysis.unresolved[:],
 		context.temp_allocator,
@@ -238,6 +235,22 @@ semantic_workspace_import_external_interface_records :: proc(
 	for record in external.index.projects {
 		if record.role != .External_Interface || !semantic_object_key_is_valid(record.root_key) {
 			continue
+		}
+		if semantic_workspace_discovery_has_root_key(analysis, record.root_key) {
+			continue
+		}
+		if _, exists := external_semantic_index_project_record(
+			&analysis.external_index,
+			record.id,
+		); !exists {
+			imported := semantic_project_record_clone_lists(record, analysis.allocator)
+			stored := external_semantic_index_add_project_record(&analysis.external_index, imported)
+			for edge in stored.resolved_dependencies {
+				external_semantic_index_add_dependency(&analysis.external_index, stored.id, edge)
+			}
+			for edge in stored.unresolved_dependencies {
+				external_semantic_index_add_dependency(&analysis.external_index, stored.id, edge)
+			}
 		}
 		for candidate in record.unresolved {
 			checker_add_unresolved_candidate_to_list_with_set(
@@ -254,26 +267,33 @@ semantic_workspace_import_external_interface_records :: proc(
 	}
 }
 
+semantic_workspace_discovery_has_root_key :: proc(
+	analysis: ^Workspace_Analysis,
+	key: Semantic_Object_Key,
+) -> bool {
+	if analysis == nil || !semantic_object_key_is_valid(key) {
+		return false
+	}
+	for plan in analysis.discovery.plans {
+		if plan.kind != .Root {
+			continue
+		}
+		facts := &analysis.discovery.facts[plan.root_index]
+		if semantic_workspace_root_object_key(facts, plan.kind) == key {
+			return true
+		}
+	}
+	return false
+}
+
 semantic_workspace_analysis_destroy :: proc(analysis: ^Workspace_Analysis) {
 	if analysis == nil {
 		return
 	}
 	external_semantic_index_destroy(&analysis.external_index)
 	project_discovery_destroy(&analysis.discovery)
-	for result in analysis.project_results {
-		if result.project != nil {
-			project_destroy(result.project)
-			free(result.project, analysis.allocator)
-		}
-		if result.checker != nil {
-			free(result.checker, analysis.allocator)
-		}
-		if result.root_path != "" {
-			delete(result.root_path, analysis.allocator)
-		}
-		if result.files.allocator.procedure != nil {
-			delete(result.files)
-		}
+	for &result in analysis.project_results {
+		semantic_workspace_project_result_destroy(&result, analysis.allocator)
 	}
 	if analysis.projects.allocator.procedure != nil {
 		delete(analysis.projects)
@@ -334,11 +354,401 @@ semantic_workspace_projects_for_file :: proc(
 	return nil
 }
 
+semantic_workspace_try_update_root_projects :: proc(
+	analysis: ^Workspace_Analysis,
+	input: Workspace_File_Input,
+	refs: []Semantic_Graph_Project_Ref,
+) -> bool {
+	when trace.ENABLED {
+		trace_start := trace.now()
+		provider_ms := 0.0
+		remove_and_build_ms := 0.0
+		aggregate_ms := 0.0
+	}
+	if analysis == nil || input.path == "" || analysis.external_context == nil || len(refs) == 0 {
+		return false
+	}
+	file_index, file_ok := semantic_workspace_file_index(analysis, input.path)
+	if !file_ok {
+		return false
+	}
+	old_facts := &analysis.discovery.facts[file_index]
+	if !workspace_file_kind_is_root(old_facts.kind) ||
+	   old_facts.included_by_any ||
+	   len(old_facts.include_edges) > 0 {
+		return false
+	}
+	plan, plan_ok := semantic_workspace_plan_for_root_index(analysis, file_index)
+	if !plan_ok || plan.kind != .Root {
+		return false
+	}
+	new_facts := project_discovery_scan_file(&analysis.discovery, input, file_index)
+	if !semantic_workspace_file_facts_fast_update_shape_equal(old_facts, &new_facts) ||
+	   len(new_facts.include_edges) > 0 {
+		project_discovery_file_facts_destroy(&new_facts, analysis.allocator)
+		return false
+	}
+	plans := make([dynamic]Workspace_Project_Plan, 0, len(refs), context.temp_allocator)
+	for ref in refs {
+		next_plan, ref_ok := semantic_workspace_incremental_plan_for_ref(
+			analysis,
+			ref,
+		)
+		if !ref_ok {
+			project_discovery_file_facts_destroy(&new_facts, analysis.allocator)
+			return false
+		}
+		append(&plans, next_plan)
+	}
+
+	root_key := semantic_workspace_root_object_key(&new_facts, plan.kind)
+	if role, role_ok := semantic_workspace_external_role_for_file_kind(new_facts.kind);
+	   role_ok && semantic_object_key_is_valid(root_key) && new_facts.root != nil {
+		when trace.ENABLED {
+			provider_start := trace.now()
+		}
+		_ = external_semantics_reanalyze_interface_input(
+			analysis.external_context,
+			External_Interface_Input {
+				key = root_key,
+				path = new_facts.path,
+				root = new_facts.root,
+				role = role,
+				syntax_diagnostics = new_facts.syntax_diagnostics,
+				has_syntax_errors = new_facts.has_syntax_errors,
+			},
+		)
+		when trace.ENABLED {
+			provider_ms = trace.duration_ms_since(provider_start)
+		}
+	}
+
+	when trace.ENABLED {
+		remove_and_build_start := trace.now()
+	}
+	project_discovery_file_facts_destroy(old_facts, analysis.allocator)
+	analysis.discovery.facts[file_index] = new_facts
+	for plan_to_remove in plans {
+		result_index, result_ok := semantic_workspace_project_result_index_for_plan(
+			analysis,
+			plan_to_remove,
+		)
+		assert(result_ok)
+		if result_ok {
+			semantic_workspace_remove_project_result_index(analysis, result_index)
+		}
+	}
+	for next_plan in plans {
+		semantic_workspace_build_project(analysis, next_plan, analysis.external_context)
+	}
+	when trace.ENABLED {
+		remove_and_build_ms = trace.duration_ms_since(remove_and_build_start)
+		aggregate_start := trace.now()
+	}
+	semantic_workspace_rebuild_aggregates(analysis)
+	when trace.ENABLED {
+		aggregate_ms = trace.duration_ms_since(aggregate_start)
+		trace.eprintf(
+			"[trace - semantic] workspace incremental roots=%d provider_ms=%.3f build_ms=%.3f aggregate_ms=%.3f elapsed_ms=%.3f\n",
+			len(plans),
+			provider_ms,
+			remove_and_build_ms,
+			aggregate_ms,
+			trace.duration_ms_since(trace_start),
+		)
+	}
+	return true
+}
+
+semantic_workspace_file_index :: proc(
+	analysis: ^Workspace_Analysis,
+	path: string,
+) -> (
+	int,
+	bool,
+) {
+	for facts, index in analysis.discovery.facts {
+		if facts.path == path {
+			return index, true
+		}
+	}
+	return -1, false
+}
+
+semantic_workspace_plan_for_root_index :: proc(
+	analysis: ^Workspace_Analysis,
+	root_index: int,
+) -> (
+	Workspace_Project_Plan,
+	bool,
+) {
+	for plan in analysis.discovery.plans {
+		if plan.root_index == root_index {
+			return plan, true
+		}
+	}
+	return {}, false
+}
+
+semantic_workspace_project_result_index_for_plan :: proc(
+	analysis: ^Workspace_Analysis,
+	plan: Workspace_Project_Plan,
+) -> (
+	int,
+	bool,
+) {
+	if plan.root_index < 0 || plan.root_index >= len(analysis.discovery.facts) {
+		return -1, false
+	}
+	root_path := analysis.discovery.facts[plan.root_index].path
+	for result, index in analysis.project_results {
+		if result.root_path == root_path && result.kind == plan.kind {
+			return index, true
+		}
+	}
+	return -1, false
+}
+
+semantic_workspace_incremental_plan_for_ref :: proc(
+	analysis: ^Workspace_Analysis,
+	ref: Semantic_Graph_Project_Ref,
+) -> (
+	Workspace_Project_Plan,
+	bool,
+) {
+	file_index, file_ok := semantic_workspace_file_index(analysis, ref.root_path)
+	if !file_ok {
+		return {}, false
+	}
+	facts := &analysis.discovery.facts[file_index]
+	if facts.included_by_any || len(facts.include_edges) > 0 {
+		return {}, false
+	}
+	plan, plan_ok := semantic_workspace_plan_for_root_index(analysis, file_index)
+	if !plan_ok {
+		return {}, false
+	}
+	if plan.kind == .Root {
+		if !workspace_file_kind_is_root(facts.kind) || ref.role != .Editable_Root {
+			return {}, false
+		}
+	} else if plan.kind == .Include_Fragment {
+		if ref.role != .Include_Fragment {
+			return {}, false
+		}
+	} else {
+		return {}, false
+	}
+	result_index, result_ok := semantic_workspace_project_result_index_for_plan(analysis, plan)
+	if !result_ok || len(analysis.project_results[result_index].files) != 1 {
+		return {}, false
+	}
+	return plan, true
+}
+
+semantic_workspace_file_facts_fast_update_shape_equal :: proc(
+	old,
+	new: ^Workspace_File_Facts,
+) -> bool {
+	if old == nil || new == nil {
+		return false
+	}
+	return(
+		old.path == new.path &&
+		old.kind == new.kind &&
+		old.explicit_root == new.explicit_root &&
+		semantic_workspace_string_list_equal(old.provided_names[:], new.provided_names[:]) &&
+		semantic_workspace_string_list_equal(old.type_pool_imports[:], new.type_pool_imports[:]) &&
+		semantic_workspace_include_edges_equal(old.include_edges[:], new.include_edges[:]) \
+	)
+}
+
+semantic_workspace_string_list_equal :: proc(left, right: []string) -> bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for value, index in left {
+		if value != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+semantic_workspace_include_edges_equal :: proc(
+	left,
+	right: []Workspace_Include_Edge,
+) -> bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for edge, index in left {
+		other := right[index]
+		if edge.name != other.name ||
+		   edge.if_found != other.if_found ||
+		   edge.has_target != other.has_target ||
+		   edge.is_external != other.is_external {
+			return false
+		}
+	}
+	return true
+}
+
+semantic_workspace_remove_project_result_index :: proc(
+	analysis: ^Workspace_Analysis,
+	index: int,
+) {
+	assert(index >= 0 && index < len(analysis.project_results))
+	semantic_workspace_project_result_destroy(&analysis.project_results[index], analysis.allocator)
+	for read := index + 1; read < len(analysis.project_results); read += 1 {
+		analysis.project_results[read - 1] = analysis.project_results[read]
+	}
+	resize(&analysis.project_results, len(analysis.project_results) - 1)
+}
+
+semantic_workspace_project_result_destroy :: proc(
+	result: ^Workspace_Project_Result,
+	allocator: mem.Allocator,
+) {
+	if result == nil {
+		return
+	}
+	if result.project != nil {
+		project_destroy(result.project)
+		free(result.project, allocator)
+	}
+	if result.checker != nil {
+		free(result.checker, allocator)
+	}
+	if result.root_path != "" {
+		delete(result.root_path, allocator)
+	}
+	if result.files.allocator.procedure != nil {
+		delete(result.files)
+	}
+	result^ = {}
+}
+
+semantic_workspace_rebuild_aggregates :: proc(analysis: ^Workspace_Analysis) {
+	semantic_workspace_clear_aggregates(analysis)
+	external_semantic_index_destroy(&analysis.external_index)
+	analysis.external_index = external_semantic_index_make(analysis.allocator)
+	if analysis.external_context != nil {
+		semantic_workspace_import_nonlocal_external_providers(
+			analysis,
+			analysis.external_context,
+		)
+		semantic_workspace_import_external_interface_records(
+			analysis,
+			analysis.external_context,
+		)
+	}
+	for &result in analysis.project_results {
+		append(&analysis.projects, result.project)
+		for file in result.files {
+			semantic_workspace_add_file_project_usage(analysis, file.path, result.project)
+		}
+		project_has_syntax_errors := workspace_project_result_has_syntax_errors(&result)
+		for candidate in result.checker.info.unresolved {
+			checker_add_unresolved_candidate_to_list(&analysis.unresolved, candidate)
+			if !project_has_syntax_errors {
+				checker_add_unresolved_candidate_to_list(&analysis.external_requests, candidate)
+			}
+		}
+		plan, plan_ok := semantic_workspace_project_plan_for_result(analysis, &result)
+		assert(plan_ok)
+		if plan_ok {
+			semantic_workspace_record_project_dependencies(analysis, &result, plan)
+		}
+	}
+}
+
+semantic_workspace_import_nonlocal_external_providers :: proc(
+	analysis: ^Workspace_Analysis,
+	external: ^External_Semantics,
+) {
+	if analysis == nil || external == nil {
+		return
+	}
+	for key, contributions in external.index.provider_contributions {
+		for binding in contributions {
+			if semantic_workspace_external_binding_is_local_root(analysis, external, binding) {
+				continue
+			}
+			external_semantic_index_add_provider_contribution(
+				&analysis.external_index,
+				key,
+				binding,
+			)
+			if raw := u32(binding.project_id);
+			   raw >= analysis.external_index.next_project_id {
+				analysis.external_index.next_project_id = raw + 1
+			}
+		}
+	}
+	for root_key, project_id in external.index.project_by_root_key {
+		if record, ok := external_semantic_index_project_record(&external.index, project_id);
+		   ok && record.role == .External_Interface &&
+		   semantic_workspace_discovery_has_root_key(analysis, record.root_key) {
+			continue
+		}
+		analysis.external_index.project_by_root_key[root_key] = project_id
+		if raw := u32(project_id); raw >= analysis.external_index.next_project_id {
+			analysis.external_index.next_project_id = raw + 1
+		}
+	}
+}
+
+semantic_workspace_external_binding_is_local_root :: proc(
+	analysis: ^Workspace_Analysis,
+	external: ^External_Semantics,
+	binding: External_Binding,
+) -> bool {
+	record, ok := external_semantic_index_project_record(&external.index, binding.project_id)
+	return ok &&
+	       record.role == .External_Interface &&
+	       semantic_workspace_discovery_has_root_key(analysis, record.root_key)
+}
+
+semantic_workspace_clear_aggregates :: proc(analysis: ^Workspace_Analysis) {
+	clear(&analysis.projects)
+	for &usage in analysis.file_projects {
+		if usage.path != "" {
+			delete(usage.path, analysis.allocator)
+		}
+		if usage.projects.allocator.procedure != nil {
+			delete(usage.projects)
+		}
+	}
+	clear(&analysis.file_projects)
+	clear(&analysis.unresolved)
+	clear(&analysis.external_requests)
+}
+
+semantic_workspace_project_plan_for_result :: proc(
+	analysis: ^Workspace_Analysis,
+	result: ^Workspace_Project_Result,
+) -> (
+	Workspace_Project_Plan,
+	bool,
+) {
+	for plan in analysis.discovery.plans {
+		facts := &analysis.discovery.facts[plan.root_index]
+		if facts.path == result.root_path && plan.kind == result.kind {
+			return plan, true
+		}
+	}
+	return {}, false
+}
+
 semantic_workspace_build_project :: proc(
 	analysis: ^Workspace_Analysis,
 	plan: Workspace_Project_Plan,
 	external: ^External_Semantics,
 ) {
+	when trace.ENABLED {
+		trace_start := trace.now()
+	}
 	project := new(Project, analysis.allocator)
 	assert(project != nil)
 	project^ = project_make()
@@ -414,6 +824,16 @@ semantic_workspace_build_project :: proc(
 		}
 	}
 	semantic_workspace_record_project_dependencies(analysis, project_result, plan)
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace - semantic] workspace project build kind=%v root=%s files=%d unresolved=%d elapsed_ms=%.3f\n",
+			plan.kind,
+			root_facts.path,
+			len(project_result.files),
+			len(checker.info.unresolved),
+			trace.duration_ms_since(trace_start),
+		)
+	}
 }
 
 semantic_workspace_record_project_dependencies :: proc(

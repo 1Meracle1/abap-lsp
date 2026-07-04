@@ -38,6 +38,37 @@ Server_Workspace :: struct {
 	has_analysis: bool,
 }
 
+Server_Reanalysis_Options :: struct {
+	finish_active_lints: bool,
+}
+
+Server_Reanalysis_Stats :: struct {
+	generation:                         u64,
+	finished_active_lints:              bool,
+	skipped_active_lint_wait:           bool,
+	retained_analysis_for_active_lints: bool,
+	reparsed_documents:                 int,
+	opened_document_inputs:             int,
+	workspace_disk_inputs:              int,
+	disk_refresh_inputs:                int,
+	removed_paths:                      int,
+	workspace_update_calls:             int,
+	workspace_update_changed_files:     int,
+	workspace_update_removed_files:     int,
+	remote_resolution_iterations:       int,
+	remote_resolution_requests:         int,
+	semantic_workspace_rebuilds:        int,
+	semantic_incremental_workspace_rebuilds: int,
+	semantic_workspace_rebuild_inputs:  int,
+	semantic_rebuilt_editable_projects: int,
+	diagnostic_publish_documents:       int,
+	diagnostic_publish_items:           int,
+	lint_start_attempts:                int,
+	lint_start_skipped_active:          int,
+	lint_started:                       int,
+	stale_lint_publishes:               u64,
+}
+
 Server_State :: struct {
 	allocator:                        mem.Allocator,
 	options:                          workspace.Options,
@@ -50,6 +81,9 @@ Server_State :: struct {
 	pending_disk_refresh_uris:        [dynamic]string,
 	completion_snippets_supported:    bool,
 	materialize_dependency_documents: bool,
+	diagnostic_generation:            u64,
+	stale_lint_publish_count:         u64,
+	last_reanalysis_stats:            Server_Reanalysis_Stats,
 	initialized:                      bool,
 	shutdown_requested:               bool,
 }

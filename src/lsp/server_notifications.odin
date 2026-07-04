@@ -2,6 +2,7 @@ package abap_frontend_lsp
 
 import "src:parser"
 import "src:semantic"
+import trace "src:trace"
 import workspace "src:workspace"
 
 import json "core:encoding/json"
@@ -9,6 +10,7 @@ import "core:mem"
 import "core:mem/virtual"
 import "core:os"
 import "core:strings"
+import "core:sync"
 
 handle_notification :: proc(
 	state: ^Server_State,
@@ -26,8 +28,11 @@ handle_notification :: proc(
 		}
 	case METHOD_DID_CHANGE:
 		if update_document_from_change(state, params) {
-			server_reanalyze(state)
-			publish_all_diagnostics_and_lints(state, output)
+			server_reanalyze(
+				state,
+				Server_Reanalysis_Options{finish_active_lints = false},
+			)
+			publish_all_diagnostics(state, output)
 		}
 	case METHOD_DID_SAVE:
 		if update_document_from_save(state, params) {
@@ -437,8 +442,24 @@ close_document :: proc(state: ^Server_State, params: json.Value) -> bool {
 	return true
 }
 
-server_reanalyze :: proc(state: ^Server_State) {
-	server_finish_active_lints(state)
+server_reanalyze :: proc(
+	state: ^Server_State,
+	options: Server_Reanalysis_Options = Server_Reanalysis_Options{finish_active_lints = true},
+) {
+	when trace.ENABLED {
+		trace_start := trace.now()
+	}
+	stats := Server_Reanalysis_Stats {
+		generation = sync.atomic_add_explicit(&state.diagnostic_generation, u64(1), .Acq_Rel) + 1,
+	}
+	if options.finish_active_lints {
+		stats.finished_active_lints = server_finish_active_lints(state)
+	} else if server_finish_active_lints(state, false) {
+		stats.finished_active_lints = true
+	} else if state.active_lint_graph != nil {
+		stats.skipped_active_lint_wait = true
+		stats.retained_analysis_for_active_lints = true
+	}
 	clear_parse_diagnostics(state)
 	retired_parse_arenas := make([dynamic]^virtual.Arena, 0, 2, context.temp_allocator)
 	for _, doc in state.documents {
@@ -454,7 +475,7 @@ server_reanalyze :: proc(state: ^Server_State) {
 		removed_paths := make([dynamic]string, 0, 4, context.temp_allocator)
 		suspend_external_dependency_acquisition := false
 		if !slot.has_analysis {
-			append_workspace_disk_inputs(state, &slot.root, &inputs)
+			append_workspace_disk_inputs(state, &slot.root, &inputs, &stats)
 		}
 		for _, &workspace_doc in state.documents {
 			doc_workspace_index, doc_workspace_ok := workspace_index_for_uri(state, workspace_doc.uri)
@@ -468,6 +489,7 @@ server_reanalyze :: proc(state: ^Server_State) {
 				if retired := document_reparse(&workspace_doc, state.allocator); retired != nil {
 					append(&retired_parse_arenas, retired)
 				}
+				stats.reparsed_documents += 1
 			}
 			append_parse_diagnostics(state, workspace_doc.uri, workspace_doc.parse_errors)
 			if slot.has_analysis && !workspace_doc.dirty {
@@ -482,6 +504,7 @@ server_reanalyze :: proc(state: ^Server_State) {
 					has_syntax_errors = len(workspace_doc.parse_errors) > 0,
 				},
 			)
+			stats.opened_document_inputs += 1
 		}
 		if slot.has_analysis {
 			for refresh_uri in state.pending_disk_refresh_uris {
@@ -495,7 +518,7 @@ server_reanalyze :: proc(state: ^Server_State) {
 				if _, still_open := state.documents[refresh_uri]; still_open {
 					continue
 				}
-				append_disk_inputs_for_uri(state, refresh_uri, &inputs)
+				append_disk_inputs_for_uri(state, refresh_uri, &inputs, &stats)
 			}
 			for file in slot.analysis.session.editable_files {
 				removed := false
@@ -507,6 +530,7 @@ server_reanalyze :: proc(state: ^Server_State) {
 				}
 				if removed {
 					append(&removed_paths, file.path)
+					stats.removed_paths += 1
 				}
 			}
 		}
@@ -522,8 +546,21 @@ server_reanalyze :: proc(state: ^Server_State) {
 			state.allocator,
 			workspace.Analysis_Update_Options {
 				suspend_external_dependency_acquisition = suspend_external_dependency_acquisition,
+				retain_current_analysis = stats.retained_analysis_for_active_lints,
 			},
 		)
+		stats.workspace_update_calls += 1
+		stats.workspace_update_changed_files += slot.analysis.last_stats.changed_files
+		stats.workspace_update_removed_files += slot.analysis.last_stats.removed_files
+		stats.remote_resolution_iterations += slot.analysis.last_stats.remote_resolution_iterations
+		stats.remote_resolution_requests += slot.analysis.last_stats.remote_resolution_requests
+		stats.semantic_workspace_rebuilds += slot.analysis.last_stats.semantic.workspace_rebuilds
+		stats.semantic_incremental_workspace_rebuilds +=
+			slot.analysis.last_stats.semantic.incremental_workspace_rebuilds
+		stats.semantic_workspace_rebuild_inputs +=
+			slot.analysis.last_stats.semantic.workspace_rebuild_input_files
+		stats.semantic_rebuilt_editable_projects +=
+			slot.analysis.last_stats.semantic.rebuilt_editable_projects
 	}
 	for _, &doc in state.documents {
 		doc.dirty = false
@@ -536,6 +573,33 @@ server_reanalyze :: proc(state: ^Server_State) {
 	}
 	if state.pending_disk_refresh_uris.allocator.procedure != nil {
 		clear(&state.pending_disk_refresh_uris)
+	}
+	stats.stale_lint_publishes = sync.atomic_load_explicit(&state.stale_lint_publish_count, .Acquire)
+	state.last_reanalysis_stats = stats
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace - lsp] reanalyze generation=%d finish_lints=%v finished_lints=%v skipped_lint_wait=%v retained_analysis=%v reparsed=%d opened_inputs=%d workspace_disk_inputs=%d disk_refresh_inputs=%d removed_paths=%d update_calls=%d changed=%d removed=%d remote_iterations=%d remote_requests=%d semantic_rebuilds=%d semantic_incremental_rebuilds=%d semantic_rebuild_inputs=%d rebuilt_editable=%d elapsed_ms=%.3f\n",
+			stats.generation,
+			options.finish_active_lints,
+			stats.finished_active_lints,
+			stats.skipped_active_lint_wait,
+			stats.retained_analysis_for_active_lints,
+			stats.reparsed_documents,
+			stats.opened_document_inputs,
+			stats.workspace_disk_inputs,
+			stats.disk_refresh_inputs,
+			stats.removed_paths,
+			stats.workspace_update_calls,
+			stats.workspace_update_changed_files,
+			stats.workspace_update_removed_files,
+			stats.remote_resolution_iterations,
+			stats.remote_resolution_requests,
+			stats.semantic_workspace_rebuilds,
+			stats.semantic_incremental_workspace_rebuilds,
+			stats.semantic_workspace_rebuild_inputs,
+			stats.semantic_rebuilt_editable_projects,
+			trace.duration_ms_since(trace_start),
+		)
 	}
 }
 
@@ -585,6 +649,9 @@ close_document_uri :: proc(state: ^Server_State, uri: string) -> bool {
 
 document_reparse :: proc(doc: ^Document, allocator: mem.Allocator) -> ^virtual.Arena {
 	assert(doc != nil && doc.uri != "")
+	when trace.ENABLED {
+		trace_start := trace.now()
+	}
 	retired := doc.parse_arena
 	arena := new(virtual.Arena, allocator)
 	assert(arena != nil)
@@ -595,6 +662,15 @@ document_reparse :: proc(doc: ^Document, allocator: mem.Allocator) -> ^virtual.A
 	doc.parse_root = parsed.root
 	doc.parse_errors = parsed.errors
 	doc.has_parse = true
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace - lsp] document reparse uri=%s bytes=%d errors=%d elapsed_ms=%.3f\n",
+			doc.uri,
+			len(doc.text),
+			len(doc.parse_errors),
+			trace.duration_ms_since(trace_start),
+		)
+	}
 	return retired
 }
 
@@ -654,11 +730,14 @@ append_workspace_disk_inputs :: proc(
 	state: ^Server_State,
 	root: ^workspace.Workspace,
 	out: ^[dynamic]semantic.Workspace_File_Input,
+	stats: ^Server_Reanalysis_Stats = nil,
 ) {
 	paths := make([dynamic]string, 0, 32, context.temp_allocator)
 	workspace.collect_workspace_abap_files(root.root_path, &paths, context.temp_allocator)
 	for path in paths {
-		append_disk_input_for_path(state, path, out)
+		if append_disk_input_for_path(state, path, out) && stats != nil {
+			stats.workspace_disk_inputs += 1
+		}
 	}
 }
 
@@ -666,6 +745,7 @@ append_disk_inputs_for_uri :: proc(
 	state: ^Server_State,
 	uri: string,
 	out: ^[dynamic]semantic.Workspace_File_Input,
+	stats: ^Server_Reanalysis_Stats = nil,
 ) {
 	path, path_ok := file_uri_to_path(uri, context.temp_allocator)
 	if !path_ok {
@@ -680,11 +760,15 @@ append_disk_inputs_for_uri :: proc(
 		paths := make([dynamic]string, 0, 16, context.temp_allocator)
 		workspace.collect_workspace_abap_files(path, &paths, context.temp_allocator)
 		for file_path in paths {
-			append_disk_input_for_path(state, file_path, out)
+			if append_disk_input_for_path(state, file_path, out) && stats != nil {
+				stats.disk_refresh_inputs += 1
+			}
 		}
 	case .Regular:
 		if lsp_is_abap_path(path) {
-			append_disk_input_for_path(state, path, out)
+			if append_disk_input_for_path(state, path, out) && stats != nil {
+				stats.disk_refresh_inputs += 1
+			}
 		}
 	}
 }
@@ -693,14 +777,14 @@ append_disk_input_for_path :: proc(
 	state: ^Server_State,
 	path: string,
 	out: ^[dynamic]semantic.Workspace_File_Input,
-) {
+) -> bool {
 	source, source_ok := workspace.read_text_file(path, context.temp_allocator)
 	if !source_ok {
-		return
+		return false
 	}
 	uri, uri_ok := file_uri_from_path(path, context.temp_allocator)
 	if !uri_ok {
-		return
+		return false
 	}
 	parsed := parser.parse(source, uri, state.allocator)
 	append(
@@ -712,6 +796,7 @@ append_disk_input_for_path :: proc(
 			has_syntax_errors = len(parsed.errors) > 0,
 		},
 	)
+	return true
 }
 
 file_uri_from_path :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {

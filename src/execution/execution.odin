@@ -424,6 +424,10 @@ graph_wait :: proc(graph: ^Graph) {
 	}
 }
 
+graph_completed :: proc(graph: ^Graph) -> bool {
+	return graph != nil && sync.atomic_load_explicit(&graph.completed, .Acquire)
+}
+
 graph_reset :: proc(graph: ^Graph) {
 	assert(!graph.detached)
 	assert(!graph.started || sync.atomic_load_explicit(&graph.completed, .Acquire))

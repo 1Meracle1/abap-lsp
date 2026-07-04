@@ -17,6 +17,7 @@ REMOTE_DEPENDENCY_MAX_ITERATIONS :: 32
 Analysis_Result :: struct {
 	session:       semantic.Semantic_Graph_Session,
 	last_update:   semantic.Semantic_Graph_Update_Result,
+	last_stats:    Analysis_Update_Stats,
 	remote_state:  remote_deps.State,
 	remote_result: remote_deps.Result,
 	lint_policy:   lints.Policy,
@@ -25,8 +26,20 @@ Analysis_Result :: struct {
 	error:         string,
 }
 
+Analysis_Update_Stats :: struct {
+	changed_files:                         int,
+	removed_files:                         int,
+	remote_resolution_iterations:          int,
+	remote_resolution_requests:            int,
+	remote_interfaces:                     int,
+	remote_sources:                        int,
+	external_dependency_acquisition_suspended: bool,
+	semantic:                              semantic.Semantic_Graph_Update_Stats,
+}
+
 Analysis_Update_Options :: struct {
 	suspend_external_dependency_acquisition: bool,
+	retain_current_analysis:                 bool,
 }
 
 analyze_workspace :: proc(
@@ -138,6 +151,11 @@ analysis_result_update_inputs :: proc(
 		result.remote_result = remote_deps.result_make(allocator)
 		result.ok = true
 	}
+	result.last_stats = Analysis_Update_Stats {
+		changed_files = len(changed_files),
+		removed_files = len(removed_files),
+		external_dependency_acquisition_suspended = update_options.suspend_external_dependency_acquisition,
+	}
 	result.lint_policy = lints.policy_from_config(&workspace.manifest.lints, allocator)
 
 	result.used_manifest = workspace.has_manifest
@@ -148,8 +166,10 @@ analysis_result_update_inputs :: proc(
 			removed_files                           = removed_files,
 			external_frontier_stable                = false,
 			suspend_external_dependency_acquisition = update_options.suspend_external_dependency_acquisition,
+			retain_current_analysis                 = update_options.retain_current_analysis,
 		},
 	)
+	analysis_update_stats_add_semantic(&result.last_stats, last.stats)
 	result.remote_result = remote_deps.result_make(allocator)
 
 	frontier_flushed := false
@@ -160,6 +180,7 @@ analysis_result_update_inputs :: proc(
 				&result.session,
 				semantic.Semantic_Graph_Update{external_frontier_stable = true},
 			)
+			analysis_update_stats_add_semantic(&result.last_stats, last.stats)
 			frontier_flushed = true
 			break
 		}
@@ -168,6 +189,8 @@ analysis_result_update_inputs :: proc(
 			last.new_fetch_requests[:],
 			context.temp_allocator,
 		)
+		result.last_stats.remote_resolution_iterations += 1
+		result.last_stats.remote_resolution_requests += len(requests)
 		result.remote_result = remote_deps.resolve_requests(
 			requests[:],
 			&remote_config,
@@ -183,6 +206,8 @@ analysis_result_update_inputs :: proc(
 			result.remote_result.sources[:],
 			context.temp_allocator,
 		)
+		result.last_stats.remote_interfaces += len(external_interfaces)
+		result.last_stats.remote_sources += len(external_sources)
 		semantic.semantic_graph_update_result_destroy(&last)
 		if len(external_interfaces) == 0 && len(external_sources) == 0 {
 			blocked := blocked_keys_from_requests(
@@ -196,6 +221,7 @@ analysis_result_update_inputs :: proc(
 					blocked_dependencies = blocked[:],
 				},
 			)
+			analysis_update_stats_add_semantic(&result.last_stats, last.stats)
 			frontier_flushed = true
 			break
 		}
@@ -207,6 +233,7 @@ analysis_result_update_inputs :: proc(
 				external_frontier_stable = false,
 			},
 		)
+		analysis_update_stats_add_semantic(&result.last_stats, last.stats)
 	}
 	if !frontier_flushed {
 		semantic.semantic_graph_update_result_destroy(&last)
@@ -214,11 +241,39 @@ analysis_result_update_inputs :: proc(
 			&result.session,
 			semantic.Semantic_Graph_Update{external_frontier_stable = true},
 		)
+		analysis_update_stats_add_semantic(&result.last_stats, last.stats)
 	}
 
 	result.last_update = last
 	workspace_add_dependency_diagnostics(result, workspace)
 	return result.ok
+}
+
+analysis_update_stats_add_semantic :: proc(
+	stats: ^Analysis_Update_Stats,
+	next: semantic.Semantic_Graph_Update_Stats,
+) {
+	stats.semantic.changed_files += next.changed_files
+	stats.semantic.removed_files += next.removed_files
+	stats.semantic.fetched_external_objects += next.fetched_external_objects
+	stats.semantic.fetched_external_sources += next.fetched_external_sources
+	stats.semantic.workspace_rebuilds += next.workspace_rebuilds
+	stats.semantic.incremental_workspace_rebuilds += next.incremental_workspace_rebuilds
+	stats.semantic.workspace_rebuild_input_files += next.workspace_rebuild_input_files
+	stats.semantic.full_editable_rebuilds += next.full_editable_rebuilds
+	stats.semantic.dirty_editable_projects += next.dirty_editable_projects
+	stats.semantic.deferred_editable_projects += next.deferred_editable_projects
+	stats.semantic.rebuilt_editable_projects += next.rebuilt_editable_projects
+	stats.semantic.rebuilt_external_projects += next.rebuilt_external_projects
+	stats.semantic.new_fetch_requests += next.new_fetch_requests
+	stats.semantic.blocked_unresolved_dependencies += next.blocked_unresolved_dependencies
+	stats.semantic.external_frontier_stable = next.external_frontier_stable
+	stats.semantic.external_dependency_fetch_suspended =
+		stats.semantic.external_dependency_fetch_suspended ||
+		next.external_dependency_fetch_suspended
+	stats.semantic.retained_current_analysis =
+		stats.semantic.retained_current_analysis ||
+		next.retained_current_analysis
 }
 
 workspace_add_dependency_diagnostics :: proc(result: ^Analysis_Result, workspace: ^Workspace) {

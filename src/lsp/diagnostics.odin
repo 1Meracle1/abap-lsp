@@ -3,6 +3,7 @@ package abap_frontend_lsp
 import lints "src:lints"
 import "src:parser"
 import "src:semantic"
+import trace "src:trace"
 
 import "core:fmt"
 import "core:mem"
@@ -36,6 +37,11 @@ clear_parse_diagnostics :: proc(state: ^Server_State) {
 }
 
 publish_all_diagnostics :: proc(state: ^Server_State, output: ^os.File) {
+	when trace.ENABLED {
+		trace_start := trace.now()
+	}
+	published_documents := 0
+	published_diagnostics := 0
 	for uri, doc in state.documents {
 		diagnostics := diagnostics_for_uri(state, uri, context.temp_allocator)
 		params := Publish_Diagnostics_Params {
@@ -43,7 +49,19 @@ publish_all_diagnostics :: proc(state: ^Server_State, output: ^os.File) {
 			version     = doc.version,
 			diagnostics = diagnostics,
 		}
+		published_documents += 1
+		published_diagnostics += len(diagnostics)
 		send_notification(output, METHOD_PUBLISH_DIAGNOSTICS, params, state.allocator)
+	}
+	state.last_reanalysis_stats.diagnostic_publish_documents += published_documents
+	state.last_reanalysis_stats.diagnostic_publish_items += published_diagnostics
+	when trace.ENABLED {
+		trace.eprintf(
+			"[trace - lsp] publish diagnostics documents=%d diagnostics=%d elapsed_ms=%.3f\n",
+			published_documents,
+			published_diagnostics,
+			trace.duration_ms_since(trace_start),
+		)
 	}
 }
 

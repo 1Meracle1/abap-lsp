@@ -232,34 +232,7 @@ project_discovery_destroy :: proc(discovery: ^Project_Discovery) {
 		return
 	}
 	for &facts in discovery.facts {
-		if facts.path != "" {
-			delete(facts.path, discovery.allocator)
-		}
-		syntax_diagnostic_list_destroy(&facts.syntax_diagnostics, discovery.allocator)
-		for name in facts.provided_names {
-			if name != "" {
-				delete(name, discovery.allocator)
-			}
-		}
-		if facts.provided_names.allocator.procedure != nil {
-			delete(facts.provided_names)
-		}
-		for edge in facts.include_edges {
-			if edge.name != "" {
-				delete(edge.name, discovery.allocator)
-			}
-		}
-		if facts.include_edges.allocator.procedure != nil {
-			delete(facts.include_edges)
-		}
-		for name in facts.type_pool_imports {
-			if name != "" {
-				delete(name, discovery.allocator)
-			}
-		}
-		if facts.type_pool_imports.allocator.procedure != nil {
-			delete(facts.type_pool_imports)
-		}
+		project_discovery_file_facts_destroy(&facts, discovery.allocator)
 	}
 	if discovery.facts.allocator.procedure != nil {
 		delete(discovery.facts)
@@ -269,6 +242,44 @@ project_discovery_destroy :: proc(discovery: ^Project_Discovery) {
 	}
 	checker_diagnostic_list_destroy(&discovery.diagnostics, discovery.allocator)
 	discovery^ = {}
+}
+
+project_discovery_file_facts_destroy :: proc(
+	facts: ^Workspace_File_Facts,
+	allocator: mem.Allocator,
+) {
+	if facts == nil {
+		return
+	}
+	if facts.path != "" {
+		delete(facts.path, allocator)
+	}
+	syntax_diagnostic_list_destroy(&facts.syntax_diagnostics, allocator)
+	for name in facts.provided_names {
+		if name != "" {
+			delete(name, allocator)
+		}
+	}
+	if facts.provided_names.allocator.procedure != nil {
+		delete(facts.provided_names)
+	}
+	for edge in facts.include_edges {
+		if edge.name != "" {
+			delete(edge.name, allocator)
+		}
+	}
+	if facts.include_edges.allocator.procedure != nil {
+		delete(facts.include_edges)
+	}
+	for name in facts.type_pool_imports {
+		if name != "" {
+			delete(name, allocator)
+		}
+	}
+	if facts.type_pool_imports.allocator.procedure != nil {
+		delete(facts.type_pool_imports)
+	}
+	facts^ = {}
 }
 
 project_discovery_visit_include_cycles :: proc(

@@ -20,12 +20,34 @@ Semantic_Graph_Update :: struct {
 	fetched_external_sources:                   []External_Source_Input,
 	external_frontier_stable:                   bool,
 	suspend_external_dependency_acquisition:    bool,
+	retain_current_analysis:                    bool,
 	blocked_dependencies:                       []Semantic_Object_Key,
+}
+
+Semantic_Graph_Update_Stats :: struct {
+	changed_files:                       int,
+	removed_files:                       int,
+	fetched_external_objects:            int,
+	fetched_external_sources:            int,
+	workspace_rebuilds:                  int,
+	incremental_workspace_rebuilds:      int,
+	workspace_rebuild_input_files:       int,
+	full_editable_rebuilds:              int,
+	dirty_editable_projects:             int,
+	deferred_editable_projects:          int,
+	rebuilt_editable_projects:           int,
+	rebuilt_external_projects:           int,
+	new_fetch_requests:                  int,
+	blocked_unresolved_dependencies:     int,
+	external_frontier_stable:            bool,
+	external_dependency_fetch_suspended: bool,
+	retained_current_analysis:           bool,
 }
 
 Semantic_Graph_Update_Result :: struct {
 	allocator:                       mem.Allocator,
 	generation:                      u64,
+	stats:                           Semantic_Graph_Update_Stats,
 	new_fetch_requests:              [dynamic]Checker_Unresolved_Candidate,
 	blocked_unresolved_dependencies: [dynamic]Checker_Unresolved_Candidate,
 	rebuilt_external_projects:       [dynamic]Semantic_Object_Key,
@@ -43,6 +65,7 @@ Semantic_Graph_Session :: struct {
 	external:                        External_Semantics,
 	analysis:                        Workspace_Analysis,
 	has_analysis:                    bool,
+	retired_analyses:                [dynamic]Workspace_Analysis,
 	pending_dirty_editable_projects: [dynamic]Semantic_Graph_Project_Ref,
 	pending_full_editable_rebuild:   bool,
 }
@@ -56,6 +79,7 @@ semantic_graph_session_make :: proc(
 		external_inputs = make([dynamic]External_Interface_Input, 0, 8, allocator),
 		external_source_inputs = make([dynamic]External_Source_Input, 0, 8, allocator),
 		external = external_semantics_make(allocator),
+		retired_analyses = make([dynamic]Workspace_Analysis, 0, 2, allocator),
 		pending_dirty_editable_projects = make(
 			[dynamic]Semantic_Graph_Project_Ref,
 			0,
@@ -72,6 +96,7 @@ semantic_graph_session_destroy :: proc(session: ^Semantic_Graph_Session) {
 	if session.has_analysis {
 		semantic_workspace_analysis_destroy(&session.analysis)
 	}
+	semantic_graph_session_clear_retired_analyses(session)
 	for &input in session.editable_files {
 		semantic_graph_workspace_file_input_destroy(&input, session.allocator)
 	}
@@ -94,8 +119,21 @@ semantic_graph_session_destroy :: proc(session: ^Semantic_Graph_Session) {
 	if session.external_source_inputs.allocator.procedure != nil {
 		delete(session.external_source_inputs)
 	}
+	if session.retired_analyses.allocator.procedure != nil {
+		delete(session.retired_analyses)
+	}
 	external_semantics_destroy(&session.external)
 	session^ = {}
+}
+
+semantic_graph_session_clear_retired_analyses :: proc(session: ^Semantic_Graph_Session) {
+	if session == nil || session.retired_analyses.allocator.procedure == nil {
+		return
+	}
+	for &analysis in session.retired_analyses {
+		semantic_workspace_analysis_destroy(&analysis)
+	}
+	clear(&session.retired_analyses)
 }
 
 semantic_graph_update_result_make :: proc(
@@ -147,6 +185,13 @@ semantic_graph_session_apply_update :: proc(
 	}
 	session.generation += 1
 	result := semantic_graph_update_result_make(session.generation, session.allocator)
+	result.stats.changed_files = len(update.changed_files)
+	result.stats.removed_files = len(update.removed_files)
+	result.stats.fetched_external_objects = len(update.fetched_external_objects)
+	result.stats.fetched_external_sources = len(update.fetched_external_sources)
+	result.stats.external_frontier_stable = update.external_frontier_stable
+	result.stats.external_dependency_fetch_suspended = update.suspend_external_dependency_acquisition
+	result.stats.retained_current_analysis = update.retain_current_analysis
 
 	editable_inputs_changed := false
 	for path in update.removed_files {
@@ -200,8 +245,23 @@ semantic_graph_session_apply_update :: proc(
 			session.pending_dirty_editable_projects[:],
 			session.allocator,
 		)
-		semantic_graph_session_rebuild_workspace(session)
+		incremental_rebuild := semantic_graph_session_try_rebuild_workspace_incrementally(
+			session,
+			update,
+			pending[:],
+		)
+		if !incremental_rebuild {
+			semantic_graph_session_rebuild_workspace(session, update.retain_current_analysis)
+		}
+		result.stats.workspace_rebuilds += 1
+		if incremental_rebuild {
+			result.stats.incremental_workspace_rebuilds += 1
+			result.stats.workspace_rebuild_input_files += len(pending)
+		} else {
+			result.stats.workspace_rebuild_input_files += len(session.editable_files)
+		}
 		if rebuild_all {
+			result.stats.full_editable_rebuilds += 1
 			semantic_graph_session_add_all_current_editable_projects(
 				session,
 				&result.rebuilt_editable_projects,
@@ -234,14 +294,26 @@ semantic_graph_session_apply_update :: proc(
 		update.blocked_dependencies,
 		&result,
 	)
+	result.stats.dirty_editable_projects = len(result.dirty_editable_projects)
+	result.stats.deferred_editable_projects = len(result.deferred_editable_projects)
+	result.stats.rebuilt_editable_projects = len(result.rebuilt_editable_projects)
+	result.stats.rebuilt_external_projects = len(result.rebuilt_external_projects)
+	result.stats.new_fetch_requests = len(result.new_fetch_requests)
+	result.stats.blocked_unresolved_dependencies = len(result.blocked_unresolved_dependencies)
 	when trace.ENABLED {
 		trace.eprintf(
-			"[trace - semantic] semantic graph update generation=%d changed_files=%d external_objects=%d external_sources=%d stable=%v dirty_editable=%d deferred_editable=%d rebuilt_editable=%d rebuilt_external=%d new_fetch=%d blocked=%d elapsed_ms=%.3f\n",
+			"[trace - semantic] semantic graph update generation=%d changed_files=%d removed_files=%d external_objects=%d external_sources=%d stable=%v fetch_suspended=%v retained_analysis=%v workspace_rebuilds=%d rebuild_input_files=%d full_rebuilds=%d dirty_editable=%d deferred_editable=%d rebuilt_editable=%d rebuilt_external=%d new_fetch=%d blocked=%d elapsed_ms=%.3f\n",
 			session.generation,
 			len(update.changed_files),
+			len(update.removed_files),
 			len(update.fetched_external_objects),
 			len(update.fetched_external_sources),
 			update.external_frontier_stable,
+			update.suspend_external_dependency_acquisition,
+			update.retain_current_analysis,
+			result.stats.workspace_rebuilds,
+			result.stats.workspace_rebuild_input_files,
+			result.stats.full_editable_rebuilds,
 			len(result.dirty_editable_projects),
 			len(result.deferred_editable_projects),
 			len(result.rebuilt_editable_projects),
@@ -554,16 +626,82 @@ semantic_graph_session_mark_file_projects_dirty :: proc(
 				ref,
 				result.allocator,
 			)
+			semantic_graph_session_mark_dependents_dirty(session, record.root_key, result)
 		}
 	}
 }
 
-semantic_graph_session_rebuild_workspace :: proc(session: ^Semantic_Graph_Session) {
+semantic_graph_session_mark_dependents_dirty :: proc(
+	session: ^Semantic_Graph_Session,
+	key: Semantic_Object_Key,
+	result: ^Semantic_Graph_Update_Result,
+) {
+	if !semantic_object_key_is_valid(key) {
+		return
+	}
+	project_ids := make([dynamic]Semantic_Project_Id, 0, 4, context.temp_allocator)
+	semantic_graph_collect_project_ids_for_provider(
+		&session.analysis.external_index,
+		key,
+		&project_ids,
+	)
+	for id in project_ids {
+		record, ok := external_semantic_index_project_record(
+			&session.analysis.external_index,
+			id,
+		)
+		if !ok || !(record.role == .Editable_Root || record.role == .Include_Fragment) {
+			continue
+		}
+		ref := semantic_graph_project_ref_from_record(session, record)
+		semantic_graph_project_ref_list_add(
+			&session.pending_dirty_editable_projects,
+			ref,
+			session.allocator,
+		)
+		semantic_graph_project_ref_list_add(
+			&result.dirty_editable_projects,
+			ref,
+			result.allocator,
+		)
+	}
+}
+
+semantic_graph_session_try_rebuild_workspace_incrementally :: proc(
+	session: ^Semantic_Graph_Session,
+	update: Semantic_Graph_Update,
+	pending: []Semantic_Graph_Project_Ref,
+) -> bool {
+	if update.retain_current_analysis ||
+	   !session.has_analysis ||
+	   session.pending_full_editable_rebuild ||
+	   len(update.changed_files) != 1 ||
+	   len(update.removed_files) != 0 ||
+	   len(update.fetched_external_objects) != 0 ||
+	   len(update.fetched_external_sources) != 0 {
+		return false
+	}
+	return semantic_workspace_try_update_root_projects(
+		&session.analysis,
+		update.changed_files[0],
+		pending,
+	)
+}
+
+semantic_graph_session_rebuild_workspace :: proc(
+	session: ^Semantic_Graph_Session,
+	retain_current_analysis: bool = false,
+) {
 	when trace.ENABLED {
 		trace_start := trace.now()
 	}
 	if session.has_analysis {
-		semantic_workspace_analysis_destroy(&session.analysis)
+		if retain_current_analysis {
+			append(&session.retired_analyses, session.analysis)
+		} else {
+			semantic_workspace_analysis_destroy(&session.analysis)
+		}
+		session.analysis = {}
 		session.has_analysis = false
 	}
 	session.analysis = semantic_workspace_analyze(
