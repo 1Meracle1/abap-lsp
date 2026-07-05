@@ -2,6 +2,8 @@ package main
 
 import "src:ast"
 import execution "src:execution"
+import ir "src:ir"
+import bytecode "src:ir/bytecode"
 import lints "src:lints"
 import "src:parser"
 import "src:semantic"
@@ -29,6 +31,12 @@ print_usage :: proc() {
 	fmt.println("usage: abap_frontend --help")
 	fmt.println("       abap_frontend parse <file>")
 	fmt.println("       abap_frontend tree <file>")
+	fmt.println(
+		"       abap_frontend ir <file-or-folder> [--include <file>...] [--disable-adt-dependency-fetch]",
+	)
+	fmt.println(
+		"       abap_frontend bytecode <file-or-folder> [--include <file>...] [--raw] [--source] [--disable-adt-dependency-fetch]",
+	)
 	fmt.println(
 		"       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors] [--enable-dependency-diagnostics] [--enable-lints] [--disable-adt-dependency-fetch]",
 	)
@@ -183,6 +191,11 @@ Tree_State :: struct {
 	index: int,
 }
 
+Ir_Cli_Output :: enum {
+	Module,
+	Bytecode,
+}
+
 SGR_RESET :: ansi.CSI + ansi.RESET + ansi.SGR
 SGR_RED :: ansi.CSI + ansi.FG_RED + ansi.SGR
 SGR_YELLOW :: ansi.CSI + ansi.FG_YELLOW + ansi.SGR
@@ -217,6 +230,14 @@ main :: proc() {
 			os.exit(1)
 		}
 		run_analyze(args, allocator)
+		return
+	}
+	if command == "ir" {
+		run_ir(args, allocator, .Module)
+		return
+	}
+	if command == "bytecode" {
+		run_ir(args, allocator, .Bytecode)
 		return
 	}
 	if command == "perf-edit" {
@@ -473,9 +494,9 @@ run_lint :: proc(args: []string, allocator: mem.Allocator) {
 		)
 		lint_cli_emit_json(report, options.pretty, context.temp_allocator)
 	} else if len(hard_errors) > 0 {
-		_ = print_analyze_diagnostics(&result, false, path_filter)
+		print_analyze_diagnostics(&result, false, path_filter)
 	} else {
-		_ = print_lint_diagnostics(&lint_analysis, options.fail_on_warnings, path_filter)
+		print_lint_diagnostics(&lint_analysis, options.fail_on_warnings, path_filter)
 	}
 
 	if len(hard_errors) > 0 ||
@@ -486,6 +507,241 @@ run_lint :: proc(args: []string, allocator: mem.Allocator) {
 				   path_filter,
 			   )) {
 		os.exit(1)
+	}
+}
+
+run_ir :: proc(args: []string, allocator: mem.Allocator, output: Ir_Cli_Output) {
+	assert(
+		context.temp_allocator.procedure == virtual.arena_allocator_proc &&
+		context.temp_allocator.data != nil,
+	)
+	temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
+	defer virtual.arena_temp_end(temp_arena)
+
+	if len(args) < 3 {
+		print_usage()
+		os.exit(1)
+	}
+
+	target_path := args[2]
+	workspace_flags := workspace.Option_Flags{.Enable_ADT}
+	include_paths := make([dynamic]string, 0, 4, context.temp_allocator)
+	bytecode_options := bytecode.Print_Options{}
+	for i := 3; i < len(args); {
+		if args[i] == "--include" && i + 1 < len(args) {
+			append(&include_paths, args[i + 1])
+			i += 2
+		} else if args[i] == "--disable-adt-dependency-fetch" {
+			workspace_flags += {.Disable_ADT_Dependency_Fetch}
+			i += 1
+		} else if output == .Bytecode && args[i] == "--raw" {
+			bytecode_options.raw = true
+			i += 1
+		} else if output == .Bytecode && args[i] == "--source" {
+			bytecode_options.show_source = true
+			i += 1
+		} else {
+			print_usage()
+			os.exit(1)
+		}
+	}
+
+	context.allocator = allocator
+	pool: execution.Pool
+	execution.pool_init(
+		&pool,
+		execution.Options {
+			worker_count = execution.AUTO_WORKER_COUNT,
+			queue_capacity = 128,
+			deque_capacity = 128,
+		},
+		context.allocator,
+	)
+	defer execution.pool_destroy(&pool)
+	if pool.options.worker_count > 0 {
+		execution.pool_start(&pool)
+	}
+
+	result := analyze_cli_path(
+		target_path,
+		include_paths[:],
+		&pool,
+		workspace.Options{flags = workspace_flags},
+		context.allocator,
+	)
+	if !result.ok {
+		fmt.printf("error\t%s\t%s\n", ir_cli_output_name(output), result.error)
+		os.exit(1)
+	}
+	defer workspace.analysis_result_destroy(&result, context.allocator)
+
+	print_ok := false
+	switch output {
+	case .Module:
+		print_ok = print_ir_for_analysis(&result, context.allocator)
+	case .Bytecode:
+		print_ok = print_emitted_bytecode_for_analysis(&result, context.allocator, bytecode_options)
+	}
+	if !print_ok {
+		os.exit(1)
+	}
+}
+
+ir_cli_output_name :: proc "contextless" (output: Ir_Cli_Output) -> string {
+	switch output {
+	case .Module:
+		return "ir"
+	case .Bytecode:
+		return "bytecode"
+	}
+	unreachable()
+}
+
+print_ir_for_analysis :: proc(
+	result: ^workspace.Analysis_Result,
+	allocator: mem.Allocator,
+) -> bool {
+	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
+	if analysis == nil {
+		fmt.eprintln("error: ir: semantic analysis produced no snapshot")
+		return false
+	}
+
+	printed := false
+	ok := true
+	for &project_result in analysis.project_results {
+		if project_result.project == nil || project_result.checker == nil {
+			continue
+		}
+
+		lowered := ir.lower_project(project_result.project, project_result.checker, allocator)
+		verify := ir.verify_module(&lowered.module, allocator)
+		if verify.ok {
+			if printed {
+				fmt.println()
+			}
+			text := ir.print_module(&lowered.module, allocator)
+			fmt.print(text)
+			delete(text, allocator)
+			printed = true
+		} else {
+			print_ir_verify_diagnostics(project_result.root_path, verify.diagnostics[:])
+			ok = false
+		}
+		ir.verify_result_destroy(&verify)
+		ir.lower_result_destroy(&lowered)
+	}
+
+	if !printed && ok {
+		fmt.eprintln("error: ir: semantic analysis produced no lowerable projects")
+		return false
+	}
+	return ok
+}
+
+print_emitted_bytecode_for_analysis :: proc(
+	result: ^workspace.Analysis_Result,
+	allocator: mem.Allocator,
+	options: bytecode.Print_Options = {},
+) -> bool {
+	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
+	if analysis == nil {
+		fmt.eprintln("error: bytecode: semantic analysis produced no snapshot")
+		return false
+	}
+
+	printed := false
+	ok := true
+	for &project_result in analysis.project_results {
+		if project_result.project == nil || project_result.checker == nil {
+			continue
+		}
+
+		lowered := ir.lower_project(project_result.project, project_result.checker, allocator)
+		emitted_bytecode := bytecode.lower_module(&lowered.module, allocator)
+		if emitted_bytecode.ok {
+			if printed {
+				fmt.println()
+			}
+			text := bytecode.print_module(&emitted_bytecode.module, allocator, options)
+			fmt.print(text)
+			delete(text, allocator)
+			printed = true
+		} else {
+			print_emitted_bytecode_lower_error(project_result.root_path, &emitted_bytecode)
+			ok = false
+		}
+		bytecode.module_destroy(&emitted_bytecode.module)
+		ir.lower_result_destroy(&lowered)
+	}
+
+	if !printed && ok {
+		fmt.eprintln("error: bytecode: semantic analysis produced no lowerable projects")
+		return false
+	}
+	return ok
+}
+
+print_emitted_bytecode_lower_error :: proc(
+	fallback_path: string,
+	lowered: ^bytecode.Lower_Result,
+) {
+	source_cache := make([dynamic]Source_Cache_Entry, 0, 1, context.temp_allocator)
+	path := fallback_path
+	if lowered.source.file != nil && lowered.source.file.path != "" {
+		path = lowered.source.file.path
+	}
+	uri := display_uri(path, context.temp_allocator)
+	if lowered.source.range.end > lowered.source.range.start {
+		source := cached_source(path, &source_cache, context.temp_allocator)
+		line_starts := build_line_starts(source, context.temp_allocator)
+		pos := source_position(source, line_starts[:], lowered.source.range.start)
+		fmt.eprintf("%s(%d:%d) error BYTECODE: %s", uri, pos.line, pos.column, lowered.message)
+	} else {
+		fmt.eprintf("%s error BYTECODE: %s", uri, lowered.message)
+	}
+	fmt.eprintln()
+}
+
+print_ir_verify_diagnostics :: proc(
+	fallback_path: string,
+	diagnostics: []ir.Verify_Diagnostic,
+) {
+	source_cache := make([dynamic]Source_Cache_Entry, 0, 4, context.temp_allocator)
+	for diagnostic in diagnostics {
+		path := fallback_path
+		if diagnostic.source.file != nil && diagnostic.source.file.path != "" {
+			path = diagnostic.source.file.path
+		}
+		uri := display_uri(path, context.temp_allocator)
+		if diagnostic.source.range.end > diagnostic.source.range.start {
+			source := cached_source(path, &source_cache, context.temp_allocator)
+			line_starts := build_line_starts(source, context.temp_allocator)
+			pos := source_position(source, line_starts[:], diagnostic.source.range.start)
+			fmt.eprintf(
+				"%s(%d:%d) error IR_%v: %s",
+				uri,
+				pos.line,
+				pos.column,
+				diagnostic.kind,
+				diagnostic.message,
+			)
+		} else {
+			fmt.eprintf("%s error IR_%v: %s", uri, diagnostic.kind, diagnostic.message)
+		}
+		if diagnostic.function != ir.INVALID_FUNCTION_ID {
+			fmt.eprintf(" function=%d", int(diagnostic.function))
+		}
+		if diagnostic.block != ir.INVALID_BLOCK_ID {
+			fmt.eprintf(" block=%d", int(diagnostic.block))
+		}
+		if diagnostic.op != ir.INVALID_OP_ID {
+			fmt.eprintf(" op=%d", int(diagnostic.op))
+		}
+		if diagnostic.value != ir.INVALID_VALUE_ID {
+			fmt.eprintf(" value=%d", int(diagnostic.value))
+		}
+		fmt.eprintln()
 	}
 }
 

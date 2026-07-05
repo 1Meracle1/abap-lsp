@@ -3340,7 +3340,7 @@ completion_method_call_snippet :: proc(
 	strings.write_string(&out, "(\n")
 	tabstop := 1
 	if completion_method_only_call_exporting(payload) {
-		_ = completion_write_method_call_section(
+		completion_write_method_call_section(
 			&out,
 			project,
 			payload.parameters[:],
@@ -3350,7 +3350,7 @@ completion_method_call_snippet :: proc(
 			&tabstop,
 		)
 	} else {
-		_ = completion_write_method_call_section(
+		completion_write_method_call_section(
 			&out,
 			project,
 			payload.parameters[:],
@@ -3359,7 +3359,7 @@ completion_method_call_snippet :: proc(
 			indent,
 			&tabstop,
 		)
-		_ = completion_write_method_call_section(
+		completion_write_method_call_section(
 			&out,
 			project,
 			payload.parameters[:],
@@ -3368,7 +3368,7 @@ completion_method_call_snippet :: proc(
 			indent,
 			&tabstop,
 		)
-		_ = completion_write_method_call_section(
+		completion_write_method_call_section(
 			&out,
 			project,
 			payload.parameters[:],

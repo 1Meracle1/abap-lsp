@@ -116,7 +116,7 @@ parse_include_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 
 	if allow_keyword(p, "IF") {
-		_ = expect_keyword_message(p, "FOUND", "syntax error: expected FOUND after INCLUDE IF")
+		expect_keyword_message(p, "FOUND", "syntax error: expected FOUND after INCLUDE IF")
 		stmt.if_found = true
 	}
 
@@ -841,7 +841,7 @@ select_reject_clause :: proc(
 	stop_at_rparen: bool,
 ) {
 	error(p, start.range, message)
-	_ = select_skip_clause(p, start, body_start, stop_at_rparen)
+	select_skip_clause(p, start, body_start, stop_at_rparen)
 }
 
 select_skip_to_query_end :: proc(p: ^Parser, body_start: int, stop_at_rparen: bool) {
@@ -2241,7 +2241,7 @@ parse_select_result_tail :: proc(
 	if clause.target == nil {
 		error_current(p, "syntax error: expected SELECT result target")
 	} else if validate_open_sql_target {
-		_ = closing_delimiter_error(p)
+		closing_delimiter_error(p)
 	}
 	clause.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 	return clause
@@ -2764,7 +2764,7 @@ dml_reject_clause :: proc(
 	stop_keywords: []string,
 ) {
 	error(p, start.range, message)
-	_ = dml_skip_clause(p, start, body_start, stop_keywords)
+	dml_skip_clause(p, start, body_start, stop_keywords)
 }
 
 dml_dynamic_source :: proc(expr: ^ast.Expr) -> bool {
@@ -4036,8 +4036,8 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 		if allow_keyword(p, "COMPARING") {
 			if at_keyword(p, "ALL") && at_keyword_index(p, p.index + 1, "FIELDS") {
-				_ = bump_token(p)
-				_ = bump_token(p)
+				bump_token(p)
+				bump_token(p)
 				append(
 					&stmt.comparing,
 					ast.Delete_Comparing_Clause {

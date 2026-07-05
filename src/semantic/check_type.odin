@@ -2,6 +2,7 @@ package abap_frontend_semantic2
 
 import "src:ast"
 
+import "core:strconv"
 import "core:strings"
 
 checker_check_decl_type_clause :: proc(
@@ -27,6 +28,8 @@ checker_check_decl_type_clause :: proc(
 	}
 	checker_check_expr(ctx, clause.initial_size, .Value)
 	checker_check_expr(ctx, occurs, .Value)
+	decl := entity.decl_info if entity != nil else nil
+	typ = checker_type_with_decl_attributes(ctx, typ, entity, decl)
 	return typ
 }
 
@@ -46,6 +49,7 @@ checker_check_field_type :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^
 		}
 		node := &decl.type_clause.type_ref.expr_base if decl.type_clause.type_ref != nil else nil
 		typ = checker_type_from_ref_data_with_form(ctx, type_ref, has_ref, payload.type_clause_form, true, node, entity)
+		typ = checker_type_with_decl_attributes(ctx, typ, entity, decl)
 		if has_ref {
 			checker_record_type_ref_raw_uses(ctx, decl.type_clause.type_ref)
 			checker_record_type_expr_info(ctx, decl.type_clause.type_ref, typ)
@@ -62,6 +66,7 @@ checker_check_field_type :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^
 			entity.node,
 			entity,
 		)
+		typ = checker_type_with_decl_attributes(ctx, typ, entity, decl)
 		checker_validate_decl_type_ref(ctx, entity, payload.type_ref)
 	}
 	if typ == nil {
@@ -195,6 +200,7 @@ checker_add_range_row_field :: proc(
 	payload.flags += {.Synthetic}
 	if length != "" {
 		decl := checker_range_row_char_field_decl_info(ctx, entity, scope, length)
+		entity.type = checker_type_with_decl_attributes(ctx, entity.type, entity, decl)
 		payload.flags += {.Has_Type_Ref}
 		type_ref, _ := checker_type_ref_data_from_clause(ctx, decl.type_clause)
 		payload.type_ref = type_ref
@@ -234,6 +240,183 @@ checker_range_row_char_field_decl_info :: proc(
 	)
 	decl.state = .Resolved
 	return decl
+}
+
+checker_type_with_decl_attributes :: proc(
+	ctx: ^Checker_Context,
+	typ: ^Type,
+	entity: ^Entity,
+	info: ^Decl_Info,
+) -> ^Type {
+	if typ == nil {
+		return typ
+	}
+
+	length, has_length := decl_info_length(info)
+	decimals, has_decimals := decl_info_decimals(info)
+
+	if !has_length && decl_uses_concrete_default_length(entity) {
+		if _, existing := type_length(typ); !existing {
+			name, name_ok := checker_type_builtin_name(ctx, typ)
+			if default_length, default_ok := builtin_default_length(name); name_ok && default_ok {
+				length = default_length
+				has_length = true
+			}
+		}
+	}
+
+	if !has_length && !has_decimals {
+		return typ
+	}
+	return checker_type_with_technical_attributes(ctx, typ, has_length, length, has_decimals, decimals)
+}
+
+decl_uses_concrete_default_length :: proc "contextless" (entity: ^Entity) -> bool {
+	if entity == nil {
+		return false
+	}
+	return entity.kind != .Parameter && entity.kind != .Field_Symbol
+}
+
+builtin_default_length :: proc "contextless" (name: string) -> (int, bool) {
+	switch name {
+	case "c", "n", "x", "abap_bool":
+		return 1, true
+	}
+	return 0, false
+}
+
+checker_type_with_technical_attributes :: proc(
+	ctx: ^Checker_Context,
+	typ: ^Type,
+	has_length: bool,
+	length: int,
+	has_decimals: bool,
+	decimals: int,
+	depth := 0,
+) -> ^Type {
+	if typ == nil || depth > 16 {
+		return typ
+	}
+	#partial switch typ.kind {
+	case .Builtin:
+		name, name_ok := checker_type_builtin_name(ctx, typ)
+		if !name_ok {
+			return typ
+		}
+		apply_length := has_length && type_name_supports_length(name)
+		apply_decimals := has_decimals && type_name_supports_decimals(name)
+		if !apply_length && !apply_decimals {
+			return typ
+		}
+		if (!apply_length || (typ.has_length && typ.length == length)) &&
+		   (!apply_decimals || (typ.has_decimals && typ.decimals == decimals)) {
+			return typ
+		}
+		out := project_type_clone(ctx.project, typ)
+		if apply_length {
+			out.has_length = true
+			out.length = length
+		}
+		if apply_decimals {
+			out.has_decimals = true
+			out.decimals = decimals
+		}
+		return out
+	case .Named:
+		base := checker_type_with_technical_attributes(ctx, typ.base, has_length, length, has_decimals, decimals, depth + 1)
+		if base == typ.base {
+			return typ
+		}
+		out := project_type_clone(ctx.project, typ)
+		out.base = base
+		return out
+	case .Table:
+		base := checker_type_with_technical_attributes(ctx, typ.base, has_length, length, has_decimals, decimals, depth + 1)
+		if base == typ.base {
+			return typ
+		}
+		out := project_type_clone(ctx.project, typ)
+		out.base = base
+		return out
+	}
+	return typ
+}
+
+type_name_supports_length :: proc "contextless" (name: string) -> bool {
+	switch name {
+	case "c", "n", "x", "p":
+		return true
+	}
+	return false
+}
+
+type_name_supports_decimals :: proc "contextless" (name: string) -> bool {
+	return name == "p"
+}
+
+decl_info_length :: proc(info: ^Decl_Info) -> (int, bool) {
+	if info == nil {
+		return 0, false
+	}
+	if info.paren_length != nil {
+		if length, ok := integer_literal_expr_value(info.paren_length.expr); ok {
+			return length, true
+		}
+	}
+	for clause in info.length_clauses {
+		if clause.kind != .Length {
+			continue
+		}
+		if length, ok := integer_literal_expr_value(clause.expr); ok {
+			return length, true
+		}
+	}
+	return 0, false
+}
+
+decl_info_decimals :: proc(info: ^Decl_Info) -> (int, bool) {
+	if info == nil {
+		return 0, false
+	}
+	for clause in info.length_clauses {
+		if clause.kind != .Decimals {
+			continue
+		}
+		if decimals, ok := integer_literal_expr_value(clause.expr); ok {
+			return decimals, true
+		}
+	}
+	return 0, false
+}
+
+integer_literal_expr_value :: proc(expr: ^ast.Expr) -> (int, bool) {
+	if expr == nil {
+		return 0, false
+	}
+	lit, ok := expr.derived_expr.(^ast.Literal_Expr)
+	if !ok || lit.value == "" {
+		return 0, false
+	}
+	parsed, parse_ok := strconv.parse_int(lit.value, 10)
+	if !parse_ok {
+		return 0, false
+	}
+	return int(parsed), true
+}
+
+type_length :: proc(typ: ^Type, depth := 0) -> (int, bool) {
+	if typ == nil || depth > 16 {
+		return 0, false
+	}
+	if typ.has_length {
+		return typ.length, true
+	}
+	#partial switch typ.kind {
+	case .Named:
+		return type_length(typ.base, depth + 1)
+	}
+	return 0, false
 }
 
 checker_type_from_ref_data :: proc(
@@ -1007,7 +1190,7 @@ checker_type_path_segment_is_deref :: proc(type_ref: Field_Type_Ref_Data, index:
 	return index < len(type_ref.field_derefs) && type_ref.field_derefs[index]
 }
 
-checker_type_same :: proc(a, b: ^Type, depth := 0) -> bool {
+type_same :: proc(a, b: ^Type, depth := 0) -> bool {
 	if a == b {
 		return true
 	}
@@ -1018,12 +1201,16 @@ checker_type_same :: proc(a, b: ^Type, depth := 0) -> bool {
 	case .Unknown:
 		return true
 	case .Builtin:
-		return a.name == b.name
+		return a.name == b.name && type_technical_attributes_same(a, b)
 	case .Named:
 		if a.entity != nil || b.entity != nil {
-			return a.entity == b.entity
+			return a.entity == b.entity &&
+			       type_technical_attributes_same(a, b) &&
+			       type_same(a.base, b.base, depth + 1)
 		}
-		return a.name == b.name && checker_type_same(a.base, b.base, depth + 1)
+		return a.name == b.name &&
+		       type_technical_attributes_same(a, b) &&
+		       type_same(a.base, b.base, depth + 1)
 	case .Structure:
 		return a.structure == b.structure
 	case .Table:
@@ -1031,15 +1218,15 @@ checker_type_same :: proc(a, b: ^Type, depth := 0) -> bool {
 			return false
 		}
 		if a.table_form == .Range_Of {
-			return checker_type_same(
-				checker_type_range_low_type(a),
-				checker_type_range_low_type(b),
+			return type_same(
+				type_range_low_type(a),
+				type_range_low_type(b),
 				depth + 1,
 			)
 		}
-		return checker_type_same(a.base, b.base, depth + 1)
+		return type_same(a.base, b.base, depth + 1)
 	case .Ref:
-		return checker_type_same(a.base, b.base, depth + 1)
+		return type_same(a.base, b.base, depth + 1)
 	case .Class, .Interface:
 		if a.entity != nil || b.entity != nil {
 			return a.entity == b.entity
@@ -1051,7 +1238,26 @@ checker_type_same :: proc(a, b: ^Type, depth := 0) -> bool {
 	return false
 }
 
-checker_type_range_low_type :: proc(typ: ^Type) -> ^Type {
+type_technical_attributes_same :: proc "contextless" (a, b: ^Type) -> bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.has_length != b.has_length {
+		return false
+	}
+	if a.has_length && a.length != b.length {
+		return false
+	}
+	if a.has_decimals != b.has_decimals {
+		return false
+	}
+	if a.has_decimals && a.decimals != b.decimals {
+		return false
+	}
+	return true
+}
+
+type_range_low_type :: proc(typ: ^Type) -> ^Type {
 	if typ == nil || typ.kind != .Table || typ.table_form != .Range_Of {
 		return nil
 	}

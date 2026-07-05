@@ -916,7 +916,7 @@ checker_collect_type_decl :: proc(
 		paren_length = paren_length,
 		length_clauses = length_clauses,
 	)
-	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_add_entity_and_decl_info(ctx, entity, decl)
 	return entity
 }
 
@@ -974,7 +974,7 @@ checker_collect_structure_field :: proc(
 		}
 	}
 	append(&structure.fields, entity)
-	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_add_entity_and_decl_info(ctx, entity, decl)
 	return entity
 }
 
@@ -1145,7 +1145,7 @@ checker_collect_structure_include :: proc(
 		}
 	}
 	append(&structure.fields, entity)
-	_ = checker_add_entity_and_decl_info(ctx, entity, decl, insert_in_scope = name != "")
+	checker_add_entity_and_decl_info(ctx, entity, decl, insert_in_scope = name != "")
 	return entity
 }
 
@@ -1184,7 +1184,7 @@ checker_collect_variable_decl :: proc(
 		paren_length = paren_length,
 		length_clauses = length_clauses,
 	)
-	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_add_entity_and_decl_info(ctx, entity, decl)
 	checker_note_variable_decl_flags(entity, has_type = type_clause != nil)
 	return entity
 }
@@ -1313,7 +1313,7 @@ checker_collect_range_component :: #force_inline proc(
 	range: Range,
 	node: ^ast.Node,
 ) {
-	_ = checker_collect_structure_field(ctx, structure, scope, owner, name, range, node, nil, nil)
+	checker_collect_structure_field(ctx, structure, scope, owner, name, range, node, nil, nil)
 }
 
 checker_collect_parameters_decl :: proc(
@@ -1385,7 +1385,7 @@ checker_collect_report_decl :: proc(ctx: ^Checker_Context, name: string, range: 
 	if payload, ok := entity.payload.(^Entity_Report_Payload); ok && payload != nil {
 		append(&payload.provided_names, interned)
 	}
-	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_add_entity_and_decl_info(ctx, entity, decl)
 	return entity
 }
 
@@ -1401,7 +1401,7 @@ checker_collect_include_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Include_S
 		if payload, ok := entity.payload.(^Entity_Include_Payload); ok && payload != nil {
 			payload.if_found = stmt.if_found
 		}
-		_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+		checker_add_entity_and_decl_info(ctx, entity, decl)
 	}
 }
 
@@ -1412,7 +1412,7 @@ checker_collect_class_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Class_Decl)
 		entity.node = &decl.node.stmt_base
 		interned := project_intern_lower_ascii(ctx.project, decl.name.text)
 		info := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Class, decl.name.range, &decl.node.stmt_base)
-		_ = checker_add_entity_and_decl_info(ctx, entity, info)
+		checker_add_entity_and_decl_info(ctx, entity, info)
 	}
 	if entity == nil {
 		return nil
@@ -1465,7 +1465,7 @@ checker_collect_interface_decl :: proc(ctx: ^Checker_Context, decl: ^ast.Interfa
 		entity.node = &decl.node.stmt_base
 		interned := project_intern_lower_ascii(ctx.project, decl.name.text)
 		info := project_new_decl_info(ctx.project, entity, ctx.scope, interned, .Interface, decl.name.range, &decl.node.stmt_base)
-		_ = checker_add_entity_and_decl_info(ctx, entity, info)
+		checker_add_entity_and_decl_info(ctx, entity, info)
 	}
 	if entity == nil {
 		return nil
@@ -1740,7 +1740,7 @@ checker_collect_oop_alias :: proc(
 		}
 		payload.visibility = visibility
 	}
-	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_add_entity_and_decl_info(ctx, entity, decl)
 	return entity
 }
 
@@ -1902,7 +1902,7 @@ checker_collect_routine_decl :: proc(
 	entity.node = node
 	interned := project_intern_lower_ascii(ctx.project, name)
 	decl := project_new_decl_info(ctx.project, entity, decl_scope, interned, kind, header_range, node)
-	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_add_entity_and_decl_info(ctx, entity, decl)
 	checker_initialize_routine_payload(ctx, entity, range, signature)
 	checker_collect_routine_parameters(ctx, entity, node)
 	return entity
@@ -2144,7 +2144,7 @@ checker_check_entity_decl :: proc(
 		append(&local.type_path, entity)
 	}
 	defer if track_path {
-		_ = pop(&local.type_path)
+		pop(&local.type_path)
 	}
 
 	switch entity.kind {
@@ -2407,7 +2407,7 @@ checker_check_routine_exception_type_refs :: proc(
 ) {
 	assert(routine != nil && payload != nil)
 	for type_ref in payload.exception_type_refs {
-		_, _ = checker_type_from_ref_data(
+		checker_type_from_ref_data(
 			ctx,
 			type_ref,
 			routine.node,

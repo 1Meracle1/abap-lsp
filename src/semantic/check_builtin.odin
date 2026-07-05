@@ -762,7 +762,7 @@ checker_register_builtin_entity :: proc(
 	entity := project_new_entity(ctx.project, kind)
 	entity.flags += {.Builtin}
 	decl := project_new_decl_info(ctx.project, entity, ctx.scope, interned, kind)
-	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_add_entity_and_decl_info(ctx, entity, decl)
 	checker_mark_builtin_entity_resolved(ctx, entity)
 	return entity
 }

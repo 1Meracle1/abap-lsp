@@ -27,6 +27,10 @@ Type :: struct {
 	base:       ^Type,
 	table_form: ast.Data_Type_Form,
 	routine:    Type_Routine_Info,
+	length:     int,
+	has_length: bool,
+	decimals:  int,
+	has_decimals: bool,
 }
 
 Type_Routine_Info :: struct {

@@ -141,6 +141,22 @@ project_type_builtin :: proc(project: ^Project, name: string, entity: ^Entity = 
 	return typ
 }
 
+project_type_clone :: proc(project: ^Project, source: ^Type) -> ^Type {
+	assert(source != nil)
+	typ := project_new_type(project, source.kind)
+	typ.name = source.name
+	typ.entity = source.entity
+	typ.structure = source.structure
+	typ.base = source.base
+	typ.table_form = source.table_form
+	typ.routine = source.routine
+	typ.length = source.length
+	typ.has_length = source.has_length
+	typ.decimals = source.decimals
+	typ.has_decimals = source.has_decimals
+	return typ
+}
+
 project_type_named :: proc(
 	project: ^Project,
 	name: string,

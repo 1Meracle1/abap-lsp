@@ -40,7 +40,33 @@ Sql_For_All_Entries_Info :: struct {
 	entity:  ^Entity,
 }
 
+Sql_Dml_Kind :: enum {
+	Insert,
+	Update,
+	Delete,
+	Modify,
+}
+
+Checker_Sql_Query_Fact :: struct {
+	file:            ^Project_File,
+	query:           ^ast.Select_Query_Clause,
+	shape:           Sql_Query_Shape,
+	sources:         [dynamic]Sql_Source_Info,
+	for_all_entries: Sql_For_All_Entries_Info,
+}
+
+Checker_Sql_Dml_Fact :: struct {
+	file:             ^Project_File,
+	stmt:             ^ast.Stmt,
+	kind:             Sql_Dml_Kind,
+	source:           Sql_Source_Info,
+	assignment_count: int,
+	from_table:       bool,
+	dynamic_where:    bool,
+}
+
 Checker_Cursor_Query :: struct {
+	file:   ^Project_File,
 	handle: ^Entity,
 	shape:  Sql_Query_Shape,
 }
@@ -64,13 +90,19 @@ checker_sql_register_cursor_query :: proc(
 	if handle == nil {
 		return
 	}
+	found := false
 	for &cursor_query in ctx.cursor_shapes {
 		if cursor_query.handle == handle {
 			cursor_query.shape = shape
-			return
+			cursor_query.file = ctx.file
+			found = true
+			break
 		}
 	}
-	append(&ctx.cursor_shapes, Checker_Cursor_Query{handle = handle, shape = shape})
+	if !found {
+		append(&ctx.cursor_shapes, Checker_Cursor_Query{file = ctx.file, handle = handle, shape = shape})
+	}
+	checker_sql_record_cursor_query(ctx, handle, shape)
 }
 
 checker_sql_cursor_query_shape :: proc(
@@ -88,7 +120,100 @@ checker_sql_cursor_query_shape :: proc(
 	return {}, false
 }
 
-checker_check_sql_select_query :: proc(ctx: ^Checker_Context, query: ast.Select_Query_Clause) -> Sql_Query_Shape {
+checker_sql_record_cursor_query :: proc(
+	ctx: ^Checker_Context,
+	handle: ^Entity,
+	shape: Sql_Query_Shape,
+) {
+	assert(ctx != nil && ctx.info != nil)
+	if handle == nil {
+		return
+	}
+	for &record in ctx.info.sql_cursor_queries {
+		if record.file == ctx.file && record.handle == handle {
+			record.shape = shape
+			return
+		}
+	}
+	append(
+		&ctx.info.sql_cursor_queries,
+		Checker_Cursor_Query {
+			file   = ctx.file,
+			handle = handle,
+			shape  = shape,
+		},
+	)
+}
+
+checker_sql_record_query_fact :: proc(
+	ctx: ^Checker_Context,
+	query: ^ast.Select_Query_Clause,
+	shape: Sql_Query_Shape,
+	sources: []Sql_Source_Info,
+	for_all_entries: Sql_For_All_Entries_Info,
+) {
+	assert(ctx != nil && ctx.info != nil && query != nil)
+	copied_sources := make([dynamic]Sql_Source_Info, 0, len(sources), ctx.project.allocator)
+	for source in sources {
+		append(&copied_sources, source)
+	}
+	for &record in ctx.info.sql_queries {
+		if record.file == ctx.file && record.query == query {
+			record.shape = shape
+			record.sources = copied_sources
+			record.for_all_entries = for_all_entries
+			return
+		}
+	}
+	append(
+		&ctx.info.sql_queries,
+		Checker_Sql_Query_Fact {
+			file            = ctx.file,
+			query           = query,
+			shape           = shape,
+			sources         = copied_sources,
+			for_all_entries = for_all_entries,
+		},
+	)
+}
+
+checker_sql_record_dml_fact :: proc(
+	ctx: ^Checker_Context,
+	stmt: ^ast.Stmt,
+	kind: Sql_Dml_Kind,
+	source: ^Sql_Source_Info,
+	assignment_count: int = 0,
+	from_table: bool = false,
+	dynamic_where: bool = false,
+) {
+	assert(ctx != nil && ctx.info != nil && stmt != nil)
+	source_value := source^ if source != nil else Sql_Source_Info{}
+	for &record in ctx.info.sql_dml {
+		if record.file == ctx.file && record.stmt == stmt {
+			record.kind = kind
+			record.source = source_value
+			record.assignment_count = assignment_count
+			record.from_table = from_table
+			record.dynamic_where = dynamic_where
+			return
+		}
+	}
+	append(
+		&ctx.info.sql_dml,
+		Checker_Sql_Dml_Fact {
+			file             = ctx.file,
+			stmt             = stmt,
+			kind             = kind,
+			source           = source_value,
+			assignment_count = assignment_count,
+			from_table       = from_table,
+			dynamic_where    = dynamic_where,
+		},
+	)
+}
+
+checker_check_sql_select_query :: proc(ctx: ^Checker_Context, query: ^ast.Select_Query_Clause) -> Sql_Query_Shape {
+	assert(query != nil)
 	sql := checker_sql_source_scope_make()
 	defer delete(sql.sources)
 
@@ -102,17 +227,18 @@ checker_check_sql_select_query :: proc(ctx: ^Checker_Context, query: ast.Select_
 		checker_sql_add_select_source(ctx, &sql, query.source, {}, checker_expr_range(query.source), false)
 	}
 
-	fields := checker_sql_check_projection_list(ctx, &sql, query)
-	checker_check_sql_order_by(ctx, query, fields[:])
-	checker_check_sql_group_by(ctx, &sql, query)
+	fields := checker_sql_check_projection_list(ctx, &sql, query^)
+	checker_check_sql_order_by(ctx, query^, fields[:])
+	checker_check_sql_group_by(ctx, &sql, query^)
 	shape := checker_sql_query_shape(ctx, fields[:], query.result)
 	checker_check_sql_select_result(ctx, query.result, shape)
 	for_all_entries := checker_check_sql_for_all_entries(ctx, query.for_all_entries)
 	checker_check_sql_expr(ctx, &sql, query.where_cond, true, validate_where_hosts = true, for_all_entries = for_all_entries)
 	checker_check_expr(ctx, query.package_size)
 	checker_check_expr(ctx, query.up_to_rows)
-	for set in query.set_ops {
-		_ = checker_check_sql_select_query(ctx, set.query)
+	checker_sql_record_query_fact(ctx, query, shape, sql.sources[:], for_all_entries)
+	for _, i in query.set_ops {
+		checker_check_sql_select_query(ctx, &query.set_ops[i].query)
 	}
 	return shape
 }
@@ -136,6 +262,7 @@ checker_check_sql_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_S
 	defer delete(sql.sources)
 
 	source := checker_sql_add_db_source(ctx, &sql, stmt.target, stmt.db_table_name.text, stmt.db_table_name.range, stmt.dynamic_source)
+	checker_sql_record_dml_fact(ctx, &stmt.node, .Insert, source, len(stmt.assignments), stmt.from_table)
 	row_type := source.row_type if source != nil else project_type_unknown(ctx.project)
 	if stmt.source != nil {
 		value := checker_check_expr(ctx, stmt.source)
@@ -152,6 +279,7 @@ checker_check_sql_update_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Update_S
 	defer delete(sql.sources)
 
 	source := checker_sql_add_db_source(ctx, &sql, stmt.target, "", Range{}, stmt.dynamic_source)
+	checker_sql_record_dml_fact(ctx, &stmt.node, .Update, source, len(stmt.assignments), stmt.from_table, stmt.dynamic_where)
 	row_type := source.row_type if source != nil else project_type_unknown(ctx.project)
 	if stmt.source != nil {
 		value := checker_check_expr(ctx, stmt.source)
@@ -169,6 +297,7 @@ checker_check_sql_modify_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_S
 	defer delete(sql.sources)
 
 	source := checker_sql_add_db_source(ctx, &sql, stmt.target, "", Range{}, stmt.dynamic_source)
+	checker_sql_record_dml_fact(ctx, &stmt.node, .Modify, source, 0, stmt.from_table, stmt.dynamic_where)
 	row_type := source.row_type if source != nil else project_type_unknown(ctx.project)
 	if stmt.source != nil {
 		value := checker_check_expr(ctx, stmt.source)
@@ -182,7 +311,8 @@ checker_check_sql_delete_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Delete_S
 	sql := checker_sql_source_scope_make()
 	defer delete(sql.sources)
 
-	_ = checker_sql_add_db_source(ctx, &sql, stmt.target, "", Range{}, stmt.dynamic_source)
+	source := checker_sql_add_db_source(ctx, &sql, stmt.target, "", Range{}, stmt.dynamic_source)
+	checker_sql_record_dml_fact(ctx, &stmt.node, .Delete, source, 0, stmt.from_table, stmt.dynamic_where)
 	checker_check_expr(ctx, stmt.source)
 	checker_check_sql_expr(ctx, &sql, stmt.where_cond, true)
 }
@@ -633,7 +763,7 @@ checker_check_sql_expr :: proc(
 		return project_type_unknown(ctx.project)
 	case ^ast.Sql_Star_Expr:
 		if n.qualifier.text != "" {
-			_, _ = checker_sql_source_for_qualifier(ctx, sql, project_intern_lower_ascii(ctx.project, n.qualifier.text))
+			checker_sql_source_for_qualifier(ctx, sql, project_intern_lower_ascii(ctx.project, n.qualifier.text))
 		}
 		return project_type_unknown(ctx.project)
 	case ^ast.Sql_Call_Expr:
@@ -1105,7 +1235,7 @@ checker_sql_add_structure_field :: proc(
 	payload.field_index = len(structure.fields)
 	payload.flags += {.Has_Decl_Range}
 	append(&structure.fields, entity)
-	_ = scope_insert_declaration(structure.scope, entity)
+	scope_insert_declaration(structure.scope, entity)
 	checker_add_definition(ctx.info, entity)
 	append(&ctx.info.checked_entities, entity)
 	return entity

@@ -41,7 +41,7 @@ remote_adt_test_server_run :: proc(t: ^thread.Thread) {
 				response = server.source_response
 			}
 		}
-		_, _ = net.send_tcp(client, transmute([]u8)response)
+		net.send_tcp(client, transmute([]u8)response)
 		net.close(client)
 	}
 }
@@ -52,7 +52,7 @@ remote_adt_test_client :: proc(
 ) -> (adt.Client, ^thread.Thread) {
 	listener, listen_err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = 0})
 	testing.expect(t, listen_err == nil)
-	_ = net.set_option(listener, .Receive_Timeout, 500 * time.Millisecond)
+	net.set_option(listener, .Receive_Timeout, 500 * time.Millisecond)
 	ep, ep_err := net.bound_endpoint(listener)
 	testing.expect(t, ep_err == nil)
 	server.listener = listener

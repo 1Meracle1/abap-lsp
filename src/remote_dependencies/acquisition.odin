@@ -521,7 +521,7 @@ append_cache_artifacts_parallel :: proc(
 			results       = results,
 			offset        = start,
 		}
-		_ = execution.submit_value(
+		execution.submit_value(
 			&graph,
 			execution.worker_executor(pool),
 			payload,
@@ -1028,7 +1028,7 @@ backfill_typepool_symbol_cache :: proc(
 	}
 	for &record in records {
 		symbols := typepool_source_symbols(record.source_text, context.temp_allocator)
-		_ = dep_store.put_typepool_symbols(
+		dep_store.put_typepool_symbols(
 			store,
 			record.artifact_id,
 			record.object_name,
@@ -1365,7 +1365,7 @@ store_local_export_dependency :: proc(
 		fetched_at       = fetched_at,
 		typepool_symbols = symbols[:],
 	}
-	_, _ = dep_store.put_artifact(store, profile, &artifact, store_allocator)
+	dep_store.put_artifact(store, profile, &artifact, store_allocator)
 }
 
 ensure_adt_available :: proc(
@@ -1742,7 +1742,7 @@ fetch_adt_request :: proc(
 			context.temp_allocator,
 		)
 	}
-	_ = fetch_adt_objects(client, request, selected[:], store, profile, &out, allocator)
+	fetch_adt_objects(client, request, selected[:], store, profile, &out, allocator)
 	when TRACE {
 		if len(out) == 0 {
 			trace_eprintf(
@@ -2079,7 +2079,7 @@ store_typepool_artifact :: proc(
 		fetched_at       = fetched_at,
 		typepool_symbols = analysis.symbols[:],
 	}
-	_, _ = dep_store.put_artifact(store, profile, &stored, store_allocator)
+	dep_store.put_artifact(store, profile, &stored, store_allocator)
 }
 
 store_adt_dependency_fetch :: proc(
@@ -2127,7 +2127,7 @@ store_adt_dependency_fetch :: proc(
 			),
 		)
 	}
-	_, _ = dep_store.put_artifacts(store, profile, artifacts[:], store_allocator)
+	dep_store.put_artifacts(store, profile, artifacts[:], store_allocator)
 }
 
 stored_artifact_from_adt :: proc(

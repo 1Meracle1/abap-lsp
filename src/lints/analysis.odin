@@ -197,7 +197,7 @@ collect_file :: proc(
 	missing_tables_context: ^Missing_Tables_Report_Context = nil,
 	trace_timings: ^Trace_File_Timings = nil,
 ) -> Unit_Lints {
-	_ = semantic.semantic_query(project, checker, file)
+	semantic.semantic_query(project, checker, file)
 	out := unit_lints_make(
 		file.path if file != nil else "",
 		project,

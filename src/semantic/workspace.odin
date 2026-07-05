@@ -157,7 +157,7 @@ semantic_workspace_add_local_root_providers :: proc(
 		if !semantic_object_key_is_valid(key) {
 			continue
 		}
-		_ = external_semantics_analyze_interface_input(
+		external_semantics_analyze_interface_input(
 			external,
 			External_Interface_Input {
 				key = key,
@@ -208,10 +208,10 @@ semantic_workspace_prepare_external_context :: proc(
 	}
 	if external != nil {
 		for source_input in input.external_sources {
-			_ = external_semantics_upsert_source_input(external, source_input)
+			external_semantics_upsert_source_input(external, source_input)
 		}
 		for interface_input in input.external_interfaces {
-			_ = external_semantics_analyze_interface_input(external, interface_input)
+			external_semantics_analyze_interface_input(external, interface_input)
 		}
 	}
 	return external, owns_external
@@ -407,7 +407,7 @@ semantic_workspace_try_update_root_projects :: proc(
 		when trace.ENABLED {
 			provider_start := trace.now()
 		}
-		_ = external_semantics_reanalyze_interface_input(
+		external_semantics_reanalyze_interface_input(
 			analysis.external_context,
 			External_Interface_Input {
 				key = root_key,
@@ -951,7 +951,7 @@ workspace_collect_expanded_file_entities :: proc(
 	defer {
 		ctx.file = previous_file
 		ctx.scope = previous_scope
-		_ = pop(&state.stack)
+		pop(&state.stack)
 	}
 
 	facts := &state.discovery.facts[file_index]
@@ -1126,7 +1126,7 @@ workspace_check_include_targets :: proc(
 		}
 		append(&state.stack, edge.target_index)
 		workspace_check_expanded_file_stmts(state, ctx, edge.target_index)
-		_ = pop(&state.stack)
+		pop(&state.stack)
 	}
 }
 

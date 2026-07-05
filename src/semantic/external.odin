@@ -841,9 +841,9 @@ external_semantic_index_replace_project_record :: proc(
 	record: Semantic_Project_Record,
 ) -> ^Semantic_Project_Record {
 	if semantic_object_key_is_valid(record.root_key) {
-		_ = external_semantic_index_remove_project_record_by_root_key(index, record.root_key)
+		external_semantic_index_remove_project_record_by_root_key(index, record.root_key)
 	} else if semantic_project_id_is_valid(record.id) {
-		_ = external_semantic_index_remove_project_record(index, record.id)
+		external_semantic_index_remove_project_record(index, record.id)
 	}
 	stored := external_semantic_index_add_project_record(index, record)
 	external_semantic_index_add_project_record_contributions(index, stored)
@@ -1187,7 +1187,7 @@ external_semantics_reanalyze_interface_input :: proc(
 ) -> ^Semantic_Project_Record {
 	assert(external != nil)
 	root_key := external_interface_input_key(input)
-	_ = external_semantic_index_remove_project_record_by_root_key(&external.index, root_key)
+	external_semantic_index_remove_project_record_by_root_key(&external.index, root_key)
 	return external_semantics_analyze_interface_input(external, input)
 }
 
@@ -1200,7 +1200,7 @@ external_semantics_publish_interface_project_providers :: proc(
 ) {
 	assert(external != nil && record != nil && file != nil && file.root_scope != nil)
 	if entity, ok := external_interface_entity_for_key(file.root_scope, root_key); ok {
-		_ = external_semantic_index_publish_provider(
+		external_semantic_index_publish_provider(
 			&external.index,
 			record,
 			root_key,
@@ -1210,7 +1210,7 @@ external_semantics_publish_interface_project_providers :: proc(
 	}
 	for entity in file.root_scope.declarations {
 		if key, ok := external_object_key_for_provider_entity(entity); ok {
-			_ = external_semantic_index_publish_provider(
+			external_semantic_index_publish_provider(
 				&external.index,
 				record,
 				key,
@@ -1318,9 +1318,9 @@ external_semantics_add_entity :: proc(
 	entity.scope = root_scope
 	entity.source_file = external.compat_root_file
 	entity.type = external_default_type_for_entity(external, entity)
-	_ = scope_insert_declaration(root_scope, entity)
+	scope_insert_declaration(root_scope, entity)
 	key := external_object_key_for_entity(entity, namespace)
-	_ = external_semantic_index_publish_provider(&external.index, record, key, entity)
+	external_semantic_index_publish_provider(&external.index, record, key, entity)
 	return entity
 }
 
@@ -1384,13 +1384,13 @@ external_semantics_add_structure_summary :: proc(
 		field_payload.type_clause_form = .Type
 		field_payload.has_type_clause_form = true
 		append(&structure.fields, field_entity)
-		_ = scope_insert_declaration(structure_scope, field_entity)
+		scope_insert_declaration(structure_scope, field_entity)
 	}
 	if record, ok := external_semantic_index_project_record(
 		&external.index,
 		external.compat_record_id,
 	); ok {
-		_ = external_semantic_index_publish_provider(
+		external_semantic_index_publish_provider(
 			&external.index,
 			record,
 			Semantic_Object_Key{kind = .DDIC_Table, name = entity.name},

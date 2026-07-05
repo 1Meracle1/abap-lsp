@@ -318,7 +318,7 @@ project_discovery_visit_include_cycles :: proc(
 			stack,
 		)
 	}
-	_ = pop(stack)
+	pop(stack)
 	delete_key(visiting, index)
 	visited^[index] = true
 }

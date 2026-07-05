@@ -623,7 +623,7 @@ checker_lookup_selector_member :: proc(
 			if member, ok := checker_lookup_object_member_visible(ctx, owner, namespace, interned, checker_use_range(node, use_range)); ok {
 				return checker_record_entity_operand(ctx, node, member, lhs, use_range = use_range)
 			}
-			_ = checker_diagnose_unaliased_interface_member_access(
+			checker_diagnose_unaliased_interface_member_access(
 				ctx,
 				owner,
 				namespace,
@@ -643,7 +643,7 @@ checker_lookup_selector_member :: proc(
 				return checker_record_entity_operand(ctx, node, member, lhs, use_range = use_range)
 			}
 			if op == .Fat_Arrow {
-				_ = checker_diagnose_unaliased_interface_member_access(
+				checker_diagnose_unaliased_interface_member_access(
 					ctx,
 					owner,
 					namespace,
@@ -756,7 +756,7 @@ checker_check_raw_operand_facts :: proc(
 		if fact_count == 1 {
 			operand = checker_check_raw_operand_ref(ctx, ref, lhs, node)
 		} else {
-			_ = checker_check_raw_operand_ref(ctx, ref, false, node)
+			checker_check_raw_operand_ref(ctx, ref, false, node)
 		}
 	}
 	if fact_count == 1 {
@@ -1766,9 +1766,9 @@ checker_filter_types_structurally_same :: proc(
 	     .Class,
 	     .Interface,
 	     .Routine:
-		return checker_type_same(left_type, right_type), true
+		return type_same(left_type, right_type), true
 	}
-	return checker_type_same(left_type, right_type), true
+	return type_same(left_type, right_type), true
 }
 
 checker_filter_structures_structurally_same :: proc(

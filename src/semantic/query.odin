@@ -141,6 +141,11 @@ semantic_query_completion :: proc(q: Semantic_Query) -> Semantic_Completion_Quer
 	}
 }
 
+semantic_query_files :: proc(q: Semantic_Query) -> []^Project_File {
+	assert(q.checker != nil)
+	return q.checker.info.files[:]
+}
+
 semantic_decl_entity_at_offset :: proc(q: Semantic_Decl_Query, offset: int) -> ^Entity {
 	best: ^Entity
 	best_width := 0
@@ -277,6 +282,18 @@ semantic_ref_use_at_offset :: proc(q: Semantic_Ref_Query, offset: int) -> ^Check
 	return &q.checker.info.uses[best] if best >= 0 else nil
 }
 
+semantic_ref_use_for_node :: proc(q: Semantic_Ref_Query, node: ^ast.Node) -> ^Checker_Entity_Use {
+	if node == nil {
+		return nil
+	}
+	for &use in q.checker.info.uses {
+		if use.node == node && semantic_query_use_matches_file(use, q.file) {
+			return &use
+		}
+	}
+	return nil
+}
+
 semantic_ref_use_at_range :: proc(q: Semantic_Ref_Query, range: Range) -> ^Checker_Entity_Use {
 	for &use in q.checker.info.uses {
 		if semantic_query_use_matches_file(use, q.file) &&
@@ -337,6 +354,98 @@ semantic_fact_operand_info_at_offset :: proc(
 		return {}, false
 	}
 	return record.info, true
+}
+
+semantic_fact_operand_info_for_node :: proc(
+	q: Semantic_Fact_Query,
+	node: ^ast.Node,
+) -> (
+	Checker_Expr_Info,
+	bool,
+) {
+	if node == nil {
+		return {}, false
+	}
+	for record in q.checker.info.expr_infos {
+		if record.node == node && semantic_query_record_matches_file(record, q.file) {
+			return record.info, true
+		}
+	}
+	return {}, false
+}
+
+semantic_fact_operand_info_at_range :: proc(
+	q: Semantic_Fact_Query,
+	range: Range,
+) -> (
+	Checker_Expr_Info,
+	bool,
+) {
+	if range.end <= range.start {
+		return {}, false
+	}
+	for record in q.checker.info.expr_infos {
+		if record.node != nil &&
+		   record.node.range == range &&
+		   semantic_query_record_matches_file(record, q.file) {
+			return record.info, true
+		}
+	}
+	return {}, false
+}
+
+semantic_fact_sql_query_for_query :: proc(
+	q: Semantic_Fact_Query,
+	query: ^ast.Select_Query_Clause,
+) -> (
+	^Checker_Sql_Query_Fact,
+	bool,
+) {
+	if query == nil {
+		return nil, false
+	}
+	for &record in q.checker.info.sql_queries {
+		if record.query == query && semantic_query_file_matches(record.file, q.file) {
+			return &record, true
+		}
+	}
+	return nil, false
+}
+
+semantic_fact_sql_dml_for_stmt :: proc(
+	q: Semantic_Fact_Query,
+	stmt: ^ast.Stmt,
+) -> (
+	^Checker_Sql_Dml_Fact,
+	bool,
+) {
+	if stmt == nil {
+		return nil, false
+	}
+	for &record in q.checker.info.sql_dml {
+		if record.stmt == stmt && semantic_query_file_matches(record.file, q.file) {
+			return &record, true
+		}
+	}
+	return nil, false
+}
+
+semantic_fact_sql_cursor_query_shape :: proc(
+	q: Semantic_Fact_Query,
+	handle: ^Entity,
+) -> (
+	Sql_Query_Shape,
+	bool,
+) {
+	if handle == nil {
+		return {}, false
+	}
+	for record in q.checker.info.sql_cursor_queries {
+		if record.handle == handle && semantic_query_file_matches(record.file, q.file) {
+			return record.shape, true
+		}
+	}
+	return {}, false
 }
 
 semantic_fact_type_at_offset :: proc(q: Semantic_Fact_Query, offset: int) -> (^Type, bool) {
@@ -1263,6 +1372,10 @@ semantic_query_member_matches_file :: proc(entity: ^Entity, file: ^Project_File)
 
 semantic_query_use_matches_file :: proc(use: Checker_Entity_Use, file: ^Project_File) -> bool {
 	return file == nil || use.file == file
+}
+
+semantic_query_file_matches :: proc "contextless" (record_file: ^Project_File, file: ^Project_File) -> bool {
+	return file == nil || record_file == file
 }
 
 semantic_entity_use_range :: proc(use: Checker_Entity_Use) -> Range {

@@ -130,6 +130,9 @@ Checker_Info :: struct {
 	uses:                                   [dynamic]Checker_Entity_Use,
 	constructor_for_iterators:              [dynamic]Checker_Constructor_For_Iterator_Binding,
 	expr_infos:                             [dynamic]Checker_Expr_Record,
+	sql_queries:                            [dynamic]Checker_Sql_Query_Fact,
+	sql_dml:                                [dynamic]Checker_Sql_Dml_Fact,
+	sql_cursor_queries:                     [dynamic]Checker_Cursor_Query,
 	diagnostics:                            [dynamic]Checker_Diagnostic,
 	unresolved:                             [dynamic]Checker_Unresolved_Candidate,
 	resolved_external_dependencies:         [dynamic]Semantic_Dependency_Edge,
@@ -221,6 +224,9 @@ checker_info_make :: proc(
 			project.allocator,
 		),
 		expr_infos = make([dynamic]Checker_Expr_Record, 0, 32, project.allocator),
+		sql_queries = make([dynamic]Checker_Sql_Query_Fact, 0, 8, project.allocator),
+		sql_dml = make([dynamic]Checker_Sql_Dml_Fact, 0, 8, project.allocator),
+		sql_cursor_queries = make([dynamic]Checker_Cursor_Query, 0, 4, project.allocator),
 		diagnostics = make([dynamic]Checker_Diagnostic, 0, 8, project.allocator),
 		unresolved = make([dynamic]Checker_Unresolved_Candidate, 0, 8, project.allocator),
 		resolved_external_dependencies = make(
@@ -332,7 +338,7 @@ checker_add_file :: proc(
 
 checker_register_file :: proc(checker: ^Checker, file: ^Project_File) -> bool {
 	assert(checker != nil && file != nil)
-	_ = checker_ensure_file_scope(checker, file)
+	checker_ensure_file_scope(checker, file)
 	for registered in checker.info.files {
 		if registered == file {
 			return true
@@ -1215,7 +1221,7 @@ checker_constructor_for_iterator_table_types_compatible :: proc(
 	if checker_type_is_unknown(first) || checker_type_is_unknown(current) {
 		return true
 	}
-	return checker_type_same(first, current)
+	return type_same(first, current)
 }
 
 checker_add_constructor_for_iterator_reuse_diagnostic :: proc(

@@ -52,6 +52,38 @@ CLASS lcl_accumulator IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 
+CLASS lcl_parent_class DEFINITION.
+  PUBLIC SECTION.
+    METHODS mul
+      IMPORTING
+        iv_val1 TYPE numeric
+        iv_val2 TYPE numeric
+      RETURNING
+        VALUE(rv_res) TYPE numeric.
+ENDCLASS.
+
+CLASS lcl_parent_class IMPLEMENTATION.
+  METHOD mul.
+    rv_res = iv_val1 * iv_val2.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_class DEFINITION INHERITING FROM lcl_parent_class.
+  PUBLIC SECTION.
+    CLASS-METHODS add
+      IMPORTING
+        iv_val1 TYPE numeric
+        iv_val2 TYPE numeric
+      RETURNING
+        VALUE(rv_res) TYPE numeric.
+ENDCLASS.
+
+CLASS lcl_class IMPLEMENTATION.
+  METHOD add.
+    rv_res = iv_val1 + iv_val2.
+  ENDMETHOD.
+ENDCLASS.
+
 FORM seed_source CHANGING ct_source TYPE ty_source_tab.
   DATA ls_source TYPE ty_source.
 
@@ -127,3 +159,9 @@ START-OF-SELECTION.
   PERFORM transform_source USING gt_source CHANGING gt_target gv_total.
   PERFORM summarize USING gt_target CHANGING gv_message.
   WRITE: / gv_total, gv_message.
+
+  DATA(lv_add_res) = lcl_class=>add( iv_val1 = 1 iv_val2 = 3 ).
+  WRITE: / lv_add_res.
+  DATA(lo_class) = NEW lcl_class( ).
+  DATA(lv_mul_res) = lo_class->mul( iv_val1 = 1 iv_val2 = 3 ).
+  WRITE: / lv_mul_res.

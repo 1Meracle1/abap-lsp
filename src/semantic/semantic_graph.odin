@@ -403,7 +403,7 @@ semantic_graph_session_upsert_external_source_input :: proc(
 		if existing.generation == 0 {
 			existing.generation = session.generation
 		}
-		_ = external_semantics_upsert_source_input(&session.external, existing)
+		external_semantics_upsert_source_input(&session.external, existing)
 		return true
 	}
 	next := semantic_graph_external_source_input_clone(input, session.allocator)
@@ -411,7 +411,7 @@ semantic_graph_session_upsert_external_source_input :: proc(
 		next.generation = session.generation
 	}
 	append(&session.external_source_inputs, next)
-	_ = external_semantics_upsert_source_input(&session.external, next)
+	external_semantics_upsert_source_input(&session.external, next)
 	return true
 }
 
@@ -546,7 +546,7 @@ semantic_graph_session_reanalyze_external_input :: proc(
 			record^,
 			session.analysis.external_index.allocator,
 		)
-		_ = external_semantic_index_replace_project_record(
+		external_semantic_index_replace_project_record(
 			&session.analysis.external_index,
 			imported,
 		)

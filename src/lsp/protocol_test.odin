@@ -43,29 +43,17 @@ file_uri_to_path_decodes_windows_paths :: proc(t: ^testing.T) {
 	path, ok := file_uri_to_path("file:///D:/dev/rust/abap%20lsp/demo.abap", context.allocator)
 
 	testing.expect(t, ok)
-	testing.expect_value(t, path, `D:\dev\rust\abap lsp\demo.abap`)
+	expected := `D:\dev\rust\abap lsp\demo.abap`
+	when ODIN_OS != .Windows {
+		expected = "D:/dev/rust/abap lsp/demo.abap"
+	}
+	testing.expect_value(t, path, expected)
 }
 
 @(test)
 initialize_opens_all_workspace_folders :: proc(t: ^testing.T) {
-	root_a := `tmp\lsp_multi_workspace_a`
-	if absolute, abs_err := os.get_absolute_path(root_a, context.allocator); abs_err == nil {
-		root_a = absolute
-	}
-	if cleaned, clean_err := os.clean_path(root_a, context.allocator); clean_err == nil {
-		root_a = cleaned
-	}
-	root_b := `tmp\lsp_multi_workspace_b`
-	if absolute, abs_err := os.get_absolute_path(root_b, context.allocator); abs_err == nil {
-		root_b = absolute
-	}
-	if cleaned, clean_err := os.clean_path(root_b, context.allocator); clean_err == nil {
-		root_b = cleaned
-	}
-	os.remove_all(root_a)
-	os.remove_all(root_b)
-	testing.expect(t, os.make_directory_all(root_a) == nil)
-	testing.expect(t, os.make_directory_all(root_b) == nil)
+	root_a := lsp_test_temp_root(t, `tmp\lsp_multi_workspace_a`)
+	root_b := lsp_test_temp_root(t, `tmp\lsp_multi_workspace_b`)
 	defer os.remove_all(root_a)
 	defer os.remove_all(root_b)
 	output_path := `tmp\lsp_initialize_response.out`
@@ -435,7 +423,7 @@ lsp_did_change_keeps_typing_path_off_lints_and_disk_workspace_inputs :: proc(t: 
 	testing.expect(t, state.last_reanalysis_stats.workspace_disk_inputs >= 25)
 
 	pending_lint_graph := execution.graph_create(&state.pool, state.allocator)
-	_ = execution.submit_value(
+	execution.submit_value(
 		pending_lint_graph,
 		execution.worker_executor(&state.pool),
 		1,
@@ -582,7 +570,7 @@ lsp_stale_lint_publish_is_discarded_by_generation :: proc(t: ^testing.T) {
 	allocator := virtual.arena_allocator(&result.arena)
 	result.analyses = make([dynamic]lints.Analysis, 0, 0, allocator)
 
-	_ = server_publish_lint_result(
+	server_publish_lint_result(
 		result,
 		Server_Lint_Publish_Payload {
 			state = &state,
@@ -5654,14 +5642,14 @@ read_dependency_document_source_prefers_regenerated_dependency_source_for_cache_
 ) {
 	root_seed := strings.concatenate(
 		{
-			`tmp\lsp_dependency_document_source_refresh_`,
+			"lsp_dependency_document_source_refresh_",
 			fmt.tprintf("%d", os.get_pid()),
 			"_",
 			fmt.tprintf("%d", time.time_to_unix_nano(time.now())),
 		},
 		context.allocator,
 	)
-	root := root_seed
+	root := lsp_test_join_path(t, "tmp", root_seed)
 	if absolute, abs_err := os.get_absolute_path(root, context.allocator); abs_err == nil {
 		root = absolute
 	}
@@ -5758,14 +5746,14 @@ lsp_definition_materializes_cached_e070_with_documentation_comments_for_zed :: p
 ) {
 	root_seed := strings.concatenate(
 		{
-			`tmp\lsp_definition_cached_e070_`,
+			"lsp_definition_cached_e070_",
 			fmt.tprintf("%d", os.get_pid()),
 			"_",
 			fmt.tprintf("%d", time.time_to_unix_nano(time.now())),
 		},
 		context.allocator,
 	)
-	root := root_seed
+	root := lsp_test_join_path(t, "tmp", root_seed)
 	if absolute, abs_err := os.get_absolute_path(root, context.allocator); abs_err == nil {
 		root = absolute
 	}
@@ -6712,6 +6700,9 @@ lsp_test_state_destroy :: proc(state: ^Server_State) {
 
 lsp_test_temp_root :: proc(t: ^testing.T, path: string) -> string {
 	root := path
+	if normalized, normalize_err := os.replace_path_separators(path, os.Path_Separator, context.allocator); normalize_err == nil {
+		root = normalized
+	}
 	if absolute, abs_err := os.get_absolute_path(root, context.allocator); abs_err == nil {
 		root = absolute
 	}

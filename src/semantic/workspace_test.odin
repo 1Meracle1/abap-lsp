@@ -774,7 +774,7 @@ workspace_test_add_external_class_method_with_param :: proc(
 	method_payload.is_static = true
 	method.type = external_new_type(external, .Routine)
 	method.type.routine.signature_scope = signature_scope
-	_ = scope_insert_declaration(class_payload.definition_scope, method)
+	scope_insert_declaration(class_payload.definition_scope, method)
 
 	param := external_new_entity(external, .Parameter)
 	param.name = project_intern_lower_ascii(project, param_name)
@@ -787,7 +787,7 @@ workspace_test_add_external_class_method_with_param :: proc(
 	assert(param_ok && param_payload != nil)
 	param_payload.section = .Method_Importing
 	param_payload.passing = .Reference
-	_ = scope_insert_declaration(signature_scope, param)
+	scope_insert_declaration(signature_scope, param)
 	append(&method_payload.parameters, param)
 	append(&method.type.routine.parameters, param)
 	return method
@@ -815,7 +815,7 @@ workspace_test_add_external_class_attribute :: proc(
 	attr.member_kind = .Attribute
 	attr.visibility = visibility
 	attr.flags += {.Has_Declared_Type}
-	_ = scope_insert_declaration(class_payload.definition_scope, attr)
+	scope_insert_declaration(class_payload.definition_scope, attr)
 	return attr
 }
 
@@ -1680,7 +1680,7 @@ semantic_workspace_keeps_external_ddic_fields_with_unresolved_types_soft :: proc
 	fields := [?]External_Field_Summary {
 		{name = "raw_value", type_name = "zmissing_domain"},
 	}
-	_ = external_semantics_add_structure_summary(&external, "zunknown", fields[:])
+	external_semantics_add_structure_summary(&external, "zunknown", fields[:])
 
 	files := [?]Workspace_File_Input {
 		workspace_test_file(t, "mem://zmain.report.abap", `REPORT zmain.
@@ -1705,7 +1705,7 @@ semantic_workspace_keeps_external_class_parameters_with_unresolved_types_soft ::
 	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
 	class := external_semantics_add_class_summary(&external, "zcl_dep")
-	_ = workspace_test_add_external_class_method_with_param(&external, class, "run", "iv_value", "zmissing_domain")
+	workspace_test_add_external_class_method_with_param(&external, class, "run", "iv_value", "zmissing_domain")
 
 	files := [?]Workspace_File_Input {
 		workspace_test_file(t, "mem://zmain.report.abap", `REPORT zmain.
@@ -1781,7 +1781,7 @@ semantic_workspace_expands_external_include_source_in_lexical_order :: proc(t: ^
 	defer external_semantics_destroy(&external)
 	parsed_external := parser.parse("DATA gv_ext TYPE i.", "adt://zext.include.abap", context.allocator)
 	testing.expect_value(t, len(parsed_external.errors), 0)
-	_ = external_semantics_add_source_file(&external, "adt://zext.include.abap", parsed_external.root, []string{"zext"})
+	external_semantics_add_source_file(&external, "adt://zext.include.abap", parsed_external.root, []string{"zext"})
 
 	files := [?]Workspace_File_Input {
 		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. DATA gv_before TYPE i. INCLUDE zext. DATA gv_after TYPE i."),
@@ -1859,11 +1859,11 @@ semantic_workspace_resolves_external_type_and_sql_summaries_without_candidates :
 
 	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
-	_ = external_semantics_add_class_summary(&external, "zcl_remote")
+	external_semantics_add_class_summary(&external, "zcl_remote")
 	scarr_fields := [?]External_Field_Summary {
 		{name = "carrid", type_name = "string"},
 	}
-	_ = external_semantics_add_structure_summary(&external, "scarr", scarr_fields[:])
+	external_semantics_add_structure_summary(&external, "scarr", scarr_fields[:])
 
 	files := [?]Workspace_File_Input {
 		workspace_test_file(t, "mem://zmain.report.abap", `REPORT zmain.
@@ -1906,7 +1906,7 @@ semantic_workspace_resolves_external_function_modules_without_candidates :: proc
 
 	external := external_semantics_make()
 	defer external_semantics_destroy(&external)
-	_ = external_semantics_add_routine_summary(&external, "z_remote_fm", .Module)
+	external_semantics_add_routine_summary(&external, "z_remote_fm", .Module)
 
 	files := [?]Workspace_File_Input {
 		workspace_test_file(t, "mem://zmain.report.abap", "REPORT zmain. CALL FUNCTION 'Z_REMOTE_FM'."),

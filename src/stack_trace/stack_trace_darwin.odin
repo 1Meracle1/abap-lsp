@@ -43,7 +43,7 @@ when ODIN_DEBUG {
 	@(private)
 	warm_up_backtrace :: proc() {
 		frames: [1]rawptr
-		_ = backtrace(raw_data(frames[:]), c.int(len(frames)))
+		backtrace(raw_data(frames[:]), c.int(len(frames)))
 	}
 
 	@(private)
@@ -54,15 +54,15 @@ when ODIN_DEBUG {
 		if use_alt_stack {
 			action.sa_flags += {.ONSTACK}
 		}
-		_ = posix.sigemptyset(&action.sa_mask)
-		_ = posix.sigaction(sig, &action, nil)
+		posix.sigemptyset(&action.sa_mask)
+		posix.sigaction(sig, &action, nil)
 	}
 
 	@(private)
 	debug_crash_signal_handler :: proc "c" (sig: posix.Signal, info: ^posix.siginfo_t, _context: rawptr) {
 		print_native_signal_report(sig, info)
 		reset_signal_to_default(sig)
-		_ = posix.kill(posix.getpid(), sig)
+		posix.kill(posix.getpid(), sig)
 		posix._exit(c.int(128) + c.int(sig))
 	}
 
@@ -102,8 +102,8 @@ when ODIN_DEBUG {
 	reset_signal_to_default :: proc "contextless" (sig: posix.Signal) {
 		action: posix.sigaction_t
 		action.sa_handler = auto_cast posix.SIG_DFL
-		_ = posix.sigemptyset(&action.sa_mask)
-		_ = posix.sigaction(sig, &action, nil)
+		posix.sigemptyset(&action.sa_mask)
+		posix.sigaction(sig, &action, nil)
 	}
 
 	@(private)
@@ -140,7 +140,7 @@ when ODIN_DEBUG {
 		if len(text) == 0 {
 			return
 		}
-		_ = posix.write(posix.FD(posix.STDERR_FILENO), raw_data(text), c.size_t(len(text)))
+		posix.write(posix.FD(posix.STDERR_FILENO), raw_data(text), c.size_t(len(text)))
 	}
 
 	@(private)
@@ -160,7 +160,7 @@ when ODIN_DEBUG {
 			v /= 10
 		}
 
-		_ = posix.write(posix.FD(posix.STDERR_FILENO), raw_data(buf[i:]), c.size_t(len(buf) - i))
+		posix.write(posix.FD(posix.STDERR_FILENO), raw_data(buf[i:]), c.size_t(len(buf) - i))
 	}
 
 	@(private)
@@ -171,6 +171,6 @@ when ODIN_DEBUG {
 			shift := uint((width - 1 - i) * 4)
 			buf[i] = digits[int((value >> shift) & 0xf)]
 		}
-		_ = posix.write(posix.FD(posix.STDERR_FILENO), raw_data(buf[:width]), c.size_t(width))
+		posix.write(posix.FD(posix.STDERR_FILENO), raw_data(buf[:width]), c.size_t(width))
 	}
 }

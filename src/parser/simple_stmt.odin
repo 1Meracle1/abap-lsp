@@ -1525,7 +1525,7 @@ parse_assign_field_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	parse_assign_field_casting_addition(p, stmt)
 	if allow_keyword(p, "RANGE") {
-		_ = parse_raw_operand_to_period(p, []string{"CASTING", "TYPE", "DECIMALS"})
+		parse_raw_operand_to_period(p, []string{"CASTING", "TYPE", "DECIMALS"})
 		parse_assign_field_casting_addition(p, stmt)
 	}
 	if !raw_period_done(p) {
@@ -4673,7 +4673,7 @@ skip_call_function_named_assignment :: proc(p: ^Parser) {
 		bump_token(p)
 		return
 	}
-	_, _, _ = parse_call_stmt_arg_name(p)
+	parse_call_stmt_arg_name(p)
 	expect_token(p, .Eq)
 	value_end := call_function_arg_value_end(p, p.index, .Unknown)
 	for p.index < value_end {
@@ -5053,7 +5053,7 @@ append_call_transformation_arg :: proc(
 	has_eq := false
 	if call_transformation_named_arg_starts(p, p.index) {
 		tok := bump_token(p)
-		_ = expect_token(p, .Eq)
+		expect_token(p, .Eq)
 		name = parser_ast_raw_name_token(p, tok)
 		has_eq = true
 	} else if (kind == .Source || kind == .Result) && call_transformation_mode_token(p, current_token(p)) {
@@ -5215,12 +5215,12 @@ parse_raw_call_arguments :: proc(
 	for !raw_period_done(p) {
 		if call_kind == .Function && at_keyword_phrase(p, "PARAMETER-TABLE") {
 			expect_keyword_phrase(p, "PARAMETER-TABLE")
-			_ = parse_raw_operand_to_period(p, CALL_FUNCTION_DYNAMIC_TABLE_STOP_KEYWORDS, false, false, false)
+			parse_raw_operand_to_period(p, CALL_FUNCTION_DYNAMIC_TABLE_STOP_KEYWORDS, false, false, false)
 			continue
 		}
 		if call_kind == .Function && at_keyword_phrase(p, "EXCEPTION-TABLE") {
 			expect_keyword_phrase(p, "EXCEPTION-TABLE")
-			_ = parse_raw_operand_to_period(p, CALL_FUNCTION_DYNAMIC_TABLE_STOP_KEYWORDS, false, false, false)
+			parse_raw_operand_to_period(p, CALL_FUNCTION_DYNAMIC_TABLE_STOP_KEYWORDS, false, false, false)
 			continue
 		}
 		if call_argument_section_starts(p) {

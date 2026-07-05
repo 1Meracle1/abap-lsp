@@ -471,7 +471,7 @@ workspace_rebuild_project_snapshot_with_opened_dependencies :: proc(
 	if !build_ok {
 		return nil, false, build_error
 	}
-	_ = workspace_publish_project_snapshot(workspace, project_id, next)
+	workspace_publish_project_snapshot(workspace, project_id, next)
 	return next, true, ""
 }
 

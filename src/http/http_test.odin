@@ -55,7 +55,7 @@ test_server_run :: proc(t: ^thread.Thread) {
 	if recv_err == nil {
 		server.request_len = n
 	}
-	_, _ = net.send_tcp(client, transmute([]u8)server.response)
+	net.send_tcp(client, transmute([]u8)server.response)
 }
 
 @(test)

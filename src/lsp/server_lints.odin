@@ -127,7 +127,7 @@ server_start_lints_async :: proc(state: ^Server_State, output: ^os.File) -> bool
 		Server_Lint_Run_Payload{analyses = analyses[:]},
 		server_run_lints,
 	)
-	_ = execution.then_with(
+	execution.then_with(
 		graph,
 		root,
 		execution.worker_executor(&state.pool),

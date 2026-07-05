@@ -204,7 +204,11 @@ dependency_store_from_override_path :: proc(
 	if !ok {
 		return {}, .Missing_Store_Path
 	}
-	if db, open_err := open_connection(path, allocator); open_err == .None {
+	db, open_err := open_connection(path, allocator)
+	if open_err != .None {
+		return {}, open_err
+	}
+	if db != nil {
 		sqlite3.close(db)
 	}
 	return Dependency_Store{path = path}, .None
@@ -1437,7 +1441,7 @@ profile_key :: proc(profile: ^Dependency_Profile, allocator: mem.Allocator) -> s
 open_connection :: proc(path: string, allocator: mem.Allocator) -> (^sqlite3.Connection, Store_Error) {
 	parent := filepath.dir(path)
 	if parent != "" && parent != "." {
-		if os.make_directory_all(parent) != nil {
+		if err := os.make_directory_all(parent); err != nil && err != .Exist {
 			return nil, .Create_Directory
 		}
 	}

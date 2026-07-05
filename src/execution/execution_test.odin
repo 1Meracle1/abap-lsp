@@ -144,7 +144,7 @@ stats_track_graph_work :: proc(t: ^testing.T) {
 	defer graph_destroy(&graph)
 
 	for i in 0 ..< 4 {
-		_ = submit_value(&graph, worker_executor(&pool), i, inc)
+		submit_value(&graph, worker_executor(&pool), i, inc)
 	}
 	graph_start(&graph)
 	graph_wait(&graph)
@@ -377,7 +377,7 @@ detached_graph_completes_without_coordinator_wait :: proc(t: ^testing.T) {
 	graph := graph_create(&pool, base_runtime.heap_allocator())
 	out := 0
 	root := submit_value(graph, worker_executor(&pool), 9, inc)
-	_ = then_with(graph, root, worker_executor(&pool), &out, record_detached_value)
+	then_with(graph, root, worker_executor(&pool), &out, record_detached_value)
 	graph_detach(graph)
 
 	for i := 0; i < 100000 && sync.atomic_load_explicit(&out, .Acquire) == 0; i += 1 {

@@ -873,7 +873,7 @@ parse_catch_system_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if period.kind != .Period {
 		return nil
 	}
-	_ = parse_stmt_list_until(p, []string{"ENDCATCH"})
+	parse_stmt_list_until(p, []string{"ENDCATCH"})
 	end := expect_keyword_message(p, "ENDCATCH", "syntax error: expected ENDCATCH")
 	if !token_is_keyword(p, end, "ENDCATCH") {
 		return nil

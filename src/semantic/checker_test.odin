@@ -466,6 +466,53 @@ ENDFORM.`
 }
 
 @(test)
+root_semantic_type_checker_preserves_fixed_character_lengths :: proc(t: ^testing.T) {
+	source := `TYPES ty_c10 TYPE c LENGTH 10.
+DATA lv_c10 TYPE c LENGTH 10.
+DATA lv_c5 TYPE c LENGTH 5.
+DATA lv_default TYPE c.
+DATA lv_string TYPE string.
+DATA lv_alias TYPE ty_c10.
+lv_c5 = lv_c10.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://fixed_character_lengths.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 0)
+
+	ty_c10 := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_c10", .Type_Def)
+	lv_c10 := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_c10", .Variable)
+	lv_c5 := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_c5", .Variable)
+	lv_default := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_default", .Variable)
+	lv_string := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_string", .Variable)
+	lv_alias := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_alias", .Variable)
+	testing.expect(t, ty_c10 != nil && lv_c10 != nil && lv_c5 != nil && lv_default != nil && lv_string != nil && lv_alias != nil)
+	if ty_c10 == nil || lv_c10 == nil || lv_c5 == nil || lv_default == nil || lv_string == nil || lv_alias == nil {
+		return
+	}
+
+	c10_length, c10_length_ok := type_length(lv_c10.type)
+	c5_length, c5_length_ok := type_length(lv_c5.type)
+	default_length, default_length_ok := type_length(lv_default.type)
+	alias_length, alias_length_ok := type_length(lv_alias.type)
+	ty_c10_length, ty_c10_length_ok := type_length(ty_c10.type)
+	_, string_has_length := type_length(lv_string.type)
+
+	testing.expect_value(t, checker_test_type_name(&project, lv_c10.type), "c")
+	testing.expect_value(t, checker_test_type_name(&project, lv_string.type), "string")
+	testing.expect(t, c10_length_ok && c10_length == 10)
+	testing.expect(t, c5_length_ok && c5_length == 5)
+	testing.expect(t, default_length_ok && default_length == 1)
+	testing.expect(t, alias_length_ok && alias_length == 10)
+	testing.expect(t, ty_c10_length_ok && ty_c10_length == 10)
+	testing.expect(t, !string_has_length)
+	testing.expect(t, !type_same(lv_c10.type, lv_c5.type))
+	testing.expect(t, type_same(lv_alias.type, ty_c10.type))
+}
+
+@(test)
 root_semantic_type_checker_resolves_declared_type_shapes :: proc(t: ^testing.T) {
 	source := `CLASS lcl_demo DEFINITION.
 ENDCLASS.
@@ -508,16 +555,16 @@ DATA lr_if TYPE REF TO lif_demo.`
 			testing.expect_value(t, checker_test_type_name(&project, text.type), "string")
 		}
 	}
-	testing.expect(t, checker_type_same(ls_line.type, ty_line.type))
+	testing.expect(t, type_same(ls_line.type, ty_line.type))
 
 	testing.expect_value(t, ty_lines.type.kind, Type_Kind.Named)
 	testing.expect(t, ty_lines.type.base != nil)
 	if ty_lines.type.base != nil {
 		testing.expect_value(t, ty_lines.type.base.kind, Type_Kind.Table)
 		testing.expect_value(t, ty_lines.type.base.table_form, ast.Data_Type_Form.Standard_Table)
-		testing.expect(t, checker_type_same(ty_lines.type.base.base, ty_line.type))
+		testing.expect(t, type_same(ty_lines.type.base.base, ty_line.type))
 	}
-	testing.expect(t, checker_type_same(lt_lines.type, ty_lines.type))
+	testing.expect(t, type_same(lt_lines.type, ty_lines.type))
 
 	testing.expect_value(t, lr_demo.type.kind, Type_Kind.Ref)
 	if lr_demo.type.base != nil {
@@ -762,9 +809,9 @@ DATA lt_ranges TYPE ty_code_ranges.`
 	if code_ranges.type != nil && code_ranges.type.base != nil {
 		testing.expect_value(t, code_ranges.type.base.kind, Type_Kind.Table)
 		testing.expect_value(t, code_ranges.type.base.table_form, ast.Data_Type_Form.Sorted_Table)
-		testing.expect(t, checker_type_same(code_ranges.type.base.base, code_range.type))
+		testing.expect(t, type_same(code_ranges.type.base.base, code_range.type))
 	}
-	testing.expect(t, checker_type_same(lt_ranges.type, code_ranges.type))
+	testing.expect(t, type_same(lt_ranges.type, code_ranges.type))
 }
 
 @(test)
@@ -792,7 +839,7 @@ DATA int_eket LIKE beket OCCURS 0 WITH HEADER LINE.`
 	if ty_line == nil || ty_range == nil || line == nil || int_eket == nil {
 		return
 	}
-	testing.expect(t, checker_type_same(line.type, ty_line.type))
+	testing.expect(t, type_same(line.type, ty_line.type))
 	testing.expect(t, ty_range.type != nil && ty_range.type.base != nil)
 	if ty_range.type != nil && ty_range.type.base != nil {
 		testing.expect_value(t, ty_range.type.base.kind, Type_Kind.Table)
@@ -809,6 +856,10 @@ DATA int_eket LIKE beket OCCURS 0 WITH HEADER LINE.`
 			testing.expect_value(t, checker_test_type_name(&project, option.type), "c")
 			testing.expect_value(t, checker_test_type_name(&project, low.type), "string")
 			testing.expect_value(t, checker_test_type_name(&project, high.type), "string")
+			sign_length, sign_length_ok := type_length(sign.type)
+			option_length, option_length_ok := type_length(option.type)
+			testing.expect(t, sign_length_ok && sign_length == 1)
+			testing.expect(t, option_length_ok && option_length == 2)
 		}
 	}
 	testing.expect_value(t, int_eket.type.kind, Type_Kind.Table)
@@ -1127,9 +1178,9 @@ ENDFORM.`
 
 	checker, file := checker_test_check_source(t, &project, source, "mem://scope_lookup.abap")
 
-	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "shared", .Variable)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Type, "shared", .Type_Def)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "shared", .Form)
+	checker_test_lookup(t, &project, file.root_scope, .Value, "shared", .Variable)
+	checker_test_lookup(t, &project, file.root_scope, .Type, "shared", .Type_Def)
+	checker_test_lookup(t, &project, file.root_scope, .Routine, "shared", .Form)
 	run := checker_test_lookup(t, &project, file.root_scope, .Routine, "run", .Form)
 	testing.expect(t, run != nil)
 	if run == nil {
@@ -2057,16 +2108,16 @@ CONSTANTS: BEGIN OF gc_pair,
 
 	report := checker_test_lookup(t, &project, file.root_scope, .Value, "zdecl", .Report)
 	include := checker_test_lookup(t, &project, file.root_scope, .Value, "zinc", .Include)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "gv_value", .Variable)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "lv_inline", .Variable)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "gc_limit", .Constant)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "<fs_row>", .Field_Symbol)
+	checker_test_lookup(t, &project, file.root_scope, .Value, "gv_value", .Variable)
+	checker_test_lookup(t, &project, file.root_scope, .Value, "lv_inline", .Variable)
+	checker_test_lookup(t, &project, file.root_scope, .Value, "gc_limit", .Constant)
+	checker_test_lookup(t, &project, file.root_scope, .Value, "<fs_row>", .Field_Symbol)
 	statics := checker_test_lookup(t, &project, file.root_scope, .Value, "sv_count", .Variable)
 	tables := checker_test_lookup(t, &project, file.root_scope, .Value, "mara", .Variable)
 	ranges := checker_test_lookup(t, &project, file.root_scope, .Value, "r_matnr", .Variable)
 	param := checker_test_lookup(t, &project, file.root_scope, .Value, "p_count", .Variable)
 	select_option := checker_test_lookup(t, &project, file.root_scope, .Value, "s_matnr", .Variable)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "tc_main", .Control)
+	checker_test_lookup(t, &project, file.root_scope, .Value, "tc_main", .Control)
 	typ := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_line", .Type_Def)
 	data_struct := checker_test_lookup(t, &project, file.root_scope, .Value, "gs_row", .Variable)
 	const_struct := checker_test_lookup(t, &project, file.root_scope, .Value, "gc_pair", .Constant)
@@ -2243,12 +2294,12 @@ START-OF-SELECTION.
 	checker, file := checker_test_check_source(t, &project, source, "mem://selection_screen_events.abap")
 
 	p_field := checker_test_lookup(t, &project, file.root_scope, .Value, "p_field", .Variable)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen output", .Event)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen on exit-command", .Event)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen on p_field", .Event)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen on value-request for p_field", .Event)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen", .Event)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Routine, "start-of-selection", .Event)
+	checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen output", .Event)
+	checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen on exit-command", .Event)
+	checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen on p_field", .Event)
+	checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen on value-request for p_field", .Event)
+	checker_test_lookup(t, &project, file.root_scope, .Routine, "at selection-screen", .Event)
+	checker_test_lookup(t, &project, file.root_scope, .Routine, "start-of-selection", .Event)
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Duplicate_Declaration), 0)
 
 	target_offset := checker_test_find_text(source, "ON p_field") + len("ON ")
@@ -2545,7 +2596,7 @@ ENDFORM.`
 	testing.expect(t, selector_ok)
 	if selector_ok {
 		testing.expect_value(t, selector_info.mode, ast.Addressing_Mode.Field)
-		testing.expect(t, checker_type_same(selector_info.type, lv_text.type))
+		testing.expect(t, type_same(selector_info.type, lv_text.type))
 	}
 }
 
@@ -2604,7 +2655,7 @@ ENDFORM.`
 	testing.expect(t, constructor_ok)
 	if constructor_ok {
 		testing.expect_value(t, constructor_info.mode, ast.Addressing_Mode.Value)
-		testing.expect(t, checker_type_same(constructor_info.type, lv_num.type))
+		testing.expect(t, type_same(constructor_info.type, lv_num.type))
 	}
 }
 
@@ -2674,7 +2725,7 @@ ENDFORM.`
 	tab1 := checker_test_lookup(t, &project, run_payload.body_scope, .Value, "tab1", .Variable)
 	testing.expect(t, base1 != nil && tab1 != nil)
 	if base1 != nil && tab1 != nil {
-		testing.expect(t, checker_type_same(tab1.type, base1.type))
+		testing.expect(t, type_same(tab1.type, base1.type))
 	}
 }
 
@@ -2772,12 +2823,12 @@ gt_mseg[] = lt_mseg[].`
 	if lhs_ok {
 		testing.expect_value(t, lhs_info.mode, ast.Addressing_Mode.Variable)
 		testing.expect(t, lhs_info.is_lhs)
-		testing.expect(t, checker_type_same(lhs_info.type, gt_mseg.type))
+		testing.expect(t, type_same(lhs_info.type, gt_mseg.type))
 	}
 	if rhs_ok {
 		testing.expect_value(t, rhs_info.mode, ast.Addressing_Mode.Value)
 		testing.expect(t, !rhs_info.is_lhs)
-		testing.expect(t, checker_type_same(rhs_info.type, lt_mseg.type))
+		testing.expect(t, type_same(rhs_info.type, lt_mseg.type))
 	}
 }
 
@@ -2832,7 +2883,7 @@ struct1 = struct2 = struct.`
 		testing.expect(t, middle_info.is_lhs)
 	}
 	if middle_ok && rhs_ok {
-		testing.expect(t, checker_type_same(middle_info.type, rhs_info.type))
+		testing.expect(t, type_same(middle_info.type, rhs_info.type))
 	}
 }
 
@@ -3043,8 +3094,8 @@ DATA(lv_val1) = 1.`
 	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_inline_forward_ref.abap")
 
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "lv_val", .Variable)
-	_ = checker_test_lookup(t, &project, file.root_scope, .Value, "lv_val1", .Variable)
+	checker_test_lookup(t, &project, file.root_scope, .Value, "lv_val", .Variable)
+	checker_test_lookup(t, &project, file.root_scope, .Value, "lv_val1", .Variable)
 
 	seen_forward_ref := false
 	for diagnostic in checker.info.diagnostics {
@@ -5341,7 +5392,7 @@ DATA(lt_delta_docnum_wt_ship1) = FILTER #(
 	lt_delta_docnum_wt_ship1 := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_delta_docnum_wt_ship1", .Variable)
 	testing.expect(t, lt_docnum_wt_ship != nil && lt_delta_docnum_wt_ship1 != nil)
 	if lt_docnum_wt_ship != nil && lt_delta_docnum_wt_ship1 != nil {
-		testing.expect(t, checker_type_same(lt_delta_docnum_wt_ship1.type, lt_docnum_wt_ship.type))
+		testing.expect(t, type_same(lt_delta_docnum_wt_ship1.type, lt_docnum_wt_ship.type))
 	}
 }
 
@@ -5553,7 +5604,7 @@ DATA(lt_delta_docnum_wt_ship1) = FILTER tt_docnum(
 	lt_delta_docnum_wt_ship1 := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_delta_docnum_wt_ship1", .Variable)
 	testing.expect(t, lt_delta_docnum_wt_ship != nil && lt_delta_docnum_wt_ship1 != nil)
 	if lt_delta_docnum_wt_ship != nil && lt_delta_docnum_wt_ship1 != nil {
-		testing.expect(t, checker_type_same(lt_delta_docnum_wt_ship.type, lt_delta_docnum_wt_ship1.type))
+		testing.expect(t, type_same(lt_delta_docnum_wt_ship.type, lt_delta_docnum_wt_ship1.type))
 	}
 }
 
@@ -7422,7 +7473,7 @@ lv_copy = lv_value + 1.`
 	if info_ok {
 		testing.expect_value(t, info.kind, Semantic_Expression_Info_Kind.Reference)
 		testing.expect_value(t, info.info.mode, ast.Addressing_Mode.Variable)
-		testing.expect(t, checker_type_same(info.info.type, decl.type))
+		testing.expect(t, type_same(info.info.type, decl.type))
 		testing.expect(t, info.scope == file.root_scope)
 	}
 

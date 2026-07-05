@@ -349,7 +349,7 @@ checker_check_stmt :: proc(
 		checker_check_select_stmt(ctx, n)
 	case ^ast.Open_Cursor_Stmt:
 		handle := checker_check_cursor_handle_expr(ctx, n.handle, true)
-		shape := checker_check_sql_select_query(ctx, n.query)
+		shape := checker_check_sql_select_query(ctx, &n.query)
 		checker_sql_register_cursor_query(ctx, handle.entity, shape)
 	case ^ast.Fetch_Stmt:
 		handle := checker_check_cursor_handle_expr(ctx, n.handle, false)
@@ -1885,7 +1885,7 @@ checker_modify_stmt_uses_db_source :: proc(ctx: ^Checker_Context, stmt: ^ast.Mod
 	if name == "" {
 		return false
 	}
-	_, _, value_ok := checker_lookup_reference(ctx, .Value, name)
+	_, _, value_ok := checker_lookup_declaration(ctx, .Value, name)
 	return !value_ok
 }
 
@@ -4032,11 +4032,11 @@ checker_check_dataset_integer_target :: proc(
 
 checker_check_select_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Select_Stmt) {
 	if stmt.with != nil {
-		for cte in stmt.with.entries {
-			checker_check_sql_select_query(ctx, cte.query)
+		for _, i in stmt.with.entries {
+			checker_check_sql_select_query(ctx, &stmt.with.entries[i].query)
 		}
 	}
-	checker_check_sql_select_query(ctx, stmt.query)
+	checker_check_sql_select_query(ctx, &stmt.query)
 	checker_check_stmt_list(ctx, stmt.body)
 }
 
@@ -4076,7 +4076,7 @@ checker_check_cursor_handle_type :: proc(
 		)
 		return
 	}
-	if checker_type_same(actual, expected) {
+	if type_same(actual, expected) {
 		return
 	}
 	if checker_type_is_ref(actual) || checker_type_is_table_like(ctx, actual) || checker_type_structure(actual) != nil {
@@ -4095,7 +4095,7 @@ checker_type_assignment_compatible :: proc(
 	dst: ^Type,
 	downcast := false,
 ) -> (bool, bool) {
-	if checker_type_same(src, dst) {
+	if type_same(src, dst) {
 		return true, true
 	}
 	if ok, known := checker_type_ref_compatible(ctx, src, dst, downcast); known {
@@ -4174,7 +4174,7 @@ checker_type_exact_or_generic :: proc(
 	dst: ^Type,
 	strict: bool,
 ) -> bool {
-	if checker_type_same(src, dst) || checker_type_generic_accepts(ctx, src, dst) {
+	if type_same(src, dst) || checker_type_generic_accepts(ctx, src, dst) {
 		return true
 	}
 	src_name, src_ok := checker_type_builtin_name(ctx, src)

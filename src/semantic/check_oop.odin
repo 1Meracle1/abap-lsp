@@ -912,7 +912,7 @@ checker_copy_inherited_parameter :: proc(
 	param_payload.section = inherited_payload.section
 	param_payload.passing = inherited_payload.passing
 	param_payload.param_value = inherited_payload.param_value
-	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_add_entity_and_decl_info(ctx, entity, decl)
 	append(&payload.parameters, entity)
 	append(&ctx.info.checked_entities, entity)
 	return entity
@@ -1047,7 +1047,7 @@ checker_ensure_oop_receiver_entity :: proc(
 	param_payload, param_ok := entity.payload.(^Entity_Variable_Payload)
 	assert(param_ok && param_payload != nil)
 	param_payload.passing = .Reference
-	_ = checker_add_entity_and_decl_info(ctx, entity, decl)
+	checker_add_entity_and_decl_info(ctx, entity, decl)
 	append(&ctx.info.checked_entities, entity)
 	return entity
 }

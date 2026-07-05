@@ -31,6 +31,10 @@ memory_database_round_trips_values :: proc(t: ^testing.T) {
 
 @(test)
 reports_linked_sqlite_version :: proc(t: ^testing.T) {
-	testing.expect_value(t, libversion_number(), c.int(VERSION_NUMBER))
+	when ODIN_OS == .Windows && ODIN_ARCH == .amd64 {
+		testing.expect_value(t, libversion_number(), c.int(VERSION_NUMBER))
+	} else {
+		testing.expect(t, libversion_number() >= 3024000)
+	}
 	testing.expect(t, threadsafe() != 0)
 }

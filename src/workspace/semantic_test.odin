@@ -107,12 +107,10 @@ unknown_value = 1.`
 
 @(test)
 workspace_file_analysis_reports_parse_errors_and_skips_remote_fetches :: proc(t: ^testing.T) {
-	root := `tmp\workspace_parse_errors`
-	os.remove_all(root)
-	testing.expect(t, os.make_directory_all(root) == nil)
+	root := workspace_test_temp_root(t, "workspace_parse_errors")
 	defer os.remove_all(root)
 
-	report_path := `tmp\workspace_parse_errors\zmain.report.abap`
+	report_path := workspace_test_join_path(t, root, "zmain.report.abap")
 	source := `REPORT zmain.
 DATA lv TYPE zmissing.
 APPEND VALUE #( field = 'hello'`
@@ -223,13 +221,11 @@ workspace_option_disables_adt_candidate_fetch_in_remote_config :: proc(t: ^testi
 
 @(test)
 analyze_path_uses_standalone_sibling_abap_files :: proc(t: ^testing.T) {
-	root := `tmp\workspace_standalone_sibling`
-	os.remove_all(root)
-	testing.expect(t, os.make_directory_all(root) == nil)
+	root := workspace_test_temp_root(t, "workspace_standalone_sibling")
 	defer os.remove_all(root)
 
-	report_path := `tmp\workspace_standalone_sibling\zmain.report.abap`
-	class_path := `tmp\workspace_standalone_sibling\zcl_repo.abap`
+	report_path := workspace_test_join_path(t, root, "zmain.report.abap")
+	class_path := workspace_test_join_path(t, root, "zcl_repo.abap")
 	testing.expect(t, os.write_entire_file(report_path, "REPORT zmain. zcl_repo=>run( ).") == nil)
 	testing.expect(
 		t,
@@ -287,6 +283,28 @@ ENDCLASS.`,
 		0,
 	)
 	testing.expect_value(t, workspace_test_unresolved_count(analysis, .Class, "zcl_repo"), 0)
+}
+
+workspace_test_temp_root :: proc(t: ^testing.T, name: string) -> string {
+	root := workspace_test_join_path(t, "tmp", name)
+	if absolute, abs_err := os.get_absolute_path(root, context.allocator); abs_err == nil {
+		root = absolute
+	}
+	if cleaned, clean_err := os.clean_path(root, context.allocator); clean_err == nil {
+		root = cleaned
+	}
+	os.remove_all(root)
+	testing.expect(t, os.make_directory_all(root) == nil)
+	return root
+}
+
+workspace_test_join_path :: proc(t: ^testing.T, a, b: string) -> string {
+	path, err := os.join_path({a, b}, context.allocator)
+	testing.expect(t, err == nil)
+	if err != nil {
+		return ""
+	}
+	return path
 }
 
 workspace_test_unresolved_count :: proc(

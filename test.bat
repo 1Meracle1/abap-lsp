@@ -29,6 +29,7 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" check "%ROOT%src\encoding\toml" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\ast" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\parser" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\ir" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\execution" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\trace" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\http" -no-entry-point %ODIN_FLAGS% || exit /b
@@ -46,6 +47,7 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" test "%ROOT%src\encoding\toml" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\ast" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\parser" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\ir" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\execution" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\http" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\adt" %ODIN_FLAGS% %TEST_FLAGS% || exit /b

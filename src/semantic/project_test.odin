@@ -34,9 +34,9 @@ root_semantic_project_storage_keeps_entity_scope_and_file_pointers_stable :: pro
 	testing.expect(t, previous == nil)
 
 	for _ in 0 ..< 300 {
-		_ = project_add_file(&project)
-		_ = project_new_entity(&project)
-		_ = project_new_scope(&project)
+		project_add_file(&project)
+		project_new_entity(&project)
+		project_new_scope(&project)
 	}
 
 	testing.expect_value(t, xar.len(project.files), 301)
@@ -91,9 +91,9 @@ root_semantic_project_storage_keeps_type_structure_and_decl_pointers_stable :: p
 	entity.type = project_type_named(&project, name, entity, structure_type)
 
 	for _ in 0 ..< 300 {
-		_ = project_new_type(&project)
-		_ = project_new_structure(&project)
-		_ = project_new_decl_info(&project, nil, nil, "", .Invalid, {})
+		project_new_type(&project)
+		project_new_structure(&project)
+		project_new_decl_info(&project, nil, nil, "", .Invalid, {})
 	}
 
 	unknown := project_type_unknown(&project)

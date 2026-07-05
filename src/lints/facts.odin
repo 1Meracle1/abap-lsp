@@ -1037,6 +1037,9 @@ type_backing_length :: proc(
 	if typ == nil || depth > 16 {
 		return 0, false
 	}
+	if typ.has_length {
+		return typ.length, true
+	}
 	if typ.entity != nil && typ.entity != current {
 		if length, ok := entity_backing_length(out, typ.entity, depth + 1); ok {
 			return length, true

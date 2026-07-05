@@ -800,8 +800,21 @@ append_disk_input_for_path :: proc(
 }
 
 file_uri_from_path :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
-	abs_path, path_ok := workspace.absolute_clean_path(path, context.temp_allocator)
-	if !path_ok {
+	abs_path := path
+	if !os.is_absolute_path(path) {
+		cwd, cwd_err := os.get_working_directory(context.temp_allocator)
+		if cwd_err != nil {
+			return "", false
+		}
+		joined, join_err := os.join_path({cwd, path}, context.temp_allocator)
+		if join_err != nil {
+			return "", false
+		}
+		abs_path = joined
+	}
+	if cleaned, clean_err := os.clean_path(abs_path, context.temp_allocator); clean_err == nil {
+		abs_path = cleaned
+	} else {
 		return "", false
 	}
 	normalized := normalize_lsp_uri(abs_path, context.temp_allocator)

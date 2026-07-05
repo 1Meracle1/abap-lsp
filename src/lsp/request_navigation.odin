@@ -1222,7 +1222,7 @@ materialize_dependency_document_uri :: proc(
 	}
 	parent := os.dir(path)
 	if parent != "" && parent != "." {
-		if os.make_directory_all(parent) != nil {
+		if err := os.make_directory_all(parent); err != nil && err != .Exist {
 			return "", false
 		}
 	}

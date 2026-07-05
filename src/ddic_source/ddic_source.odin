@@ -247,7 +247,7 @@ parse_type_definition :: proc(p: ^Parser) -> Type_Definition {
 	if !allow_token(p, .LBrace) {
 		error_current(p, "expected '{'")
 		recover_to_definition_body(p)
-	_ = allow_token(p, .LBrace)
+	allow_token(p, .LBrace)
 	}
 	for !at_eof(p) && !at_token(p, .RBrace) {
 		annotations := parse_annotations(p)
@@ -263,7 +263,7 @@ parse_type_definition :: proc(p: ^Parser) -> Type_Definition {
 		}
 		ensure_forward_progress(p, start)
 	}
-	_ = allow_token(p, .RBrace)
+	allow_token(p, .RBrace)
 	return definition
 }
 
@@ -317,7 +317,7 @@ parse_type_ref :: proc(p: ^Parser) -> Type_Ref {
 		return Type_Ref{kind = .Include, name = name}
 	}
 	if allow_keyword(p, "reference") {
-		_ = expect_keyword(p, "to")
+		expect_keyword(p, "to")
 		name := parse_name(p)
 		parse_type_arguments(p)
 		return Type_Ref{kind = .Reference_To, name = name}
@@ -364,7 +364,7 @@ parse_member_clause :: proc(p: ^Parser) -> (Clause, bool) {
 	case at_keyword(p, "not"):
 		start := current_token(p).range.start
 		bump_token(p)
-		_ = allow_keyword(p, "null")
+		allow_keyword(p, "null")
 		return Clause{kind = .Not_Null, range = tokenizer.text_range(start, previous_token(p).range.end)}, true
 	case at_keyword(p, "with"):
 		return parse_with_clause(p), true
@@ -380,13 +380,13 @@ parse_member_clause :: proc(p: ^Parser) -> (Clause, bool) {
 
 parse_with_clause :: proc(p: ^Parser) -> Clause {
 	start := current_token(p).range.start
-	_ = allow_keyword(p, "with")
+	allow_keyword(p, "with")
 	kind := Clause_Kind.Unknown
 	if allow_keyword(p, "foreign") {
-		_ = allow_keyword(p, "key")
+		allow_keyword(p, "key")
 		kind = .Foreign_Key
 	} else if allow_keyword(p, "value") {
-		_ = allow_keyword(p, "help")
+		allow_keyword(p, "help")
 		kind = .Value_Help
 	}
 	parse_clause_body(p)
@@ -402,10 +402,10 @@ parse_keyword_clause :: proc(p: ^Parser, kind: Clause_Kind) -> Clause {
 
 parse_remove_clause :: proc(p: ^Parser) -> Clause {
 	start := current_token(p).range.start
-	_ = allow_keyword(p, "remove")
+	allow_keyword(p, "remove")
 	kind := Clause_Kind.Unknown
 	if allow_keyword(p, "foreign") {
-		_ = allow_keyword(p, "key")
+		allow_keyword(p, "key")
 		kind = .Remove_Foreign_Key
 	}
 	parse_clause_body(p)
@@ -481,7 +481,7 @@ parse_annotations :: proc(p: ^Parser) -> [dynamic]Annotation {
 
 parse_annotation :: proc(p: ^Parser) -> Annotation {
 	start := current_token(p).range.start
-	_ = allow_token(p, .At)
+	allow_token(p, .At)
 	name := parse_name(p)
 	value := ""
 	for !at_eof(p) && !at_token(p, .RBrace) {

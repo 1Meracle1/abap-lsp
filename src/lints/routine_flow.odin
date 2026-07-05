@@ -1335,7 +1335,7 @@ routine_flow_analyze_global_declarations :: proc(
 	ctx.tracked_values = make([dynamic]^semantic.Entity, 0, 4, ctx.allocator)
 	ctx.dead_store_untracked_values = make([dynamic]^semantic.Entity, 0, 4, ctx.allocator)
 	state := routine_flow_state_make(ctx.allocator)
-	_ = routine_flow_analyze_stmt_list(&ctx, global_stmts[:], state)
+	routine_flow_analyze_stmt_list(&ctx, global_stmts[:], state)
 	routine_flow_dead_store_collect_untracked_stmt_list(&ctx, global_stmts[:])
 	routine_flow_dead_store_analyze_stmt_list(&ctx, global_stmts[:], routine_flow_entity_list_make(ctx.allocator))
 }
@@ -1415,7 +1415,7 @@ routine_flow_analyze_routine :: proc(
 	ctx.tracked_values = make([dynamic]^semantic.Entity, 0, 4, ctx.allocator)
 	ctx.dead_store_untracked_values = make([dynamic]^semantic.Entity, 0, 4, ctx.allocator)
 	state := routine_flow_state_make(ctx.allocator)
-	_ = routine_flow_analyze_stmt_list(&ctx, body, state)
+	routine_flow_analyze_stmt_list(&ctx, body, state)
 	routine_flow_dead_store_collect_untracked_stmt_list(&ctx, body)
 	routine_flow_dead_store_analyze_stmt_list(&ctx, body, routine_flow_entity_list_make(ctx.allocator))
 }
@@ -1588,12 +1588,12 @@ routine_flow_analyze_stmt :: proc(
 	case ^ast.While_Stmt:
 		routine_flow_read_condition_expr(ctx, &next, n.condition)
 		body := routine_flow_state_clone(next, ctx.allocator)
-		_ = routine_flow_analyze_stmt_list(ctx, n.body[:], body)
+		routine_flow_analyze_stmt_list(ctx, n.body[:], body)
 		routine_flow_clear_last_success(&next)
 	case ^ast.Do_Stmt:
 		routine_flow_read_expr(ctx, &next, n.count)
 		body := routine_flow_state_clone(next, ctx.allocator)
-		_ = routine_flow_analyze_stmt_list(ctx, n.body[:], body)
+		routine_flow_analyze_stmt_list(ctx, n.body[:], body)
 		routine_flow_clear_last_success(&next)
 	case ^ast.Loop_Stmt:
 		routine_flow_read_expr(ctx, &next, n.source)
@@ -1613,12 +1613,12 @@ routine_flow_analyze_stmt :: proc(
 		} else {
 			routine_flow_write_expr(ctx, &body, n.group_target)
 		}
-		_ = routine_flow_analyze_stmt_list(ctx, n.body[:], body)
+		routine_flow_analyze_stmt_list(ctx, n.body[:], body)
 		routine_flow_clear_last_success(&next)
 	case ^ast.At_Stmt:
 		routine_flow_read_expr(ctx, &next, n.expr)
 		body := routine_flow_state_clone(next, ctx.allocator)
-		_ = routine_flow_analyze_stmt_list(ctx, n.body[:], body)
+		routine_flow_analyze_stmt_list(ctx, n.body[:], body)
 		routine_flow_clear_last_success(&next)
 	case ^ast.Try_Stmt:
 		next = routine_flow_merge_try_stmt(ctx, n, next)
@@ -1639,7 +1639,7 @@ routine_flow_analyze_stmt :: proc(
 				body = routine_flow_state_clone(next, ctx.allocator)
 			}
 		}
-		_ = routine_flow_analyze_stmt_list(ctx, n.body[:], body)
+		routine_flow_analyze_stmt_list(ctx, n.body[:], body)
 		if conditional_success {
 			// Keep the success state for an immediately following sy-subrc guard.
 		} else {

@@ -262,7 +262,7 @@ handle_request :: proc(ctx: ^Request_Context, method: string, params: json.Value
 send_success :: proc(output: ^os.File, id: json.Value, result: any, allocator: mem.Allocator) {
 	payload_allocator := server_payload_allocator(allocator)
 	if payload, ok := rpc_success_payload(id, result, payload_allocator); ok {
-		_ = write_frame(output, payload)
+		write_frame(output, payload)
 	}
 }
 
@@ -275,7 +275,7 @@ send_error :: proc(
 ) {
 	payload_allocator := server_payload_allocator(allocator)
 	if payload, ok := rpc_error_payload(id, code, message, payload_allocator); ok {
-		_ = write_frame(output, payload)
+		write_frame(output, payload)
 	}
 }
 
@@ -287,7 +287,7 @@ send_notification :: proc(
 ) {
 	payload_allocator := server_payload_allocator(allocator)
 	if payload, ok := notification_payload(method, params, payload_allocator); ok {
-		_ = write_frame(output, payload)
+		write_frame(output, payload)
 	}
 }
 
