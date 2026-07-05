@@ -12,6 +12,7 @@ Op_Id :: distinct u32
 Value_Id :: distinct u32
 Type_Id :: distinct u32
 Slot_Id :: distinct u32
+Projection_Id :: distinct u32
 
 INVALID_FUNCTION_ID :: Function_Id(0xffffffff)
 INVALID_BLOCK_ID :: Block_Id(0xffffffff)
@@ -19,6 +20,7 @@ INVALID_OP_ID :: Op_Id(0xffffffff)
 INVALID_VALUE_ID :: Value_Id(0xffffffff)
 INVALID_TYPE_ID :: Type_Id(0xffffffff)
 INVALID_SLOT_ID :: Slot_Id(0xffffffff)
+INVALID_PROJECTION_ID :: Projection_Id(0xffffffff)
 
 BUILTIN_TYPE_VOID :: Type_Id(0)
 BUILTIN_TYPE_WORLD :: Type_Id(1)
@@ -70,8 +72,8 @@ Slot_Kind :: enum {
 	Local,
 	Parameter,
 	Global,
+	Runtime,
 	Instance,
-	System_Field,
 	Field,
 	Table_Handle,
 	Temporary,
@@ -83,6 +85,23 @@ Slot :: struct {
 	type:   Type_Id,
 	entity: ^semantic.Entity,
 	source: Source_Loc,
+}
+
+Projection_Segment_Kind :: enum {
+	Field,
+}
+
+Projection_Segment :: struct {
+	kind:        Projection_Segment_Kind,
+	name:        string,
+	selector:    ast.Selector_Op,
+	field_index: i32,
+	entity:      ^semantic.Entity,
+	source:      Source_Loc,
+}
+
+Projection_Path :: struct {
+	segments: [dynamic]Projection_Segment,
 }
 
 Value_Kind :: enum {
@@ -246,6 +265,8 @@ Op_Flags :: bit_set[Op_Flag]
 
 Op_Payload :: struct {
 	slot:                Slot_Id,
+	projection:          Projection_Id,
+	has_projection:      bool,
 	field_name:          string,
 	literal:             string,
 	callee_name:         string,
@@ -289,7 +310,7 @@ Op_Payload :: struct {
 	sql_distinct:          bool,
 	sql_for_all_entries:   bool,
 	sql_from_table:        bool,
-	system_field:        string,
+	system_field:          string,
 	unsupported_message: string,
 	sql_query:           ^ast.Select_Query_Clause,
 	ast_stmt:            ^ast.Stmt,
@@ -347,6 +368,7 @@ Function :: struct {
 	source:       Source_Loc,
 	return_types: [dynamic]Type_Id,
 	slots:        [dynamic]Slot,
+	projections:  [dynamic]Projection_Path,
 	values:       [dynamic]Value,
 	blocks:       [dynamic]Block,
 	op_locations: [dynamic]Op_Location,
@@ -400,6 +422,10 @@ function_destroy :: proc(function: ^Function) {
 	}
 	delete(function.return_types)
 	delete(function.slots)
+	for &projection in function.projections {
+		delete(projection.segments)
+	}
+	delete(function.projections)
 	delete(function.values)
 	delete(function.blocks)
 	delete(function.op_locations)
@@ -459,6 +485,11 @@ value_ptr :: #force_inline proc(function: ^Function, id: Value_Id) -> ^Value {
 slot_ptr :: #force_inline proc(function: ^Function, id: Slot_Id) -> ^Slot {
 	assert(function != nil && id != INVALID_SLOT_ID && int(id) < len(function.slots))
 	return &function.slots[int(id)]
+}
+
+projection_ptr :: #force_inline proc(function: ^Function, id: Projection_Id) -> ^Projection_Path {
+	assert(function != nil && id != INVALID_PROJECTION_ID && int(id) < len(function.projections))
+	return &function.projections[int(id)]
 }
 
 type_ptr :: #force_inline proc(module: ^Module, id: Type_Id) -> ^Type {

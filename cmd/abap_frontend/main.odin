@@ -1,6 +1,7 @@
 package main
 
 import "src:ast"
+import cli "src:cli"
 import execution "src:execution"
 import ir "src:ir"
 import bytecode "src:ir/bytecode"
@@ -12,9 +13,8 @@ import "src:tokenizer"
 import trace "src:trace"
 import workspace "src:workspace"
 
-import "base:runtime"
+import base_runtime "base:runtime"
 import "core:container/xar"
-import json "core:encoding/json"
 import "core:fmt"
 import "core:mem"
 import "core:mem/virtual"
@@ -23,7 +23,6 @@ import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "core:terminal"
-import ansi "core:terminal/ansi"
 import "core:time"
 
 print_usage :: proc() {
@@ -58,19 +57,9 @@ Node_Counts :: struct {
 }
 
 Allocation_Location_Total :: struct {
-	location: runtime.Source_Code_Location,
+	location: base_runtime.Source_Code_Location,
 	bytes:    i64,
 	count:    int,
-}
-
-Source_Cache_Entry :: struct {
-	path:   string,
-	source: string,
-}
-
-Analyze_Diagnostic_Output :: struct {
-	diagnostic:    semantic.Checker_Diagnostic,
-	fallback_path: string,
 }
 
 Analyze_Lint_Diagnostic_Output :: struct {
@@ -195,10 +184,6 @@ Ir_Cli_Output :: enum {
 	Module,
 	Bytecode,
 }
-
-SGR_RESET :: ansi.CSI + ansi.RESET + ansi.SGR
-SGR_RED :: ansi.CSI + ansi.FG_RED + ansi.SGR
-SGR_YELLOW :: ansi.CSI + ansi.FG_YELLOW + ansi.SGR
 
 main :: proc() {
 	stack_trace.install_debug_crash_trace()
@@ -374,7 +359,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		execution.pool_start(&pool)
 	}
 
-	result := analyze_cli_path(
+	result := cli.analyze_path(
 		target_path,
 		include_paths[:],
 		&pool,
@@ -389,8 +374,8 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	when trace.ENABLED {
 		print_analyze_counts(&result)
 	}
-	diagnostic_path_filter := analyze_diagnostic_path_filter(target_path, context.temp_allocator)
-	count_errors := print_analyze_diagnostics(&result, warnings_as_errors, diagnostic_path_filter)
+	diagnostic_path_filter := cli.diagnostic_path_filter(target_path, context.temp_allocator)
+	count_errors := cli.print_analysis_diagnostics(&result, warnings_as_errors, diagnostic_path_filter)
 	if .Enable_Lints in workspace_flags {
 		lint_analysis := run_analyze_lints(&result, &pool)
 		count_errors += print_lint_diagnostics(
@@ -464,7 +449,7 @@ run_lint :: proc(args: []string, allocator: mem.Allocator) {
 	defer execution.pool_destroy(&pool)
 
 	path_filter :=
-		"" if options.all_files else analyze_diagnostic_path_filter(target_path, context.temp_allocator)
+		"" if options.all_files else cli.diagnostic_path_filter(target_path, context.temp_allocator)
 	hard_errors := lint_cli_hard_errors(&result, path_filter, context.temp_allocator)
 	policy := result.lint_policy
 	if options.show_suppressed {
@@ -492,9 +477,9 @@ run_lint :: proc(args: []string, allocator: mem.Allocator) {
 			path_filter,
 			context.temp_allocator,
 		)
-		lint_cli_emit_json(report, options.pretty, context.temp_allocator)
+		cli.emit_json(report, options.pretty, context.temp_allocator)
 	} else if len(hard_errors) > 0 {
-		print_analyze_diagnostics(&result, false, path_filter)
+		cli.print_analysis_diagnostics(&result, false, path_filter)
 	} else {
 		print_lint_diagnostics(&lint_analysis, options.fail_on_warnings, path_filter)
 	}
@@ -562,7 +547,7 @@ run_ir :: proc(args: []string, allocator: mem.Allocator, output: Ir_Cli_Output) 
 		execution.pool_start(&pool)
 	}
 
-	result := analyze_cli_path(
+	result := cli.analyze_path(
 		target_path,
 		include_paths[:],
 		&pool,
@@ -625,7 +610,7 @@ print_ir_for_analysis :: proc(
 			delete(text, allocator)
 			printed = true
 		} else {
-			print_ir_verify_diagnostics(project_result.root_path, verify.diagnostics[:])
+			cli.print_ir_verify_diagnostics(project_result.root_path, verify.diagnostics[:])
 			ok = false
 		}
 		ir.verify_result_destroy(&verify)
@@ -668,7 +653,7 @@ print_emitted_bytecode_for_analysis :: proc(
 			delete(text, allocator)
 			printed = true
 		} else {
-			print_emitted_bytecode_lower_error(project_result.root_path, &emitted_bytecode)
+			cli.print_bytecode_lower_error(project_result.root_path, &emitted_bytecode)
 			ok = false
 		}
 		bytecode.module_destroy(&emitted_bytecode.module)
@@ -680,69 +665,6 @@ print_emitted_bytecode_for_analysis :: proc(
 		return false
 	}
 	return ok
-}
-
-print_emitted_bytecode_lower_error :: proc(
-	fallback_path: string,
-	lowered: ^bytecode.Lower_Result,
-) {
-	source_cache := make([dynamic]Source_Cache_Entry, 0, 1, context.temp_allocator)
-	path := fallback_path
-	if lowered.source.file != nil && lowered.source.file.path != "" {
-		path = lowered.source.file.path
-	}
-	uri := display_uri(path, context.temp_allocator)
-	if lowered.source.range.end > lowered.source.range.start {
-		source := cached_source(path, &source_cache, context.temp_allocator)
-		line_starts := build_line_starts(source, context.temp_allocator)
-		pos := source_position(source, line_starts[:], lowered.source.range.start)
-		fmt.eprintf("%s(%d:%d) error BYTECODE: %s", uri, pos.line, pos.column, lowered.message)
-	} else {
-		fmt.eprintf("%s error BYTECODE: %s", uri, lowered.message)
-	}
-	fmt.eprintln()
-}
-
-print_ir_verify_diagnostics :: proc(
-	fallback_path: string,
-	diagnostics: []ir.Verify_Diagnostic,
-) {
-	source_cache := make([dynamic]Source_Cache_Entry, 0, 4, context.temp_allocator)
-	for diagnostic in diagnostics {
-		path := fallback_path
-		if diagnostic.source.file != nil && diagnostic.source.file.path != "" {
-			path = diagnostic.source.file.path
-		}
-		uri := display_uri(path, context.temp_allocator)
-		if diagnostic.source.range.end > diagnostic.source.range.start {
-			source := cached_source(path, &source_cache, context.temp_allocator)
-			line_starts := build_line_starts(source, context.temp_allocator)
-			pos := source_position(source, line_starts[:], diagnostic.source.range.start)
-			fmt.eprintf(
-				"%s(%d:%d) error IR_%v: %s",
-				uri,
-				pos.line,
-				pos.column,
-				diagnostic.kind,
-				diagnostic.message,
-			)
-		} else {
-			fmt.eprintf("%s error IR_%v: %s", uri, diagnostic.kind, diagnostic.message)
-		}
-		if diagnostic.function != ir.INVALID_FUNCTION_ID {
-			fmt.eprintf(" function=%d", int(diagnostic.function))
-		}
-		if diagnostic.block != ir.INVALID_BLOCK_ID {
-			fmt.eprintf(" block=%d", int(diagnostic.block))
-		}
-		if diagnostic.op != ir.INVALID_OP_ID {
-			fmt.eprintf(" op=%d", int(diagnostic.op))
-		}
-		if diagnostic.value != ir.INVALID_VALUE_ID {
-			fmt.eprintf(" value=%d", int(diagnostic.value))
-		}
-		fmt.eprintln()
-	}
 }
 
 lint_parse_options :: proc(args: []string) -> (Lint_Cli_Options, bool) {
@@ -897,7 +819,7 @@ lint_cli_hard_errors :: proc(
 	if analysis == nil {
 		return out
 	}
-	diagnostics := make([dynamic]Analyze_Diagnostic_Output, 0, 16, allocator)
+	diagnostics := make([dynamic]cli.Analysis_Diagnostic_Output, 0, 16, allocator)
 	for project_result in analysis.project_results {
 		if project_result.project == nil || project_result.checker == nil {
 			continue
@@ -910,22 +832,22 @@ lint_cli_hard_errors :: proc(
 		for diagnostic in project_diagnostics {
 			append(
 				&diagnostics,
-				Analyze_Diagnostic_Output {
+				cli.Analysis_Diagnostic_Output {
 					diagnostic = diagnostic,
 					fallback_path = project_result.root_path,
 				},
 			)
 		}
 	}
-	slice.sort_by(diagnostics[:], analyze_diagnostic_output_less)
+	slice.sort_by(diagnostics[:], cli.analysis_diagnostic_output_less)
 	for item in diagnostics {
 		if item.diagnostic.kind != .Syntax_Error || item.diagnostic.severity != .Error {
 			continue
 		}
-		if !analyze_diagnostic_output_matches_filter(item, path_filter) {
+		if !cli.analysis_diagnostic_output_matches_filter(item, path_filter, allocator) {
 			continue
 		}
-		path := analyze_diagnostic_output_path(item)
+		path := cli.analysis_diagnostic_output_path(item)
 		append(
 			&out,
 			Lint_Cli_Hard_Error {
@@ -1213,7 +1135,7 @@ lint_cli_file_uri :: proc(path: string, allocator: mem.Allocator) -> string {
 	if path == "" {
 		return ""
 	}
-	display := display_uri(path, allocator)
+	display := cli.display_uri(path, allocator)
 	lower := strings.to_lower(display, context.temp_allocator)
 	if strings.has_prefix(lower, "file://") {
 		return display
@@ -1239,71 +1161,6 @@ lint_cli_optional_int :: proc(value: int, present: bool) -> Maybe(int) {
 		return nil
 	}
 	return value
-}
-
-lint_cli_emit_json :: proc(value: any, pretty: bool, allocator: mem.Allocator) {
-	options := json.Marshal_Options {
-		spec = .JSON,
-	}
-	if pretty {
-		options.pretty = true
-		options.use_spaces = true
-		options.spaces = 2
-	}
-	bytes, err := json.marshal(value, options, allocator)
-	if err != nil {
-		fmt.eprintf("error: failed to serialize JSON: %v\n", err)
-		os.exit(1)
-	}
-	fmt.println(string(bytes))
-}
-
-analyze_diagnostic_path_filter :: proc(path: string, allocator: mem.Allocator) -> string {
-	abs_path, ok := workspace.absolute_clean_path(path, allocator)
-	if !ok {
-		return ""
-	}
-	info, err := os.stat(abs_path, allocator)
-	if err != nil || info.type != .Regular {
-		return ""
-	}
-	return abs_path
-}
-
-analyze_cli_path :: proc(
-	path: string,
-	include_paths: []string,
-	pool: ^execution.Pool,
-	options: workspace.Options,
-	allocator: mem.Allocator,
-) -> workspace.Analysis_Result {
-	abs_path, ok := workspace.absolute_clean_path(path, allocator)
-	if !ok {
-		return workspace.Analysis_Result{ok = false, error = "invalid path"}
-	}
-	info, err := os.stat(abs_path, allocator)
-	if err != nil {
-		return workspace.Analysis_Result{ok = false, error = "invalid path"}
-	}
-	if info.type == .Directory {
-		opened, workspace_ok, workspace_error := workspace.open(abs_path, options, allocator)
-		if !workspace_ok {
-			return workspace.Analysis_Result{ok = false, error = workspace_error}
-		}
-		defer workspace.workspace_destroy(&opened, allocator)
-		return workspace.analyze_workspace(&opened, include_paths, pool, options, allocator)
-	}
-
-	opened, workspace_ok, workspace_error := workspace.open_standalone(
-		os.dir(abs_path),
-		options,
-		allocator,
-	)
-	if !workspace_ok {
-		return workspace.Analysis_Result{ok = false, error = workspace_error}
-	}
-	defer workspace.workspace_destroy(&opened, allocator)
-	return workspace.analyze_path(&opened, abs_path, include_paths, pool, options, allocator)
 }
 
 print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
@@ -1352,7 +1209,7 @@ print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
 	}
 }
 
-source_location_equal :: proc(a, b: runtime.Source_Code_Location) -> bool {
+source_location_equal :: proc(a, b: base_runtime.Source_Code_Location) -> bool {
 	return(
 		a.file_path == b.file_path &&
 		a.line == b.line &&
@@ -1396,125 +1253,6 @@ print_analyze_counts :: proc(result: ^workspace.Analysis_Result) {
 		len(analysis.unresolved),
 		len(analysis.external_requests),
 	)
-}
-
-Source_Position :: struct {
-	line:   int,
-	column: int,
-}
-
-build_line_starts :: proc(source: string, allocator: mem.Allocator) -> [dynamic]int {
-	starts := make([dynamic]int, 0, 128, allocator)
-	append(&starts, 0)
-	for i in 0 ..< len(source) {
-		if source[i] == '\n' {
-			append(&starts, i + 1)
-		}
-	}
-	return starts
-}
-
-source_position :: proc(source: string, starts: []int, offset: int) -> Source_Position {
-	pos := offset
-	if pos < 0 {
-		pos = 0
-	}
-	if pos > len(source) {
-		pos = len(source)
-	}
-	line_index := 0
-	lo, hi := 0, len(starts) - 1
-	for lo <= hi {
-		mid := (lo + hi) / 2
-		if starts[mid] <= pos {
-			line_index = mid
-			lo = mid + 1
-		} else {
-			hi = mid - 1
-		}
-	}
-	return Source_Position{line = line_index + 1, column = pos - starts[line_index] + 1}
-}
-
-source_line_text :: proc(source: string, starts: []int, line: int) -> string {
-	index := line - 1
-	if index < 0 || index >= len(starts) {
-		return ""
-	}
-	start := starts[index]
-	end := len(source)
-	if index + 1 < len(starts) {
-		end = starts[index + 1] - 1
-	}
-	if end > start && source[end - 1] == '\r' {
-		end -= 1
-	}
-	return source[start:end]
-}
-
-display_uri :: proc(uri: string, allocator: mem.Allocator) -> string {
-	out := strings.builder_make(allocator)
-	for i in 0 ..< len(uri) {
-		ch := uri[i]
-		if ch == '\\' {
-			ch = '/'
-		}
-		strings.write_byte(&out, ch)
-	}
-	return strings.to_string(out)
-}
-
-print_caret_line :: proc(start_column, width: int, color: string) {
-	fmt.print("    ")
-	spaces := start_column - 1
-	for _ in 0 ..< spaces {
-		fmt.print(" ")
-	}
-	w := width
-	if w < 1 {
-		w = 1
-	}
-	if color != "" {
-		fmt.print(color)
-	}
-	for _ in 0 ..< w {
-		fmt.print("^")
-	}
-	if color != "" {
-		fmt.print(SGR_RESET)
-	}
-	fmt.println()
-}
-
-print_source_highlight :: proc(
-	source: string,
-	starts: []int,
-	start, end: Source_Position,
-	color: string,
-) {
-	range_end := end
-	if range_end.line > start.line && range_end.column == 1 {
-		range_end.line -= 1
-		range_end.column = len(source_line_text(source, starts, range_end.line)) + 1
-	}
-	if range_end.line < start.line ||
-	   (range_end.line == start.line && range_end.column < start.column) {
-		range_end = start
-	}
-
-	for line := start.line; line <= range_end.line; line += 1 {
-		line_text := source_line_text(source, starts, line)
-		caret_start := 1
-		caret_end := len(line_text) + 1
-		if line == start.line {
-			caret_start = start.column
-		}
-		if line == range_end.line {
-			caret_end = range_end.column
-		}
-		fmt.printf("    %s\n", line_text)
-		print_caret_line(caret_start, caret_end - caret_start, color)
-	}
 }
 
 run_perf_edit :: proc(args: []string, allocator: mem.Allocator) {
@@ -1718,57 +1456,6 @@ perf_workspace_input_from_source :: proc(
 	}
 }
 
-print_analyze_diagnostics :: proc(
-	result: ^workspace.Analysis_Result,
-	warnings_as_errors: bool,
-	path_filter: string = "",
-) -> (
-	count_errors: int,
-) {
-	use_color := terminal.color_enabled && terminal.is_terminal(os.stdout)
-	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
-	if analysis == nil {
-		return
-	}
-	source_cache := make([dynamic]Source_Cache_Entry, 0, 16, context.temp_allocator)
-	diagnostics := make([dynamic]Analyze_Diagnostic_Output, 0, 16, context.temp_allocator)
-	for project_result in analysis.project_results {
-		if project_result.project == nil || project_result.checker == nil {
-			continue
-		}
-		query := semantic.semantic_query(project_result.project, project_result.checker)
-		project_diagnostics := semantic.semantic_diagnostic_copies(
-			semantic.semantic_query_diagnostics(query),
-			context.temp_allocator,
-		)
-		for diagnostic in project_diagnostics {
-			append(
-				&diagnostics,
-				Analyze_Diagnostic_Output {
-					diagnostic = diagnostic,
-					fallback_path = project_result.root_path,
-				},
-			)
-		}
-	}
-	slice.sort_by(diagnostics[:], analyze_diagnostic_output_less)
-	for item in diagnostics {
-		if !analyze_diagnostic_output_matches_filter(item, path_filter) {
-			continue
-		}
-		if print_semantic_diagnostic(
-			item.diagnostic,
-			item.fallback_path,
-			warnings_as_errors,
-			use_color,
-			&source_cache,
-		) {
-			count_errors += 1
-		}
-	}
-	return
-}
-
 print_lint_diagnostics :: proc(
 	analysis: ^lints.Analysis,
 	warnings_as_errors: bool,
@@ -1780,7 +1467,7 @@ print_lint_diagnostics :: proc(
 		return
 	}
 	use_color := terminal.color_enabled && terminal.is_terminal(os.stdout)
-	source_cache := make([dynamic]Source_Cache_Entry, 0, 16, context.temp_allocator)
+	source_cache := make([dynamic]cli.Source_Cache_Entry, 0, 16, context.temp_allocator)
 	diagnostics := make(
 		[dynamic]Analyze_Lint_Diagnostic_Output,
 		0,
@@ -1812,36 +1499,6 @@ print_lint_diagnostics :: proc(
 		}
 	}
 	return
-}
-
-analyze_diagnostic_output_matches_filter :: proc(
-	item: Analyze_Diagnostic_Output,
-	path_filter: string,
-) -> bool {
-	if path_filter == "" {
-		return true
-	}
-	path := analyze_diagnostic_output_path(item)
-	return(
-		workspace.normalized_uri_path_key(path, context.temp_allocator) ==
-		workspace.normalized_uri_path_key(path_filter, context.temp_allocator) \
-	)
-}
-
-analyze_diagnostic_output_less :: proc(left, right: Analyze_Diagnostic_Output) -> bool {
-	return semantic.semantic_diagnostic_less_with_paths(
-		left.diagnostic,
-		analyze_diagnostic_output_path(left),
-		right.diagnostic,
-		analyze_diagnostic_output_path(right),
-	)
-}
-
-analyze_diagnostic_output_path :: proc(item: Analyze_Diagnostic_Output) -> string {
-	if item.diagnostic.file != nil && item.diagnostic.file.path != "" {
-		return item.diagnostic.file.path
-	}
-	return item.fallback_path
 }
 
 analyze_lint_diagnostic_output_matches_filter :: proc(
@@ -1888,65 +1545,20 @@ analyze_lint_diagnostic_output_path :: proc(item: Analyze_Lint_Diagnostic_Output
 	return item.fallback_path
 }
 
-print_semantic_diagnostic :: proc(
-	diagnostic: semantic.Checker_Diagnostic,
-	fallback_path: string,
-	warnings_as_errors: bool,
-	use_color: bool,
-	source_cache: ^[dynamic]Source_Cache_Entry,
-) -> bool {
-	path := fallback_path
-	if diagnostic.file != nil && diagnostic.file.path != "" {
-		path = diagnostic.file.path
-	}
-	source := cached_source(path, source_cache, context.temp_allocator)
-	line_starts := build_line_starts(source, context.temp_allocator)
-	uri := display_uri(path, context.temp_allocator)
-	is_warning := diagnostic.severity == .Warning
-	is_note := diagnostic.severity == .Note
-	label := "error"
-	had_error := true
-	if is_note {
-		label = "note"
-		had_error = false
-	} else if is_warning && !warnings_as_errors {
-		label = "warning"
-		had_error = false
-	}
-	color := ""
-	if use_color {
-		color = SGR_RED if had_error else SGR_YELLOW
-	}
-	start := source_position(source, line_starts[:], diagnostic.range.start)
-	end := source_position(source, line_starts[:], diagnostic.range.end)
-	fmt.printf("%s(%d:%d) ", uri, start.line, start.column)
-	if color != "" {
-		fmt.print(color)
-	}
-	fmt.print(label)
-	if color != "" {
-		fmt.print(SGR_RESET)
-	}
-	fmt.printf(" %v: %s\n", diagnostic.kind, diagnostic.message)
-	print_source_highlight(source, line_starts[:], start, end, color)
-	fmt.println()
-	return had_error
-}
-
 print_lint_diagnostic :: proc(
 	diagnostic: lints.Diagnostic,
 	fallback_path: string,
 	warnings_as_errors: bool,
 	use_color: bool,
-	source_cache: ^[dynamic]Source_Cache_Entry,
+	source_cache: ^[dynamic]cli.Source_Cache_Entry,
 ) -> bool {
 	path := fallback_path
 	if diagnostic.file != nil && diagnostic.file.path != "" {
 		path = diagnostic.file.path
 	}
-	source := cached_source(path, source_cache, context.temp_allocator)
-	line_starts := build_line_starts(source, context.temp_allocator)
-	uri := display_uri(path, context.temp_allocator)
+	source := cli.cached_source(path, source_cache, context.temp_allocator)
+	line_starts := cli.build_line_starts(source, context.temp_allocator)
+	uri := cli.display_uri(path, context.temp_allocator)
 	is_warning := diagnostic.severity == .Warning
 	is_note := diagnostic.severity == .Information || diagnostic.severity == .Hint
 	label := "error"
@@ -1960,42 +1572,15 @@ print_lint_diagnostic :: proc(
 	}
 	color := ""
 	if use_color {
-		color = SGR_RED if had_error else SGR_YELLOW
+		color = cli.SGR_RED if had_error else cli.SGR_YELLOW
 	}
-	start := source_position(source, line_starts[:], diagnostic.range.start)
-	end := source_position(source, line_starts[:], diagnostic.range.end)
-	fmt.printf("%s(%d:%d) ", uri, start.line, start.column)
-	if color != "" {
-		fmt.print(color)
-	}
-	fmt.print(label)
-	if color != "" {
-		fmt.print(SGR_RESET)
-	}
-	fmt.printf(" %s: %s\n", diagnostic.id, diagnostic.message)
-	print_source_highlight(source, line_starts[:], start, end, color)
+	start := cli.source_position(source, line_starts[:], diagnostic.range.start)
+	end := cli.source_position(source, line_starts[:], diagnostic.range.end)
+	prefix := cli.diagnostic_prefix(uri, start.line, start.column, label, color)
+	fmt.printf("%s %s: %s\n", prefix, diagnostic.id, diagnostic.message)
+	cli.print_source_highlight(source, line_starts[:], start, end, color)
 	fmt.println()
 	return had_error
-}
-
-cached_source :: proc(
-	path: string,
-	cache: ^[dynamic]Source_Cache_Entry,
-	allocator: mem.Allocator,
-) -> string {
-	for entry in cache^ {
-		if entry.path == path {
-			return entry.source
-		}
-	}
-	source := ""
-	if path != "" {
-		if data, err := os.read_entire_file(path, allocator); err == nil {
-			source = string(data)
-		}
-	}
-	append(cache, Source_Cache_Entry{path = path, source = source})
-	return source
 }
 
 print_lex_errors :: proc(errors: []tokenizer.Lex_Error) {
@@ -2009,38 +1594,24 @@ print_parse_errors :: proc(path, source: string, errors: []parser.Parse_Error) -
 	if len(errors) == 0 {
 		return false
 	}
-	line_starts := build_line_starts(source, context.temp_allocator)
-	uri := parse_display_uri(path, context.temp_allocator)
+	line_starts := cli.build_line_starts(source, context.temp_allocator)
+	uri := cli.parse_display_uri(path, context.temp_allocator)
 	color := ""
 	if terminal.color_enabled && terminal.is_terminal(os.stdout) {
-		color = SGR_RED
+		color = cli.SGR_RED
 	}
 	for err in errors {
-		start := source_position(source, line_starts[:], err.range.start)
-		end := source_position(source, line_starts[:], err.range.end)
-		fmt.printf("%s(%d:%d) ", uri, start.line, start.column)
-		if color != "" {
-			fmt.print(color)
-		}
-		fmt.print("error")
-		if color != "" {
-			fmt.print(SGR_RESET)
-		}
-		fmt.printf(" Syntax_Error: %s\n", err.message)
-		print_source_highlight(source, line_starts[:], start, end, color)
+		start := cli.source_position(source, line_starts[:], err.range.start)
+		end := cli.source_position(source, line_starts[:], err.range.end)
+		prefix := cli.diagnostic_prefix(uri, start.line, start.column, "error", color)
+		fmt.printf("%s Syntax_Error: %s\n", prefix, err.message)
+		cli.print_source_highlight(source, line_starts[:], start, end, color)
 		fmt.println()
 	}
 	return true
 }
 
-parse_display_uri :: proc(path: string, allocator: mem.Allocator) -> string {
-	if abs_path, ok := workspace.absolute_clean_path(path, allocator); ok {
-		return display_uri(abs_path, allocator)
-	}
-	return display_uri(path, allocator)
-}
-
-print_node_counts :: proc(root: ^ast.Node, allocator: runtime.Allocator) {
+print_node_counts :: proc(root: ^ast.Node, allocator: base_runtime.Allocator) {
 	counts := Node_Counts {
 		items = make([dynamic]Node_Count, 0, 64, allocator),
 	}

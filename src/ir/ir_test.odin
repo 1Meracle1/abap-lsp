@@ -661,6 +661,41 @@ START-OF-SELECTION.
 }
 
 @(test)
+lowering_perform_changing_exposes_output_result_for_runtime_copy_back :: proc(t: ^testing.T) {
+	source := `FORM set_total CHANGING cv_total TYPE i.
+  cv_total = 5.
+ENDFORM.
+DATA gv_total TYPE i.
+START-OF-SELECTION.
+  PERFORM set_total CHANGING gv_total.`
+	fixture := lower_test_verified_source(t, source)
+	defer lower_test_result_destroy(&fixture)
+	module := &fixture.lowered.module
+
+	start := lower_test_primary_source_function(module)
+	call, call_ok := lower_test_first_op_by_kind(start, .Abap_Routine_Call)
+	testing.expect(t, call_ok)
+	if !call_ok {
+		return
+	}
+	testing.expect_value(t, call.payload.call_kind, Abap_Call_Kind.Form)
+	testing.expect_value(t, len(call.results), 2)
+	if len(call.results) == 2 {
+		testing.expect_value(t, value_type(start, call.results[1]), BUILTIN_TYPE_INTEGER)
+	}
+
+	store_found := false
+	for block in start.blocks {
+		for op in block.ops {
+			if op.kind == .Core_Store && len(op.operands) > 1 && op.operands[1] == call.results[1] {
+				store_found = true
+			}
+		}
+	}
+	testing.expect(t, store_found)
+}
+
+@(test)
 lowering_snippet_if_emits_predicate_branch :: proc(t: ^testing.T) {
 	source := `DATA lv TYPE i.
 IF lv = 1.
@@ -725,7 +760,7 @@ SELECT SINGLE id FROM zcust INTO lv_number WHERE id = lv_number.`
 	testing.expect(t, strings.contains(text, "table.read"))
 	testing.expect(t, strings.contains(text, "table.append"))
 	testing.expect(t, strings.contains(text, "sql.select"))
-	testing.expect(t, strings.contains(text, "system.write sy-subrc"))
+	testing.expect(t, strings.contains(text, "system.write .subrc"))
 }
 
 @(test)
@@ -905,6 +940,55 @@ lo_old = NEW #( ).`
 		testing.expect_value(t, inferred_type.kind, Type_Kind.Reference)
 		testing.expect_value(t, inferred_type.name, "ref:lcl_class")
 	}
+}
+
+@(test)
+lowering_create_object_type_addition_uses_concrete_constructor_type :: proc(t: ^testing.T) {
+	source := `CLASS lcl_parent DEFINITION.
+ENDCLASS.
+CLASS lcl_parent IMPLEMENTATION.
+ENDCLASS.
+CLASS lcl_child DEFINITION INHERITING FROM lcl_parent.
+  PUBLIC SECTION.
+    METHODS constructor.
+ENDCLASS.
+CLASS lcl_child IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+DATA lo TYPE REF TO lcl_parent.
+CREATE OBJECT lo TYPE lcl_child.`
+	fixture := lower_test_verified_source(t, source)
+	defer lower_test_result_destroy(&fixture)
+	module := &fixture.lowered.module
+	function := lower_test_primary_source_function(module)
+
+	create_offset := strings.index(source, "CREATE OBJECT")
+	testing.expect(t, create_offset >= 0)
+	construct, construct_ok := lower_test_op_by_kind_at_start(function, .Abap_Construct, create_offset)
+	testing.expect(t, construct_ok)
+	if construct_ok && len(construct.results) > 0 {
+		construct_type := type_ptr(module, value_type(function, construct.results[0]))
+		testing.expect_value(t, construct_type.kind, Type_Kind.Reference)
+		testing.expect_value(t, construct_type.name, "ref:lcl_child")
+	}
+
+	constructor_call_ok := false
+	for block in function.blocks {
+		for op in block.ops {
+			if op.kind != .Abap_Method_Call || op.payload.callee_name != "lcl_child.constructor" {
+				continue
+			}
+			constructor_call_ok = true
+			testing.expect(t, len(op.operands) >= 2)
+			if len(op.operands) >= 2 {
+				receiver_type := type_ptr(module, value_type(function, op.operands[1]))
+				testing.expect_value(t, receiver_type.kind, Type_Kind.Reference)
+				testing.expect_value(t, receiver_type.name, "ref:lcl_child")
+			}
+		}
+	}
+	testing.expect(t, constructor_call_ok)
 }
 
 @(test)
@@ -1316,14 +1400,20 @@ FREE lt.`
 
 @(test)
 lowering_snippet_covers_selector_paths_and_field_symbol_assignment :: proc(t: ^testing.T) {
-	source := `TYPES: BEGIN OF ty_row,
+	source := `TYPES: BEGIN OF ty_inner,
+         amount TYPE i,
+       END OF ty_inner.
+TYPES: BEGIN OF ty_row,
          count TYPE i,
+         inner TYPE ty_inner,
        END OF ty_row.
 DATA ls TYPE ty_row.
 DATA lv TYPE i.
 FIELD-SYMBOLS <fs> TYPE i.
 lv = ls-count.
+lv = ls-inner-amount.
 lv = sy-subrc.
+sy-subrc = lv.
 ls-count = lv.
 ASSIGN lv TO <fs>.
 UNASSIGN <fs>.`
@@ -1335,27 +1425,64 @@ UNASSIGN <fs>.`
 	defer delete(text, context.allocator)
 	testing.expect(t, strings.contains(text, "core.field_load .count"))
 	testing.expect(t, strings.contains(text, "core.field_store .count"))
-	testing.expect(t, strings.contains(text, "system.read sy-subrc"))
+	testing.expect(t, strings.contains(text, "system.read .subrc"))
 	testing.expect(t, strings.contains(text, "abap.assign_field"))
 	testing.expect(t, strings.contains(text, "abap.unassign"))
-	testing.expect(t, strings.contains(text, "system.write sy-subrc"))
+	testing.expect(t, strings.contains(text, "system.write .subrc"))
 
 	function := lower_test_primary_source_function(&result.module)
 	field_load, field_load_ok := lower_test_first_op_by_kind(function, .Core_Field_Load)
-	system_read, system_read_ok := lower_test_first_op_by_kind(function, .System_Read)
+	nested_field_load, nested_field_load_ok := lower_test_field_op_by_name(function, .Core_Field_Load, "amount")
+	system_read, system_read_ok := lower_test_op_by_kind_at_start(
+		function,
+		.System_Read,
+		strings.index(source, "sy-subrc."),
+	)
+	system_write_assignment, system_write_assignment_ok := lower_test_op_by_kind_at_start(
+		function,
+		.System_Write,
+		strings.index(source, "sy-subrc ="),
+	)
 	assign_field, assign_field_ok := lower_test_first_op_by_kind(function, .Abap_Assign_Field)
 	unassign, unassign_ok := lower_test_first_op_by_kind(function, .Abap_Unassign)
 	testing.expect(t, field_load_ok)
+	testing.expect(t, nested_field_load_ok)
 	testing.expect(t, system_read_ok)
+	testing.expect(t, system_write_assignment_ok)
 	testing.expect(t, assign_field_ok)
 	testing.expect(t, unassign_ok)
 	if field_load_ok {
 		testing.expect_value(t, field_load.payload.field_name, "count")
+		testing.expect(t, field_load.payload.has_projection)
+		if field_load.payload.has_projection {
+			projection := projection_ptr(function, field_load.payload.projection)
+			testing.expect_value(t, len(projection.segments), 1)
+			if len(projection.segments) == 1 {
+				testing.expect_value(t, projection.segments[0].name, "count")
+				testing.expect_value(t, projection.segments[0].field_index, i32(0))
+			}
+		}
 		testing.expect(t, value_type(function, field_load.results[0]) != BUILTIN_TYPE_UNKNOWN)
+	}
+	if nested_field_load_ok {
+		testing.expect(t, nested_field_load.payload.has_projection)
+		if nested_field_load.payload.has_projection {
+			projection := projection_ptr(function, nested_field_load.payload.projection)
+			testing.expect_value(t, len(projection.segments), 2)
+			if len(projection.segments) == 2 {
+				testing.expect_value(t, projection.segments[0].name, "inner")
+				testing.expect_value(t, projection.segments[0].field_index, i32(1))
+				testing.expect_value(t, projection.segments[1].name, "amount")
+				testing.expect_value(t, projection.segments[1].field_index, i32(0))
+			}
+		}
 	}
 	if system_read_ok {
 		testing.expect_value(t, system_read.payload.system_field, "subrc")
 		testing.expect(t, value_type(function, system_read.results[0]) != BUILTIN_TYPE_UNKNOWN)
+	}
+	if system_write_assignment_ok {
+		testing.expect_value(t, system_write_assignment.payload.system_field, "subrc")
 	}
 	if assign_field_ok {
 		testing.expect_value(t, assign_field.source.range.start, strings.index(source, "ASSIGN"))
@@ -1941,6 +2068,17 @@ lower_test_first_op_by_kind :: proc(function: ^Function, kind: Op_Kind) -> (^Op,
 	for &block in function.blocks {
 		for &op in block.ops {
 			if op.kind == kind {
+				return &op, true
+			}
+		}
+	}
+	return nil, false
+}
+
+lower_test_field_op_by_name :: proc(function: ^Function, kind: Op_Kind, field_name: string) -> (^Op, bool) {
+	for &block in function.blocks {
+		for &op in block.ops {
+			if op.kind == kind && op.payload.field_name == field_name {
 				return &op, true
 			}
 		}

@@ -1,6 +1,7 @@
 package main
 
 import adt "src:adt"
+import cli "src:cli"
 
 import json "core:encoding/json"
 import "core:fmt"
@@ -601,11 +602,11 @@ print_search_json :: proc(query: string, max_results: int, results: []adt.Object
 	for &entry, i in results {
 		out[i] = object_ref_json(&entry)
 	}
-	emit_json(Search_JSON{"search", query, max_results, out}, allocator)
+	cli.emit_json(Search_JSON{"search", query, max_results, out}, true, allocator)
 }
 
 print_get_source_json :: proc(command: ^Command, fetched: ^adt.Source_Fetch, allocator: mem.Allocator) {
-	emit_json(Get_Source_JSON {
+	cli.emit_json(Get_Source_JSON {
 		command        = "get-source",
 		kind           = adt.source_kind_string(command.source_kind),
 		name           = command.name,
@@ -614,17 +615,17 @@ print_get_source_json :: proc(command: ^Command, fetched: ^adt.Source_Fetch, all
 		object_uri     = optional_json_string(fetched.object_uri),
 		request_url    = fetched.request_url,
 		source         = fetched.body,
-	}, allocator)
+	}, true, allocator)
 }
 
 print_get_ddic_json :: proc(command: ^Command, fetched: ^adt.Ddic_Fetch, allocator: mem.Allocator) {
-	emit_json(Get_Ddic_JSON {
+	cli.emit_json(Get_Ddic_JSON {
 		command     = "get-ddic",
 		kind        = adt.ddic_kind_string(command.ddic_kind),
 		name        = command.name,
 		request_url = fetched.request_url,
 		xml         = fetched.body,
-	}, allocator)
+	}, true, allocator)
 }
 
 print_children_json :: proc(command: ^Command, structure: ^adt.Repository_Node_Structure, children: []adt.Child_Entry, allocator: mem.Allocator) {
@@ -648,14 +649,14 @@ print_children_json :: proc(command: ^Command, structure: ^adt.Repository_Node_S
 			expandable        = entry.expandable,
 		}
 	}
-	emit_json(Children_JSON {
+	cli.emit_json(Children_JSON {
 		command      = "children",
 		kind         = adt.child_kind_string(command.child_kind),
 		name         = command.name,
 		categories   = categories,
 		object_types = object_types,
 		children     = child_items,
-	}, allocator)
+	}, true, allocator)
 }
 
 object_ref_json :: proc(entry: ^adt.Object_Ref) -> Object_Ref_JSON {
@@ -673,19 +674,6 @@ optional_json_string :: proc(value: string) -> json.Value {
 		return json.Value(json.Null(nil))
 	}
 	return json.Value(json.String(value))
-}
-
-emit_json :: proc(value: any, allocator: mem.Allocator) {
-	bytes, err := json.marshal(
-		value,
-		json.Marshal_Options{spec = .JSON, pretty = true, use_spaces = true, spaces = 2},
-		allocator,
-	)
-	if err != nil {
-		fmt.eprintf("error: failed to serialize JSON: %v\n", err)
-		os.exit(1)
-	}
-	fmt.println(string(bytes))
 }
 
 fail_adt :: proc(action: string, err: adt.Error) {

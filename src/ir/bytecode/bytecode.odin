@@ -12,6 +12,8 @@ Register :: distinct u32
 INVALID_FUNCTION_ID :: Function_Id(0xffffffff)
 INVALID_BLOCK_OFFSET :: Block_Offset(0xffffffff)
 INVALID_REGISTER :: Register(0xffffffff)
+UNKNOWN_FIELD_INDEX :: i32(-1)
+UNKNOWN_FIELD_BYTE_OFFSET :: i32(-1)
 
 Op :: enum {
 	Nop,
@@ -39,6 +41,12 @@ Edge :: struct {
 	param_count: u32,
 }
 
+Field_Ref :: struct {
+	name:        string,
+	field_index: i32,
+	byte_offset: i32,
+}
+
 Instruction :: struct {
 	op:           Op,
 	dst:          Register,
@@ -63,7 +71,7 @@ Function :: struct {
 	block_debug:      [dynamic]Block_Debug,
 	block_params:     [dynamic]Register,
 	constants:        [dynamic]string,
-	fields:           [dynamic]string,
+	fields:           [dynamic]Field_Ref,
 	slots:            [dynamic]Slot_Debug,
 	values:           [dynamic]Value_Debug,
 	return_type_names: [dynamic]string,
@@ -143,6 +151,7 @@ Unsupported_Search :: struct {
 
 Lower_Context :: struct {
 	module:         ^Module,
+	ir_module:      ^ir.Module,
 	out_function:   ^Function,
 	ir_function:    ^ir.Function,
 	instruction_ip: u32,
@@ -171,7 +180,7 @@ module_destroy :: proc(module: ^Module) {
 	module^ = {}
 }
 
-// Bytecode lowering is the runtime boundary. It consumes only verified IR,
+// Bytecode lowering is the VM boundary. It consumes only verified IR,
 // rejects source-bearing unsupported IR before instruction emission, assigns one
 // stable bytecode register per IR value, lays blocks out in IR block order, and
 // reports the source range of the first operation or terminator outside the
@@ -203,7 +212,7 @@ lower_module :: proc(
 	bytecode := module_make(allocator)
 	module_copy_debug_metadata(&bytecode, module)
 	for _, function_index in module.functions {
-		result := lower_function(&bytecode, ir.function_ptr(module, ir.Function_Id(function_index)))
+		result := lower_function(&bytecode, module, ir.function_ptr(module, ir.Function_Id(function_index)))
 		if !result.ok {
 			module_destroy(&bytecode)
 			return result
@@ -234,6 +243,7 @@ find_unsupported :: proc "contextless" (module: ^ir.Module) -> Unsupported_Searc
 
 lower_function :: proc(
 	bytecode: ^Module,
+	ir_module: ^ir.Module,
 	function: ^ir.Function,
 ) -> Lower_Result {
 	out_function := Function {
@@ -244,7 +254,7 @@ lower_function :: proc(
 		block_debug = make([dynamic]Block_Debug, 0, len(function.blocks), bytecode.allocator),
 		block_params = make([dynamic]Register, 0, len(function.values), bytecode.allocator),
 		constants = make([dynamic]string, 0, 8, bytecode.allocator),
-		fields = make([dynamic]string, 0, 8, bytecode.allocator),
+		fields = make([dynamic]Field_Ref, 0, 8, bytecode.allocator),
 		slots = make([dynamic]Slot_Debug, 0, len(function.slots), bytecode.allocator),
 		values = make([dynamic]Value_Debug, 0, len(function.values), bytecode.allocator),
 		return_type_names = make([dynamic]string, 0, len(function.return_types), bytecode.allocator),
@@ -278,6 +288,7 @@ lower_function :: proc(
 
 	ctx := Lower_Context {
 		module = bytecode,
+		ir_module = ir_module,
 		out_function = &out_function,
 		ir_function = function,
 	}
@@ -313,7 +324,7 @@ function_destroy :: proc(function: ^Function, allocator: mem.Allocator) {
 		delete(constant, allocator)
 	}
 	for field in function.fields {
-		delete(field, allocator)
+		delete(field.name, allocator)
 	}
 	for slot in function.slots {
 		delete(slot.name, allocator)
@@ -522,13 +533,13 @@ emit_op :: proc(ctx: ^Lower_Context, op: ir.Op) -> Lower_Result {
 		return Lower_Result{ok = true}
 	case .Core_Field_Load:
 		instruction := instruction_make(.Field_Load, op.source)
-		instruction.payload = function_add_field(ctx.out_function, op.payload.field_name, ctx.module.allocator)
+		instruction.payload = function_add_field_projection(ctx, op)
 		instruction_set_registers(ctx, &instruction, op.operands[:], op.results[:])
 		emit(ctx, instruction)
 		return Lower_Result{ok = true}
 	case .Core_Field_Store:
 		instruction := instruction_make(.Field_Store, op.source)
-		instruction.payload = function_add_field(ctx.out_function, op.payload.field_name, ctx.module.allocator)
+		instruction.payload = function_add_field_projection(ctx, op)
 		instruction_set_registers(ctx, &instruction, op.operands[:], op.results[:])
 		emit(ctx, instruction)
 		return Lower_Result{ok = true}
@@ -546,7 +557,7 @@ emit_op :: proc(ctx: ^Lower_Context, op: ir.Op) -> Lower_Result {
 		return Lower_Result{ok = true}
 	}
 	if kind, ok := runtime_callback_kind(op.kind); ok {
-		callback_index := function_add_runtime_callback(ctx.out_function, op, kind, ctx.module.allocator)
+		callback_index := function_add_runtime_callback(ctx, op, kind)
 		instruction := instruction_make(.Call_Runtime, op.source)
 		instruction.payload = callback_index
 		instruction_set_registers(ctx, &instruction, op.operands[:], op.results[:])
@@ -656,18 +667,41 @@ emit_edge :: proc(
 	return edge_index
 }
 
+function_add_field_projection :: proc(ctx: ^Lower_Context, op: ir.Op) -> u32 {
+	ref := Field_Ref {
+		name = op.payload.field_name,
+		field_index = UNKNOWN_FIELD_INDEX,
+		byte_offset = UNKNOWN_FIELD_BYTE_OFFSET,
+	}
+	if op.payload.has_projection &&
+	   op.payload.projection != ir.INVALID_PROJECTION_ID &&
+	   int(op.payload.projection) < len(ctx.ir_function.projections) {
+		path := ir.projection_ptr(ctx.ir_function, op.payload.projection)
+		if len(path.segments) > 0 {
+			segment := path.segments[len(path.segments) - 1]
+			ref.name = segment.name
+			ref.field_index = segment.field_index
+		}
+	}
+	return function_add_field(ctx.out_function, ref, ctx.module.allocator)
+}
+
 function_add_field :: proc(
 	function: ^Function,
-	name: string,
+	ref: Field_Ref,
 	allocator: mem.Allocator,
 ) -> u32 {
 	for field, i in function.fields {
-		if field == name {
+		if field.name == ref.name &&
+		   field.field_index == ref.field_index &&
+		   field.byte_offset == ref.byte_offset {
 			return u32(i)
 		}
 	}
 	index := u32(len(function.fields))
-	append(&function.fields, strings.clone(name, allocator))
+	stored := ref
+	stored.name = strings.clone(ref.name, allocator)
+	append(&function.fields, stored)
 	return index
 }
 
@@ -687,11 +721,17 @@ function_add_constant :: proc(
 }
 
 function_add_runtime_callback :: proc(
-	function: ^Function,
+	ctx: ^Lower_Context,
 	op: ir.Op,
 	kind: Runtime_Callback_Kind,
-	allocator: mem.Allocator,
 ) -> u32 {
+	function := ctx.out_function
+	allocator := ctx.module.allocator
+	payload := op.payload
+	if target, ok := runtime_callback_function_target(ctx, op); ok {
+		payload.call_function_target = target
+		payload.has_call_function_target = true
+	}
 	index := u32(len(function.runtime_callbacks))
 	append(
 		&function.runtime_callbacks,
@@ -699,10 +739,28 @@ function_add_runtime_callback :: proc(
 			kind = kind,
 			name = strings.clone(ir.op_kind_name(op.kind), allocator),
 			op_kind = op.kind,
-			payload = op.payload,
+			payload = payload,
 		},
 	)
 	return index
+}
+
+runtime_callback_function_target :: proc "contextless" (
+	ctx: ^Lower_Context,
+	op: ir.Op,
+) -> (ir.Function_Id, bool) {
+	if ctx == nil || ctx.ir_module == nil || op.payload.call_target == nil {
+		return ir.INVALID_FUNCTION_ID, false
+	}
+	#partial switch op.kind {
+	case .Abap_Routine_Call, .Abap_Method_Call:
+		for function, i in ctx.ir_module.functions {
+			if function.entity == op.payload.call_target {
+				return ir.Function_Id(i), true
+			}
+		}
+	}
+	return ir.INVALID_FUNCTION_ID, false
 }
 
 register :: proc "contextless" (value: ir.Value_Id) -> Register {

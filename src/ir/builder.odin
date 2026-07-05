@@ -127,6 +127,7 @@ module_add_function :: proc(
 		source = source,
 		return_types = make([dynamic]Type_Id, 0, 2, module.allocator),
 		slots = make([dynamic]Slot, 0, 16, module.allocator),
+		projections = make([dynamic]Projection_Path, 0, 8, module.allocator),
 		values = make([dynamic]Value, 0, 32, module.allocator),
 		blocks = make([dynamic]Block, 0, 8, module.allocator),
 		op_locations = make([dynamic]Op_Location, 0, 32, module.allocator),
@@ -225,6 +226,24 @@ function_add_slot :: proc(
 	}
 	id := Slot_Id(len(function.slots))
 	append(&function.slots, Slot{kind = kind, name = name, type = typ, entity = entity, source = source})
+	return id
+}
+
+function_add_projection :: proc(
+	function: ^Function,
+	segments: []Projection_Segment,
+	allocator: mem.Allocator,
+) -> Projection_Id {
+	assert(function != nil)
+	assert(len(segments) > 0)
+	id := Projection_Id(len(function.projections))
+	path := Projection_Path {
+		segments = make([dynamic]Projection_Segment, 0, len(segments), allocator),
+	}
+	for segment in segments {
+		append(&path.segments, segment)
+	}
+	append(&function.projections, path)
 	return id
 }
 
@@ -736,11 +755,11 @@ builder_emit_system_write :: proc(
 	value: Value_Id = INVALID_VALUE_ID,
 	source: Source_Loc = {},
 ) {
-	inputs := make([dynamic]Value_Id, 0, 1, context.temp_allocator)
-	defer delete(inputs)
-	if value != INVALID_VALUE_ID {
-		append(&inputs, value)
+	stored := value
+	if stored == INVALID_VALUE_ID {
+		stored = builder_emit_const(builder, "0", BUILTIN_TYPE_INTEGER, source)
 	}
+	inputs := [?]Value_Id{stored}
 	builder_emit_effect_op(
 		builder,
 		.System_Write,

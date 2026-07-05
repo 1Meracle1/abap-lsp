@@ -80,6 +80,7 @@ Run a built tool through the wrapper:
 .\run.bat debug abap_frontend tree examples\ZPERF_PARSER_MIXED.abap
 .\run.bat debug abap_frontend analyze path\to\workspace --enable-lints
 .\run.bat debug abap_frontend lint --json --pretty path\to\workspace
+.\run.bat debug abap_interpreter run examples\ZPERF_PARSER_MIXED.abap
 ```
 
 ## Language Server

@@ -32,6 +32,9 @@ CHECK_PACKAGES=(
 	ast
 	parser
 	ir
+	ir/bytecode
+	runtime
+	vm
 	execution
 	trace
 	http
@@ -53,6 +56,9 @@ TEST_PACKAGES=(
 	ast
 	parser
 	ir
+	ir/bytecode
+	runtime
+	vm
 	execution
 	http
 	adt

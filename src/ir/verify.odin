@@ -364,14 +364,16 @@ verify_op_signature :: proc(
 		verify_slot_payload(function, function_id, block_id, op, result)
 	case .Core_Field_Load:
 		verify_op_arity(result, function_id, block_id, op, 2, 2, 1, 1)
+		verify_projection_payload(function, function_id, block_id, op, result)
 	case .Core_Field_Store:
 		verify_op_arity(result, function_id, block_id, op, 3, 3, 1, 1)
-		case .Core_Cast:
-			verify_op_arity(result, function_id, block_id, op, 1, 1, 1, 1)
-		case .Core_Call:
-			verify_op_arity(result, function_id, block_id, op, 1, -1, 1, -1)
-			verify_effectful_core_call_signature(module, function_id, block_id, op, result)
-		case .Core_Unsupported:
+		verify_projection_payload(function, function_id, block_id, op, result)
+	case .Core_Cast:
+		verify_op_arity(result, function_id, block_id, op, 1, 1, 1, 1)
+	case .Core_Call:
+		verify_op_arity(result, function_id, block_id, op, 1, -1, 1, -1)
+		verify_effectful_core_call_signature(module, function_id, block_id, op, result)
+	case .Core_Unsupported:
 		if !(.Unsupported in op.flags) {
 			verify_add(result, .Bad_Op_Signature, "core.unsupported operation must carry unsupported flag", function_id, block_id, op.id, source = op.source)
 		}
@@ -486,13 +488,19 @@ verify_op_signature :: proc(
 		verify_sql_mutation_payload(module, function_id, block_id, op, result)
 	case .System_Read:
 		verify_op_arity(result, function_id, block_id, op, 1, 1, 1, 1)
+		if !(.Reads_World in op.flags) || .Writes_World in op.flags {
+			verify_add(result, .Bad_Op_Signature, "system.read must only read world", function_id, block_id, op.id, source = op.source)
+		}
 		if op.payload.system_field == "" {
-			verify_add(result, .Bad_Op_Signature, "system read operation must name a system field", function_id, block_id, op.id, source = op.source)
+			verify_add(result, .Bad_Op_Signature, "system.read operation must name a system field", function_id, block_id, op.id, source = op.source)
 		}
 	case .System_Write:
-		verify_op_arity(result, function_id, block_id, op, 1, 2, 1, 1)
+		verify_op_arity(result, function_id, block_id, op, 2, 2, 1, 1)
+		if !(.Reads_World in op.flags) || !(.Writes_World in op.flags) {
+			verify_add(result, .Bad_Op_Signature, "system.write must participate in world threading", function_id, block_id, op.id, source = op.source)
+		}
 		if op.payload.system_field == "" {
-			verify_add(result, .Bad_Op_Signature, "system write operation must name a system field", function_id, block_id, op.id, source = op.source)
+			verify_add(result, .Bad_Op_Signature, "system.write operation must name a system field", function_id, block_id, op.id, source = op.source)
 		}
 	}
 }
@@ -819,6 +827,31 @@ verify_slot_payload :: proc(
 ) {
 	if op.payload.slot == INVALID_SLOT_ID || int(op.payload.slot) >= len(function.slots) {
 		verify_add(result, .Bad_Op_Signature, "slot operation must reference a valid slot", function_id, block_id, op.id, source = op.source)
+	}
+}
+
+verify_projection_payload :: proc(
+	function: ^Function,
+	function_id: Function_Id,
+	block_id: Block_Id,
+	op: Op,
+	result: ^Verify_Result,
+) {
+	if !op.payload.has_projection ||
+	   op.payload.projection == INVALID_PROJECTION_ID ||
+	   int(op.payload.projection) >= len(function.projections) {
+		verify_add(result, .Bad_Op_Signature, "field operation must reference a valid projection path", function_id, block_id, op.id, source = op.source)
+		return
+	}
+	path := projection_ptr(function, op.payload.projection)
+	if len(path.segments) == 0 {
+		verify_add(result, .Bad_Op_Signature, "projection path must contain at least one segment", function_id, block_id, op.id, source = op.source)
+		return
+	}
+	for segment in path.segments {
+		if segment.name == "" {
+			verify_add(result, .Bad_Op_Signature, "projection segment must have a field name", function_id, block_id, op.id, source = op.source)
+		}
 	}
 }
 

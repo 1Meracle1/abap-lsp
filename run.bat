@@ -19,6 +19,10 @@ if /I "%~1"=="debug" (
   set "APP=abap_frontend"
   shift
   goto parse_prefix
+) else if /I "%~1"=="abap_interpreter" (
+  set "APP=abap_interpreter"
+  shift
+  goto parse_prefix
 ) else if /I "%~1"=="adt_cli" (
   set "APP=adt_cli"
   shift
@@ -29,6 +33,10 @@ if /I "%~1"=="debug" (
   goto parse_prefix
 ) else if /I "%~1"=="lsp" (
   set "APP=abap_language_server"
+  shift
+  goto parse_prefix
+) else if /I "%~1"=="interpreter" (
+  set "APP=abap_interpreter"
   shift
   goto parse_prefix
 ) else if /I "%~1"=="adt" (

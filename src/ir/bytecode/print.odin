@@ -167,7 +167,15 @@ print_fields_section :: proc(out: ^strings.Builder, function: ^Function) {
 		strings.write_string(out, "    #")
 		strings.write_int(out, i)
 		strings.write_string(out, " .")
-		strings.write_string(out, field)
+		strings.write_string(out, field.name)
+		if field.field_index != UNKNOWN_FIELD_INDEX {
+			strings.write_string(out, " index=")
+			strings.write_int(out, int(field.field_index))
+		}
+		if field.byte_offset != UNKNOWN_FIELD_BYTE_OFFSET {
+			strings.write_string(out, " offset=")
+			strings.write_int(out, int(field.byte_offset))
+		}
 		strings.write_byte(out, '\n')
 	}
 }
@@ -379,7 +387,7 @@ print_runtime_instruction :: proc(
 print_runtime_payload :: proc(out: ^strings.Builder, module: ^Module, callback: Runtime_Callback) {
 	payload := callback.payload
 	if payload.system_field != "" {
-		strings.write_string(out, " sy-")
+		strings.write_string(out, " .")
 		strings.write_string(out, payload.system_field)
 	}
 	if payload.has_call_function_target {
@@ -592,9 +600,14 @@ print_slot_ref :: proc(out: ^strings.Builder, function: ^Function, payload: u32)
 print_field_ref :: proc(out: ^strings.Builder, function: ^Function, payload: u32) {
 	if int(payload) < len(function.fields) {
 		strings.write_byte(out, '.')
-		strings.write_string(out, function.fields[int(payload)])
+		strings.write_string(out, function.fields[int(payload)].name)
 		strings.write_byte(out, '#')
 		strings.write_int(out, int(payload))
+		if function.fields[int(payload)].field_index != UNKNOWN_FIELD_INDEX {
+			strings.write_byte(out, '[')
+			strings.write_int(out, int(function.fields[int(payload)].field_index))
+			strings.write_byte(out, ']')
+		}
 		return
 	}
 	strings.write_string(out, "#")
@@ -885,7 +898,15 @@ print_function_raw :: proc(
 		strings.write_string(out, "  field #")
 		strings.write_int(out, i)
 		strings.write_string(out, " = .")
-		strings.write_string(out, field)
+		strings.write_string(out, field.name)
+		if field.field_index != UNKNOWN_FIELD_INDEX {
+			strings.write_string(out, " index=")
+			strings.write_int(out, int(field.field_index))
+		}
+		if field.byte_offset != UNKNOWN_FIELD_BYTE_OFFSET {
+			strings.write_string(out, " offset=")
+			strings.write_int(out, int(field.byte_offset))
+		}
 		strings.write_byte(out, '\n')
 	}
 	for callback, i in function.runtime_callbacks {
@@ -1007,7 +1028,11 @@ print_instruction_payload_raw :: proc(
 		strings.write_int(out, int(instruction.payload))
 		if int(instruction.payload) < len(function.fields) {
 			strings.write_string(out, " .")
-			strings.write_string(out, function.fields[int(instruction.payload)])
+			strings.write_string(out, function.fields[int(instruction.payload)].name)
+			if function.fields[int(instruction.payload)].field_index != UNKNOWN_FIELD_INDEX {
+				strings.write_string(out, " index=")
+				strings.write_int(out, int(function.fields[int(instruction.payload)].field_index))
+			}
 		}
 	case .Cast:
 		strings.write_string(out, " type=")

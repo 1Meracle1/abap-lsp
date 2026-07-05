@@ -36,5 +36,6 @@ if /I "%MODE%"=="release" (
 )
 
 "%ODIN_EXE%" build "%ROOT%cmd\abap_frontend" -out:"%OUT_DIR%\abap_frontend.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% !ODIN_EXTRA_ARGS! !ODIN_FRONTEND_EXTRA_ARGS! || exit /b %errorlevel%
+"%ODIN_EXE%" build "%ROOT%cmd\abap_interpreter" -out:"%OUT_DIR%\abap_interpreter.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% !ODIN_EXTRA_ARGS! || exit /b %errorlevel%
 "%ODIN_EXE%" build "%ROOT%cmd\adt_cli" -out:"%OUT_DIR%\adt_cli.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% !ODIN_EXTRA_ARGS! || exit /b %errorlevel%
 "%ODIN_EXE%" build "%ROOT%cmd\abap_language_server" -out:"%OUT_DIR%\abap_language_server.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% !ODIN_EXTRA_ARGS! || exit /b %errorlevel%

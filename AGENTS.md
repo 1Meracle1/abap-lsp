@@ -39,10 +39,10 @@ from `bin/<mode>/abap_language_server.exe` when configured for stdio mode.
 
 Use the root Odin wrapper scripts on Windows.
 
-- `.\build.bat`: debug build for `cmd/abap_frontend`, `cmd/adt_cli`, and `cmd/abap_language_server`.
+- `.\build.bat`: debug build for `cmd/abap_frontend`, `cmd/abap_interpreter`, `cmd/adt_cli`, and `cmd/abap_language_server`.
 - `.\build.bat release`: optimized Odin build.
 - `.\build.bat trace`: build with trace logging enabled.
-- `.\run.bat [debug|release] [abap_frontend|adt_cli|abap_language_server|lsp|adt] ...`: build and run a root Odin executable.
+- `.\run.bat [debug|release] [abap_frontend|abap_interpreter|adt_cli|abap_language_server|interpreter|lsp|adt] ...`: build and run a root Odin executable.
 - `.\test.bat`: check and test the Odin packages.
 - `.\test.bat --no-leak-warnings`: run tests with quieter leak logging.
 

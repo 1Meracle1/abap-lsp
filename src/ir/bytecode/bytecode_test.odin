@@ -159,6 +159,54 @@ boundary_lowers_core_store_load_and_return_slice :: proc(t: ^testing.T) {
 }
 
 @(test)
+boundary_lowers_field_projection_to_field_index_ref :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_row,
+         count TYPE i,
+       END OF ty_row.
+DATA ls TYPE ty_row.
+DATA lv TYPE i.
+lv = ls-count.`
+	fixture := lower_test_verified_source(t, source)
+	defer lower_test_result_destroy(&fixture)
+
+	bytecode := lower_module(&fixture.lowered.module, context.allocator)
+	defer module_destroy(&bytecode.module)
+	testing.expect(t, bytecode.ok)
+	if !bytecode.ok {
+		return
+	}
+
+	lowered := bytecode_test_first_function_with_fields(&bytecode.module)
+	testing.expect(t, lowered != nil)
+	if lowered == nil {
+		return
+	}
+	testing.expect_value(t, len(lowered.fields), 1)
+	if len(lowered.fields) == 1 {
+		testing.expect_value(t, lowered.fields[0].name, "count")
+		testing.expect_value(t, lowered.fields[0].field_index, i32(0))
+		testing.expect_value(t, lowered.fields[0].byte_offset, UNKNOWN_FIELD_BYTE_OFFSET)
+	}
+	field_load_found := false
+	for instruction in lowered.instructions {
+		if instruction.op == .Field_Load {
+			field_load_found = true
+			testing.expect_value(t, instruction.payload, u32(0))
+		}
+	}
+	testing.expect(t, field_load_found)
+}
+
+bytecode_test_first_function_with_fields :: proc(module: ^Module) -> ^Function {
+	for &function in module.functions {
+		if len(function.fields) > 0 {
+			return &function
+		}
+	}
+	return nil
+}
+
+@(test)
 boundary_rejects_unverified_ir_before_emitting :: proc(t: ^testing.T) {
 	module := ir.module_make(context.allocator)
 	defer ir.module_destroy(&module)
@@ -259,6 +307,84 @@ boundary_lowers_domain_ops_to_runtime_callbacks :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect_value(t, callback_count, 4)
+	testing.expect(t, !bytecode_test_has_slot(lowered, .Runtime, "sy"))
+	testing.expect(t, !bytecode_test_has_field(lowered, "subrc"))
+}
+
+@(test)
+boundary_lowers_system_helpers_to_system_runtime_callbacks :: proc(t: ^testing.T) {
+	module := ir.module_make(context.allocator)
+	defer ir.module_destroy(&module)
+
+	builder := ir.builder_begin_function(&module, "runtime_fields")
+	one := ir.builder_emit_const(&builder, "1", ir.BUILTIN_TYPE_INTEGER)
+	ir.builder_emit_system_write(&builder, "subrc", one)
+	ir.builder_emit_system_read(&builder, "subrc", ir.BUILTIN_TYPE_INTEGER)
+	ir.builder_set_return_world(&builder)
+
+	bytecode := lower_module(&module, context.allocator)
+	defer module_destroy(&bytecode.module)
+	testing.expect(t, bytecode.ok)
+	testing.expect_value(t, len(bytecode.module.functions), 1)
+	if !bytecode.ok || len(bytecode.module.functions) != 1 {
+		return
+	}
+
+	lowered := &bytecode.module.functions[0]
+	testing.expect_value(t, len(lowered.runtime_callbacks), 2)
+	if len(lowered.runtime_callbacks) == 2 {
+		testing.expect_value(t, lowered.runtime_callbacks[0].kind, Runtime_Callback_Kind.System_Field)
+		testing.expect_value(t, lowered.runtime_callbacks[0].op_kind, ir.Op_Kind.System_Write)
+		testing.expect_value(t, lowered.runtime_callbacks[0].payload.system_field, "subrc")
+		testing.expect_value(t, lowered.runtime_callbacks[1].kind, Runtime_Callback_Kind.System_Field)
+		testing.expect_value(t, lowered.runtime_callbacks[1].op_kind, ir.Op_Kind.System_Read)
+		testing.expect_value(t, lowered.runtime_callbacks[1].payload.system_field, "subrc")
+	}
+	testing.expect(t, !bytecode_test_has_slot(lowered, .Runtime, "sy"))
+	testing.expect(t, !bytecode_test_has_field(lowered, "subrc"))
+	testing.expect_value(t, len(lowered.instructions), 4)
+	if len(lowered.instructions) == 4 {
+		testing.expect_value(t, lowered.instructions[1].op, Op.Call_Runtime)
+		testing.expect_value(t, lowered.instructions[2].op, Op.Call_Runtime)
+	}
+}
+
+@(test)
+boundary_resolves_local_routine_callbacks_to_function_targets :: proc(t: ^testing.T) {
+	source := `FORM set_total CHANGING cv_total TYPE i.
+  cv_total = 5.
+ENDFORM.
+DATA gv_total TYPE i.
+START-OF-SELECTION.
+  PERFORM set_total CHANGING gv_total.`
+	fixture := lower_test_verified_source(t, source)
+	defer lower_test_result_destroy(&fixture)
+
+	bytecode := lower_module(&fixture.lowered.module, context.allocator)
+	defer module_destroy(&bytecode.module)
+	testing.expect(t, bytecode.ok)
+	if !bytecode.ok {
+		return
+	}
+
+	found := false
+	for function in bytecode.module.functions {
+		for callback in function.runtime_callbacks {
+			if callback.op_kind != ir.Op_Kind.Abap_Routine_Call || callback.payload.callee_name != "set_total" {
+				continue
+			}
+			found = true
+			testing.expect(t, callback.payload.has_call_function_target)
+			if callback.payload.has_call_function_target {
+				target := int(callback.payload.call_function_target)
+				testing.expect(t, target >= 0 && target < len(bytecode.module.functions))
+				if target >= 0 && target < len(bytecode.module.functions) {
+					testing.expect_value(t, bytecode.module.functions[target].name, "set_total")
+				}
+			}
+		}
+	}
+	testing.expect(t, found)
 }
 
 @(test)
@@ -320,6 +446,24 @@ expect_print_snapshot :: proc(t: ^testing.T, module: ^ir.Module, expected: strin
 	text := print_module(&bytecode.module, context.allocator)
 	defer delete(text, context.allocator)
 	testing.expect_value(t, text, expected)
+}
+
+bytecode_test_has_slot :: proc(function: ^Function, kind: ir.Slot_Kind, name: string) -> bool {
+	for slot in function.slots {
+		if slot.kind == kind && slot.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+bytecode_test_has_field :: proc(function: ^Function, name: string) -> bool {
+	for field in function.fields {
+		if field.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 Lower_Test_Result :: struct {

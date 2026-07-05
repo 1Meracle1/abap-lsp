@@ -114,8 +114,11 @@ print_op :: proc(out: ^strings.Builder, module: ^Module, function: ^Function, op
 		strings.write_string(out, " .")
 		strings.write_string(out, op.payload.field_name)
 	}
+	if op.payload.has_projection {
+		print_projection_payload(out, function, op.payload.projection)
+	}
 	if op.payload.system_field != "" {
-		strings.write_string(out, " sy-")
+		strings.write_string(out, " .")
 		strings.write_string(out, op.payload.system_field)
 	}
 	if op.payload.literal != "" {
@@ -399,6 +402,42 @@ print_quoted :: proc(out: ^strings.Builder, text: string) {
 	strings.write_byte(out, '"')
 }
 
+print_projection_payload :: proc(out: ^strings.Builder, function: ^Function, projection: Projection_Id) {
+	if int(projection) >= len(function.projections) {
+		strings.write_string(out, " path=<invalid>")
+		return
+	}
+	path := function.projections[int(projection)]
+	if len(path.segments) == 0 {
+		return
+	}
+	strings.write_string(out, " path=")
+	for segment, i in path.segments {
+		if i > 0 {
+			strings.write_string(out, "/")
+		}
+		print_projection_segment(out, segment)
+	}
+}
+
+print_projection_segment :: proc(out: ^strings.Builder, segment: Projection_Segment) {
+	switch segment.selector {
+	case .Dash:
+		strings.write_byte(out, '-')
+	case .Arrow:
+		strings.write_string(out, "->")
+	case .Fat_Arrow:
+		strings.write_string(out, "=>")
+	case .Tilde:
+		strings.write_byte(out, '~')
+	}
+	strings.write_string(out, segment.name)
+	if segment.field_index >= 0 {
+		strings.write_byte(out, '#')
+		strings.write_int(out, int(segment.field_index))
+	}
+}
+
 print_literal :: proc(out: ^strings.Builder, module: ^Module, function: ^Function, op: Op) {
 	typ := INVALID_TYPE_ID
 	if len(op.results) > 0 {
@@ -459,10 +498,10 @@ slot_kind_name :: proc "contextless" (kind: Slot_Kind) -> string {
 		return "param"
 	case .Global:
 		return "global"
+	case .Runtime:
+		return "runtime"
 	case .Instance:
 		return "instance"
-	case .System_Field:
-		return "system"
 	case .Field:
 		return "field"
 	case .Table_Handle:

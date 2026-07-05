@@ -678,7 +678,7 @@ lower_constructor_expr :: proc(
 		operands := make([dynamic]Value_Id, 0, len(constructor.args), context.temp_allocator)
 		defer delete(operands)
 		lower_constructor_collect_args(ctx, constructor.args[:], &operands)
-		return lower_emit_value_op(
+		created := lower_emit_value_op(
 			ctx,
 			.Abap_Construct,
 			operands[:],
@@ -686,6 +686,10 @@ lower_constructor_expr :: proc(
 			source,
 			Op_Payload{callee_name = lower_constructor_kind_name(constructor.kind)},
 		)
+		if constructor.kind == .New {
+			lower_emit_constructor_call_for_expr(ctx, expr, created, operands[:], source)
+		}
+		return created
 	case .Corresponding, .Filter, .Reduce, .Switch, .Cond, .Throw:
 		operands := make([dynamic]Value_Id, 0, len(constructor.args), context.temp_allocator)
 		defer delete(operands)
@@ -695,7 +699,7 @@ lower_constructor_expr :: proc(
 	operands := make([dynamic]Value_Id, 0, len(constructor.args), context.temp_allocator)
 	defer delete(operands)
 	lower_constructor_collect_args(ctx, constructor.args[:], &operands)
-	return lower_emit_value_op(
+	created := lower_emit_value_op(
 		ctx,
 		.Abap_Construct,
 		operands[:],
@@ -703,6 +707,78 @@ lower_constructor_expr :: proc(
 		source,
 		Op_Payload{callee_name = lower_constructor_kind_name(constructor.kind)},
 	)
+	if constructor.kind == .New {
+		lower_emit_constructor_call_for_expr(ctx, expr, created, operands[:], source)
+	}
+	return created
+}
+
+lower_emit_constructor_call_for_expr :: proc(
+	ctx: ^Lower_Context,
+	expr: ^ast.Expr,
+	receiver: Value_Id,
+	args: []Value_Id,
+	source: Source_Loc,
+) {
+	if expr == nil {
+		return
+	}
+	if info, ok := lower_expr_info_for_node(ctx, &expr.expr_base); ok {
+		lower_emit_constructor_call_for_type(ctx, info.type, receiver, args, source)
+	}
+}
+
+lower_emit_constructor_call_for_type :: proc(
+	ctx: ^Lower_Context,
+	typ: ^semantic.Type,
+	receiver: Value_Id,
+	args: []Value_Id,
+	source: Source_Loc,
+	ast_stmt: ^ast.Stmt = nil,
+) {
+	if receiver == INVALID_VALUE_ID || typ == nil || ctx == nil || ctx.checker == nil {
+		return
+	}
+	constructor := lower_constructor_method_for_type(ctx, typ)
+	if constructor == nil {
+		return
+	}
+	inputs := make([dynamic]Value_Id, 0, 1 + len(args), context.temp_allocator)
+	defer delete(inputs)
+	append(&inputs, receiver)
+	for arg in args {
+		if arg != INVALID_VALUE_ID {
+			append(&inputs, arg)
+		}
+	}
+	builder_emit_method_call(
+		ctx.builder,
+		constructor,
+		lower_callable_entity_name(constructor, "constructor", ctx.module.allocator),
+		inputs[:],
+		source = source,
+		ast_stmt = ast_stmt,
+	)
+}
+
+lower_constructor_method_for_type :: proc(ctx: ^Lower_Context, typ: ^semantic.Type) -> ^semantic.Entity {
+	if ctx == nil || ctx.project == nil || typ == nil {
+		return nil
+	}
+	owner := semantic.checker_type_object_entity(typ)
+	if owner == nil || owner.kind != .Class {
+		return nil
+	}
+	payload, ok := owner.payload.(^semantic.Entity_Object_Payload)
+	if !ok || payload == nil || payload.definition_scope == nil {
+		return nil
+	}
+	name := semantic.project_intern_lower_ascii(ctx.project, "constructor")
+	constructor, found := semantic.scope_lookup_declaration(payload.definition_scope, .Routine, name)
+	if !found || constructor == nil || constructor.kind != .Method {
+		return nil
+	}
+	return constructor
 }
 
 lower_constructor_single_value :: proc(ctx: ^Lower_Context, constructor: ^ast.Constructor_Expr) -> (Value_Id, bool) {
@@ -857,6 +933,8 @@ lower_raw_operand_ref :: proc(
 	if value == INVALID_VALUE_ID {
 		return builder_emit_unsupported(ctx.builder, "unresolved raw operand", lower_type_for_expr(ctx, expr), source)
 	}
+	projection_segments := make([dynamic]Projection_Segment, 0, len(ref.path), context.temp_allocator)
+	defer delete(projection_segments)
 	for segment, i in ref.path {
 		if segment.name.text == "" {
 			return builder_emit_unsupported(ctx.builder, "dynamic selector path", lower_type_for_expr(ctx, expr), source)
@@ -864,7 +942,12 @@ lower_raw_operand_ref :: proc(
 		is_last := i == len(ref.path) - 1
 		segment_source := Source_Loc{file = ctx.file, node = &expr.expr_base, range = segment.name.range}
 		segment_type := lower_type_for_raw_segment(ctx, expr, segment, is_last)
-		value = lower_emit_field_load(ctx, value, segment.name.text, segment_type, segment_source)
+		entity := lower_field_entity_at_range(ctx, segment.name.range)
+		append(
+			&projection_segments,
+			lower_field_projection_segment(ctx, segment.name.text, segment_source, entity, segment.selector),
+		)
+		value = lower_emit_field_load(ctx, value, segment.name.text, segment_type, segment_source, entity, segment.selector, projection_segments[:])
 	}
 	if ref.dynamic_path {
 		return builder_emit_unsupported(ctx.builder, "dynamic selector path", lower_type_for_expr(ctx, expr), source)
@@ -969,20 +1052,43 @@ lower_store_raw_operand_ref :: proc(
 		builder_emit_unsupported(ctx.builder, "unresolved raw operand assignment target", source = source)
 		return
 	}
+	projection_segments := make([dynamic]Projection_Segment, 0, len(ref.path), context.temp_allocator)
+	defer delete(projection_segments)
 	for segment, i in ref.path[:len(ref.path) - 1] {
 		segment_source := Source_Loc{file = ctx.file, node = &target.expr_base, range = segment.name.range}
-		base = lower_emit_field_load(ctx, base, segment.name.text, lower_type_for_raw_segment(ctx, target, segment, false), segment_source)
+		entity := lower_field_entity_at_range(ctx, segment.name.range)
+		append(
+			&projection_segments,
+			lower_field_projection_segment(ctx, segment.name.text, segment_source, entity, segment.selector),
+		)
+		base = lower_emit_field_load(
+			ctx,
+			base,
+			segment.name.text,
+			lower_type_for_raw_segment(ctx, target, segment, false),
+			segment_source,
+			entity,
+			segment.selector,
+			projection_segments[:],
+		)
 		_ = i
 	}
 	last := ref.path[len(ref.path) - 1]
+	last_entity := lower_field_entity_at_range(ctx, last.name.range)
+	last_source := Source_Loc{file = ctx.file, node = &target.expr_base, range = last.name.range}
+	append(
+		&projection_segments,
+		lower_field_projection_segment(ctx, last.name.text, last_source, last_entity, last.selector),
+	)
+	last_projection := lower_add_projection_segments(ctx, projection_segments[:])
 	inputs := [?]Value_Id{base, lower_move_value_to_target(ctx, target, value, source)}
 	builder_emit_effect_op(
 		ctx.builder,
 		.Core_Field_Store,
 		inputs[:],
 		flags = {.Reads_World, .Writes_World},
-		payload = Op_Payload{field_name = last.name.text},
-		source = Source_Loc{file = ctx.file, node = &target.expr_base, range = last.name.range},
+		payload = Op_Payload{field_name = last.name.text, projection = last_projection, has_projection = true},
+		source = last_source,
 	)
 }
 
@@ -999,12 +1105,24 @@ lower_selector_expr :: proc(
 	if base == INVALID_VALUE_ID {
 		return builder_emit_unsupported(ctx.builder, "selector base value", lower_type_for_expr(ctx, expr), source)
 	}
+	field_name := lower_expr_name(selector.field, ctx.project.allocator)
+	entity := lower_entity_for_node(ctx, &selector.field.expr_base)
+	projection_segments := make([dynamic]Projection_Segment, 0, 4, context.temp_allocator)
+	defer delete(projection_segments)
+	lower_append_projection_prefix_for_expr(ctx, selector.base, &projection_segments)
+	append(
+		&projection_segments,
+		lower_field_projection_segment(ctx, field_name, source, entity, selector.op),
+	)
 	return lower_emit_field_load(
 		ctx,
 		base,
-		lower_expr_name(selector.field, ctx.project.allocator),
+		field_name,
 		lower_type_for_expr(ctx, expr),
 		source,
+		entity,
+		selector.op,
+		projection_segments[:],
 	)
 }
 
@@ -1023,7 +1141,10 @@ lower_system_field_selector :: proc(ctx: ^Lower_Context, selector: ^ast.Selector
 	}
 	field_name := entity.name
 	if field_name == "" {
-		field_name = lower_expr_name(selector.field, context.temp_allocator)
+		field_name = semantic.project_intern_lower_ascii(
+			ctx.project,
+			lower_expr_name(selector.field, context.temp_allocator),
+		)
 	}
 	return field_name, field_name != ""
 }
@@ -1038,12 +1159,24 @@ lower_interface_selector_expr :: proc(
 	if receiver == INVALID_VALUE_ID {
 		return builder_emit_unsupported(ctx.builder, "interface selector receiver", lower_type_for_expr(ctx, expr), source)
 	}
+	field_name := lower_interface_selector_name(selector, ctx.project.allocator)
+	entity := lower_entity_for_node(ctx, &selector.member.expr_base)
+	projection_segments := make([dynamic]Projection_Segment, 0, 4, context.temp_allocator)
+	defer delete(projection_segments)
+	lower_append_projection_prefix_for_expr(ctx, selector.receiver, &projection_segments)
+	append(
+		&projection_segments,
+		lower_field_projection_segment(ctx, field_name, source, entity, selector.receiver_op),
+	)
 	return lower_emit_field_load(
 		ctx,
 		receiver,
-		lower_interface_selector_name(selector, ctx.project.allocator),
+		field_name,
 		lower_type_for_expr(ctx, expr),
 		source,
+		entity,
+		selector.receiver_op,
+		projection_segments[:],
 	)
 }
 
@@ -1054,18 +1187,32 @@ lower_store_selector_expr :: proc(
 	value: Value_Id,
 	source: Source_Loc,
 ) {
+	if field_name, ok := lower_system_field_selector(ctx, selector); ok {
+		builder_emit_system_write(ctx.builder, field_name, lower_move_value_to_target(ctx, target, value, source), source)
+		return
+	}
 	base := lower_expr(ctx, selector.base)
 	if base == INVALID_VALUE_ID {
 		builder_emit_unsupported(ctx.builder, "selector assignment base", source = source)
 		return
 	}
+	field_name := lower_expr_name(selector.field, ctx.project.allocator)
+	entity := lower_entity_for_node(ctx, &selector.field.expr_base)
+	projection_segments := make([dynamic]Projection_Segment, 0, 4, context.temp_allocator)
+	defer delete(projection_segments)
+	lower_append_projection_prefix_for_expr(ctx, selector.base, &projection_segments)
+	append(
+		&projection_segments,
+		lower_field_projection_segment(ctx, field_name, source, entity, selector.op),
+	)
+	projection := lower_add_projection_segments(ctx, projection_segments[:])
 	inputs := [?]Value_Id{base, lower_move_value_to_target(ctx, target, value, source)}
 	builder_emit_effect_op(
 		ctx.builder,
 		.Core_Field_Store,
 		inputs[:],
 		flags = {.Reads_World, .Writes_World},
-		payload = Op_Payload{field_name = lower_expr_name(selector.field, ctx.project.allocator)},
+		payload = Op_Payload{field_name = field_name, projection = projection, has_projection = true},
 		source = source,
 	)
 }
@@ -1082,13 +1229,23 @@ lower_store_interface_selector_expr :: proc(
 		builder_emit_unsupported(ctx.builder, "interface selector receiver assignment", source = source)
 		return
 	}
+	field_name := lower_interface_selector_name(selector, ctx.project.allocator)
+	entity := lower_entity_for_node(ctx, &selector.member.expr_base)
+	projection_segments := make([dynamic]Projection_Segment, 0, 4, context.temp_allocator)
+	defer delete(projection_segments)
+	lower_append_projection_prefix_for_expr(ctx, selector.receiver, &projection_segments)
+	append(
+		&projection_segments,
+		lower_field_projection_segment(ctx, field_name, source, entity, selector.receiver_op),
+	)
+	projection := lower_add_projection_segments(ctx, projection_segments[:])
 	inputs := [?]Value_Id{receiver, lower_move_value_to_target(ctx, target, value, source)}
 	builder_emit_effect_op(
 		ctx.builder,
 		.Core_Field_Store,
 		inputs[:],
 		flags = {.Reads_World, .Writes_World},
-		payload = Op_Payload{field_name = lower_interface_selector_name(selector, ctx.project.allocator)},
+		payload = Op_Payload{field_name = field_name, projection = projection, has_projection = true},
 		source = source,
 	)
 }
@@ -1166,19 +1323,117 @@ lower_emit_field_load :: proc(
 	field_name: string,
 	result_type: Type_Id,
 	source: Source_Loc,
+	entity: ^semantic.Entity = nil,
+	selector: ast.Selector_Op = .Dash,
+	projection_segments: []Projection_Segment = nil,
 ) -> Value_Id {
 	operands := [?]Value_Id{ctx.builder.current_world, base}
 	result_types := [?]Type_Id{lower_known_result_type(result_type)}
+	projection := lower_add_projection_segments(ctx, projection_segments) if len(projection_segments) > 0 else lower_add_field_projection(ctx, field_name, source, entity, selector)
 	op_id := builder_emit_op(
 		ctx.builder,
 		.Core_Field_Load,
 		operands[:],
 		result_types[:],
 		{.Reads_World},
-		Op_Payload{field_name = field_name},
+		Op_Payload{field_name = field_name, projection = projection, has_projection = true},
 		source,
 	)
 	return op_ptr(builder_function(ctx.builder), op_id).results[0]
+}
+
+lower_add_field_projection :: proc(
+	ctx: ^Lower_Context,
+	field_name: string,
+	source: Source_Loc,
+	entity: ^semantic.Entity = nil,
+	selector: ast.Selector_Op = .Dash,
+) -> Projection_Id {
+	segment := lower_field_projection_segment(ctx, field_name, source, entity, selector)
+	segments := [?]Projection_Segment{segment}
+	return lower_add_projection_segments(ctx, segments[:])
+}
+
+lower_add_projection_segments :: proc(ctx: ^Lower_Context, segments: []Projection_Segment) -> Projection_Id {
+	return function_add_projection(builder_function(ctx.builder), segments, ctx.module.allocator)
+}
+
+lower_field_projection_segment :: proc(
+	ctx: ^Lower_Context,
+	field_name: string,
+	source: Source_Loc,
+	entity: ^semantic.Entity = nil,
+	selector: ast.Selector_Op = .Dash,
+) -> Projection_Segment {
+	_ = ctx
+	return Projection_Segment {
+		kind = .Field,
+		name = field_name,
+		selector = selector,
+		field_index = lower_field_index(entity),
+		entity = entity,
+		source = source,
+	}
+}
+
+lower_append_projection_prefix_for_expr :: proc(
+	ctx: ^Lower_Context,
+	expr: ^ast.Expr,
+	segments: ^[dynamic]Projection_Segment,
+) {
+	if expr == nil {
+		return
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Selector_Expr:
+		lower_append_projection_prefix_for_expr(ctx, n.base, segments)
+		field_name := lower_expr_name(n.field, ctx.project.allocator)
+		source := Source_Loc{file = ctx.file, node = &n.field.expr_base, range = n.field.range}
+		append(
+			segments,
+			lower_field_projection_segment(
+				ctx,
+				field_name,
+				source,
+				lower_entity_for_node(ctx, &n.field.expr_base),
+				n.op,
+			),
+		)
+	case ^ast.Interface_Qualified_Selector_Expr:
+		lower_append_projection_prefix_for_expr(ctx, n.receiver, segments)
+		field_name := lower_interface_selector_name(n, ctx.project.allocator)
+		source := Source_Loc{file = ctx.file, node = &n.member.expr_base, range = n.member.range}
+		append(
+			segments,
+			lower_field_projection_segment(
+				ctx,
+				field_name,
+				source,
+				lower_entity_for_node(ctx, &n.member.expr_base),
+				n.receiver_op,
+			),
+		)
+	case ^ast.Paren_Expr:
+		lower_append_projection_prefix_for_expr(ctx, n.expr, segments)
+	}
+}
+
+lower_field_entity_at_range :: proc(ctx: ^Lower_Context, range: tokenizer.Range) -> ^semantic.Entity {
+	if use := semantic.semantic_ref_use_at_range(ctx.ref_query, range); use != nil {
+		return use.entity
+	}
+	return nil
+}
+
+lower_field_index :: proc(entity: ^semantic.Entity) -> i32 {
+	if entity == nil {
+		return -1
+	}
+	payload, ok := entity.payload.(^semantic.Entity_Field_Payload)
+	if !ok || payload == nil {
+		return -1
+	}
+	return i32(payload.field_index)
 }
 
 lower_emit_value_op :: proc(
@@ -1265,6 +1520,9 @@ lower_write_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Write_Stmt, source: Sou
 
 lower_create_object_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Create_Object_Stmt, source: Source_Loc) {
 	assert(stmt.target != nil)
+	target_type := lower_type_for_expr(ctx, stmt.target)
+	constructor_type := lower_create_object_constructor_type(ctx, stmt)
+	construct_type := lower_create_object_construct_type(ctx, constructor_type, target_type)
 	inputs := make([dynamic]Value_Id, 0, len(stmt.operands), context.temp_allocator)
 	defer delete(inputs)
 	if stmt.type_dynamic_expr != nil {
@@ -1273,16 +1531,68 @@ lower_create_object_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Create_Object_S
 			append(&inputs, value)
 		}
 	}
-	lower_constructor_collect_args(ctx, stmt.operands[:], &inputs)
+	constructor_args := make([dynamic]Value_Id, 0, len(stmt.operands), context.temp_allocator)
+	defer delete(constructor_args)
+	lower_constructor_collect_args(ctx, stmt.operands[:], &constructor_args)
+	for arg in constructor_args {
+		append(&inputs, arg)
+	}
 	created := lower_emit_value_op(
 		ctx,
 		.Abap_Construct,
 		inputs[:],
-		lower_type_for_expr(ctx, stmt.target),
+		construct_type,
 		source,
 		Op_Payload{callee_name = "new"},
 	)
+	if constructor_type != nil && !stmt.type_dynamic {
+		lower_emit_constructor_call_for_type(ctx, constructor_type, created, constructor_args[:], source, &stmt.node)
+	}
 	lower_store_expr(ctx, stmt.target, created)
+}
+
+lower_create_object_constructor_type :: proc(
+	ctx: ^Lower_Context,
+	stmt: ^ast.Create_Object_Stmt,
+) -> ^semantic.Type {
+	if stmt == nil {
+		return nil
+	}
+	if !stmt.type_dynamic {
+		if stmt.type_clause != nil && stmt.type_clause.type_ref != nil {
+			if info, ok := lower_expr_info_for_node(ctx, &stmt.type_clause.type_ref.expr_base); ok {
+				return info.type
+			}
+		}
+		if stmt.type_ref != nil {
+			if info, ok := lower_expr_info_for_node(ctx, &stmt.type_ref.expr_base); ok {
+				return info.type
+			}
+		}
+	}
+	if stmt.target != nil {
+		if info, ok := lower_expr_info_for_node(ctx, &stmt.target.expr_base); ok {
+			return info.type
+		}
+	}
+	return nil
+}
+
+lower_create_object_construct_type :: proc(
+	ctx: ^Lower_Context,
+	constructor_type: ^semantic.Type,
+	fallback: Type_Id,
+) -> Type_Id {
+	if ctx == nil || ctx.project == nil || constructor_type == nil || constructor_type.kind == .Unknown {
+		return fallback
+	}
+	if constructor_type.kind == .Ref {
+		return module_type_from_semantic(ctx.module, constructor_type)
+	}
+	if semantic.checker_type_object_entity(constructor_type) != nil {
+		return module_type_from_semantic(ctx.module, semantic.project_type_ref(ctx.project, constructor_type))
+	}
+	return fallback
 }
 
 lower_if_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.If_Stmt) {
@@ -2292,30 +2602,39 @@ lower_call_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Call_Stmt) {
 		append(&inputs, receiver)
 	}
 	lower_call_stmt_arg_inputs(ctx, stmt.named_args[:], &inputs)
+	outputs := make([dynamic]^ast.Expr, 0, 2, context.temp_allocator)
+	defer delete(outputs)
+	lower_call_stmt_output_exprs(stmt.named_args[:], &outputs)
+	result_types := lower_call_output_result_types(ctx, outputs[:], context.temp_allocator)
+	defer delete(result_types)
 	target_entity := lower_call_target_entity(ctx, target)
 	callee_name := lower_call_target_name(ctx, target, target_entity)
+	op_id := INVALID_OP_ID
 	if target_entity == nil {
 		builder_emit_unsupported(ctx.builder, lower_call_stmt_unsupported_message(stmt), source = source)
 	} else if target_entity.kind == .Method {
-		builder_emit_method_call(
+		op_id = builder_emit_method_call(
 			ctx.builder,
 			target_entity,
 			callee_name,
 			inputs[:],
+			result_types[:],
 			source = source,
 			ast_stmt = &stmt.node,
 		)
 	} else {
-		builder_emit_routine_call(
+		op_id = builder_emit_routine_call(
 			ctx.builder,
 			target_entity,
 			callee_name,
 			inputs[:],
+			result_types[:],
 			source = source,
 			ast_stmt = &stmt.node,
 			call_kind = lower_call_kind_for_stmt(stmt, target_entity),
 		)
 	}
+	lower_store_call_outputs(ctx, op_id, outputs[:])
 	if stmt.kind == .Function {
 		builder_emit_system_write(ctx.builder, "subrc", source = source)
 	}
@@ -2339,6 +2658,11 @@ lower_direct_call_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Call_Stmt, source
 		append(&inputs, receiver)
 	}
 	lower_call_arg_inputs(ctx, call.args, &inputs)
+	outputs := make([dynamic]^ast.Expr, 0, 2, context.temp_allocator)
+	defer delete(outputs)
+	lower_call_arg_output_exprs(call.args, &outputs)
+	result_types := lower_call_output_result_types(ctx, outputs[:], context.temp_allocator)
+	defer delete(result_types)
 	target_entity := lower_call_target_entity(ctx, call.callee)
 	callee_name := lower_call_target_name(ctx, call.callee, target_entity)
 	if target_entity != nil && target_entity.kind == .Builtin {
@@ -2357,24 +2681,28 @@ lower_direct_call_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Call_Stmt, source
 		return
 	}
 	if target_entity.kind == .Method {
-		builder_emit_method_call(
+		op_id := builder_emit_method_call(
 			ctx.builder,
 			target_entity,
 			callee_name,
 			inputs[:],
+			result_types[:],
 			source = source,
 			ast_stmt = &stmt.node,
 		)
+		lower_store_call_outputs(ctx, op_id, outputs[:])
 		return
 	}
-	builder_emit_routine_call(
+	op_id := builder_emit_routine_call(
 		ctx.builder,
 		target_entity,
 		callee_name,
 		inputs[:],
+		result_types[:],
 		source = source,
 		ast_stmt = &stmt.node,
 	)
+	lower_store_call_outputs(ctx, op_id, outputs[:])
 }
 
 lower_perform_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Perform_Stmt, source: Source_Loc) {
@@ -2383,6 +2711,8 @@ lower_perform_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Perform_Stmt, source:
 	lower_call_expr_list_inputs(ctx, stmt.tables[:], &inputs)
 	lower_call_expr_list_inputs(ctx, stmt.using_args[:], &inputs)
 	lower_call_expr_list_inputs(ctx, stmt.changing[:], &inputs)
+	result_types := lower_call_output_result_types(ctx, stmt.changing[:], context.temp_allocator)
+	defer delete(result_types)
 	lower_expr(ctx, stmt.program)
 	target_entity := lower_call_target_entity(ctx, stmt.form)
 	callee_name := lower_call_target_name(ctx, stmt.form, target_entity)
@@ -2390,15 +2720,17 @@ lower_perform_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Perform_Stmt, source:
 		builder_emit_unsupported(ctx.builder, "unresolved PERFORM target", source = source)
 		return
 	}
-	builder_emit_routine_call(
+	op_id := builder_emit_routine_call(
 		ctx.builder,
 		target_entity,
 		callee_name,
 		inputs[:],
+		result_types[:],
 		source = source,
 		ast_stmt = &stmt.node,
 		call_kind = .Form,
 	)
+	lower_store_call_outputs(ctx, op_id, stmt.changing[:])
 }
 
 lower_message_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Message_Stmt, source: Source_Loc) {
@@ -2666,6 +2998,77 @@ lower_call_expr_list_inputs :: proc(ctx: ^Lower_Context, exprs: []^ast.Expr, inp
 	}
 }
 
+lower_call_stmt_output_exprs :: proc(args: []ast.Call_Stmt_Named_Arg, outputs: ^[dynamic]^ast.Expr) {
+	for arg in args {
+		if lower_call_section_is_output(arg.section) && arg.value != nil {
+			append(outputs, arg.value)
+		}
+	}
+}
+
+lower_call_arg_output_exprs :: proc(
+	expr: ^ast.Expr,
+	outputs: ^[dynamic]^ast.Expr,
+	output_section: bool = false,
+) {
+	if expr == nil {
+		return
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Call_Arg_List_Expr:
+		for arg in n.args {
+			lower_call_arg_output_exprs(arg, outputs, output_section)
+		}
+	case ^ast.Call_Arg_Section_Expr:
+		is_output := lower_call_section_is_output(n.kind)
+		for arg in n.args {
+			lower_call_arg_output_exprs(arg, outputs, is_output)
+		}
+	case ^ast.Call_Named_Arg_Expr:
+		if output_section && n.value != nil {
+			append(outputs, n.value)
+		}
+	case ^ast.Call_Positional_Arg_Expr:
+		if output_section && n.value != nil {
+			append(outputs, n.value)
+		}
+	}
+}
+
+lower_call_section_is_output :: #force_inline proc "contextless" (section: ast.Call_Arg_Section_Kind) -> bool {
+	#partial switch section {
+	case .Changing, .Importing, .Receiving:
+		return true
+	}
+	return false
+}
+
+lower_call_output_result_types :: proc(
+	ctx: ^Lower_Context,
+	outputs: []^ast.Expr,
+	allocator: mem.Allocator,
+) -> [dynamic]Type_Id {
+	result_types := make([dynamic]Type_Id, 0, len(outputs), allocator)
+	for output in outputs {
+		append(&result_types, lower_type_for_expr(ctx, output))
+	}
+	return result_types
+}
+
+lower_store_call_outputs :: proc(ctx: ^Lower_Context, op_id: Op_Id, outputs: []^ast.Expr) {
+	if op_id == INVALID_OP_ID || len(outputs) == 0 {
+		return
+	}
+	op := op_ptr(builder_function(ctx.builder), op_id)
+	for output, i in outputs {
+		result_index := i + 1
+		if result_index >= len(op.results) {
+			break
+		}
+		lower_store_expr(ctx, output, op.results[result_index])
+	}
+}
+
 lower_call_target_entity :: proc(ctx: ^Lower_Context, expr: ^ast.Expr) -> ^semantic.Entity {
 	if expr == nil {
 		return nil
@@ -2812,12 +3215,28 @@ lower_call_receiver_raw_prefix :: proc(
 	if value == INVALID_VALUE_ID {
 		return INVALID_VALUE_ID
 	}
+	projection_segments := make([dynamic]Projection_Segment, 0, segment_count, context.temp_allocator)
+	defer delete(projection_segments)
 	for segment, i in ref.path {
 		if i >= segment_count {
 			break
 		}
 		segment_source := Source_Loc{file = ctx.file, node = &expr.expr_base, range = segment.name.range}
-		value = lower_emit_field_load(ctx, value, segment.name.text, lower_type_for_raw_segment(ctx, expr, segment, false), segment_source)
+		entity := lower_field_entity_at_range(ctx, segment.name.range)
+		append(
+			&projection_segments,
+			lower_field_projection_segment(ctx, segment.name.text, segment_source, entity, segment.selector),
+		)
+		value = lower_emit_field_load(
+			ctx,
+			value,
+			segment.name.text,
+			lower_type_for_raw_segment(ctx, expr, segment, false),
+			segment_source,
+			entity,
+			segment.selector,
+			projection_segments[:],
+		)
 	}
 	return value
 }
@@ -2842,7 +3261,12 @@ lower_call_target_name :: proc(
 	}
 	#partial switch n in expr.derived_expr {
 	case ^ast.Literal_Expr:
-		return lower_strip_literal_quotes(n.value)
+		if len(n.value) >= 2 &&
+		   ((n.value[0] == '\'' && n.value[len(n.value) - 1] == '\'') ||
+		    (n.value[0] == '`' && n.value[len(n.value) - 1] == '`')) {
+			return n.value[1:len(n.value) - 1]
+		}
+		return n.value
 	case ^ast.Type_Ref_Expr:
 		if n.raw_operand && len(n.raw_refs) == 1 {
 			ref := n.raw_refs[0]
@@ -2883,15 +3307,6 @@ lower_callable_entity_name :: proc(
 		return entity.name
 	}
 	return fallback
-}
-
-lower_strip_literal_quotes :: proc "contextless" (text: string) -> string {
-	if len(text) >= 2 &&
-	   ((text[0] == '\'' && text[len(text) - 1] == '\'') ||
-	    (text[0] == '`' && text[len(text) - 1] == '`')) {
-		return text[1:len(text) - 1]
-	}
-	return text
 }
 
 lower_call_kind_for_stmt :: proc "contextless" (
@@ -3062,7 +3477,7 @@ lower_load_instance_attribute :: proc(
 ) -> Value_Id {
 	receiver := lower_load_current_instance(ctx, source, entity.owner)
 	assert(receiver != INVALID_VALUE_ID)
-	return lower_emit_field_load(ctx, receiver, lower_instance_attribute_name(entity, name), result_type, source)
+	return lower_emit_field_load(ctx, receiver, lower_instance_attribute_name(entity, name), result_type, source, entity, .Arrow)
 }
 
 lower_store_instance_attribute :: proc(
@@ -3075,13 +3490,15 @@ lower_store_instance_attribute :: proc(
 ) {
 	receiver := lower_load_current_instance(ctx, source, entity.owner)
 	assert(receiver != INVALID_VALUE_ID)
+	field_name := lower_instance_attribute_name(entity, name)
+	projection := lower_add_field_projection(ctx, field_name, source, entity, .Arrow)
 	inputs := [?]Value_Id{receiver, lower_move_value_to_target(ctx, target, value, source)}
 	builder_emit_effect_op(
 		ctx.builder,
 		.Core_Field_Store,
 		inputs[:],
 		flags = {.Reads_World, .Writes_World},
-		payload = Op_Payload{field_name = lower_instance_attribute_name(entity, name)},
+		payload = Op_Payload{field_name = field_name, projection = projection, has_projection = true},
 		source = source,
 	)
 }
@@ -3133,17 +3550,6 @@ lower_instance_attribute_name :: proc "contextless" (entity: ^semantic.Entity, f
 	return fallback
 }
 
-lower_ensure_slot_for_expr :: proc(
-	ctx: ^Lower_Context,
-	expr: ^ast.Expr,
-	name: string,
-	source: Source_Loc,
-) -> Slot_Id {
-	entity := lower_entity_for_node(ctx, &expr.expr_base)
-	typ := lower_type_for_expr(ctx, expr)
-	return lower_ensure_slot(ctx, entity, name, typ, .Local, source)
-}
-
 lower_ensure_slot_for_decl :: proc(
 	ctx: ^Lower_Context,
 	name: string,
@@ -3181,13 +3587,13 @@ lower_ensure_slot :: proc(
 				return Slot_Id(i)
 			}
 		}
-		if slot_name == "" {
+		if entity.name != "" {
 			slot_name = entity.name
 		}
 		if slot_type == INVALID_TYPE_ID {
 			slot_type = module_type_from_semantic(ctx.module, entity.type)
 		}
-			return function_add_slot(function, slot_kind, slot_name, slot_type, entity, lower_source_loc_for_entity(entity, source))
+		return function_add_slot(function, slot_kind, slot_name, slot_type, entity, lower_source_loc_for_entity(entity, source))
 	}
 	if slot_type == INVALID_TYPE_ID {
 		slot_type = BUILTIN_TYPE_UNKNOWN
