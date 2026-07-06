@@ -420,9 +420,9 @@ runtime_cli_report :: proc(result: ^vm.Run_Result, allocator: mem.Allocator) -> 
 	}
 }
 
-runtime_source_path :: proc(source: ir.Source_Loc, fallback_path: string = "") -> string {
-	if source.file != nil && source.file.path != "" {
-		return source.file.path
+runtime_source_path :: proc(source: runtime.Source_Loc, fallback_path: string = "") -> string {
+	if source.path != "" {
+		return source.path
 	}
 	return fallback_path
 }

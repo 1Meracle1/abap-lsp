@@ -327,7 +327,12 @@ exec_store :: proc(vm: ^VM, frame: ^Frame, instruction: bytecode.Instruction) {
 	case .Global:
 		runtime.context_global_write(&vm.runtime_context, slot.name, value)
 	case .Runtime:
-		if !runtime.context_runtime_write(&vm.runtime_context, slot.name, value, instruction.source) {
+		if !runtime.context_runtime_write(
+			&vm.runtime_context,
+			slot.name,
+			value,
+			instruction_runtime_source(instruction),
+		) {
 			vm_sync_runtime_trap(vm)
 			return
 		}
@@ -353,7 +358,11 @@ exec_field_access :: proc(vm: ^VM, frame: ^Frame, instruction: bytecode.Instruct
 		result_type = result_type_name(frame.function, instruction, 0),
 	}
 	if instruction.op == .Field_Load {
-		value, value_ok := runtime.context_field_load(&vm.runtime_context, request, instruction.source)
+		value, value_ok := runtime.context_field_load(
+			&vm.runtime_context,
+			request,
+			instruction_runtime_source(instruction),
+		)
 		defer runtime.value_destroy(&value)
 		if !value_ok {
 			vm_sync_runtime_trap(vm)
@@ -364,7 +373,11 @@ exec_field_access :: proc(vm: ^VM, frame: ^Frame, instruction: bytecode.Instruct
 		return
 	}
 	request.value = get_operand(frame, instruction, 2)
-	if !runtime.context_field_store(&vm.runtime_context, request, instruction.source) {
+	if !runtime.context_field_store(
+		&vm.runtime_context,
+		request,
+		instruction_runtime_source(instruction),
+	) {
 		vm_sync_runtime_trap(vm)
 		return
 	}
@@ -574,7 +587,7 @@ dispatch_call_callback :: proc(
 				callee_name = callback.payload.callee_name,
 				values = values,
 			},
-			instruction.source,
+			instruction_runtime_source(instruction),
 		)
 		if !ok {
 			vm_sync_runtime_trap(vm)
@@ -588,7 +601,7 @@ dispatch_call_callback :: proc(
 			values = values,
 			result_type = result_type_name(frame.function, instruction, result_index),
 		},
-		instruction.source,
+		instruction_runtime_source(instruction),
 	)
 	defer runtime.value_destroy(&value)
 	if !ok {
@@ -630,7 +643,11 @@ dispatch_table_callback :: proc(
 	#partial switch operation {
 	case .Iter:
 		request.result_type = result_type_name(frame.function, instruction, 1)
-		iter, ok := runtime.context_table_iter(&vm.runtime_context, request, instruction.source)
+		iter, ok := runtime.context_table_iter(
+			&vm.runtime_context,
+			request,
+			instruction_runtime_source(instruction),
+		)
 		defer runtime.value_destroy(&iter)
 		if !ok {
 			vm_sync_runtime_trap(vm)
@@ -639,7 +656,11 @@ dispatch_table_callback :: proc(
 		set_result(vm, frame, instruction, 1, iter)
 	case .Next:
 		request.result_type = result_type_name(frame.function, instruction, 2)
-		has_row, row, next_iter, ok := runtime.context_table_next(&vm.runtime_context, request, instruction.source)
+		has_row, row, next_iter, ok := runtime.context_table_next(
+			&vm.runtime_context,
+			request,
+			instruction_runtime_source(instruction),
+		)
 		defer runtime.value_destroy(&has_row)
 		defer runtime.value_destroy(&row)
 		defer runtime.value_destroy(&next_iter)
@@ -652,7 +673,11 @@ dispatch_table_callback :: proc(
 		set_result(vm, frame, instruction, 2, row)
 	case .Read:
 		request.result_type = result_type_name(frame.function, instruction, 1)
-		row, subrc, ok := runtime.context_table_read(&vm.runtime_context, request, instruction.source)
+		row, subrc, ok := runtime.context_table_read(
+			&vm.runtime_context,
+			request,
+			instruction_runtime_source(instruction),
+		)
 		defer runtime.value_destroy(&row)
 		defer runtime.value_destroy(&subrc)
 		if !ok {
@@ -662,7 +687,11 @@ dispatch_table_callback :: proc(
 		set_result(vm, frame, instruction, 1, row)
 		set_result(vm, frame, instruction, 2, subrc)
 	case:
-		if !runtime.context_table_mutate(&vm.runtime_context, request, instruction.source) {
+		if !runtime.context_table_mutate(
+			&vm.runtime_context,
+			request,
+			instruction_runtime_source(instruction),
+		) {
 			vm_sync_runtime_trap(vm)
 		}
 	}
@@ -685,7 +714,11 @@ dispatch_sql_callback :: proc(
 		result_type = result_type_name(frame.function, instruction, 1),
 	}
 	if operation == .Select {
-		value, subrc, ok := runtime.context_sql_select(&vm.runtime_context, request, instruction.source)
+		value, subrc, ok := runtime.context_sql_select(
+			&vm.runtime_context,
+			request,
+			instruction_runtime_source(instruction),
+		)
 		defer runtime.value_destroy(&value)
 		defer runtime.value_destroy(&subrc)
 		if !ok {
@@ -696,7 +729,11 @@ dispatch_sql_callback :: proc(
 		set_result(vm, frame, instruction, 2, subrc)
 		return
 	}
-	if !runtime.context_sql_mutate(&vm.runtime_context, request, instruction.source) {
+	if !runtime.context_sql_mutate(
+		&vm.runtime_context,
+		request,
+		instruction_runtime_source(instruction),
+	) {
 		vm_sync_runtime_trap(vm)
 	}
 }
@@ -798,7 +835,12 @@ dispatch_abap_callback :: proc(
 		for i in 0 ..< int(instruction.operand_count) {
 			values[i] = get_operand(frame, instruction, i)
 		}
-		value, ok := runtime.abap_string_join(&vm.runtime_context, values[:], vm.allocator, instruction.source)
+		value, ok := runtime.abap_string_join(
+			&vm.runtime_context,
+			values[:],
+			vm.allocator,
+			instruction_runtime_source(instruction),
+		)
 		defer runtime.value_destroy(&value)
 		if !ok {
 			vm_sync_runtime_trap(vm)
@@ -817,7 +859,11 @@ dispatch_abap_callback :: proc(
 		for i := 0; i < value_count; i += 1 {
 			values[i] = get_operand(frame, instruction, i + 1)
 		}
-		if !runtime.context_write(&vm.runtime_context, values[:], instruction.source) {
+		if !runtime.context_write(
+			&vm.runtime_context,
+			values[:],
+			instruction_runtime_source(instruction),
+		) {
 			vm_sync_runtime_trap(vm)
 		}
 	case .Abap_Message:
@@ -834,7 +880,7 @@ dispatch_abap_callback :: proc(
 		value, ok := runtime.context_assign_field(
 			&vm.runtime_context,
 			runtime.Assign_Request{values = values},
-			instruction.source,
+			instruction_runtime_source(instruction),
 		)
 		defer runtime.value_destroy(&value)
 		if !ok {
@@ -873,7 +919,7 @@ dispatch_integer_arithmetic :: proc(
 		arithmetic,
 		get_operand(frame, instruction, 0),
 		get_operand(frame, instruction, 1),
-		instruction.source,
+		instruction_runtime_source(instruction),
 	)
 	if !result_ok {
 		vm_sync_runtime_trap(vm)
@@ -912,7 +958,7 @@ dispatch_comparison :: proc(
 		comparison,
 		get_operand(frame, instruction, 0),
 		get_operand(frame, instruction, 1),
-		instruction.source,
+		instruction_runtime_source(instruction),
 	)
 	if !result_ok {
 		vm_sync_runtime_trap(vm)
@@ -937,7 +983,7 @@ dispatch_construct :: proc(
 		callback.payload.callee_name,
 		values[:],
 		result_type_name(frame.function, instruction, 0),
-		instruction.source,
+		instruction_runtime_source(instruction),
 	)
 	defer runtime.value_destroy(&value)
 	if !ok {
@@ -973,7 +1019,7 @@ dispatch_message :: proc(
 			message_number = payload.message_number,
 		},
 		values[:],
-		instruction.source,
+		instruction_runtime_source(instruction),
 	)
 	if !ok {
 		vm_sync_runtime_trap(vm)
@@ -1162,11 +1208,29 @@ current_source :: #force_inline proc "contextless" (vm: ^VM) -> ir.Source_Loc {
 
 vm_trap :: proc(vm: ^VM, kind: runtime.Trap_Kind, message: string, source: ir.Source_Loc = {}) {
 	vm.state = .Trapped
-	runtime.context_trap(&vm.runtime_context, kind, message, source)
+	runtime.context_trap(&vm.runtime_context, kind, message, runtime_source_from_ir(source))
 }
 
 vm_sync_runtime_trap :: #force_inline proc "contextless" (vm: ^VM) {
 	if runtime.context_trapped(&vm.runtime_context) {
 		vm.state = .Trapped
 	}
+}
+
+runtime_source_from_ir :: #force_inline proc "contextless" (source: ir.Source_Loc) -> runtime.Source_Loc {
+	path := ""
+	if source.file != nil {
+		path = source.file.path
+	}
+	return runtime.Source_Loc {
+		path = path,
+		range = runtime.Source_Range {
+			start = source.range.start,
+			end = source.range.end,
+		},
+	}
+}
+
+instruction_runtime_source :: #force_inline proc "contextless" (instruction: bytecode.Instruction) -> runtime.Source_Loc {
+	return runtime_source_from_ir(instruction.source)
 }

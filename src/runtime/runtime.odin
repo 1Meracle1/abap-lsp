@@ -1,7 +1,5 @@
 package abap_frontend_runtime
 
-import ir "src:ir"
-
 import "core:mem"
 import "core:slice"
 import "core:strconv"
@@ -78,6 +76,17 @@ SQL_Operation :: enum {
 	Delete,
 	Insert,
 	Update,
+}
+
+Source_Range :: struct {
+	start: int,
+	end:   int,
+}
+
+// Source_Loc carries borrowed provenance; callers own path storage.
+Source_Loc :: struct {
+	path:  string,
+	range: Source_Range,
 }
 
 IO_Policy :: struct {
@@ -167,13 +176,13 @@ IO_Event :: struct {
 	kind:         IO_Event_Kind,
 	text:         string,
 	message_type: string,
-	source:       ir.Source_Loc,
+	source:       Source_Loc,
 }
 
 Trap :: struct {
 	kind:    Trap_Kind,
 	message: string,
-	source:  ir.Source_Loc,
+	source:  Source_Loc,
 }
 
 Context_Options :: struct {
@@ -278,7 +287,7 @@ context_trap :: proc(
 	ctx: ^Context,
 	kind: Trap_Kind,
 	message: string,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) {
 	delete(ctx.trap.message)
 	ctx.trap = Trap {
@@ -364,7 +373,7 @@ context_runtime_write :: proc(
 	ctx: ^Context,
 	name: string,
 	value: Value,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> bool {
 	switch name {
 	case "sy", "syst":
@@ -393,7 +402,7 @@ context_system_write :: #force_inline proc(ctx: ^Context, field_name: string, va
 context_write :: proc(
 	ctx: ^Context,
 	values: []Value,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> bool {
 	if !ctx.io_policy.capture_write {
 		context_trap(ctx, .Unsupported, "WRITE output is denied by runtime I/O policy", source)
@@ -417,7 +426,7 @@ context_message :: proc(
 	ctx: ^Context,
 	descriptor: Message_Descriptor,
 	values: []Value,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (string, bool) {
 	if !ctx.io_policy.capture_message {
 		context_trap(ctx, .Unsupported, "MESSAGE output is denied by runtime I/O policy", source)
@@ -436,7 +445,7 @@ abap_integer_arithmetic :: proc(
 	ctx: ^Context,
 	kind: Arithmetic_Kind,
 	left, right: Value,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, bool) {
 	left_int, left_ok := value_integer(left)
 	right_int, right_ok := value_integer(right)
@@ -465,7 +474,7 @@ abap_compare :: proc(
 	ctx: ^Context,
 	kind: Comparison_Kind,
 	left, right: Value,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, bool) {
 	cmp: int
 	if left_int, left_ok := value_integer(left); left_ok {
@@ -507,7 +516,7 @@ abap_string_join :: proc(
 	ctx: ^Context,
 	values: []Value,
 	allocator: mem.Allocator,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, bool) {
 	out := strings.builder_make(context.temp_allocator)
 	for value in values {
@@ -524,7 +533,7 @@ abap_construct :: proc(
 	callee_name: string,
 	values: []Value,
 	result_type: string,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, bool) {
 	switch callee_name {
 	case "", "value":
@@ -557,9 +566,9 @@ abap_construct :: proc(
 context_call :: proc(
 	ctx: ^Context,
 	request: Call_Request,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, bool) {
-	name := strings.to_lower(request.callee_name, context.temp_allocator)
+	name := request.callee_name
 	switch name {
 	case "boolc":
 		return value_string("X" if len(request.values) > 0 && value_truthy(request.values[0]) else "", ctx.allocator), true
@@ -631,7 +640,7 @@ context_call :: proc(
 context_table_read :: proc(
 	ctx: ^Context,
 	request: Table_Request,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, Value, bool) {
 	if len(request.values) == 0 {
 		context_trap(ctx, .Type, "table read requires a table operand", source)
@@ -654,7 +663,7 @@ context_table_read :: proc(
 context_table_iter :: proc(
 	ctx: ^Context,
 	request: Table_Request,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, bool) {
 	if len(request.values) == 0 {
 		context_trap(ctx, .Type, "table iterator requires a table operand", source)
@@ -666,7 +675,7 @@ context_table_iter :: proc(
 context_table_next :: proc(
 	ctx: ^Context,
 	request: Table_Request,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, Value, Value, bool) {
 	if len(request.values) == 0 || value_iterator_data(request.values[0]) == nil {
 		context_trap(ctx, .Type, "table next requires a table iterator operand", source)
@@ -683,7 +692,7 @@ context_table_next :: proc(
 context_table_mutate :: proc(
 	ctx: ^Context,
 	request: Table_Request,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> bool {
 	#partial switch request.operation {
 	case .Append:
@@ -743,7 +752,7 @@ context_table_mutate :: proc(
 context_sql_select :: proc(
 	ctx: ^Context,
 	request: SQL_Request,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, Value, bool) {
 	return initial_for_type(request.result_type, ctx.allocator), value_integer_make(4), true
 }
@@ -751,7 +760,7 @@ context_sql_select :: proc(
 context_sql_mutate :: proc(
 	ctx: ^Context,
 	request: SQL_Request,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> bool {
 	return true
 }
@@ -759,7 +768,7 @@ context_sql_mutate :: proc(
 context_field_load :: proc(
 	ctx: ^Context,
 	request: Field_Request,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, bool) {
 	if value_kind(request.base) == .Structure && structure_is_system(request.base) {
 		return value_clone(context_system_read(ctx, request.name), ctx.allocator), true
@@ -788,7 +797,7 @@ context_field_load :: proc(
 context_field_store :: proc(
 	ctx: ^Context,
 	request: Field_Request,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> bool {
 	if value_kind(request.base) == .Structure && structure_is_system(request.base) {
 		context_system_write(ctx, request.name, request.value)
@@ -814,7 +823,7 @@ context_field_store :: proc(
 context_assign_field :: proc(
 	ctx: ^Context,
 	request: Assign_Request,
-	source: ir.Source_Loc = {},
+	source: Source_Loc = {},
 ) -> (Value, bool) {
 	if len(request.values) == 0 {
 		context_trap(ctx, .Type, "ASSIGN requires a source operand", source)
@@ -827,7 +836,7 @@ builtin_extremum :: proc(
 	ctx: ^Context,
 	name: string,
 	values: []Value,
-	source: ir.Source_Loc,
+	source: Source_Loc,
 ) -> (Value, bool) {
 	if len(values) == 0 {
 		return value_integer_make(0), true
@@ -875,7 +884,7 @@ table_read :: proc(value: Value, index: int, allocator: mem.Allocator) -> (Value
 	return value_deep_clone(table.rows[row_index], allocator), true
 }
 
-table_append :: proc(ctx: ^Context, table: Value, row: Value, source: ir.Source_Loc) -> bool {
+table_append :: proc(ctx: ^Context, table: Value, row: Value, source: Source_Loc) -> bool {
 	data := value_table_data(table)
 	if data == nil {
 		context_trap(ctx, .Type, "table operand is not mutable", source)
@@ -885,7 +894,7 @@ table_append :: proc(ctx: ^Context, table: Value, row: Value, source: ir.Source_
 	return true
 }
 
-table_insert :: proc(ctx: ^Context, table: Value, row: Value, index: int, source: ir.Source_Loc) -> bool {
+table_insert :: proc(ctx: ^Context, table: Value, row: Value, index: int, source: Source_Loc) -> bool {
 	data := value_table_data(table)
 	if data == nil {
 		context_trap(ctx, .Type, "table operand is not mutable", source)
@@ -907,7 +916,7 @@ table_insert :: proc(ctx: ^Context, table: Value, row: Value, index: int, source
 	return true
 }
 
-table_modify :: proc(ctx: ^Context, table: Value, row: Value, index: int, source: ir.Source_Loc) -> bool {
+table_modify :: proc(ctx: ^Context, table: Value, row: Value, index: int, source: Source_Loc) -> bool {
 	data := value_table_data(table)
 	if data == nil {
 		context_trap(ctx, .Type, "table operand is not mutable", source)
@@ -925,7 +934,7 @@ table_modify :: proc(ctx: ^Context, table: Value, row: Value, index: int, source
 	return true
 }
 
-table_delete :: proc(ctx: ^Context, table: Value, index: int, source: ir.Source_Loc) -> bool {
+table_delete :: proc(ctx: ^Context, table: Value, index: int, source: Source_Loc) -> bool {
 	data := value_table_data(table)
 	if data == nil {
 		context_trap(ctx, .Type, "table operand is not mutable", source)
@@ -943,7 +952,7 @@ table_delete :: proc(ctx: ^Context, table: Value, index: int, source: ir.Source_
 	return true
 }
 
-table_sort :: proc(ctx: ^Context, table: Value, source: ir.Source_Loc) -> bool {
+table_sort :: proc(ctx: ^Context, table: Value, source: Source_Loc) -> bool {
 	data := value_table_data(table)
 	if data == nil {
 		context_trap(ctx, .Type, "table operand is not mutable", source)
@@ -1574,7 +1583,7 @@ append_event :: proc(
 	ctx: ^Context,
 	kind: IO_Event_Kind,
 	text, message_type: string,
-	source: ir.Source_Loc,
+	source: Source_Loc,
 ) {
 	append(
 		&ctx.events,
