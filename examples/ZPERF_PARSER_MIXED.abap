@@ -21,6 +21,7 @@ DATA gt_target TYPE ty_target_tab.
 DATA gs_target TYPE ty_target.
 DATA gv_total TYPE i.
 DATA gv_message TYPE string.
+DATA gv_runtime_message TYPE string.
 
 PARAMETERS p_plant TYPE string.
 SELECT-OPTIONS s_matnr FOR gs_target-material.
@@ -154,6 +155,100 @@ FORM summarize USING it_target TYPE ty_target_tab
   ENDIF.
 ENDFORM.
 
+FORM guarded_check USING iv_flag TYPE i
+                   CHANGING cv_message TYPE string.
+  CHECK iv_flag = 1.
+  CONCATENATE cv_message 'check' INTO cv_message SEPARATED BY '|'.
+ENDFORM.
+
+FORM exercise_runtime_coverage CHANGING cv_message TYPE string.
+  DATA lv_calc TYPE i VALUE 2.
+  DATA lv_text TYPE string.
+  DATA lv_first TYPE string.
+  DATA lv_second TYPE string.
+  DATA lv_rest TYPE string.
+  DATA lv_offset TYPE i.
+  DATA lv_length TYPE i.
+  DATA lv_count TYPE i.
+  DATA lv_loop TYPE i.
+  DATA lv_written TYPE string.
+  DATA lv_clear TYPE string VALUE 'clear-me'.
+  DATA lr_calc TYPE REF TO i.
+  DATA lr_line TYPE REF TO i.
+  DATA lt_nums TYPE STANDARD TABLE OF i.
+  DATA lt_scratch TYPE STANDARD TABLE OF i.
+  DATA lv_num TYPE i.
+  FIELD-SYMBOLS <num> TYPE i.
+
+  MOVE 2 TO lv_calc.
+  COMPUTE lv_calc = lv_calc + 3.
+  ADD 5 TO lv_calc.
+  SUBTRACT 4 FROM lv_calc.
+  MULTIPLY lv_calc BY 2.
+  DIVIDE lv_calc BY 4.
+  WRITE lv_calc TO lv_written.
+
+  CONCATENATE 'AA' 'BB' 'CC' INTO lv_text SEPARATED BY '-'.
+  SPLIT lv_text AT '-' INTO lv_first lv_second lv_rest.
+  REPLACE ALL OCCURRENCES OF 'C' IN lv_rest WITH 'x'.
+  SHIFT lv_rest RIGHT BY 1 PLACES.
+  CONDENSE lv_rest NO-GAPS.
+  TRANSLATE lv_rest TO UPPER CASE.
+  FIND ALL OCCURRENCES OF 'A' IN lv_text MATCH OFFSET lv_offset MATCH LENGTH lv_length MATCH COUNT lv_count.
+  SEARCH lv_text FOR 'bb'.
+
+  ASSIGN lv_calc TO <num>.
+  <num> = 7.
+  lr_calc = REF #( lv_calc ).
+  lr_calc->* = lr_calc->* + 1.
+  UNASSIGN <num>.
+
+  CREATE DATA lr_line.
+  lr_line->* = 11.
+  APPEND 5 TO lt_nums ASSIGNING <num>.
+  <num> = 6.
+  INSERT 9 INTO TABLE lt_nums INDEX 1 REFERENCE INTO lr_line.
+  lv_num = 8.
+  MODIFY lt_nums FROM lv_num INDEX 2.
+  READ TABLE lt_nums INTO lv_num INDEX 2.
+  DELETE lt_nums WHERE table_line = 9.
+  SORT lt_nums DESCENDING.
+
+  WHILE lv_loop < 3.
+    lv_loop = lv_loop + 1.
+    IF lv_loop = 2.
+      CONTINUE.
+    ENDIF.
+  ENDWHILE.
+
+  DO.
+    lv_loop = lv_loop + 1.
+    IF lv_loop = 4.
+      EXIT.
+    ENDIF.
+  ENDDO.
+
+  PERFORM guarded_check USING 0 CHANGING cv_message.
+  PERFORM guarded_check USING 1 CHANGING cv_message.
+
+  TRY.
+      RAISE EXCEPTION TYPE cx_root.
+      CONCATENATE cv_message 'miss' INTO cv_message SEPARATED BY '|'.
+    CATCH cx_root INTO DATA(lx_error).
+      CONCATENATE cv_message 'caught' INTO cv_message SEPARATED BY '|'.
+  ENDTRY.
+
+  MESSAGE 'runtime coverage message' TYPE 'I'.
+
+  CONCATENATE cv_message lv_written lv_first lv_second lv_rest lv_offset lv_length lv_count sy-fdpos lv_calc lr_calc->* lr_line->* lv_num lv_loop
+    INTO cv_message SEPARATED BY '|'.
+
+  CLEAR lv_clear.
+  REFRESH lt_scratch.
+  FREE lt_scratch.
+  FREE lr_calc.
+ENDFORM.
+
 START-OF-SELECTION.
   PERFORM seed_source CHANGING gt_source.
   PERFORM transform_source USING gt_source CHANGING gt_target gv_total.
@@ -165,3 +260,6 @@ START-OF-SELECTION.
   DATA(lo_class) = NEW lcl_class( ).
   DATA(lv_mul_res) = lo_class->mul( iv_val1 = 1 iv_val2 = 3 ).
   WRITE: / lv_mul_res.
+
+  PERFORM exercise_runtime_coverage CHANGING gv_runtime_message.
+  WRITE: / gv_runtime_message.

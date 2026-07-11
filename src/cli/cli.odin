@@ -2,7 +2,6 @@ package abap_frontend_cli
 
 import execution "src:execution"
 import ir "src:ir"
-import bytecode "src:ir/bytecode"
 import "src:semantic"
 import workspace "src:workspace"
 
@@ -320,28 +319,6 @@ print_ir_verify_diagnostics :: proc(
 		}
 		fmt.eprintln()
 	}
-}
-
-print_bytecode_lower_error :: proc(
-	fallback_path: string,
-	lowered: ^bytecode.Lower_Result,
-	allocator: mem.Allocator = context.temp_allocator,
-) {
-	source_cache := make([dynamic]Source_Cache_Entry, 0, 1, allocator)
-	path := fallback_path
-	if lowered.source.file != nil && lowered.source.file.path != "" {
-		path = lowered.source.file.path
-	}
-	uri := display_uri(path, allocator)
-	if lowered.source.range.end > lowered.source.range.start {
-		source := cached_source(path, &source_cache, allocator)
-		line_starts := build_line_starts(source, allocator)
-		pos := source_position(source, line_starts[:], lowered.source.range.start)
-		fmt.eprintf("%s(%d:%d) error BYTECODE: %s", uri, pos.line, pos.column, lowered.message)
-	} else {
-		fmt.eprintf("%s error BYTECODE: %s", uri, lowered.message)
-	}
-	fmt.eprintln()
 }
 
 cached_source :: proc(

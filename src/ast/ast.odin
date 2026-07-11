@@ -1328,6 +1328,7 @@ Shift_Stmt :: struct {
 	target:           ^Expr,
 	direction:        Shift_Direction,
 	places:           ^Expr,
+	up_to:            ^Expr,
 	circular:         bool,
 	delete_direction: Shift_Delete_Direction,
 	delete_pattern:   ^Expr,
@@ -1339,10 +1340,17 @@ Find_Occurrence :: enum {
 	All,
 }
 
+Find_Case_Mode :: enum {
+	Default,
+	Respecting,
+	Ignoring,
+}
+
 // ABAP syntax: `FIND [FIRST|ALL OCCURRENCES OF] [REGEX] pattern IN [SECTION OFFSET off [LENGTH len] OF|TABLE] target ...`.
 Find_Stmt :: struct {
 	using node:     Stmt,
 	occurrence:     Find_Occurrence,
+	case_mode:      Find_Case_Mode,
 	regex:          bool,
 	pattern:        ^Expr,
 	target:         ^Expr,
@@ -1365,6 +1373,7 @@ Search_Stmt :: struct {
 	starting_at: ^Expr,
 	ending_at:   ^Expr,
 	abbreviated: bool,
+	mark:        bool,
 }
 
 Perform_Form_Kind :: enum {

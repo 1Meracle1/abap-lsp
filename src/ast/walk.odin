@@ -323,6 +323,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Shift_Stmt:
 		walk(next, n.target)
 		walk(next, n.places)
+		walk(next, n.up_to)
 		walk(next, n.delete_pattern)
 	case ^Find_Stmt:
 		walk(next, n.pattern)
@@ -848,4 +849,3 @@ walk_message_head :: proc(v: ^Visitor, clause: ^Message_Head_Clause) {
 		walk(v, clause.number)
 	}
 }
-

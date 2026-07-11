@@ -3732,6 +3732,15 @@ parse_shift_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			allow_keyword(p, "PLACES")
 			continue
 		}
+		if allow_keyword(p, "UP") {
+			allow_keyword(p, "TO")
+			stmt.up_to = required_simple_expr(
+				p,
+				body_start,
+				[]string{"LEFT", "RIGHT", "CIRCULAR", "DELETING", "IN"},
+			)
+			continue
+		}
 		if allow_keyword(p, "DELETING") {
 			if allow_keyword(
 				p,
@@ -3853,6 +3862,16 @@ parse_find_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			for value in more {append(&stmt.submatches, value)}
 			continue
 		}
+		if allow_keyword(p, "IGNORING") {
+			allow_keyword(p, "CASE")
+			stmt.case_mode = .Ignoring
+			continue
+		}
+		if allow_keyword(p, "RESPECTING") {
+			allow_keyword(p, "CASE")
+			stmt.case_mode = .Respecting
+			continue
+		}
 		bump_token(p)
 	}
 	stmt.range = simple_stmt_range(p, start)
@@ -3893,6 +3912,12 @@ parse_search_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		if allow_keyword(p, "ABBREVIATED") {
 			stmt.abbreviated = true
 			continue
+		}
+		if allow_keyword(p, "AND") {
+			if allow_keyword(p, "MARK") {
+				stmt.mark = true
+				continue
+			}
 		}
 		bump_token(p)
 	}

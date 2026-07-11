@@ -2063,6 +2063,10 @@ emit_shift_stmt :: proc(p: ^Printer, stmt: ^Shift_Stmt) {
 		emit_node(p, stmt.places)
 		emit(p, " PLACES")
 	}
+	if stmt.up_to != nil {
+		emit(p, " UP TO ")
+		emit_node(p, stmt.up_to)
+	}
 	if stmt.circular {
 		emit(p, " CIRCULAR")
 	}
@@ -2130,6 +2134,11 @@ emit_find_stmt :: proc(p: ^Printer, stmt: ^Find_Stmt) {
 		emit(p, " SUBMATCHES ")
 		emit_expr_list(p, stmt.submatches, " ")
 	}
+	if stmt.case_mode == .Ignoring {
+		emit(p, " IGNORING CASE")
+	} else if stmt.case_mode == .Respecting {
+		emit(p, " RESPECTING CASE")
+	}
 	emit(p, ".")
 }
 
@@ -2150,6 +2159,9 @@ emit_search_stmt :: proc(p: ^Printer, stmt: ^Search_Stmt) {
 	}
 	if stmt.abbreviated {
 		emit(p, " ABBREVIATED")
+	}
+	if stmt.mark {
+		emit(p, " AND MARK")
 	}
 	emit(p, ".")
 }

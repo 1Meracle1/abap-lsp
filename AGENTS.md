@@ -15,7 +15,9 @@ This section has priority over every other convention in this file.
   runtime, and persistence APIs before creating new code. If behavior already
   exists, extend or adapt the owning implementation instead of copying it.
 - Add helpers or abstractions only when they remove real duplication, preserve
-  module boundaries, or express an established project pattern.
+  module boundaries, or express an established project pattern. Do not introduce
+  single-use helper procedures for simple local expressions, bounds checks, or
+  branch decisions; keep that logic at the use site.
 - Fix root causes in the responsible subsystem. Avoid call-site workarounds
   unless the issue is truly local to that call site.
 - Keep code compact and direct, but prioritize correctness, coherence, and
@@ -52,8 +54,9 @@ Follow the style already used in `src/`: package names are lower snake case,
 types use `Camel_Case` where the surrounding Odin code does, procedures and
 variables use `snake_case`, and tests are descriptive `snake_case` procedures
 annotated with `@(test)`. Keep modules focused by responsibility and prefer
-existing package helpers over duplicated local logic. Use small local helpers
-when behavior is truly local, and avoid framework-like abstractions.
+existing package helpers over duplicated local logic. Avoid framework-like
+abstractions, and do not create small single-use helper procedures unless the
+logic is complex enough that naming it materially improves the owning procedure.
 
 Default procedure calling convention passes implicit `context` pointer on each call- this context variable is local to each scope.
 In tests, pass `context.allocator` directly instead of creating a heap allocator or local allocator alias.

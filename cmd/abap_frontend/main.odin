@@ -4,7 +4,6 @@ import "src:ast"
 import cli "src:cli"
 import execution "src:execution"
 import ir "src:ir"
-import bytecode "src:ir/bytecode"
 import lints "src:lints"
 import "src:parser"
 import "src:semantic"
@@ -32,9 +31,6 @@ print_usage :: proc() {
 	fmt.println("       abap_frontend tree <file>")
 	fmt.println(
 		"       abap_frontend ir <file-or-folder> [--include <file>...] [--disable-adt-dependency-fetch]",
-	)
-	fmt.println(
-		"       abap_frontend bytecode <file-or-folder> [--include <file>...] [--raw] [--source] [--disable-adt-dependency-fetch]",
 	)
 	fmt.println(
 		"       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors] [--enable-dependency-diagnostics] [--enable-lints] [--disable-adt-dependency-fetch]",
@@ -182,7 +178,6 @@ Tree_State :: struct {
 
 Ir_Cli_Output :: enum {
 	Module,
-	Bytecode,
 }
 
 main :: proc() {
@@ -219,10 +214,6 @@ main :: proc() {
 	}
 	if command == "ir" {
 		run_ir(args, allocator, .Module)
-		return
-	}
-	if command == "bytecode" {
-		run_ir(args, allocator, .Bytecode)
 		return
 	}
 	if command == "perf-edit" {
@@ -511,19 +502,12 @@ run_ir :: proc(args: []string, allocator: mem.Allocator, output: Ir_Cli_Output) 
 	target_path := args[2]
 	workspace_flags := workspace.Option_Flags{.Enable_ADT}
 	include_paths := make([dynamic]string, 0, 4, context.temp_allocator)
-	bytecode_options := bytecode.Print_Options{}
 	for i := 3; i < len(args); {
 		if args[i] == "--include" && i + 1 < len(args) {
 			append(&include_paths, args[i + 1])
 			i += 2
 		} else if args[i] == "--disable-adt-dependency-fetch" {
 			workspace_flags += {.Disable_ADT_Dependency_Fetch}
-			i += 1
-		} else if output == .Bytecode && args[i] == "--raw" {
-			bytecode_options.raw = true
-			i += 1
-		} else if output == .Bytecode && args[i] == "--source" {
-			bytecode_options.show_source = true
 			i += 1
 		} else {
 			print_usage()
@@ -564,8 +548,6 @@ run_ir :: proc(args: []string, allocator: mem.Allocator, output: Ir_Cli_Output) 
 	switch output {
 	case .Module:
 		print_ok = print_ir_for_analysis(&result, context.allocator)
-	case .Bytecode:
-		print_ok = print_emitted_bytecode_for_analysis(&result, context.allocator, bytecode_options)
 	}
 	if !print_ok {
 		os.exit(1)
@@ -576,8 +558,6 @@ ir_cli_output_name :: proc "contextless" (output: Ir_Cli_Output) -> string {
 	switch output {
 	case .Module:
 		return "ir"
-	case .Bytecode:
-		return "bytecode"
 	}
 	unreachable()
 }
@@ -619,49 +599,6 @@ print_ir_for_analysis :: proc(
 
 	if !printed && ok {
 		fmt.eprintln("error: ir: semantic analysis produced no lowerable projects")
-		return false
-	}
-	return ok
-}
-
-print_emitted_bytecode_for_analysis :: proc(
-	result: ^workspace.Analysis_Result,
-	allocator: mem.Allocator,
-	options: bytecode.Print_Options = {},
-) -> bool {
-	analysis := semantic.semantic_graph_session_current_analysis(&result.session)
-	if analysis == nil {
-		fmt.eprintln("error: bytecode: semantic analysis produced no snapshot")
-		return false
-	}
-
-	printed := false
-	ok := true
-	for &project_result in analysis.project_results {
-		if project_result.project == nil || project_result.checker == nil {
-			continue
-		}
-
-		lowered := ir.lower_project(project_result.project, project_result.checker, allocator)
-		emitted_bytecode := bytecode.lower_module(&lowered.module, allocator)
-		if emitted_bytecode.ok {
-			if printed {
-				fmt.println()
-			}
-			text := bytecode.print_module(&emitted_bytecode.module, allocator, options)
-			fmt.print(text)
-			delete(text, allocator)
-			printed = true
-		} else {
-			cli.print_bytecode_lower_error(project_result.root_path, &emitted_bytecode)
-			ok = false
-		}
-		bytecode.module_destroy(&emitted_bytecode.module)
-		ir.lower_result_destroy(&lowered)
-	}
-
-	if !printed && ok {
-		fmt.eprintln("error: bytecode: semantic analysis produced no lowerable projects")
 		return false
 	}
 	return ok

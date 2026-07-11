@@ -568,8 +568,8 @@ CONDENSE text NO-GAPS.
 REPLACE FIRST OCCURRENCE OF 'a' IN text WITH 'b'.
 TRANSLATE text TO UPPER CASE.
 SHIFT text RIGHT BY 2 PLACES.
-FIND FIRST OCCURRENCE OF 'a' IN text MATCH OFFSET off MATCH COUNT cnt RESULTS res.
-SEARCH text FOR pattern STARTING AT first ENDING AT last ABBREVIATED.
+FIND FIRST OCCURRENCE OF 'a' IN text MATCH OFFSET off MATCH COUNT cnt RESULTS res IGNORING CASE.
+SEARCH text FOR pattern STARTING AT first ENDING AT last ABBREVIATED AND MARK.
 PERFORM frm IN PROGRAM prog USING arg CHANGING out IF FOUND.
 CALL FUNCTION 'Z_FM'.
 SUBMIT zrep WITH p = v AND RETURN.
@@ -603,12 +603,14 @@ WRITE /10(5) text.`
 	testing.expect_value(t, shift.direction, ast.Shift_Direction.Right)
 	testing.expect(t, shift.places != nil)
 	testing.expect_value(t, find.occurrence, ast.Find_Occurrence.First)
+	testing.expect_value(t, find.case_mode, ast.Find_Case_Mode.Ignoring)
 	testing.expect(t, find.match_offset != nil)
 	testing.expect(t, find.match_count != nil)
 	testing.expect(t, find.results != nil)
 	testing.expect(t, search.starting_at != nil)
 	testing.expect(t, search.ending_at != nil)
 	testing.expect(t, search.abbreviated)
+	testing.expect(t, search.mark)
 	testing.expect(t, perform.program != nil)
 	testing.expect(t, perform.has_program_clause)
 	testing.expect_value(t, perform.form_kind, ast.Perform_Form_Kind.Static)
@@ -627,6 +629,16 @@ WRITE /10(5) text.`
 	testing.expect(t, write.operands[0].line_break)
 	testing.expect(t, write.operands[0].position != nil)
 	testing.expect(t, write.operands[0].length != nil)
+}
+
+@(test)
+simple_shift_up_to_keeps_pattern :: proc(t: ^testing.T) {
+	parsed := parse(`SHIFT text UP TO pattern.`, "shift_up_to.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	shift := parsed.root.stmts[0].derived_stmt.(^ast.Shift_Stmt)
+	testing.expect(t, shift.up_to != nil)
+	testing.expect_value(t, ast.print_node(shift, context.allocator), "SHIFT text UP TO pattern.")
 }
 
 @(test)
@@ -854,6 +866,7 @@ find_in_table_keeps_target_after_table_keyword :: proc(t: ^testing.T) {
 	target := find.target.derived_expr.(^ast.Ident_Expr)
 
 	testing.expect(t, find.in_table)
+	testing.expect_value(t, find.case_mode, ast.Find_Case_Mode.Ignoring)
 	testing.expect_value(t, target.name, "ct_source")
 	testing.expect_value(t, len(find.submatches), 1)
 }

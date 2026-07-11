@@ -758,6 +758,11 @@ checker_check_shift_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Shift_Stmt) {
 	checker_check_shift_places(ctx, stmt.places)
 	checker_check_shift_text_operand(
 		ctx,
+		stmt.up_to,
+		"SHIFT UP TO pattern is not character-like or byte-like",
+	)
+	checker_check_shift_text_operand(
+		ctx,
 		stmt.delete_pattern,
 		"SHIFT DELETING pattern is not character-like or byte-like",
 	)

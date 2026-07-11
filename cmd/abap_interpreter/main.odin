@@ -3,11 +3,10 @@ package main
 import cli "src:cli"
 import execution "src:execution"
 import ir "src:ir"
-import bytecode "src:ir/bytecode"
-import runtime "src:runtime"
 import "src:semantic"
 import stack_trace "src:stack_trace"
 import vm "src:vm"
+import runtime "src:vm/runtime"
 import workspace "src:workspace"
 
 import "core:fmt"
@@ -43,10 +42,17 @@ Run_Cli_Event :: struct {
 }
 
 Run_Cli_Trap :: struct {
-	kind:    string `json:"kind"`,
-	message: string `json:"message"`,
-	path:    string `json:"path,omitempty"`,
-	range:   [2]int `json:"range"`,
+	kind:        string `json:"kind"`,
+	message:     string `json:"message"`,
+	path:        string `json:"path,omitempty"`,
+	range:       [2]int `json:"range"`,
+	stack_trace: []Run_Cli_Stack_Frame `json:"stack_trace,omitempty"`,
+}
+
+Run_Cli_Stack_Frame :: struct {
+	name:  string `json:"name"`,
+	path:  string `json:"path,omitempty"`,
+	range: [2]int `json:"range"`,
 }
 
 Run_Cli_Value :: struct {
@@ -71,7 +77,7 @@ Run_Cli_Report :: struct {
 Runtime_Prepare_Result :: struct {
 	ok:      bool,
 	message: string,
-	module:  bytecode.Module,
+	module:  vm.Prepared_Module,
 }
 
 main :: proc() {
@@ -161,18 +167,18 @@ run_runtime :: proc(args: []string, allocator: mem.Allocator) {
 	}
 
 	target_file_path := runtime_target_file_path(options.path, context.temp_allocator)
-	prepared := runtime_prepare_bytecode(&result, target_file_path, context.allocator)
+	prepared := runtime_prepare_module(&result, target_file_path, context.allocator)
 	if !prepared.ok {
 		fmt.eprintf("error: run: %s\n", prepared.message)
 		os.exit(1)
 	}
-	defer bytecode.module_destroy(&prepared.module)
+	defer vm.prepared_module_destroy(&prepared.module)
 
 	run_options := vm.Run_Options {
 		step_limit = options.step_limit,
 		io_policy = runtime.io_policy_captured(),
 	}
-	run := vm.execute_module(&prepared.module, run_options, context.allocator)
+	run := vm.execute_prepared_module(&prepared.module, run_options, context.allocator)
 	defer vm.run_result_destroy(&run)
 
 	if options.json_output {
@@ -181,7 +187,7 @@ run_runtime :: proc(args: []string, allocator: mem.Allocator) {
 	} else {
 		print_runtime_output(&run)
 		if run.status == .Trapped {
-			print_runtime_trap(&run.trap, options.path)
+			print_runtime_trap(&run.trap, run.stack_trace[:], options.path)
 		}
 	}
 	if run.status == .Trapped {
@@ -234,7 +240,7 @@ runtime_parse_options :: proc(args: []string, allocator: mem.Allocator) -> (Run_
 	return options, had_path
 }
 
-runtime_prepare_bytecode :: proc(
+runtime_prepare_module :: proc(
 	result: ^workspace.Analysis_Result,
 	target_file_path: string,
 	allocator: mem.Allocator,
@@ -268,40 +274,42 @@ runtime_prepare_bytecode :: proc(
 		}
 		ir.verify_result_destroy(&verify)
 
-		emitted := bytecode.lower_module(&lowered.module, allocator)
+		emitted := vm.prepare_module(&lowered.module, allocator)
 		if !emitted.ok {
-			cli.print_bytecode_lower_error(project_result.root_path, &emitted)
+			fmt.eprintf("error: ir prepare: %s\n", emitted.message)
 			had_error = true
-			bytecode.module_destroy(&emitted.module)
+			vm.prepare_result_destroy(&emitted)
 			ir.lower_result_destroy(&lowered)
 			continue
 		}
 
-		entry_count += len(emitted.module.entries)
+		entry_count += vm.prepared_module_entry_count(&emitted.module)
 		if entry_count > 1 {
-			bytecode.module_destroy(&emitted.module)
+			vm.prepare_result_destroy(&emitted)
 			ir.lower_result_destroy(&lowered)
 			if prepared.ok {
-				bytecode.module_destroy(&prepared.module)
+				vm.prepared_module_destroy(&prepared.module)
 			}
 			return Runtime_Prepare_Result {
-				message = "runtime requires exactly one executable bytecode entry",
+				message = "runtime requires exactly one executable IR entry",
 			}
 		}
-		if len(emitted.module.entries) == 1 {
+		if vm.prepared_module_entry_count(&emitted.module) == 1 {
 			prepared.ok = true
 			prepared.module = emitted.module
+			emitted.module = {}
 		} else {
-			bytecode.module_destroy(&emitted.module)
+			vm.prepared_module_destroy(&emitted.module)
 		}
+		vm.prepare_result_destroy(&emitted)
 		ir.lower_result_destroy(&lowered)
 	}
 
 	if had_error {
 		if prepared.ok {
-			bytecode.module_destroy(&prepared.module)
+			vm.prepared_module_destroy(&prepared.module)
 		}
-		return Runtime_Prepare_Result{message = "bytecode preparation failed"}
+		return Runtime_Prepare_Result{message = "IR preparation failed"}
 	}
 	if !prepared.ok {
 		return Runtime_Prepare_Result{message = "semantic analysis produced no executable entry"}
@@ -360,7 +368,11 @@ print_runtime_output :: proc(result: ^vm.Run_Result) {
 	}
 }
 
-print_runtime_trap :: proc(trap: ^runtime.Trap, fallback_path: string) {
+print_runtime_trap :: proc(
+	trap: ^runtime.Trap,
+	stack_trace: []vm.Stack_Trace_Frame,
+	fallback_path: string,
+) {
 	path := runtime_source_path(trap.source, fallback_path)
 	label := runtime_trap_kind_text(trap.kind)
 	if trap.source.range.end > trap.source.range.start && path != "" {
@@ -372,9 +384,34 @@ print_runtime_trap :: proc(trap: ^runtime.Trap, fallback_path: string) {
 		uri := cli.display_uri(path, context.temp_allocator)
 		fmt.eprintf("%s(%d:%d) error RUNTIME_%s: %s\n", uri, start.line, start.column, label, trap.message)
 		cli.print_source_highlight_stderr(source, line_starts[:], start, end)
+	} else {
+		fmt.eprintf("error RUNTIME_%s: %s\n", label, trap.message)
+	}
+	print_runtime_stack_trace(stack_trace, fallback_path)
+}
+
+print_runtime_stack_trace :: proc(stack_trace: []vm.Stack_Trace_Frame, fallback_path: string) {
+	if len(stack_trace) == 0 {
 		return
 	}
-	fmt.eprintf("error RUNTIME_%s: %s\n", label, trap.message)
+	source_cache := make([dynamic]cli.Source_Cache_Entry, 0, len(stack_trace), context.temp_allocator)
+	fmt.eprintf("Stack trace:\n")
+	for frame in stack_trace {
+		name := runtime_stack_frame_display_name(frame.name)
+		path := runtime_source_path(frame.source, fallback_path)
+		if frame.source.range.end > frame.source.range.start && path != "" {
+			source := cli.cached_source(path, &source_cache, context.temp_allocator)
+			line_starts := cli.build_line_starts(source, context.temp_allocator)
+			pos := cli.source_position(source, line_starts[:], frame.source.range.start)
+			uri := cli.display_uri(path, context.temp_allocator)
+			fmt.eprintf("    at %s(%s:%d:%d)\n", name, uri, pos.line, pos.column)
+		} else if path != "" {
+			uri := cli.display_uri(path, context.temp_allocator)
+			fmt.eprintf("    at %s(%s)\n", name, uri)
+		} else {
+			fmt.eprintf("    at %s\n", name)
+		}
+	}
 }
 
 runtime_cli_report :: proc(result: ^vm.Run_Result, allocator: mem.Allocator) -> Run_Cli_Report {
@@ -406,6 +443,7 @@ runtime_cli_report :: proc(result: ^vm.Run_Result, allocator: mem.Allocator) -> 
 			message = result.trap.message,
 			path = runtime_source_path(result.trap.source, ""),
 			range = [2]int{result.trap.source.range.start, result.trap.source.range.end},
+			stack_trace = runtime_cli_stack_trace(result.stack_trace[:], allocator),
 		}
 	}
 	return Run_Cli_Report {
@@ -427,7 +465,29 @@ runtime_source_path :: proc(source: runtime.Source_Loc, fallback_path: string = 
 	return fallback_path
 }
 
-runtime_status_text :: proc(status: runtime.Run_Status) -> string {
+runtime_cli_stack_trace :: proc(
+	stack_trace: []vm.Stack_Trace_Frame,
+	allocator: mem.Allocator,
+) -> []Run_Cli_Stack_Frame {
+	frames := make([]Run_Cli_Stack_Frame, len(stack_trace), allocator)
+	for frame, i in stack_trace {
+		frames[i] = Run_Cli_Stack_Frame {
+			name = runtime_stack_frame_display_name(frame.name),
+			path = runtime_source_path(frame.source, ""),
+			range = [2]int{frame.source.range.start, frame.source.range.end},
+		}
+	}
+	return frames
+}
+
+runtime_stack_frame_display_name :: proc(name: string) -> string {
+	if i := strings.last_index_byte(name, '$'); i >= 0 && i + 1 < len(name) {
+		return name[i + 1:]
+	}
+	return name
+}
+
+runtime_status_text :: proc(status: vm.Run_Status) -> string {
 	switch status {
 	case .Completed:
 		return "completed"
@@ -449,6 +509,8 @@ runtime_trap_kind_text :: proc(kind: runtime.Trap_Kind) -> string {
 		return "invalid-instruction"
 	case .Unsupported:
 		return "unsupported"
+	case .Exception:
+		return "exception"
 	case .Type:
 		return "type"
 	case .Divide_By_Zero:
@@ -489,6 +551,8 @@ runtime_value_kind_text :: proc(kind: runtime.Value_Kind) -> string {
 		return "table"
 	case .Table_Iterator:
 		return "table-iterator"
+	case .Reference:
+		return "reference"
 	}
 	return "initial"
 }

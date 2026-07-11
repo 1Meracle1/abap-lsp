@@ -29,6 +29,7 @@ Lower_Context :: struct {
 	fact_query: semantic.Semantic_Fact_Query,
 	builder:    ^Builder,
 	control_targets: [dynamic]Lower_Control_Target,
+	exception_targets: [dynamic]Lower_Exception_Target,
 }
 
 Lower_Control_Target_Kind :: enum {
@@ -41,6 +42,10 @@ Lower_Control_Target :: struct {
 	continue_block: Block_Id,
 	continue_arg:   Value_Id,
 	exit_block:     Block_Id,
+}
+
+Lower_Exception_Target :: struct {
+	dispatch_block: Block_Id,
 }
 
 Lower_File_Event :: struct {
@@ -56,7 +61,6 @@ Lower_File_Callables :: struct {
 }
 
 lower_result_destroy :: proc(result: ^Lower_Result) {
-	assert(result != nil)
 	module_destroy(&result.module)
 	delete(result.diagnostics)
 	result^ = {}
@@ -72,11 +76,11 @@ lower_project :: proc(
 		diagnostics = make([dynamic]Lower_Diagnostic, 0, 4, allocator),
 		ok = true,
 	}
-	assert(project != nil && checker != nil)
 	query := semantic.semantic_query(project, checker)
 	for file in semantic.semantic_query_files(query) {
 		lower_file(&result.module, project, checker, file)
 	}
+	lower_resolve_canonical_call_targets(&result.module)
 	return result
 }
 
@@ -86,7 +90,6 @@ lower_file :: proc(
 	checker: ^semantic.Checker,
 	file: ^semantic.Project_File,
 ) -> Function_Id {
-	assert(module != nil && project != nil && checker != nil && file != nil)
 	if file.root == nil {
 		return INVALID_FUNCTION_ID
 	}
@@ -115,9 +118,100 @@ lower_file :: proc(
 	}
 
 	lower_collect_nested_callables(module, project, checker, file, file.root.stmts[:], &callables)
+	lower_resolve_canonical_call_targets(module)
 	lower_emit_report_entry(&entry_builder, &callables, source)
 	module_add_entry(module, entry_id)
 	return entry_id
+}
+
+lower_resolve_canonical_call_targets :: proc(module: ^Module) {
+	for &function in module.functions {
+		for &block in function.blocks {
+			for instruction in block.instructions {
+				op := &function.instructions[int(instruction)]
+				if (op.opcode != .Intrinsic && op.opcode != .Invoke) ||
+				   op.intrinsic == INVALID_INTRINSIC_ID ||
+				   int(op.intrinsic) >= len(module.intrinsics) {
+					continue
+				}
+				intrinsic := &module.intrinsics[int(op.intrinsic)]
+				if intrinsic.family != .Call {
+					continue
+				}
+				payload, payload_ok := intrinsic.payload.(Intrinsic_Call_Payload)
+				if !payload_ok || payload.has_call_function_target || payload.callee_name == "" {
+					continue
+				}
+				target, target_ok := lower_find_canonical_call_target_for_op(module, op)
+				if !target_ok {
+					target, target_ok = lower_find_canonical_call_target(module, payload)
+				}
+				if !target_ok {
+					continue
+				}
+				payload.call_function_target = target
+				payload.has_call_function_target = true
+				intrinsic.payload = payload
+			}
+		}
+	}
+}
+
+lower_find_canonical_call_target_for_op :: proc "contextless" (
+	module: ^Module,
+	op: ^Op,
+) -> (
+	Function_Id,
+	bool,
+) {
+	if op.intrinsic == INVALID_INTRINSIC_ID || int(op.intrinsic) >= len(module.intrinsics) {
+		return INVALID_FUNCTION_ID, false
+	}
+	payload, payload_ok := module.intrinsics[int(op.intrinsic)].payload.(Intrinsic_Call_Payload)
+	if !payload_ok {
+		return INVALID_FUNCTION_ID, false
+	}
+	if payload.has_call_function_target {
+		target := payload.call_function_target
+		if target != INVALID_FUNCTION_ID && int(target) < len(module.functions) {
+			return target, true
+		}
+	}
+	return lower_find_canonical_call_target(module, payload)
+}
+
+lower_find_canonical_call_target :: proc "contextless" (
+	module: ^Module,
+	payload: Intrinsic_Call_Payload,
+) -> (
+	Function_Id,
+	bool,
+) {
+	if payload.callee_name == "" {
+		return INVALID_FUNCTION_ID, false
+	}
+	for function, i in module.functions {
+		if function.name != payload.callee_name {
+			continue
+		}
+		#partial switch payload.call_kind {
+		case .Method:
+			if function.role != .Method && function.role != .Constructor && function.role != .Class_Constructor {
+				continue
+			}
+		case .Form:
+			if function.role != .Form {
+				continue
+			}
+		case .Function_Module:
+			if function.role != .Function_Module {
+				continue
+			}
+		case:
+		}
+		return Function_Id(i), true
+	}
+	return INVALID_FUNCTION_ID, false
 }
 
 lower_collect_nested_callables :: proc(
@@ -173,12 +267,12 @@ lower_collect_nested_callables :: proc(
 
 lower_emit_report_entry :: proc(builder: ^Builder, callables: ^Lower_File_Callables, source: Source_Loc) {
 	if callables.load_globals != INVALID_FUNCTION_ID {
-		builder_emit_core_call(builder, callables.load_globals, source = source)
+		lower_emit_core_call_with_unhandled(builder, callables.load_globals, source)
 	}
 	lower_emit_event_calls(builder, callables.events[:], .Load_Of_Program, source)
 	lower_emit_event_calls(builder, callables.events[:], .Initialization, source)
 	if callables.implicit_start != INVALID_FUNCTION_ID {
-		builder_emit_core_call(builder, callables.implicit_start, source = source)
+		lower_emit_core_call_with_unhandled(builder, callables.implicit_start, source)
 	}
 	lower_emit_event_calls(builder, callables.events[:], .Start_Of_Selection, source)
 	lower_emit_event_calls(builder, callables.events[:], .End_Of_Selection, source)
@@ -193,9 +287,22 @@ lower_emit_event_calls :: proc(
 ) {
 	for event in events {
 		if event.kind == kind && event.function_id != INVALID_FUNCTION_ID {
-			builder_emit_core_call(builder, event.function_id, source = source)
+			lower_emit_core_call_with_unhandled(builder, event.function_id, source)
 		}
 	}
+}
+
+lower_emit_core_call_with_unhandled :: proc(builder: ^Builder, target: Function_Id, source: Source_Loc) {
+	normal_block := builder_add_world_block(builder, "invoke_normal", source)
+	exception_block := builder_add_world_block(builder, "invoke_unhandled", source)
+	builder_emit_core_call_invoke(builder, target, normal_block, exception_block, source = source)
+	builder_set_unreachable(builder, source)
+
+	builder_position_at_end(builder, exception_block)
+	builder_emit_exception_unhandled(builder, source)
+	builder_set_return_world(builder, source)
+
+	builder_position_at_end(builder, normal_block)
 }
 
 lower_file_has_global_initializers :: proc(stmts: []^ast.Stmt) -> bool {
@@ -333,8 +440,10 @@ lower_callable :: proc(
 		fact_query = semantic.semantic_query_facts(query),
 		builder = &builder,
 		control_targets = make([dynamic]Lower_Control_Target, 0, 4, context.temp_allocator),
+		exception_targets = make([dynamic]Lower_Exception_Target, 0, 4, context.temp_allocator),
 	}
 	defer delete(ctx.control_targets)
+	defer delete(ctx.exception_targets)
 	lower_seed_callable_frame(&ctx, source)
 	lower_stmt_list(&ctx, body)
 	if lower_current_block_open(&ctx) {
@@ -364,7 +473,7 @@ lower_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Stmt) {
 			if clause.value_clause != nil && clause.value_clause.expr != nil {
 				value := lower_expr(ctx, clause.value_clause.expr)
 				if value != INVALID_VALUE_ID {
-					builder_emit_store(ctx.builder, slot, value, source)
+					builder_emit_store(ctx.builder, slot, lower_move_value_to_type(ctx, value, slot_ptr(builder_function(ctx.builder), slot).type, source), source)
 				}
 			}
 		}
@@ -372,7 +481,7 @@ lower_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Stmt) {
 		slot := lower_ensure_slot_for_decl(ctx, n.name.text, n.name.range, .Local)
 		value := lower_expr(ctx, n.expr)
 		if value != INVALID_VALUE_ID {
-			builder_emit_store(ctx.builder, slot, value, source)
+			builder_emit_store(ctx.builder, slot, lower_move_value_to_type(ctx, value, slot_ptr(builder_function(ctx.builder), slot).type, source), source)
 		}
 	case ^ast.Assign_Stmt:
 		value := lower_expr(ctx, n.rhs)
@@ -391,6 +500,22 @@ lower_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Stmt) {
 		for entry in n.entries {
 			lower_store_expr(ctx, entry.target, lower_expr(ctx, entry.source))
 		}
+	case ^ast.Concatenate_Stmt:
+		lower_concatenate_stmt(ctx, n, source)
+	case ^ast.Split_Stmt:
+		lower_split_stmt(ctx, n, source)
+	case ^ast.Condense_Stmt:
+		lower_condense_stmt(ctx, n, source)
+	case ^ast.Replace_Stmt:
+		lower_replace_stmt(ctx, n, source)
+	case ^ast.Translate_Stmt:
+		lower_translate_stmt(ctx, n, source)
+	case ^ast.Shift_Stmt:
+		lower_shift_stmt(ctx, n, source)
+	case ^ast.Find_Stmt:
+		lower_find_stmt(ctx, n, source)
+	case ^ast.Search_Stmt:
+		lower_search_stmt(ctx, n, source)
 	case ^ast.Write_To_Stmt:
 		for entry in n.entries {
 			lower_store_expr(ctx, entry.target, lower_expr(ctx, entry.source))
@@ -399,19 +524,19 @@ lower_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Stmt) {
 		lower_write_stmt(ctx, n, source)
 	case ^ast.Add_Stmt:
 		for entry in n.entries {
-			lower_arithmetic_stmt(ctx, .Abap_Add, entry.source, entry.target, entry.result, source)
+			lower_arithmetic_stmt(ctx, .ABAP_Add, entry.source, entry.target, entry.result, source)
 		}
 	case ^ast.Subtract_Stmt:
 		for entry in n.entries {
-			lower_arithmetic_stmt(ctx, .Abap_Subtract, entry.source, entry.target, entry.result, source)
+			lower_arithmetic_stmt(ctx, .ABAP_Subtract, entry.source, entry.target, entry.result, source)
 		}
 	case ^ast.Multiply_Stmt:
 		for entry in n.entries {
-			lower_arithmetic_stmt(ctx, .Abap_Multiply, entry.source, entry.target, entry.result, source)
+			lower_arithmetic_stmt(ctx, .ABAP_Multiply, entry.source, entry.target, entry.result, source)
 		}
 	case ^ast.Divide_Stmt:
 		for entry in n.entries {
-			lower_arithmetic_stmt(ctx, .Abap_Divide, entry.source, entry.target, entry.result, source)
+			lower_arithmetic_stmt(ctx, .ABAP_Divide, entry.source, entry.target, entry.result, source)
 		}
 	case ^ast.If_Stmt:
 		lower_if_stmt(ctx, n)
@@ -444,11 +569,11 @@ lower_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Stmt) {
 	case ^ast.Select_Stmt:
 		lower_select_stmt(ctx, n)
 	case ^ast.Open_Cursor_Stmt:
-		lower_sql_cursor_stmt(ctx, .Sql_Open_Cursor, n.handle, &n.query, source)
+		lower_sql_cursor_stmt(ctx, .SQL_Open_Cursor, n.handle, &n.query, source)
 	case ^ast.Fetch_Stmt:
 		lower_fetch_stmt(ctx, n, source)
 	case ^ast.Close_Cursor_Stmt:
-		lower_sql_cursor_stmt(ctx, .Sql_Close_Cursor, n.handle, nil, source)
+		lower_sql_cursor_stmt(ctx, .SQL_Close_Cursor, n.handle, nil, source)
 	case ^ast.Call_Stmt:
 		lower_call_stmt(ctx, n)
 	case ^ast.Perform_Stmt:
@@ -482,6 +607,12 @@ lower_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Stmt) {
 		lower_assign_field_stmt(ctx, n, source)
 	case ^ast.Create_Object_Stmt:
 		lower_create_object_stmt(ctx, n, source)
+	case ^ast.Create_Data_Stmt:
+		lower_create_data_stmt(ctx, n, source)
+	case ^ast.Raise_Stmt:
+		lower_raise_stmt(ctx, n, source)
+	case ^ast.Try_Stmt:
+		lower_try_stmt(ctx, n, source)
 	case:
 		if lower_stmt_is_non_executable_declaration(stmt) {
 			return
@@ -528,23 +659,23 @@ lower_expr :: proc(ctx: ^Lower_Context, expr: ^ast.Expr) -> Value_Id {
 		assert(left != INVALID_VALUE_ID && right != INVALID_VALUE_ID)
 		kind := lower_binary_op_kind(n.op)
 		typ := lower_binary_result_type(ctx, expr, n.op)
-		if kind == .Core_Unsupported {
+		if kind == .Unsupported {
 			return builder_emit_unsupported(ctx.builder, "unsupported binary expression", typ, source)
 		}
 		operands := [?]Value_Id{left, right}
 		result_types := [?]Type_Id{typ}
-		op_id := builder_emit_op(ctx.builder, kind, operands[:], result_types[:], source = source)
+		op_id := builder_emit_intrinsic(ctx.builder, kind, operands[:], result_types[:], source = source)
 		return op_ptr(builder_function(ctx.builder), op_id).results[0]
 	case ^ast.Unary_Expr:
 		value := lower_expr(ctx, n.expr)
 		assert(value != INVALID_VALUE_ID)
-		kind := Op_Kind.Abap_Not if n.op == .Not else Op_Kind.Core_Unsupported
-		if kind == .Core_Unsupported {
+		kind := Intrinsic_Op.ABAP_Not if n.op == .Not else Intrinsic_Op.Unsupported
+		if kind == .Unsupported {
 			return builder_emit_unsupported(ctx.builder, "unsupported unary expression", lower_type_for_expr(ctx, expr), source)
 		}
 		operands := [?]Value_Id{value}
 		result_types := [?]Type_Id{lower_type_for_expr(ctx, expr)}
-		op_id := builder_emit_op(ctx.builder, kind, operands[:], result_types[:], source = source)
+		op_id := builder_emit_intrinsic(ctx.builder, kind, operands[:], result_types[:], source = source)
 		return op_ptr(builder_function(ctx.builder), op_id).results[0]
 	case ^ast.Selector_Expr:
 		return lower_selector_expr(ctx, expr, n, source)
@@ -558,18 +689,23 @@ lower_expr :: proc(ctx: ^Lower_Context, expr: ^ast.Expr) -> Value_Id {
 		inputs := make([dynamic]Value_Id, 0, 1 + len(n.selectors), context.temp_allocator)
 		defer delete(inputs)
 		append(&inputs, table)
-		lower_table_expr_selector_inputs(ctx, n.selectors[:], &inputs)
+		components := make([dynamic]Intrinsic_Table_Component, 0, len(n.selectors), context.temp_allocator)
+		defer lower_table_components_destroy_scratch(&components)
+		if !lower_table_expr_selector_inputs(ctx, n, &inputs, &components) {
+			builder_emit_unsupported(ctx.builder, "table expression selector semantics", source = source)
+		}
 		row_type := lower_table_row_type_for_expr(ctx, n.table)
-		row, subrc := builder_emit_table_read(
+		row, subrc, _ := builder_emit_table_read(
 			ctx.builder,
 			inputs[:],
 			lower_type_for_expr(ctx, expr),
 			row_type,
-			Op_Payload {
-				table_access = lower_table_expr_access(n),
-				table_key_kind = Table_Key_Kind.Free if len(n.selectors) > 0 else Table_Key_Kind.None,
-				table_result_kind = .Value,
-				table_component_count = len(n.selectors),
+			Intrinsic_Table_Payload {
+				access = lower_table_expr_access(n),
+				key_kind = Table_Key_Kind.Free if len(n.selectors) > 0 else Table_Key_Kind.None,
+				result_kind = .Value,
+				component_count = len(n.selectors),
+				components = components,
 			},
 			source,
 		)
@@ -629,7 +765,7 @@ lower_string_template_expr :: proc(
 			append(&operands, value)
 		}
 	}
-	return lower_emit_value_op(ctx, .Abap_String_Template, operands[:], lower_type_for_expr(ctx, expr), source)
+	return lower_emit_value_op(ctx, .ABAP_String_Template, operands[:], lower_type_for_expr(ctx, expr), source)
 }
 
 lower_template_interpolation_expr :: proc(
@@ -657,7 +793,7 @@ lower_template_interpolation_expr :: proc(
 			}
 		}
 	}
-	return lower_emit_value_op(ctx, .Abap_String_Template, operands[:], lower_type_for_expr(ctx, expr), source)
+	return lower_emit_value_op(ctx, .ABAP_String_Template, operands[:], lower_type_for_expr(ctx, expr), source)
 }
 
 lower_constructor_expr :: proc(
@@ -680,11 +816,11 @@ lower_constructor_expr :: proc(
 		lower_constructor_collect_args(ctx, constructor.args[:], &operands)
 		created := lower_emit_value_op(
 			ctx,
-			.Abap_Construct,
+			.ABAP_Construct,
 			operands[:],
 			result_type,
 			source,
-			Op_Payload{callee_name = lower_constructor_kind_name(constructor.kind)},
+			Intrinsic_Call_Payload{callee_name = lower_constructor_kind_name(constructor.kind)},
 		)
 		if constructor.kind == .New {
 			lower_emit_constructor_call_for_expr(ctx, expr, created, operands[:], source)
@@ -701,11 +837,11 @@ lower_constructor_expr :: proc(
 	lower_constructor_collect_args(ctx, constructor.args[:], &operands)
 	created := lower_emit_value_op(
 		ctx,
-		.Abap_Construct,
+		.ABAP_Construct,
 		operands[:],
 		result_type,
 		source,
-		Op_Payload{callee_name = lower_constructor_kind_name(constructor.kind)},
+		Intrinsic_Call_Payload{callee_name = lower_constructor_kind_name(constructor.kind)},
 	)
 	if constructor.kind == .New {
 		lower_emit_constructor_call_for_expr(ctx, expr, created, operands[:], source)
@@ -734,9 +870,8 @@ lower_emit_constructor_call_for_type :: proc(
 	receiver: Value_Id,
 	args: []Value_Id,
 	source: Source_Loc,
-	ast_stmt: ^ast.Stmt = nil,
 ) {
-	if receiver == INVALID_VALUE_ID || typ == nil || ctx == nil || ctx.checker == nil {
+	if receiver == INVALID_VALUE_ID || typ == nil {
 		return
 	}
 	constructor := lower_constructor_method_for_type(ctx, typ)
@@ -751,18 +886,17 @@ lower_emit_constructor_call_for_type :: proc(
 			append(&inputs, arg)
 		}
 	}
-	builder_emit_method_call(
-		ctx.builder,
+	lower_emit_method_may_throw(
+		ctx,
 		constructor,
-		lower_callable_entity_name(constructor, "constructor", ctx.module.allocator),
-		inputs[:],
-		source = source,
-		ast_stmt = ast_stmt,
-	)
+			lower_callable_entity_name(constructor, "constructor", ctx.module.allocator),
+			inputs[:],
+			source = source,
+		)
 }
 
 lower_constructor_method_for_type :: proc(ctx: ^Lower_Context, typ: ^semantic.Type) -> ^semantic.Entity {
-	if ctx == nil || ctx.project == nil || typ == nil {
+	if typ == nil {
 		return nil
 	}
 	owner := semantic.checker_type_object_entity(typ)
@@ -936,7 +1070,8 @@ lower_raw_operand_ref :: proc(
 	projection_segments := make([dynamic]Projection_Segment, 0, len(ref.path), context.temp_allocator)
 	defer delete(projection_segments)
 	for segment, i in ref.path {
-		if segment.name.text == "" {
+		segment_name := lower_raw_operand_segment_name(segment)
+		if segment_name == "" {
 			return builder_emit_unsupported(ctx.builder, "dynamic selector path", lower_type_for_expr(ctx, expr), source)
 		}
 		is_last := i == len(ref.path) - 1
@@ -945,9 +1080,9 @@ lower_raw_operand_ref :: proc(
 		entity := lower_field_entity_at_range(ctx, segment.name.range)
 		append(
 			&projection_segments,
-			lower_field_projection_segment(ctx, segment.name.text, segment_source, entity, segment.selector),
+				lower_field_projection_segment(segment_name, segment_source, entity, segment.selector),
 		)
-		value = lower_emit_field_load(ctx, value, segment.name.text, segment_type, segment_source, entity, segment.selector, projection_segments[:])
+		value = lower_emit_field_load(ctx, value, segment_name, segment_type, segment_source, entity, segment.selector, projection_segments[:])
 	}
 	if ref.dynamic_path {
 		return builder_emit_unsupported(ctx.builder, "dynamic selector path", lower_type_for_expr(ctx, expr), source)
@@ -1054,42 +1189,67 @@ lower_store_raw_operand_ref :: proc(
 	}
 	projection_segments := make([dynamic]Projection_Segment, 0, len(ref.path), context.temp_allocator)
 	defer delete(projection_segments)
-	for segment, i in ref.path[:len(ref.path) - 1] {
+	for segment in ref.path[:len(ref.path) - 1] {
+		segment_name := lower_raw_operand_segment_name(segment)
+		if segment_name == "" {
+			builder_emit_unsupported(ctx.builder, "dynamic selector path", source = source)
+			return
+		}
 		segment_source := Source_Loc{file = ctx.file, node = &target.expr_base, range = segment.name.range}
 		entity := lower_field_entity_at_range(ctx, segment.name.range)
 		append(
 			&projection_segments,
-			lower_field_projection_segment(ctx, segment.name.text, segment_source, entity, segment.selector),
+				lower_field_projection_segment(segment_name, segment_source, entity, segment.selector),
 		)
 		base = lower_emit_field_load(
 			ctx,
 			base,
-			segment.name.text,
+			segment_name,
 			lower_type_for_raw_segment(ctx, target, segment, false),
 			segment_source,
 			entity,
 			segment.selector,
 			projection_segments[:],
 		)
-		_ = i
-	}
+		}
 	last := ref.path[len(ref.path) - 1]
+	last_name := lower_raw_operand_segment_name(last)
+	if last_name == "" {
+		builder_emit_unsupported(ctx.builder, "dynamic selector path", source = source)
+		return
+	}
 	last_entity := lower_field_entity_at_range(ctx, last.name.range)
 	last_source := Source_Loc{file = ctx.file, node = &target.expr_base, range = last.name.range}
 	append(
 		&projection_segments,
-		lower_field_projection_segment(ctx, last.name.text, last_source, last_entity, last.selector),
+			lower_field_projection_segment(last_name, last_source, last_entity, last.selector),
 	)
 	last_projection := lower_add_projection_segments(ctx, projection_segments[:])
-	inputs := [?]Value_Id{base, lower_move_value_to_target(ctx, target, value, source)}
-	builder_emit_effect_op(
-		ctx.builder,
-		.Core_Field_Store,
-		inputs[:],
-		flags = {.Reads_World, .Writes_World},
-		payload = Op_Payload{field_name = last.name.text, projection = last_projection, has_projection = true},
-		source = last_source,
-	)
+		builder_emit_field_store(
+			ctx.builder,
+			base,
+			lower_move_value_to_target(ctx, target, value, source),
+			last_projection,
+			last_source,
+		)
+}
+
+lower_raw_operand_segment_name :: proc "contextless" (segment: ast.Raw_Operand_Path_Segment) -> string {
+	if segment.name.text != "" {
+		return segment.name.text
+	}
+	if segment.selector == .Arrow {
+		return "*"
+	}
+	return ""
+}
+
+lower_selector_field_name :: proc(ctx: ^Lower_Context, field: ^ast.Expr, selector: ast.Selector_Op) -> string {
+	name := lower_expr_name(field, ctx.project.allocator)
+	if name == "" && selector == .Arrow {
+		return "*"
+	}
+	return name
 }
 
 lower_selector_expr :: proc(
@@ -1105,14 +1265,14 @@ lower_selector_expr :: proc(
 	if base == INVALID_VALUE_ID {
 		return builder_emit_unsupported(ctx.builder, "selector base value", lower_type_for_expr(ctx, expr), source)
 	}
-	field_name := lower_expr_name(selector.field, ctx.project.allocator)
+	field_name := lower_selector_field_name(ctx, selector.field, selector.op)
 	entity := lower_entity_for_node(ctx, &selector.field.expr_base)
 	projection_segments := make([dynamic]Projection_Segment, 0, 4, context.temp_allocator)
 	defer delete(projection_segments)
 	lower_append_projection_prefix_for_expr(ctx, selector.base, &projection_segments)
 	append(
 		&projection_segments,
-		lower_field_projection_segment(ctx, field_name, source, entity, selector.op),
+			lower_field_projection_segment(field_name, source, entity, selector.op),
 	)
 	return lower_emit_field_load(
 		ctx,
@@ -1166,7 +1326,7 @@ lower_interface_selector_expr :: proc(
 	lower_append_projection_prefix_for_expr(ctx, selector.receiver, &projection_segments)
 	append(
 		&projection_segments,
-		lower_field_projection_segment(ctx, field_name, source, entity, selector.receiver_op),
+			lower_field_projection_segment(field_name, source, entity, selector.receiver_op),
 	)
 	return lower_emit_field_load(
 		ctx,
@@ -1196,25 +1356,23 @@ lower_store_selector_expr :: proc(
 		builder_emit_unsupported(ctx.builder, "selector assignment base", source = source)
 		return
 	}
-	field_name := lower_expr_name(selector.field, ctx.project.allocator)
+	field_name := lower_selector_field_name(ctx, selector.field, selector.op)
 	entity := lower_entity_for_node(ctx, &selector.field.expr_base)
 	projection_segments := make([dynamic]Projection_Segment, 0, 4, context.temp_allocator)
 	defer delete(projection_segments)
 	lower_append_projection_prefix_for_expr(ctx, selector.base, &projection_segments)
 	append(
 		&projection_segments,
-		lower_field_projection_segment(ctx, field_name, source, entity, selector.op),
+			lower_field_projection_segment(field_name, source, entity, selector.op),
 	)
 	projection := lower_add_projection_segments(ctx, projection_segments[:])
-	inputs := [?]Value_Id{base, lower_move_value_to_target(ctx, target, value, source)}
-	builder_emit_effect_op(
-		ctx.builder,
-		.Core_Field_Store,
-		inputs[:],
-		flags = {.Reads_World, .Writes_World},
-		payload = Op_Payload{field_name = field_name, projection = projection, has_projection = true},
-		source = source,
-	)
+		builder_emit_field_store(
+			ctx.builder,
+			base,
+			lower_move_value_to_target(ctx, target, value, source),
+			projection,
+			source,
+		)
 }
 
 lower_store_interface_selector_expr :: proc(
@@ -1236,18 +1394,16 @@ lower_store_interface_selector_expr :: proc(
 	lower_append_projection_prefix_for_expr(ctx, selector.receiver, &projection_segments)
 	append(
 		&projection_segments,
-		lower_field_projection_segment(ctx, field_name, source, entity, selector.receiver_op),
+			lower_field_projection_segment(field_name, source, entity, selector.receiver_op),
 	)
 	projection := lower_add_projection_segments(ctx, projection_segments[:])
-	inputs := [?]Value_Id{receiver, lower_move_value_to_target(ctx, target, value, source)}
-	builder_emit_effect_op(
-		ctx.builder,
-		.Core_Field_Store,
-		inputs[:],
-		flags = {.Reads_World, .Writes_World},
-		payload = Op_Payload{field_name = field_name, projection = projection, has_projection = true},
-		source = source,
-	)
+		builder_emit_field_store(
+			ctx.builder,
+			receiver,
+			lower_move_value_to_target(ctx, target, value, source),
+			projection,
+			source,
+		)
 }
 
 lower_clear_operand :: proc(ctx: ^Lower_Context, operand: ast.Clear_Operand_Clause, source: Source_Loc) {
@@ -1259,12 +1415,12 @@ lower_clear_operand :: proc(ctx: ^Lower_Context, operand: ast.Clear_Operand_Clau
 			append(&inputs, value)
 		}
 	}
-	result := lower_emit_effect_value_op(ctx, .Abap_Clear, inputs[:], lower_type_for_expr(ctx, operand.target), source)
+	result := lower_emit_effect_value_op(ctx, .ABAP_Clear, inputs[:], lower_type_for_expr(ctx, operand.target), source)
 	lower_store_expr(ctx, operand.target, result)
 }
 
 lower_refresh_operand :: proc(ctx: ^Lower_Context, operand: ast.Refresh_Operand_Clause, source: Source_Loc) {
-	result := lower_emit_effect_value_op(ctx, .Abap_Refresh, nil, lower_type_for_expr(ctx, operand.target), source)
+	result := lower_emit_effect_value_op(ctx, .ABAP_Refresh, nil, lower_type_for_expr(ctx, operand.target), source)
 	lower_store_expr(ctx, operand.target, result)
 }
 
@@ -1273,34 +1429,28 @@ lower_free_operand :: proc(ctx: ^Lower_Context, operand: ast.Free_Operand_Clause
 		builder_emit_unsupported(ctx.builder, "FREE OBJECT semantics", lower_type_for_expr(ctx, operand.target), source)
 		return
 	}
-	result := lower_emit_effect_value_op(ctx, .Abap_Free, nil, lower_type_for_expr(ctx, operand.target), source)
+	result := lower_emit_effect_value_op(ctx, .ABAP_Free, nil, lower_type_for_expr(ctx, operand.target), source)
 	lower_store_expr(ctx, operand.target, result)
 }
 
 lower_unassign_operand :: proc(ctx: ^Lower_Context, operand: ast.Unassign_Operand_Clause, source: Source_Loc) {
-	result := lower_emit_effect_value_op(ctx, .Abap_Unassign, nil, lower_type_for_expr(ctx, operand.target), source)
+	result := lower_emit_effect_value_op(ctx, .ABAP_Unassign, nil, lower_type_for_expr(ctx, operand.target), source)
 	lower_store_expr(ctx, operand.target, result)
 }
 
 lower_assign_field_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Assign_Field_Stmt, source: Source_Loc) {
 	inputs := make([dynamic]Value_Id, 0, 2, context.temp_allocator)
 	defer delete(inputs)
+	if stmt.component != nil || stmt.structure != nil {
+		lower_expr(ctx, stmt.component)
+		lower_expr(ctx, stmt.structure)
+		builder_emit_unsupported(ctx.builder, "ASSIGN COMPONENT semantics", source = source)
+		return
+	}
 	if stmt.source != nil {
 		source_value := lower_expr(ctx, stmt.source)
 		if source_value != INVALID_VALUE_ID {
 			append(&inputs, source_value)
-		}
-	}
-	if stmt.component != nil {
-		component := lower_expr(ctx, stmt.component)
-		if component != INVALID_VALUE_ID {
-			append(&inputs, component)
-		}
-	}
-	if stmt.structure != nil {
-		structure := lower_expr(ctx, stmt.structure)
-		if structure != INVALID_VALUE_ID {
-			append(&inputs, structure)
 		}
 	}
 	if stmt.casting || stmt.casting_type != nil || stmt.casting_decimals != nil {
@@ -1312,7 +1462,7 @@ lower_assign_field_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Assign_Field_Stm
 		builder_emit_unsupported(ctx.builder, "ASSIGN field-symbol operands", source = source)
 		return
 	}
-	result := lower_emit_effect_value_op(ctx, .Abap_Assign_Field, inputs[:], lower_type_for_expr(ctx, stmt.target), source)
+	result := lower_emit_effect_value_op(ctx, .ABAP_Assign_Field, inputs[:], lower_type_for_expr(ctx, stmt.target), source)
 	lower_store_expr(ctx, stmt.target, result)
 	builder_emit_system_write(ctx.builder, "subrc", source = source)
 }
@@ -1327,19 +1477,14 @@ lower_emit_field_load :: proc(
 	selector: ast.Selector_Op = .Dash,
 	projection_segments: []Projection_Segment = nil,
 ) -> Value_Id {
-	operands := [?]Value_Id{ctx.builder.current_world, base}
-	result_types := [?]Type_Id{lower_known_result_type(result_type)}
 	projection := lower_add_projection_segments(ctx, projection_segments) if len(projection_segments) > 0 else lower_add_field_projection(ctx, field_name, source, entity, selector)
-	op_id := builder_emit_op(
-		ctx.builder,
-		.Core_Field_Load,
-		operands[:],
-		result_types[:],
-		{.Reads_World},
-		Op_Payload{field_name = field_name, projection = projection, has_projection = true},
-		source,
+		return builder_emit_field_load(
+			ctx.builder,
+			base,
+			projection,
+			lower_known_result_type(result_type),
+			source,
 	)
-	return op_ptr(builder_function(ctx.builder), op_id).results[0]
 }
 
 lower_add_field_projection :: proc(
@@ -1349,7 +1494,7 @@ lower_add_field_projection :: proc(
 	entity: ^semantic.Entity = nil,
 	selector: ast.Selector_Op = .Dash,
 ) -> Projection_Id {
-	segment := lower_field_projection_segment(ctx, field_name, source, entity, selector)
+	segment := lower_field_projection_segment(field_name, source, entity, selector)
 	segments := [?]Projection_Segment{segment}
 	return lower_add_projection_segments(ctx, segments[:])
 }
@@ -1359,13 +1504,11 @@ lower_add_projection_segments :: proc(ctx: ^Lower_Context, segments: []Projectio
 }
 
 lower_field_projection_segment :: proc(
-	ctx: ^Lower_Context,
 	field_name: string,
 	source: Source_Loc,
 	entity: ^semantic.Entity = nil,
 	selector: ast.Selector_Op = .Dash,
 ) -> Projection_Segment {
-	_ = ctx
 	return Projection_Segment {
 		kind = .Field,
 		name = field_name,
@@ -1387,15 +1530,14 @@ lower_append_projection_prefix_for_expr :: proc(
 	#partial switch n in expr.derived_expr {
 	case ^ast.Selector_Expr:
 		lower_append_projection_prefix_for_expr(ctx, n.base, segments)
-		field_name := lower_expr_name(n.field, ctx.project.allocator)
+		field_name := lower_selector_field_name(ctx, n.field, n.op)
 		source := Source_Loc{file = ctx.file, node = &n.field.expr_base, range = n.field.range}
-		append(
-			segments,
-			lower_field_projection_segment(
-				ctx,
-				field_name,
-				source,
-				lower_entity_for_node(ctx, &n.field.expr_base),
+			append(
+				segments,
+				lower_field_projection_segment(
+					field_name,
+					source,
+					lower_entity_for_node(ctx, &n.field.expr_base),
 				n.op,
 			),
 		)
@@ -1403,13 +1545,12 @@ lower_append_projection_prefix_for_expr :: proc(
 		lower_append_projection_prefix_for_expr(ctx, n.receiver, segments)
 		field_name := lower_interface_selector_name(n, ctx.project.allocator)
 		source := Source_Loc{file = ctx.file, node = &n.member.expr_base, range = n.member.range}
-		append(
-			segments,
-			lower_field_projection_segment(
-				ctx,
-				field_name,
-				source,
-				lower_entity_for_node(ctx, &n.member.expr_base),
+			append(
+				segments,
+				lower_field_projection_segment(
+					field_name,
+					source,
+					lower_entity_for_node(ctx, &n.member.expr_base),
 				n.receiver_op,
 			),
 		)
@@ -1438,27 +1579,27 @@ lower_field_index :: proc(entity: ^semantic.Entity) -> i32 {
 
 lower_emit_value_op :: proc(
 	ctx: ^Lower_Context,
-	kind: Op_Kind,
+	kind: Intrinsic_Op,
 	operands: []Value_Id,
 	result_type: Type_Id,
 	source: Source_Loc,
-	payload: Op_Payload = {},
+	payload: Intrinsic_Payload = {},
 ) -> Value_Id {
 	result_types := [?]Type_Id{lower_known_result_type(result_type)}
-	op_id := builder_emit_op(ctx.builder, kind, operands, result_types[:], payload = payload, source = source)
+	op_id := builder_emit_intrinsic(ctx.builder, kind, operands, result_types[:], payload = payload, source = source)
 	return op_ptr(builder_function(ctx.builder), op_id).results[0]
 }
 
 lower_emit_effect_value_op :: proc(
 	ctx: ^Lower_Context,
-	kind: Op_Kind,
+	kind: Intrinsic_Op,
 	inputs: []Value_Id,
 	result_type: Type_Id,
 	source: Source_Loc,
-	payload: Op_Payload = {},
+	payload: Intrinsic_Payload = {},
 ) -> Value_Id {
 	result_types := [?]Type_Id{lower_known_result_type(result_type)}
-	op_id := builder_emit_effect_op(ctx.builder, kind, inputs, result_types[:], payload = payload, source = source)
+	op_id := builder_emit_effect_intrinsic(ctx.builder, kind, inputs, result_types[:], payload = payload, source = source)
 	return op_ptr(builder_function(ctx.builder), op_id).results[1]
 }
 
@@ -1479,7 +1620,7 @@ lower_move_value_to_type :: proc(ctx: ^Lower_Context, value: Value_Id, target_ty
 		return value
 	}
 	operands := [?]Value_Id{value}
-	return lower_emit_value_op(ctx, .Abap_Move, operands[:], target_type, source)
+	return lower_emit_value_op(ctx, .ABAP_Move, operands[:], target_type, source)
 }
 
 lower_cast_value_to_type :: proc(ctx: ^Lower_Context, value: Value_Id, target_type: Type_Id, source: Source_Loc) -> Value_Id {
@@ -1491,7 +1632,7 @@ lower_cast_value_to_type :: proc(ctx: ^Lower_Context, value: Value_Id, target_ty
 	}
 	operands := [?]Value_Id{value}
 	result_types := [?]Type_Id{target_type}
-	op_id := builder_emit_op(ctx.builder, .Core_Cast, operands[:], result_types[:], source = source)
+	op_id := builder_emit_op(ctx.builder, .Cast, operands[:], result_types[:], source = source)
 	return op_ptr(builder_function(ctx.builder), op_id).results[0]
 }
 
@@ -1500,6 +1641,382 @@ lower_known_result_type :: proc "contextless" (typ: Type_Id) -> Type_Id {
 		return BUILTIN_TYPE_UNKNOWN
 	}
 	return typ
+}
+
+lower_concatenate_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Concatenate_Stmt, source: Source_Loc) {
+	if stmt.byte_mode {
+		for entry in stmt.entries {
+			lower_concatenate_entry_inputs(ctx, entry)
+		}
+		builder_emit_unsupported(ctx.builder, "CONCATENATE BYTE MODE semantics", source = source)
+		return
+	}
+	for entry in stmt.entries {
+		if entry.target == nil {
+			lower_concatenate_entry_inputs(ctx, entry)
+			builder_emit_unsupported(ctx.builder, "CONCATENATE target semantics", source = source)
+			continue
+		}
+		if entry.lines_of {
+			lower_concatenate_entry_inputs(ctx, entry)
+			builder_emit_unsupported(ctx.builder, "CONCATENATE LINES OF semantics", source = source)
+			continue
+		}
+		inputs := make([dynamic]Value_Id, 0, len(entry.sources) + 1, context.temp_allocator)
+		defer delete(inputs)
+		lower_concatenate_entry_inputs_into(ctx, entry, &inputs)
+		payload := Intrinsic_String_Payload {
+			has_separator = entry.separator != nil,
+			respecting_blanks = entry.respecting_blanks,
+		}
+		if len(inputs) == 0 || (payload.has_separator && len(inputs) < 2) {
+			builder_emit_unsupported(ctx.builder, "CONCATENATE source semantics", source = source)
+			continue
+		}
+		result := lower_emit_value_op(
+			ctx,
+			.ABAP_Concatenate,
+			inputs[:],
+			lower_type_for_expr(ctx, entry.target),
+			source,
+			payload,
+		)
+		lower_store_expr(ctx, entry.target, result)
+	}
+}
+
+lower_concatenate_entry_inputs :: proc(ctx: ^Lower_Context, entry: ast.Concatenate_Entry_Clause) {
+	inputs := make([dynamic]Value_Id, 0, len(entry.sources) + 1, context.temp_allocator)
+	defer delete(inputs)
+	lower_concatenate_entry_inputs_into(ctx, entry, &inputs)
+}
+
+lower_concatenate_entry_inputs_into :: proc(
+	ctx: ^Lower_Context,
+	entry: ast.Concatenate_Entry_Clause,
+	inputs: ^[dynamic]Value_Id,
+) {
+	for source_expr in entry.sources {
+		value := lower_expr(ctx, source_expr)
+		if value != INVALID_VALUE_ID {
+			append(inputs, value)
+		}
+	}
+	if entry.separator != nil {
+		separator := lower_expr(ctx, entry.separator)
+		if separator != INVALID_VALUE_ID {
+			append(inputs, separator)
+		}
+	}
+}
+
+lower_split_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Split_Stmt, source: Source_Loc) {
+	for entry in stmt.entries {
+		source_value := lower_expr(ctx, entry.source)
+		separator := lower_expr(ctx, entry.separator)
+		if entry.into_table {
+			for target in entry.targets {
+				lower_expr(ctx, target)
+			}
+			builder_emit_unsupported(ctx.builder, "SPLIT INTO TABLE semantics", source = source)
+			continue
+		}
+		if len(entry.targets) == 0 {
+			builder_emit_unsupported(ctx.builder, "SPLIT target semantics", source = source)
+			continue
+		}
+		if source_value == INVALID_VALUE_ID || separator == INVALID_VALUE_ID {
+			continue
+		}
+		inputs := [?]Value_Id{source_value, separator}
+		result_types := make([dynamic]Type_Id, 0, len(entry.targets), context.temp_allocator)
+		defer delete(result_types)
+		for target in entry.targets {
+			append(&result_types, lower_known_result_type(lower_type_for_expr(ctx, target)))
+		}
+		op_id := builder_emit_intrinsic(ctx.builder, .ABAP_Split, inputs[:], result_types[:], source = source)
+		op := op_ptr(builder_function(ctx.builder), op_id)
+		for target, i in entry.targets {
+			lower_store_expr(ctx, target, op.results[i])
+		}
+	}
+}
+
+lower_condense_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Condense_Stmt, source: Source_Loc) {
+	if stmt.target == nil {
+		builder_emit_unsupported(ctx.builder, "CONDENSE target semantics", source = source)
+		return
+	}
+	value := lower_expr(ctx, stmt.target)
+	if value == INVALID_VALUE_ID {
+		return
+	}
+	inputs := [?]Value_Id{value}
+	result := lower_emit_value_op(
+		ctx,
+		.ABAP_Condense,
+		inputs[:],
+		lower_type_for_expr(ctx, stmt.target),
+		source,
+		Intrinsic_String_Payload{no_gaps = stmt.no_gaps},
+	)
+	lower_store_expr(ctx, stmt.target, result)
+}
+
+lower_replace_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Replace_Stmt, source: Source_Loc) {
+	target := lower_expr(ctx, stmt.target)
+	pattern := lower_expr(ctx, stmt.pattern)
+	replacement := lower_expr(ctx, stmt.replacement)
+	lower_expr(ctx, stmt.section_offset)
+	lower_expr(ctx, stmt.section_length)
+	if stmt.regex {
+		builder_emit_unsupported(ctx.builder, "REPLACE REGEX semantics", source = source)
+		return
+	}
+	if stmt.in_table {
+		builder_emit_unsupported(ctx.builder, "REPLACE IN TABLE semantics", source = source)
+		return
+	}
+	if stmt.section_offset != nil || stmt.section_length != nil {
+		builder_emit_unsupported(ctx.builder, "REPLACE SECTION semantics", source = source)
+		return
+	}
+	occurrence, occurrence_ok := lower_replace_occurrence(stmt.occurrence)
+	if !occurrence_ok || target == INVALID_VALUE_ID || pattern == INVALID_VALUE_ID || replacement == INVALID_VALUE_ID {
+		builder_emit_unsupported(ctx.builder, "REPLACE operand semantics", source = source)
+		return
+	}
+	inputs := [?]Value_Id{target, pattern, replacement}
+	result := lower_emit_value_op(
+		ctx,
+		.ABAP_Replace,
+		inputs[:],
+		lower_type_for_expr(ctx, stmt.target),
+		source,
+		Intrinsic_String_Payload{replace_occurrence = occurrence},
+	)
+	lower_store_expr(ctx, stmt.target, result)
+}
+
+lower_replace_occurrence :: proc "contextless" (occurrence: ast.Replace_Occurrence) -> (Abap_Replace_Occurrence, bool) {
+	switch occurrence {
+	case .Default, .First:
+		return .First, true
+	case .All:
+		return .All, true
+	}
+	return .Unknown, false
+}
+
+lower_translate_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Translate_Stmt, source: Source_Loc) {
+	if stmt.target == nil {
+		builder_emit_unsupported(ctx.builder, "TRANSLATE target semantics", source = source)
+		return
+	}
+	value := lower_expr(ctx, stmt.target)
+	if stmt.operand != nil {
+		lower_expr(ctx, stmt.operand)
+	}
+	mode, supported := lower_translate_mode(stmt.form)
+	if !supported {
+		builder_emit_unsupported(ctx.builder, "TRANSLATE form semantics", source = source)
+		return
+	}
+	if value == INVALID_VALUE_ID {
+		return
+	}
+	inputs := [?]Value_Id{value}
+	result := lower_emit_value_op(
+		ctx,
+		.ABAP_Translate,
+		inputs[:],
+		lower_type_for_expr(ctx, stmt.target),
+		source,
+		Intrinsic_String_Payload{translate_mode = mode},
+	)
+	lower_store_expr(ctx, stmt.target, result)
+}
+
+lower_translate_mode :: proc "contextless" (form: ast.Translate_Form) -> (Abap_Translate_Mode, bool) {
+	switch form {
+	case .To_Upper:
+		return .To_Upper, true
+	case .To_Lower:
+		return .To_Lower, true
+	case .Default,
+	     .Using,
+	     .To_Code_Page,
+	     .From_Code_Page,
+	     .To_Number_Format,
+	     .From_Number_Format:
+	}
+	return .Unknown, false
+}
+
+lower_shift_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Shift_Stmt, source: Source_Loc) {
+	target := lower_expr(ctx, stmt.target)
+	places := lower_expr(ctx, stmt.places)
+	lower_expr(ctx, stmt.up_to)
+	lower_expr(ctx, stmt.delete_pattern)
+	if stmt.circular {
+		builder_emit_unsupported(ctx.builder, "SHIFT CIRCULAR semantics", source = source)
+		return
+	}
+	if stmt.up_to != nil {
+		builder_emit_unsupported(ctx.builder, "SHIFT UP TO semantics", source = source)
+		return
+	}
+	if stmt.delete_direction != .None || stmt.delete_pattern != nil {
+		builder_emit_unsupported(ctx.builder, "SHIFT DELETING semantics", source = source)
+		return
+	}
+	direction, direction_ok := lower_shift_direction(stmt.direction)
+	if !direction_ok || target == INVALID_VALUE_ID || (stmt.places != nil && places == INVALID_VALUE_ID) {
+		builder_emit_unsupported(ctx.builder, "SHIFT operand semantics", source = source)
+		return
+	}
+	inputs := make([dynamic]Value_Id, 0, 2, context.temp_allocator)
+	defer delete(inputs)
+	append(&inputs, target)
+	if stmt.places != nil {
+		append(&inputs, places)
+	}
+	result := lower_emit_value_op(
+		ctx,
+		.ABAP_Shift,
+		inputs[:],
+		lower_type_for_expr(ctx, stmt.target),
+		source,
+		Intrinsic_String_Payload{shift_direction = direction},
+	)
+	lower_store_expr(ctx, stmt.target, result)
+}
+
+lower_shift_direction :: proc "contextless" (direction: ast.Shift_Direction) -> (Abap_Shift_Direction, bool) {
+	switch direction {
+	case .Default, .Left:
+		return .Left, true
+	case .Right:
+		return .Right, true
+	}
+	return .Unknown, false
+}
+
+lower_find_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Find_Stmt, source: Source_Loc) {
+	pattern := lower_expr(ctx, stmt.pattern)
+	target := lower_expr(ctx, stmt.target)
+	if stmt.regex {
+		lower_find_match_outputs(ctx, stmt)
+		builder_emit_unsupported(ctx.builder, "FIND REGEX semantics", source = source)
+		return
+	}
+	if stmt.in_table {
+		lower_expr(ctx, stmt.match_line)
+		lower_find_match_outputs(ctx, stmt)
+		builder_emit_unsupported(ctx.builder, "FIND IN TABLE semantics", source = source)
+		return
+	}
+	if stmt.section_offset != nil || stmt.section_length != nil {
+		lower_expr(ctx, stmt.section_offset)
+		lower_expr(ctx, stmt.section_length)
+		lower_find_match_outputs(ctx, stmt)
+		builder_emit_unsupported(ctx.builder, "FIND SECTION semantics", source = source)
+		return
+	}
+	if stmt.match_line != nil {
+		lower_expr(ctx, stmt.match_line)
+		lower_find_match_outputs(ctx, stmt)
+		builder_emit_unsupported(ctx.builder, "FIND MATCH LINE semantics", source = source)
+		return
+	}
+	if stmt.results != nil {
+		lower_find_match_outputs(ctx, stmt)
+		builder_emit_unsupported(ctx.builder, "FIND RESULTS semantics", source = source)
+		return
+	}
+	if len(stmt.submatches) > 0 {
+		lower_find_match_outputs(ctx, stmt)
+		builder_emit_unsupported(ctx.builder, "FIND SUBMATCHES semantics", source = source)
+		return
+	}
+	occurrence, occurrence_ok := lower_find_occurrence(stmt.occurrence)
+	if !occurrence_ok || pattern == INVALID_VALUE_ID || target == INVALID_VALUE_ID {
+		lower_find_match_outputs(ctx, stmt)
+		builder_emit_unsupported(ctx.builder, "FIND operand semantics", source = source)
+		return
+	}
+	inputs := [?]Value_Id{pattern, target}
+	result_types := [?]Type_Id{
+		BUILTIN_TYPE_INTEGER,
+		BUILTIN_TYPE_INTEGER,
+		BUILTIN_TYPE_INTEGER,
+		BUILTIN_TYPE_INTEGER,
+	}
+	op_id := builder_emit_intrinsic(
+		ctx.builder,
+		.ABAP_Find,
+		inputs[:],
+		result_types[:],
+		payload = Intrinsic_String_Payload {
+			find_occurrence = occurrence,
+			find_ignoring_case = stmt.case_mode == .Ignoring,
+		},
+		source = source,
+	)
+	op := op_ptr(builder_function(ctx.builder), op_id)
+	builder_emit_system_write(ctx.builder, "subrc", op.results[0], source)
+	lower_store_expr(ctx, stmt.match_offset, op.results[1])
+	lower_store_expr(ctx, stmt.match_length, op.results[2])
+	lower_store_expr(ctx, stmt.match_count, op.results[3])
+}
+
+lower_search_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Search_Stmt, source: Source_Loc) {
+	target := lower_expr(ctx, stmt.target)
+	pattern := lower_expr(ctx, stmt.pattern)
+	if stmt.starting_at != nil || stmt.ending_at != nil {
+		lower_expr(ctx, stmt.starting_at)
+		lower_expr(ctx, stmt.ending_at)
+		builder_emit_unsupported(ctx.builder, "SEARCH range semantics", source = source)
+		return
+	}
+	if stmt.abbreviated {
+		builder_emit_unsupported(ctx.builder, "SEARCH ABBREVIATED semantics", source = source)
+		return
+	}
+	if stmt.mark {
+		builder_emit_unsupported(ctx.builder, "SEARCH MARK semantics", source = source)
+		return
+	}
+	if target == INVALID_VALUE_ID || pattern == INVALID_VALUE_ID {
+		builder_emit_unsupported(ctx.builder, "SEARCH operand semantics", source = source)
+		return
+	}
+	inputs := [?]Value_Id{target, pattern}
+	result_types := [?]Type_Id{BUILTIN_TYPE_INTEGER, BUILTIN_TYPE_INTEGER}
+	op_id := builder_emit_intrinsic(ctx.builder, .ABAP_Search, inputs[:], result_types[:], source = source)
+	op := op_ptr(builder_function(ctx.builder), op_id)
+	builder_emit_system_write(ctx.builder, "subrc", op.results[0], source)
+	builder_emit_system_write(ctx.builder, "fdpos", op.results[1], source)
+}
+
+lower_find_match_outputs :: proc(ctx: ^Lower_Context, stmt: ^ast.Find_Stmt) {
+	lower_expr(ctx, stmt.match_offset)
+	lower_expr(ctx, stmt.match_length)
+	lower_expr(ctx, stmt.match_count)
+	lower_expr(ctx, stmt.results)
+	for submatch in stmt.submatches {
+		lower_expr(ctx, submatch)
+	}
+}
+
+lower_find_occurrence :: proc "contextless" (occurrence: ast.Find_Occurrence) -> (Abap_Find_Occurrence, bool) {
+	switch occurrence {
+	case .Default, .First:
+		return .First, true
+	case .All:
+		return .All, true
+	}
+	return .Unknown, false
 }
 
 lower_write_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Write_Stmt, source: Source_Loc) {
@@ -1519,7 +2036,6 @@ lower_write_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Write_Stmt, source: Sou
 }
 
 lower_create_object_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Create_Object_Stmt, source: Source_Loc) {
-	assert(stmt.target != nil)
 	target_type := lower_type_for_expr(ctx, stmt.target)
 	constructor_type := lower_create_object_constructor_type(ctx, stmt)
 	construct_type := lower_create_object_construct_type(ctx, constructor_type, target_type)
@@ -1539,15 +2055,39 @@ lower_create_object_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Create_Object_S
 	}
 	created := lower_emit_value_op(
 		ctx,
-		.Abap_Construct,
+		.ABAP_Construct,
 		inputs[:],
 		construct_type,
 		source,
-		Op_Payload{callee_name = "new"},
+		Intrinsic_Call_Payload{callee_name = "new"},
 	)
 	if constructor_type != nil && !stmt.type_dynamic {
-		lower_emit_constructor_call_for_type(ctx, constructor_type, created, constructor_args[:], source, &stmt.node)
+		lower_emit_constructor_call_for_type(ctx, constructor_type, created, constructor_args[:], source)
 	}
+	lower_store_expr(ctx, stmt.target, created)
+}
+
+lower_create_data_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Create_Data_Stmt, source: Source_Loc) {
+	if stmt.type_dynamic || stmt.type_dynamic_expr != nil || stmt.type_handle != nil || len(stmt.operands) > 0 {
+		lower_expr(ctx, stmt.type_dynamic_expr)
+		lower_expr(ctx, stmt.type_handle)
+		lower_constructor_collect_args(ctx, stmt.operands[:], nil)
+		builder_emit_unsupported(ctx.builder, "CREATE DATA dynamic or constructor semantics", source = source)
+		return
+	}
+	if stmt.type_ref != nil || stmt.type_clause != nil {
+		lower_expr(ctx, stmt.type_ref)
+		builder_emit_unsupported(ctx.builder, "CREATE DATA explicit type semantics", source = source)
+		return
+	}
+	created := lower_emit_value_op(
+		ctx,
+		.ABAP_Construct,
+		nil,
+		lower_type_for_expr(ctx, stmt.target),
+		source,
+		Intrinsic_Call_Payload{callee_name = "create_data"},
+	)
 	lower_store_expr(ctx, stmt.target, created)
 }
 
@@ -1583,7 +2123,7 @@ lower_create_object_construct_type :: proc(
 	constructor_type: ^semantic.Type,
 	fallback: Type_Id,
 ) -> Type_Id {
-	if ctx == nil || ctx.project == nil || constructor_type == nil || constructor_type.kind == .Unknown {
+	if constructor_type == nil || constructor_type.kind == .Unknown {
 		return fallback
 	}
 	if constructor_type.kind == .Ref {
@@ -1739,13 +2279,13 @@ lower_case_when_condition :: proc(
 			continue
 		}
 		inputs := [?]Value_Id{subject, value}
-		equals := lower_emit_value_op(ctx, .Abap_Equal, inputs[:], BUILTIN_TYPE_PREDICATE, source)
+		equals := lower_emit_value_op(ctx, .ABAP_Equal, inputs[:], BUILTIN_TYPE_PREDICATE, source)
 		if condition == INVALID_VALUE_ID {
 			condition = equals
 			continue
 		}
 		or_inputs := [?]Value_Id{condition, equals}
-		condition = lower_emit_value_op(ctx, .Abap_Or, or_inputs[:], BUILTIN_TYPE_PREDICATE, source)
+		condition = lower_emit_value_op(ctx, .ABAP_Or, or_inputs[:], BUILTIN_TYPE_PREDICATE, source)
 	}
 	if condition == INVALID_VALUE_ID {
 		return builder_emit_unsupported(ctx.builder, "CASE WHEN condition", BUILTIN_TYPE_PREDICATE, source)
@@ -1851,19 +2391,32 @@ lower_do_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Do_Stmt) {
 
 lower_loop_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Loop_Stmt) {
 	source := source_loc_from_node(ctx.file, &stmt.node.stmt_base)
-	assert(stmt.source != nil)
 	source_value := lower_expr(ctx, stmt.source)
 	assert(source_value != INVALID_VALUE_ID)
 	lower_loop_header_deferred_semantics(ctx, stmt, source)
 	row_type := lower_table_row_type_for_expr(ctx, stmt.source)
 	row_result_type := lower_loop_result_type(ctx, stmt, row_type)
-	table_payload := Op_Payload {
-		table_access = .Sequential,
-		table_result_kind = lower_loop_result_kind(stmt),
-		table_source_kind = .Row,
-		ast_stmt = &stmt.node,
+	filter_inputs := make([dynamic]Value_Id, 0, 2, context.temp_allocator)
+	defer delete(filter_inputs)
+	filter_components := make([dynamic]Intrinsic_Table_Component, 0, 2, context.temp_allocator)
+	defer lower_table_components_destroy_scratch(&filter_components)
+	filter_count := 0
+	if stmt.where_cond != nil {
+		if count, ok := lower_table_condition_inputs(ctx, stmt.where_cond, &filter_inputs, &filter_components, 1); ok {
+			filter_count = count
+		} else {
+			lower_expr(ctx, stmt.where_cond)
+			builder_emit_unsupported(ctx.builder, "LOOP WHERE filtering", source = source)
+		}
 	}
-	iter := builder_emit_table_iter(ctx.builder, source_value, row_type, table_payload, source)
+	table_payload := Intrinsic_Table_Payload {
+		access = .Sequential,
+		result_kind = lower_loop_result_kind(stmt),
+		source_kind = .Row,
+		component_count = filter_count,
+		components = filter_components,
+	}
+	iter := builder_emit_table_iter(ctx.builder, source_value, row_type, table_payload, source, filter_inputs[:])
 	iter_type := value_type(builder_function(ctx.builder), iter)
 
 	next_block := builder_add_world_block(ctx.builder, "loop_next", source)
@@ -1876,8 +2429,10 @@ lower_loop_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Loop_Stmt) {
 	builder_set_branch(ctx.builder, next_block, next_args[:], source)
 
 	builder_position_at_end(ctx.builder, next_block)
-	next_iter := block_ptr(builder_function(ctx.builder), next_block).params[1].value
-	has_row, row := builder_emit_table_next(ctx.builder, next_iter, row_result_type, row_type, table_payload, source)
+	next_iter := block_ptr(builder_function(ctx.builder), next_block).args[1]
+	has_row, row, tabix, subrc := builder_emit_table_next(ctx.builder, next_iter, row_result_type, row_type, table_payload, source)
+	builder_emit_system_write(ctx.builder, "subrc", subrc, source)
+	builder_emit_system_write(ctx.builder, "tabix", tabix, source)
 	body_args := [?]Value_Id{ctx.builder.current_world, next_iter, row}
 	after_args := [?]Value_Id{ctx.builder.current_world}
 	builder_set_cond_branch(
@@ -1891,7 +2446,7 @@ lower_loop_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Loop_Stmt) {
 	)
 
 	builder_position_at_end(ctx.builder, body_block)
-	body_iter := block_ptr(builder_function(ctx.builder), body_block).params[1].value
+	body_iter := block_ptr(builder_function(ctx.builder), body_block).args[1]
 	lower_push_control_target(
 		ctx,
 		Lower_Control_Target {
@@ -1904,18 +2459,12 @@ lower_loop_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Loop_Stmt) {
 	if stmt.target != nil {
 		lower_store_expr(ctx, stmt.target, row_param)
 	}
-	if stmt.where_cond != nil {
-		lower_expr(ctx, stmt.where_cond)
-		builder_emit_unsupported(ctx.builder, "LOOP WHERE filtering", source = source)
-	}
 	lower_stmt_list(ctx, stmt.body[:])
 	if lower_current_block_open(ctx) {
 		lower_branch_to_control_continue(ctx, source)
 	}
 	lower_pop_control_target(ctx)
 	builder_position_at_end(ctx.builder, after_block)
-	builder_emit_system_write(ctx.builder, "subrc", source = source)
-	builder_emit_system_write(ctx.builder, "tabix", source = source)
 }
 
 lower_check_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Check_Stmt) {
@@ -1965,10 +2514,288 @@ lower_flow_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Flow_Stmt) {
 	}
 }
 
+lower_prepare_invoke_targets :: proc(
+	ctx: ^Lower_Context,
+	source: Source_Loc,
+) -> (
+	normal_block: Block_Id,
+	exception_block: Block_Id,
+	uses_unhandled_block: bool,
+) {
+	normal_block = builder_add_world_block(ctx.builder, "invoke_normal", source)
+	if target, ok := lower_current_exception_target(ctx); ok {
+		exception_block = target.dispatch_block
+		return
+	}
+	exception_block = builder_add_world_block(ctx.builder, "invoke_unhandled", source)
+	uses_unhandled_block = true
+	return
+}
+
+lower_finish_invoke_targets :: proc(
+	ctx: ^Lower_Context,
+	normal_block: Block_Id,
+	exception_block: Block_Id,
+	uses_unhandled_block: bool,
+	close_normal: bool,
+	source: Source_Loc,
+) {
+	builder_set_unreachable(ctx.builder, source)
+	if uses_unhandled_block {
+		builder_position_at_end(ctx.builder, exception_block)
+		builder_emit_exception_unhandled(ctx.builder, source)
+		builder_set_return_world(ctx.builder, source)
+	}
+	builder_position_at_end(ctx.builder, normal_block)
+	if close_normal {
+		builder_set_unreachable(ctx.builder, source)
+	}
+}
+
+lower_emit_method_may_throw :: proc(
+	ctx: ^Lower_Context,
+	target: ^semantic.Entity,
+	callee_name: string,
+	inputs: []Value_Id = nil,
+	result_types: []Type_Id = nil,
+	source: Source_Loc = {},
+) -> Op_Id {
+	normal_block, exception_block, uses_unhandled_block := lower_prepare_invoke_targets(ctx, source)
+	op_id := builder_emit_method_invoke(
+		ctx.builder,
+		target,
+		callee_name,
+		normal_block,
+		exception_block,
+			inputs,
+			result_types,
+			source = source,
+		)
+	lower_finish_invoke_targets(ctx, normal_block, exception_block, uses_unhandled_block, false, source)
+	return op_id
+}
+
+lower_emit_routine_may_throw :: proc(
+	ctx: ^Lower_Context,
+	target: ^semantic.Entity,
+	callee_name: string,
+	inputs: []Value_Id = nil,
+	result_types: []Type_Id = nil,
+	source: Source_Loc = {},
+	call_kind: Abap_Call_Kind = .Unknown,
+) -> Op_Id {
+	normal_block, exception_block, uses_unhandled_block := lower_prepare_invoke_targets(ctx, source)
+	op_id := builder_emit_routine_invoke(
+		ctx.builder,
+		target,
+		callee_name,
+		normal_block,
+		exception_block,
+			inputs,
+			result_types,
+			source = source,
+			call_kind = call_kind,
+		)
+	lower_finish_invoke_targets(ctx, normal_block, exception_block, uses_unhandled_block, false, source)
+	return op_id
+}
+
+lower_raise_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Raise_Stmt, source: Source_Loc) {
+	if stmt.kind == .Event {
+		for operand in stmt.operands {
+			lower_expr(ctx, operand)
+		}
+		builder_emit_unsupported(ctx.builder, "RAISE EVENT semantics", source = source)
+		return
+	}
+	if !stmt.target_type {
+		if stmt.target != nil {
+			lower_expr(ctx, stmt.target)
+		}
+		for operand in stmt.operands {
+			lower_expr(ctx, operand)
+		}
+		builder_emit_unsupported(ctx.builder, "RAISE EXCEPTION object semantics", source = source)
+		return
+	}
+	if len(stmt.operands) > 0 {
+		for operand in stmt.operands {
+			lower_expr(ctx, operand)
+		}
+		builder_emit_unsupported(ctx.builder, "RAISE EXCEPTION constructor operands", source = source)
+		return
+	}
+	exception_name, exception_ok := lower_exception_static_name(ctx, stmt.target)
+	if !exception_ok {
+		builder_emit_unsupported(ctx.builder, "RAISE EXCEPTION dynamic type semantics", source = source)
+		return
+	}
+	normal_block, exception_block, uses_unhandled_block := lower_prepare_invoke_targets(ctx, source)
+	builder_emit_exception_raise_invoke(ctx.builder, exception_name, normal_block, exception_block, source)
+	lower_finish_invoke_targets(ctx, normal_block, exception_block, uses_unhandled_block, true, source)
+}
+
+lower_try_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Try_Stmt, source: Source_Loc) {
+	if stmt.cleanup != nil {
+		builder_emit_unsupported(ctx.builder, "TRY CLEANUP semantics", source = source)
+		return
+	}
+	if len(stmt.catches) == 0 {
+		lower_stmt_list(ctx, stmt.body[:])
+		return
+	}
+
+	dispatch_block := builder_add_world_block(ctx.builder, "try_exception", source)
+	after_block := builder_add_world_block(ctx.builder, "try_after", source)
+
+	lower_push_exception_target(ctx, Lower_Exception_Target{dispatch_block = dispatch_block})
+	lower_stmt_list(ctx, stmt.body[:])
+	lower_pop_exception_target(ctx)
+	if lower_current_block_open(ctx) {
+		builder_set_branch_world(ctx.builder, after_block, source)
+	}
+
+	builder_position_at_end(ctx.builder, dispatch_block)
+	lower_try_catch_chain(ctx, stmt, 0, after_block, source)
+
+	builder_position_at_end(ctx.builder, after_block)
+}
+
+lower_try_catch_chain :: proc(
+	ctx: ^Lower_Context,
+	stmt: ^ast.Try_Stmt,
+	catch_index: int,
+	after_block: Block_Id,
+	source: Source_Loc,
+) {
+	if catch_index >= len(stmt.catches) {
+		if target, ok := lower_current_exception_target(ctx); ok {
+			builder_set_branch_world(ctx.builder, target.dispatch_block, source)
+			return
+		}
+		builder_emit_exception_unhandled(ctx.builder, source)
+		builder_set_return_world(ctx.builder, source)
+		return
+	}
+
+	clause := stmt.catches[catch_index]
+	clause_source := lower_catch_clause_source(ctx, clause, source)
+	condition := lower_catch_condition(ctx, clause, clause_source)
+	catch_block := builder_add_world_block(ctx.builder, "try_catch", clause_source)
+	next_block := builder_add_world_block(ctx.builder, "try_catch_next", clause_source)
+	true_args := [?]Value_Id{ctx.builder.current_world}
+	false_args := [?]Value_Id{ctx.builder.current_world}
+	builder_set_cond_branch(
+		ctx.builder,
+		condition,
+		catch_block,
+		true_args[:],
+		next_block,
+		false_args[:],
+		clause_source,
+	)
+
+	builder_position_at_end(ctx.builder, catch_block)
+	if clause.into != nil {
+		exception := builder_emit_exception_catch(ctx.builder, lower_type_for_expr(ctx, clause.into), clause_source)
+		if exception != INVALID_VALUE_ID {
+			lower_store_expr(ctx, clause.into, exception)
+		}
+	} else {
+		builder_emit_exception_catch(ctx.builder, source = clause_source)
+	}
+	lower_stmt_list(ctx, clause.body[:])
+	if lower_current_block_open(ctx) {
+		builder_set_branch_world(ctx.builder, after_block, clause_source)
+	}
+
+	builder_position_at_end(ctx.builder, next_block)
+	lower_try_catch_chain(ctx, stmt, catch_index + 1, after_block, source)
+}
+
+lower_catch_condition :: proc(ctx: ^Lower_Context, clause: ^ast.Catch_Clause, source: Source_Loc) -> Value_Id {
+	condition := INVALID_VALUE_ID
+	for exception in clause.exceptions {
+		name, name_ok := lower_exception_static_name(ctx, exception)
+		if !name_ok {
+			return builder_emit_unsupported(ctx.builder, "CATCH exception type semantics", BUILTIN_TYPE_PREDICATE, source)
+		}
+		match := builder_emit_exception_match(ctx.builder, name, source)
+		if condition == INVALID_VALUE_ID {
+			condition = match
+			continue
+		}
+		inputs := [?]Value_Id{condition, match}
+		condition = lower_emit_value_op(ctx, .ABAP_Or, inputs[:], BUILTIN_TYPE_PREDICATE, source)
+	}
+	if condition == INVALID_VALUE_ID {
+		return builder_emit_unsupported(ctx.builder, "CATCH exception type semantics", BUILTIN_TYPE_PREDICATE, source)
+	}
+	return condition
+}
+
+lower_catch_clause_source :: proc(ctx: ^Lower_Context, clause: ^ast.Catch_Clause, fallback: Source_Loc) -> Source_Loc {
+	if clause == nil || clause.range.end <= clause.range.start {
+		return fallback
+	}
+	return Source_Loc{file = ctx.file, range = clause.range}
+}
+
+lower_exception_static_name :: proc(ctx: ^Lower_Context, expr: ^ast.Expr) -> (string, bool) {
+	if expr == nil {
+		return "", false
+	}
+	if entity := lower_entity_for_node(ctx, &expr.expr_base); entity != nil && lower_entity_is_exception_type(entity) {
+		return entity.name, entity.name != ""
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return n.name, n.name != ""
+	case ^ast.Type_Ref_Expr:
+		if n.raw_operand {
+			return lower_exception_static_name_from_raw(ctx, n)
+		}
+		name := n.base_name.text
+		if name == "" {
+			name = n.name.text
+		}
+		return name, name != ""
+	case ^ast.Paren_Expr:
+		return lower_exception_static_name(ctx, n.expr)
+	}
+	return "", false
+}
+
+lower_exception_static_name_from_raw :: proc(ctx: ^Lower_Context, raw: ^ast.Type_Ref_Expr) -> (string, bool) {
+	if raw == nil || len(raw.raw_refs) != 1 || len(raw.raw_decls) != 0 {
+		return "", false
+	}
+	ref := raw.raw_refs[0]
+	if ref.call_like || ref.type_base || ref.dynamic_path || len(ref.path) != 0 {
+		return "", false
+	}
+	if use := semantic.semantic_ref_use_at_range(ctx.ref_query, ref.name.range); use != nil &&
+	   use.entity != nil &&
+	   lower_entity_is_exception_type(use.entity) {
+		return use.entity.name, use.entity.name != ""
+	}
+	return ref.name.text, ref.name.text != ""
+}
+
+lower_entity_is_exception_type :: proc "contextless" (entity: ^semantic.Entity) -> bool {
+	if entity == nil {
+		return false
+	}
+	#partial switch entity.kind {
+	case .Class, .Interface, .Type_Def, .Builtin:
+		return true
+	}
+	return false
+}
+
 lower_read_table_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Read_Table_Stmt) {
 	source := source_loc_from_node(ctx.file, &stmt.node.stmt_base)
 	for entry in stmt.entries {
-		assert(entry.table != nil)
 		table := lower_expr(ctx, entry.table)
 		inputs := make([dynamic]Value_Id, 0, 2 + len(entry.key_values), context.temp_allocator)
 		defer delete(inputs)
@@ -1979,7 +2806,9 @@ lower_read_table_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Read_Table_Stmt) {
 			assert(index != INVALID_VALUE_ID)
 			append(&inputs, index)
 		}
-		lower_read_table_key_inputs(ctx, entry, &inputs)
+		components := make([dynamic]Intrinsic_Table_Component, 0, len(entry.key_values), context.temp_allocator)
+		defer lower_table_components_destroy_scratch(&components)
+		dynamic_key, dynamic_component := lower_read_table_key_inputs(ctx, entry, &inputs, &components)
 		if len(entry.transporting_fields) > 0 {
 			builder_emit_unsupported(ctx.builder, "READ TABLE TRANSPORTING field semantics", source = source)
 		}
@@ -1988,19 +2817,19 @@ lower_read_table_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Read_Table_Stmt) {
 		}
 		row_type := lower_table_row_type_for_expr(ctx, entry.table)
 		row_result_type := lower_read_table_result_type(ctx, entry, row_type)
-		row, subrc := builder_emit_table_read(
+		row, subrc, tabix := builder_emit_table_read(
 			ctx.builder,
 			inputs[:],
 			row_result_type,
 			row_type,
-			lower_read_table_payload(entry, &stmt.node),
+			lower_read_table_payload(entry, components, dynamic_key, dynamic_component),
 			source,
 		)
 		lower_store_expr(ctx, entry.into, row)
 		lower_store_expr(ctx, entry.assigning, row)
 		lower_store_expr(ctx, entry.reference_into, row)
 		builder_emit_system_write(ctx.builder, "subrc", subrc, source)
-		builder_emit_system_write(ctx.builder, "tabix", source = source)
+		builder_emit_system_write(ctx.builder, "tabix", tabix, source)
 	}
 }
 
@@ -2008,6 +2837,9 @@ lower_append_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Append_Stmt, source: S
 	if stmt.target == nil {
 		builder_emit_unsupported(ctx.builder, "APPEND target semantics", source = source)
 		return
+	}
+	if stmt.lines_of {
+		builder_emit_unsupported(ctx.builder, "APPEND source semantics", source = source)
 	}
 	row_type := lower_table_row_type_for_expr(ctx, stmt.target)
 	inputs := make([dynamic]Value_Id, 0, 2, context.temp_allocator)
@@ -2018,33 +2850,35 @@ lower_append_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Append_Stmt, source: S
 			append(&inputs, source_value)
 		}
 	} else if stmt.initial_line {
-		builder_emit_unsupported(ctx.builder, "APPEND INITIAL LINE semantics", source = source)
+		source_value := lower_emit_effect_value_op(ctx, .ABAP_Clear, nil, row_type, source)
+		append(&inputs, source_value)
 	} else {
 		builder_emit_unsupported(ctx.builder, "APPEND source semantics", source = source)
 	}
 	target := lower_expr(ctx, stmt.target)
 	assert(target != INVALID_VALUE_ID)
 	append(&inputs, target)
-	if stmt.assigning != nil || stmt.reference_into != nil {
-		builder_emit_unsupported(ctx.builder, "APPEND result binding semantics", source = source)
-	}
 	if stmt.sorted {
 		builder_emit_unsupported(ctx.builder, "APPEND SORTED BY semantics", source = source)
 	}
-	builder_emit_table_mutation(
+	append_op := builder_emit_table_mutation(
 		ctx.builder,
 		.Table_Append,
 		inputs[:],
 		row_type,
-		Op_Payload {
-			table_access = .Full,
-			table_result_kind = lower_append_result_kind(stmt),
-			table_source_kind = lower_append_source_kind(stmt),
-			ast_stmt = &stmt.node,
+		Intrinsic_Table_Payload {
+			access = .Full,
+			result_kind = lower_append_result_kind(stmt),
+			source_kind = lower_append_source_kind(stmt),
 		},
 		source,
 	)
-	builder_emit_system_write(ctx.builder, "subrc", source = source)
+	append_result := op_ptr(builder_function(ctx.builder), append_op)
+	subrc := append_result.results[1]
+	tabix := append_result.results[2]
+	builder_emit_system_write(ctx.builder, "subrc", subrc, source)
+	builder_emit_system_write(ctx.builder, "tabix", tabix, source)
+	lower_table_result_binding(ctx, target, tabix, row_type, stmt.assigning, stmt.reference_into, lower_append_result_kind(stmt), source)
 }
 
 lower_insert_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Insert_Stmt, source: Source_Loc) {
@@ -2056,6 +2890,9 @@ lower_insert_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Insert_Stmt, source: S
 		builder_emit_unsupported(ctx.builder, "INSERT target semantics", source = source)
 		return
 	}
+	if stmt.from_table || stmt.form == .Lines_Of {
+		builder_emit_unsupported(ctx.builder, "INSERT source semantics", source = source)
+	}
 	row_type := lower_table_row_type_for_expr(ctx, stmt.target)
 	inputs := make([dynamic]Value_Id, 0, 3, context.temp_allocator)
 	defer delete(inputs)
@@ -2065,7 +2902,8 @@ lower_insert_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Insert_Stmt, source: S
 			append(&inputs, source_value)
 		}
 	} else if stmt.initial_line {
-		builder_emit_unsupported(ctx.builder, "INSERT INITIAL LINE semantics", source = source)
+		source_value := lower_emit_effect_value_op(ctx, .ABAP_Clear, nil, row_type, source)
+		append(&inputs, source_value)
 	} else if len(stmt.assignments) > 0 {
 		for assignment in stmt.assignments {
 			lower_expr(ctx, assignment.name)
@@ -2084,23 +2922,54 @@ lower_insert_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Insert_Stmt, source: S
 			append(&inputs, index)
 		}
 	}
-	if stmt.assigning != nil || stmt.reference_into != nil {
-		builder_emit_unsupported(ctx.builder, "INSERT result binding semantics", source = source)
-	}
-	builder_emit_table_mutation(
+	insert_op := builder_emit_table_mutation(
 		ctx.builder,
 		.Table_Insert,
 		inputs[:],
 		row_type,
-		Op_Payload {
-			table_access = Table_Access_Kind.Index if stmt.index != nil else Table_Access_Kind.Full,
-			table_result_kind = lower_insert_result_kind(stmt),
-			table_source_kind = lower_insert_source_kind(stmt),
-			ast_stmt = &stmt.node,
+		Intrinsic_Table_Payload {
+			access = Table_Access_Kind.Index if stmt.index != nil else Table_Access_Kind.Full,
+			result_kind = lower_insert_result_kind(stmt),
+			source_kind = lower_insert_source_kind(stmt),
 		},
 		source,
 	)
-	builder_emit_system_write(ctx.builder, "subrc", source = source)
+	insert_result := op_ptr(builder_function(ctx.builder), insert_op)
+	subrc := insert_result.results[1]
+	tabix := insert_result.results[2]
+	builder_emit_system_write(ctx.builder, "subrc", subrc, source)
+	builder_emit_system_write(ctx.builder, "tabix", tabix, source)
+	lower_table_result_binding(ctx, target, tabix, row_type, stmt.assigning, stmt.reference_into, lower_insert_result_kind(stmt), source)
+}
+
+lower_table_result_binding :: proc(
+	ctx: ^Lower_Context,
+	table: Value_Id,
+	tabix: Value_Id,
+	row_type: Type_Id,
+	assigning: ^ast.Expr,
+	reference_into: ^ast.Expr,
+	result_kind: Table_Result_Kind,
+	source: Source_Loc,
+) {
+	target := assigning if assigning != nil else reference_into
+	if target == nil {
+		return
+	}
+	row_result_type := lower_type_for_expr(ctx, target)
+	inputs := [?]Value_Id{table, tabix}
+	row, _, _ := builder_emit_table_read(
+		ctx.builder,
+		inputs[:],
+		row_result_type,
+		row_type,
+		Intrinsic_Table_Payload {
+			access = .Index,
+			result_kind = result_kind,
+		},
+		source,
+	)
+	lower_store_expr(ctx, target, row)
 }
 
 lower_modify_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Modify_Stmt, source: Source_Loc) {
@@ -2120,6 +2989,9 @@ lower_modify_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Modify_Stmt, source: S
 		builder_emit_unsupported(ctx.builder, "MODIFY table operands", source = source)
 		return
 	}
+	if stmt.from_table {
+		builder_emit_unsupported(ctx.builder, "MODIFY table operands", source = source)
+	}
 	row_type := lower_table_row_type_for_expr(ctx, stmt.target)
 	inputs := make([dynamic]Value_Id, 0, 4, context.temp_allocator)
 	defer delete(inputs)
@@ -2134,30 +3006,39 @@ lower_modify_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Modify_Stmt, source: S
 			append(&inputs, index)
 		}
 	}
+	components := make([dynamic]Intrinsic_Table_Component, 0, 2, context.temp_allocator)
+	defer lower_table_components_destroy_scratch(&components)
+	where_count := 0
 	if stmt.where_cond != nil {
-		where_value := lower_expr(ctx, stmt.where_cond)
-		if where_value != INVALID_VALUE_ID {
-			append(&inputs, where_value)
+		if stmt.dynamic_where {
+			lower_expr(ctx, stmt.where_cond)
+			builder_emit_unsupported(ctx.builder, "MODIFY WHERE semantics", source = source)
+		} else if count, ok := lower_table_condition_inputs(ctx, stmt.where_cond, &inputs, &components, 0); ok {
+			where_count = count
+		} else {
+			lower_expr(ctx, stmt.where_cond)
+			builder_emit_unsupported(ctx.builder, "MODIFY WHERE semantics", source = source)
 		}
-		builder_emit_unsupported(ctx.builder, "MODIFY WHERE semantics", source = source)
 	}
 	if len(stmt.transporting) > 0 {
 		builder_emit_unsupported(ctx.builder, "MODIFY TRANSPORTING semantics", source = source)
 	}
-	builder_emit_table_mutation(
+	modify_op := builder_emit_table_mutation(
 		ctx.builder,
 		.Table_Modify,
 		inputs[:],
 		row_type,
-		Op_Payload {
-			table_access = lower_modify_access(stmt),
-			table_source_kind = Table_Source_Kind.From_Table if stmt.from_table else Table_Source_Kind.Row,
-			table_component_count = len(stmt.transporting),
-			ast_stmt = &stmt.node,
+		Intrinsic_Table_Payload {
+			access = lower_modify_access(stmt),
+			source_kind = Table_Source_Kind.From_Table if stmt.from_table else Table_Source_Kind.Row,
+			component_count = where_count + len(stmt.transporting),
+			components = components,
 		},
 		source,
 	)
-	builder_emit_system_write(ctx.builder, "subrc", source = source)
+	modify_result := op_ptr(builder_function(ctx.builder), modify_op)
+	builder_emit_system_write(ctx.builder, "subrc", modify_result.results[1], source)
+	builder_emit_system_write(ctx.builder, "tabix", modify_result.results[2], source)
 }
 
 lower_delete_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Delete_Stmt, source: Source_Loc) {
@@ -2188,12 +3069,19 @@ lower_delete_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Delete_Stmt, source: S
 			append(&inputs, index)
 		}
 	}
+	components := make([dynamic]Intrinsic_Table_Component, 0, 2, context.temp_allocator)
+	defer lower_table_components_destroy_scratch(&components)
+	where_count := 0
 	if stmt.where_cond != nil {
-		where_value := lower_expr(ctx, stmt.where_cond)
-		if where_value != INVALID_VALUE_ID {
-			append(&inputs, where_value)
+		if stmt.dynamic_where {
+			lower_expr(ctx, stmt.where_cond)
+			builder_emit_unsupported(ctx.builder, "DELETE WHERE semantics", source = source)
+		} else if count, ok := lower_table_condition_inputs(ctx, stmt.where_cond, &inputs, &components, 0); ok {
+			where_count = count
+		} else {
+			lower_expr(ctx, stmt.where_cond)
+			builder_emit_unsupported(ctx.builder, "DELETE WHERE semantics", source = source)
 		}
-		builder_emit_unsupported(ctx.builder, "DELETE WHERE semantics", source = source)
 	}
 	if stmt.form == .Adjacent_Duplicates {
 		builder_emit_unsupported(ctx.builder, "DELETE ADJACENT DUPLICATES semantics", source = source)
@@ -2207,22 +3095,24 @@ lower_delete_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Delete_Stmt, source: S
 			append(&inputs, key)
 		}
 	}
-	builder_emit_table_mutation(
+	delete_op := builder_emit_table_mutation(
 		ctx.builder,
 		.Table_Delete,
 		inputs[:],
 		row_type,
-		Op_Payload {
-			table_access = lower_delete_access(stmt),
-			table_key_kind = lower_table_key_selector_kind(stmt.using_key),
-			table_key_name = stmt.using_key.name.text,
-			table_source_kind = Table_Source_Kind.Row if stmt.source != nil && stmt.source != target_expr else Table_Source_Kind.Unknown,
-			table_component_count = len(stmt.comparing),
-			ast_stmt = &stmt.node,
+		Intrinsic_Table_Payload {
+			access = lower_delete_access(stmt),
+			key_kind = lower_table_key_selector_kind(stmt.using_key),
+			key_name = stmt.using_key.name.text,
+			source_kind = Table_Source_Kind.Row if stmt.source != nil && stmt.source != target_expr else Table_Source_Kind.Unknown,
+			component_count = where_count + len(stmt.comparing),
+			components = components,
 		},
 		source,
 	)
-	builder_emit_system_write(ctx.builder, "subrc", source = source)
+	delete_result := op_ptr(builder_function(ctx.builder), delete_op)
+	builder_emit_system_write(ctx.builder, "subrc", delete_result.results[1], source)
+	builder_emit_system_write(ctx.builder, "tabix", delete_result.results[2], source)
 }
 
 lower_sort_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Sort_Stmt, source: Source_Loc) {
@@ -2233,20 +3123,28 @@ lower_sort_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Sort_Stmt, source: Sourc
 	target := lower_expr(ctx, stmt.target)
 	assert(target != INVALID_VALUE_ID)
 	inputs := [?]Value_Id{target}
-	builder_emit_table_mutation(
+	sort_components := make([dynamic]Intrinsic_Table_Sort_Component, 0, len(stmt.fields), context.temp_allocator)
+	defer lower_table_sort_components_destroy_scratch(&sort_components)
+	if !lower_sort_components(stmt, &sort_components) {
+		builder_emit_unsupported(ctx.builder, "SORT dynamic component semantics", source = source)
+	}
+	sort_op := builder_emit_table_mutation(
 		ctx.builder,
 		.Table_Sort,
 		inputs[:],
 		lower_table_row_type_for_expr(ctx, stmt.target),
-		Op_Payload {
-			table_access = .Sort,
-			table_component_count = len(stmt.fields),
-			table_stable = stmt.stable,
-			ast_stmt = &stmt.node,
+		Intrinsic_Table_Payload {
+			access = .Sort,
+			component_count = len(stmt.fields),
+			stable = stmt.stable,
+			descending = stmt.descending,
+			sort_components = sort_components,
 		},
 		source,
 	)
-	builder_emit_system_write(ctx.builder, "subrc", source = source)
+	sort_result := op_ptr(builder_function(ctx.builder), sort_op)
+	builder_emit_system_write(ctx.builder, "subrc", sort_result.results[1], source)
+	builder_emit_system_write(ctx.builder, "tabix", sort_result.results[2], source)
 }
 
 lower_select_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Select_Stmt) {
@@ -2265,7 +3163,7 @@ lower_select_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Select_Stmt) {
 	result, count := builder_emit_sql_select(
 		ctx.builder,
 		lower_select_result_type(ctx, &stmt.query),
-		lower_sql_query_payload(ctx, &stmt.query, query_fact, &stmt.node),
+		lower_sql_query_payload(ctx, &stmt.query, query_fact),
 		source,
 	)
 	if stmt.query.result != nil {
@@ -2319,25 +3217,23 @@ lower_select_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Select_Stmt) {
 
 lower_sql_cursor_stmt :: proc(
 	ctx: ^Lower_Context,
-	kind: Op_Kind,
+	kind: Intrinsic_Op,
 	handle: ^ast.Expr,
 	query: ^ast.Select_Query_Clause,
 	source: Source_Loc,
 ) {
-	assert(handle != nil)
 	handle_value := lower_expr(ctx, handle)
 	assert(handle_value != INVALID_VALUE_ID)
-	payload := Op_Payload{}
-	if kind == .Sql_Open_Cursor {
-		assert(query != nil)
+	payload := Intrinsic_SQL_Payload{}
+	if kind == .SQL_Open_Cursor {
 		lower_select_query_inputs(ctx, query)
 		query_fact, query_ok := lower_sql_query_fact_for_query(ctx, query)
 		if !query_ok || !lower_sql_query_fact_is_modeled(query_fact) {
 			builder_emit_unsupported(ctx.builder, "SQL cursor query source semantics", source = source)
 			return
 		}
-		payload = lower_sql_query_payload(ctx, query, query_fact, nil)
-	} else if kind == .Sql_Fetch {
+		payload = lower_sql_query_payload(ctx, query, query_fact)
+	} else if kind == .SQL_Fetch {
 		handle_entity := lower_entity_for_node(ctx, &handle.expr_base)
 		if shape, ok := semantic.semantic_fact_sql_cursor_query_shape(ctx.fact_query, handle_entity); ok {
 			payload = lower_sql_shape_payload(ctx, shape, nil, Sql_Result_Kind.None)
@@ -2350,7 +3246,7 @@ lower_sql_cursor_stmt :: proc(
 }
 
 lower_fetch_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Fetch_Stmt, source: Source_Loc) {
-	lower_sql_cursor_stmt(ctx, .Sql_Fetch, stmt.handle, nil, source)
+	lower_sql_cursor_stmt(ctx, .SQL_Fetch, stmt.handle, nil, source)
 	lower_expr(ctx, stmt.package_size)
 	if stmt.result != nil {
 		result := builder_emit_unsupported(ctx.builder, "FETCH result value", lower_type_for_expr(ctx, stmt.result.target), source)
@@ -2371,7 +3267,7 @@ lower_sql_insert_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Insert_Stmt, sourc
 		builder_emit_unsupported(ctx.builder, "SQL INSERT additions", source = source)
 		return
 	}
-	lower_sql_emit_mutation(ctx, .Sql_Insert, &stmt.node, inputs[:], source)
+	lower_sql_emit_mutation(ctx, .SQL_Insert, &stmt.node, inputs[:], source)
 }
 
 lower_update_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Update_Stmt, source: Source_Loc) {
@@ -2387,7 +3283,7 @@ lower_update_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Update_Stmt, source: S
 		builder_emit_unsupported(ctx.builder, "SQL UPDATE additions", source = source)
 		return
 	}
-	lower_sql_emit_mutation(ctx, .Sql_Update, &stmt.node, inputs[:], source)
+	lower_sql_emit_mutation(ctx, .SQL_Update, &stmt.node, inputs[:], source)
 }
 
 lower_sql_modify_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Modify_Stmt, source: Source_Loc) {
@@ -2400,7 +3296,7 @@ lower_sql_modify_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Modify_Stmt, sourc
 		builder_emit_unsupported(ctx.builder, "SQL MODIFY additions", source = source)
 		return
 	}
-	lower_sql_emit_mutation(ctx, .Sql_Modify, &stmt.node, inputs[:], source)
+	lower_sql_emit_mutation(ctx, .SQL_Modify, &stmt.node, inputs[:], source)
 }
 
 lower_sql_delete_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Delete_Stmt, source: Source_Loc) {
@@ -2413,12 +3309,12 @@ lower_sql_delete_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Delete_Stmt, sourc
 		builder_emit_unsupported(ctx.builder, "SQL DELETE additions", source = source)
 		return
 	}
-	lower_sql_emit_mutation(ctx, .Sql_Delete, &stmt.node, inputs[:], source)
+	lower_sql_emit_mutation(ctx, .SQL_Delete, &stmt.node, inputs[:], source)
 }
 
 lower_sql_emit_mutation :: proc(
 	ctx: ^Lower_Context,
-	kind: Op_Kind,
+	kind: Intrinsic_Op,
 	stmt: ^ast.Stmt,
 	inputs: []Value_Id,
 	source: Source_Loc,
@@ -2432,7 +3328,7 @@ lower_sql_emit_mutation :: proc(
 		ctx.builder,
 		kind,
 		inputs,
-		lower_sql_dml_payload(ctx, fact, stmt),
+			lower_sql_dml_payload(ctx, fact),
 		source,
 	)
 	builder_emit_system_write(ctx.builder, "subrc", source = source)
@@ -2494,37 +3390,30 @@ lower_sql_query_payload :: proc(
 	ctx: ^Lower_Context,
 	query: ^ast.Select_Query_Clause,
 	fact: ^semantic.Checker_Sql_Query_Fact,
-	stmt: ^ast.Stmt,
-) -> Op_Payload {
-	assert(query != nil && fact != nil)
+) -> Intrinsic_SQL_Payload {
 	primary: ^semantic.Sql_Source_Info
 	if len(fact.sources) > 0 {
 		primary = &fact.sources[0]
 	}
 	payload := lower_sql_shape_payload(ctx, fact.shape, primary, lower_sql_result_kind(query.result))
-	payload.sql_query = query
-	payload.ast_stmt = stmt
-	payload.sql_source_count = len(fact.sources)
-	payload.sql_single = query.single
-	payload.sql_distinct = query.is_distinct
-	payload.sql_for_all_entries = fact.for_all_entries.present
+	payload.source_count = len(fact.sources)
+	payload.single = query.single
+	payload.is_distinct = query.is_distinct
+	payload.for_all_entries = fact.for_all_entries.present
 	return payload
 }
 
 lower_sql_dml_payload :: proc(
 	ctx: ^Lower_Context,
 	fact: ^semantic.Checker_Sql_Dml_Fact,
-	stmt: ^ast.Stmt,
-) -> Op_Payload {
-	assert(fact != nil)
+) -> Intrinsic_SQL_Payload {
 	source := fact.source
 	payload := lower_sql_source_payload(source)
-	payload.ast_stmt = stmt
-	payload.sql_row_type = module_type_from_semantic(ctx.module, source.row_type)
-	payload.sql_scalar_type = BUILTIN_TYPE_VOID
-	payload.sql_source_count = 1
-	payload.sql_assignment_count = fact.assignment_count
-	payload.sql_from_table = fact.from_table
+	payload.row_type = module_type_from_semantic(ctx.module, source.row_type)
+	payload.scalar_type = BUILTIN_TYPE_VOID
+	payload.source_count = 1
+	payload.assignment_count = fact.assignment_count
+	payload.from_table = fact.from_table
 	return payload
 }
 
@@ -2533,29 +3422,27 @@ lower_sql_shape_payload :: proc(
 	shape: semantic.Sql_Query_Shape,
 	source: ^semantic.Sql_Source_Info,
 	result_kind: Sql_Result_Kind,
-) -> Op_Payload {
-	payload := Op_Payload {
-		sql_result_kind = result_kind,
-		sql_row_type = module_type_from_semantic(ctx.module, shape.row_type),
-		sql_scalar_type = module_type_from_semantic(ctx.module, shape.scalar_type),
-		sql_projection_count = len(shape.fields),
+) -> Intrinsic_SQL_Payload {
+	payload := Intrinsic_SQL_Payload {
+		result_kind = result_kind,
+		row_type = module_type_from_semantic(ctx.module, shape.row_type),
+		scalar_type = module_type_from_semantic(ctx.module, shape.scalar_type),
+		projection_count = len(shape.fields),
 	}
 	if source != nil {
 		source_payload := lower_sql_source_payload(source^)
-		payload.sql_source_kind = source_payload.sql_source_kind
-		payload.sql_source_name = source_payload.sql_source_name
-		payload.sql_source_alias = source_payload.sql_source_alias
-		payload.sql_source_entity = source_payload.sql_source_entity
+		payload.source_kind = source_payload.source_kind
+		payload.source_name = source_payload.source_name
+		payload.source_alias = source_payload.source_alias
 	}
 	return payload
 }
 
-lower_sql_source_payload :: proc "contextless" (source: semantic.Sql_Source_Info) -> Op_Payload {
-	return Op_Payload {
-		sql_source_kind = lower_sql_source_kind(source),
-		sql_source_name = source.name,
-		sql_source_alias = source.alias,
-		sql_source_entity = source.entity,
+lower_sql_source_payload :: proc "contextless" (source: semantic.Sql_Source_Info) -> Intrinsic_SQL_Payload {
+	return Intrinsic_SQL_Payload {
+		source_kind = lower_sql_source_kind(source),
+		source_name = source.name,
+		source_alias = source.alias,
 	}
 }
 
@@ -2613,26 +3500,24 @@ lower_call_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Call_Stmt) {
 	if target_entity == nil {
 		builder_emit_unsupported(ctx.builder, lower_call_stmt_unsupported_message(stmt), source = source)
 	} else if target_entity.kind == .Method {
-		op_id = builder_emit_method_call(
-			ctx.builder,
+		op_id = lower_emit_method_may_throw(
+			ctx,
 			target_entity,
 			callee_name,
-			inputs[:],
-			result_types[:],
-			source = source,
-			ast_stmt = &stmt.node,
-		)
+				inputs[:],
+				result_types[:],
+				source = source,
+			)
 	} else {
-		op_id = builder_emit_routine_call(
-			ctx.builder,
+		op_id = lower_emit_routine_may_throw(
+			ctx,
 			target_entity,
 			callee_name,
-			inputs[:],
-			result_types[:],
-			source = source,
-			ast_stmt = &stmt.node,
-			call_kind = lower_call_kind_for_stmt(stmt, target_entity),
-		)
+				inputs[:],
+				result_types[:],
+				source = source,
+				call_kind = lower_call_kind_for_stmt(stmt, target_entity),
+			)
 	}
 	lower_store_call_outputs(ctx, op_id, outputs[:])
 	if stmt.kind == .Function {
@@ -2641,7 +3526,6 @@ lower_call_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Call_Stmt) {
 }
 
 lower_direct_call_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Call_Stmt, source: Source_Loc) {
-	assert(stmt != nil)
 	if stmt.call == nil {
 		builder_emit_unsupported(ctx.builder, "unresolved call target", source = source)
 		return
@@ -2668,7 +3552,6 @@ lower_direct_call_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Call_Stmt, source
 	if target_entity != nil && target_entity.kind == .Builtin {
 		builder_emit_builtin_call(
 			ctx.builder,
-			target_entity,
 			callee_name,
 			lower_type_for_expr(ctx, stmt.call),
 			inputs[:],
@@ -2681,26 +3564,24 @@ lower_direct_call_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Call_Stmt, source
 		return
 	}
 	if target_entity.kind == .Method {
-		op_id := builder_emit_method_call(
-			ctx.builder,
+		op_id := lower_emit_method_may_throw(
+			ctx,
 			target_entity,
 			callee_name,
-			inputs[:],
-			result_types[:],
-			source = source,
-			ast_stmt = &stmt.node,
-		)
+				inputs[:],
+				result_types[:],
+				source = source,
+			)
 		lower_store_call_outputs(ctx, op_id, outputs[:])
 		return
 	}
-	op_id := builder_emit_routine_call(
-		ctx.builder,
+	op_id := lower_emit_routine_may_throw(
+		ctx,
 		target_entity,
 		callee_name,
 		inputs[:],
 		result_types[:],
 		source = source,
-		ast_stmt = &stmt.node,
 	)
 	lower_store_call_outputs(ctx, op_id, outputs[:])
 }
@@ -2720,14 +3601,13 @@ lower_perform_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Perform_Stmt, source:
 		builder_emit_unsupported(ctx.builder, "unresolved PERFORM target", source = source)
 		return
 	}
-	op_id := builder_emit_routine_call(
-		ctx.builder,
+	op_id := lower_emit_routine_may_throw(
+		ctx,
 		target_entity,
 		callee_name,
 		inputs[:],
 		result_types[:],
 		source = source,
-		ast_stmt = &stmt.node,
 		call_kind = .Form,
 	)
 	lower_store_call_outputs(ctx, op_id, stmt.changing[:])
@@ -2737,30 +3617,30 @@ lower_message_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Message_Stmt, source:
 	inputs := make([dynamic]Value_Id, 0, 4 + len(stmt.with_args), context.temp_allocator)
 	defer delete(inputs)
 
-	payload := Op_Payload{ast_stmt = &stmt.node}
+	payload := Intrinsic_Message_Payload{}
 	lower_message_head(ctx, stmt.head, &payload, &inputs)
 	for arg in stmt.with_args {
 		if lower_message_append_operand(ctx, arg, &inputs) {
-			payload.message_arg_count += 1
+			payload.arg_count += 1
 		}
 	}
 	if stmt.into != nil {
-		payload.message_has_into = true
+		payload.has_into = true
 	}
 	if stmt.display_like != nil {
-		payload.message_has_display_like = true
+		payload.has_display_like = true
 		if text, static := lower_message_static_expr_text(ctx, stmt.display_like); static {
-			payload.message_display_like = text
+			payload.display_like = text
 		} else if lower_message_append_operand(ctx, stmt.display_like, &inputs) {
-			payload.message_display_like_operand = true
+			payload.display_like_operand = true
 		}
 	}
 	if stmt.raising != nil {
-		payload.message_has_raising = true
+		payload.has_raising = true
 		if text, static := lower_message_static_expr_text(ctx, stmt.raising); static {
-			payload.message_raising = text
+			payload.raising = text
 		} else if lower_message_append_operand(ctx, stmt.raising, &inputs) {
-			payload.message_raising_operand = true
+			payload.raising_operand = true
 		}
 	}
 
@@ -2777,39 +3657,44 @@ lower_message_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Message_Stmt, source:
 lower_message_head :: proc(
 	ctx: ^Lower_Context,
 	head: ^ast.Message_Head_Clause,
-	payload: ^Op_Payload,
+	payload: ^Intrinsic_Message_Payload,
 	inputs: ^[dynamic]Value_Id,
 ) {
 	if head == nil {
 		return
 	}
 	if head.id != nil {
-		payload.message_form = .Explicit
-		lower_message_head_part(ctx, head.id, &payload.message_id, payload, inputs)
-		lower_message_head_part(ctx, head.msg_type, &payload.message_type, payload, inputs)
-		lower_message_head_part(ctx, head.number, &payload.message_number, payload, inputs)
+		payload.form = .Explicit
+		lower_message_head_part(ctx, head.id, &payload.id, payload, inputs)
+		lower_message_head_part(ctx, head.msg_type, &payload.msg_type, payload, inputs)
+		lower_message_head_part(ctx, head.number, &payload.number, payload, inputs)
 		return
 	}
 
-	payload.message_form = .Compact if head.has_compact_class else .Default
+	payload.form = .Compact if head.has_compact_class else .Default
 	if head.has_compact_class {
-		payload.message_id = head.compact_class_name.text
+		payload.id = head.compact_class_name.text
 	}
 	if head.code != nil {
 		if text, static := lower_message_static_expr_text(ctx, head.code); static {
-			lower_message_apply_code(payload, text)
+			if lower_message_text_is_static_code(text) && !lower_message_expr_is_quoted_literal(head.code) {
+				lower_message_apply_code(payload, text)
+			} else {
+				lower_message_append_static_arg(ctx, head.code, text, inputs)
+				payload.arg_count += 1
+			}
 		} else if lower_message_append_operand(ctx, head.code, inputs) {
-			payload.message_head_operands += 1
+			payload.arg_count += 1
 		}
 	}
-	lower_message_head_part(ctx, head.msg_type, &payload.message_type, payload, inputs)
+	lower_message_head_part(ctx, head.msg_type, &payload.msg_type, payload, inputs)
 }
 
 lower_message_head_part :: proc(
 	ctx: ^Lower_Context,
 	expr: ^ast.Expr,
 	target: ^string,
-	payload: ^Op_Payload,
+	payload: ^Intrinsic_Message_Payload,
 	inputs: ^[dynamic]Value_Id,
 ) {
 	if expr == nil {
@@ -2820,7 +3705,7 @@ lower_message_head_part :: proc(
 		return
 	}
 	if lower_message_append_operand(ctx, expr, inputs) {
-		payload.message_head_operands += 1
+		payload.head_operands += 1
 	}
 }
 
@@ -2843,21 +3728,62 @@ lower_message_static_expr_text :: proc(ctx: ^Lower_Context, expr: ^ast.Expr) -> 
 	}
 	#partial switch n in expr.derived_expr {
 	case ^ast.Literal_Expr:
-		return n.value, n.value != ""
+		return lower_static_literal_text(n.value), n.value != ""
 	case ^ast.Ident_Expr:
 		return n.name, n.name != ""
 	case ^ast.Type_Ref_Expr:
 		if n.base_name.text != "" {
-			return n.base_name.text, true
+			return lower_static_literal_text(n.base_name.text), true
 		}
 		if n.name.text != "" {
-			return n.name.text, true
+			return lower_static_literal_text(n.name.text), true
 		}
-		return n.source.text, n.source.text != ""
+		return lower_static_literal_text(n.source.text), n.source.text != ""
 	case ^ast.Paren_Expr:
 		return lower_message_static_expr_text(ctx, n.expr)
 	}
 	return "", false
+}
+
+lower_message_append_static_arg :: proc(
+	ctx: ^Lower_Context,
+	expr: ^ast.Expr,
+	text: string,
+	inputs: ^[dynamic]Value_Id,
+) {
+	source := source_loc_from_node(ctx.file, &expr.expr_base)
+	value := builder_emit_const(ctx.builder, text, BUILTIN_TYPE_STRING, source)
+	append(inputs, value)
+}
+
+lower_static_literal_text :: proc "contextless" (text: string) -> string {
+	if len(text) >= 2 &&
+	   ((text[0] == '\'' && text[len(text) - 1] == '\'') ||
+	    (text[0] == '`' && text[len(text) - 1] == '`')) {
+		return text[1:len(text) - 1]
+	}
+	return text
+}
+
+lower_message_expr_is_quoted_literal :: proc "contextless" (expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Literal_Expr:
+		return lower_message_text_is_quoted_literal(n.value)
+	case ^ast.Type_Ref_Expr:
+		return lower_message_text_is_quoted_literal(n.source.text)
+	case ^ast.Paren_Expr:
+		return lower_message_expr_is_quoted_literal(n.expr)
+	}
+	return false
+}
+
+lower_message_text_is_quoted_literal :: proc "contextless" (text: string) -> bool {
+	return len(text) >= 2 &&
+	       ((text[0] == '\'' && text[len(text) - 1] == '\'') ||
+	        (text[0] == '`' && text[len(text) - 1] == '`'))
 }
 
 lower_message_expr_is_semantic_value :: proc(ctx: ^Lower_Context, expr: ^ast.Expr) -> bool {
@@ -2874,16 +3800,24 @@ lower_message_expr_is_semantic_value :: proc(ctx: ^Lower_Context, expr: ^ast.Exp
 	return false
 }
 
-lower_message_apply_code :: proc "contextless" (payload: ^Op_Payload, text: string) {
+lower_message_text_is_static_code :: proc "contextless" (text: string) -> bool {
+	message_type, message_number := lower_message_code_parts(text)
+	return message_type != "" && message_number != ""
+}
+
+lower_message_apply_code :: proc "contextless" (payload: ^Intrinsic_Message_Payload, text: string) {
 	if text == "" {
 		return
 	}
 	message_type, message_number := lower_message_code_parts(text)
+	if message_type == "" {
+		return
+	}
 	if message_type != "" {
-		payload.message_type = message_type
+		payload.msg_type = message_type
 	}
 	if message_number != "" {
-		payload.message_number = message_number
+		payload.number = message_number
 	}
 }
 
@@ -2929,7 +3863,6 @@ lower_call_expr :: proc(ctx: ^Lower_Context, expr: ^ast.Call_Expr, source: Sourc
 	if callee_entity != nil && callee_entity.kind == .Builtin {
 		return builder_emit_builtin_call(
 			ctx.builder,
-			callee_entity,
 			callee_name,
 			result_types[0],
 			inputs[:],
@@ -2941,8 +3874,8 @@ lower_call_expr :: proc(ctx: ^Lower_Context, expr: ^ast.Call_Expr, source: Sourc
 	}
 	op_id: Op_Id
 	if callee_entity.kind == .Method {
-		op_id = builder_emit_method_call(
-			ctx.builder,
+		op_id = lower_emit_method_may_throw(
+			ctx,
 			callee_entity,
 			callee_name,
 			inputs[:],
@@ -2950,8 +3883,8 @@ lower_call_expr :: proc(ctx: ^Lower_Context, expr: ^ast.Call_Expr, source: Sourc
 			source,
 		)
 	} else {
-		op_id = builder_emit_routine_call(
-			ctx.builder,
+		op_id = lower_emit_routine_may_throw(
+			ctx,
 			callee_entity,
 			callee_name,
 			inputs[:],
@@ -3225,7 +4158,7 @@ lower_call_receiver_raw_prefix :: proc(
 		entity := lower_field_entity_at_range(ctx, segment.name.range)
 		append(
 			&projection_segments,
-			lower_field_projection_segment(ctx, segment.name.text, segment_source, entity, segment.selector),
+				lower_field_projection_segment(segment.name.text, segment_source, entity, segment.selector),
 		)
 		value = lower_emit_field_load(
 			ctx,
@@ -3370,13 +4303,12 @@ lower_call_arg_inputs :: proc(ctx: ^Lower_Context, expr: ^ast.Expr, inputs: ^[dy
 
 lower_arithmetic_stmt :: proc(
 	ctx: ^Lower_Context,
-	kind: Op_Kind,
+	kind: Intrinsic_Op,
 	source_expr: ^ast.Expr,
 	target_expr: ^ast.Expr,
 	result_expr: ^ast.Expr,
 	source: Source_Loc,
 ) {
-	assert(source_expr != nil && target_expr != nil)
 	left := lower_expr(ctx, target_expr)
 	right := lower_expr(ctx, source_expr)
 	assert(left != INVALID_VALUE_ID && right != INVALID_VALUE_ID)
@@ -3384,7 +4316,7 @@ lower_arithmetic_stmt :: proc(
 	result_type := lower_type_for_expr(ctx, target)
 	operands := [?]Value_Id{left, right}
 	result_types := [?]Type_Id{result_type}
-	op_id := builder_emit_op(ctx.builder, kind, operands[:], result_types[:], source = source)
+	op_id := builder_emit_intrinsic(ctx.builder, kind, operands[:], result_types[:], source = source)
 	lower_store_expr(ctx, target, op_ptr(builder_function(ctx.builder), op_id).results[0])
 }
 
@@ -3419,7 +4351,6 @@ lower_loop_header_deferred_semantics :: proc(
 }
 
 lower_select_query_inputs :: proc(ctx: ^Lower_Context, query: ^ast.Select_Query_Clause) {
-	assert(query != nil)
 	for projection in query.projections {
 		lower_expr(ctx, projection)
 	}
@@ -3492,14 +4423,12 @@ lower_store_instance_attribute :: proc(
 	assert(receiver != INVALID_VALUE_ID)
 	field_name := lower_instance_attribute_name(entity, name)
 	projection := lower_add_field_projection(ctx, field_name, source, entity, .Arrow)
-	inputs := [?]Value_Id{receiver, lower_move_value_to_target(ctx, target, value, source)}
-	builder_emit_effect_op(
+	builder_emit_field_store(
 		ctx.builder,
-		.Core_Field_Store,
-		inputs[:],
-		flags = {.Reads_World, .Writes_World},
-		payload = Op_Payload{field_name = field_name, projection = projection, has_projection = true},
-		source = source,
+		receiver,
+		lower_move_value_to_target(ctx, target, value, source),
+		projection,
+		source,
 	)
 }
 
@@ -3520,7 +4449,6 @@ lower_load_current_instance :: proc(
 }
 
 lower_current_instance_entity :: proc(ctx: ^Lower_Context) -> ^semantic.Entity {
-	assert(ctx != nil && ctx.builder != nil)
 	function := builder_function(ctx.builder)
 	routine := function.entity
 	if routine == nil || routine.kind != .Method {
@@ -3536,7 +4464,6 @@ lower_current_instance_entity :: proc(ctx: ^Lower_Context) -> ^semantic.Entity {
 }
 
 lower_seed_callable_frame :: proc(ctx: ^Lower_Context, source: Source_Loc) {
-	assert(ctx != nil && ctx.builder != nil)
 	if entity := lower_current_instance_entity(ctx); entity != nil {
 		typ := module_type_from_semantic(ctx.module, entity.type)
 		lower_ensure_slot(ctx, entity, entity.name, typ, .Instance, source)
@@ -3625,7 +4552,6 @@ lower_expr_info_for_node :: proc(
 	semantic.Checker_Expr_Info,
 	bool,
 ) {
-	assert(ctx != nil && node != nil)
 	if info, ok := semantic.semantic_fact_operand_info_for_node(ctx.fact_query, node); ok {
 		return info, true
 	}
@@ -3698,24 +4624,84 @@ lower_read_table_result_type :: proc(ctx: ^Lower_Context, entry: ast.Read_Table_
 	return row_type
 }
 
-lower_table_expr_selector_inputs :: proc(ctx: ^Lower_Context, selectors: []^ast.Expr, inputs: ^[dynamic]Value_Id) {
-	for selector in selectors {
+lower_table_expr_selector_inputs :: proc(
+	ctx: ^Lower_Context,
+	expr: ^ast.Table_Expr,
+	inputs: ^[dynamic]Value_Id,
+	components: ^[dynamic]Intrinsic_Table_Component,
+) -> bool {
+	if expr == nil || len(expr.selectors) == 0 {
+		return true
+	}
+	access := lower_table_expr_access(expr)
+	for selector in expr.selectors {
 		if selector == nil {
 			continue
 		}
-		#partial switch n in selector.derived_expr {
-		case ^ast.Binary_Expr:
-			value := lower_expr(ctx, n.right)
-			if value != INVALID_VALUE_ID {
-				append(inputs, value)
-			}
-		case:
+		if access == .Index {
 			value := lower_expr(ctx, selector)
 			if value != INVALID_VALUE_ID {
 				append(inputs, value)
 			}
+			continue
 		}
+		binary, ok := selector.derived_expr.(^ast.Binary_Expr)
+		if !ok || binary.op != .Equal {
+			return false
+		}
+		path, path_ok := lower_table_path_from_expr(binary.left, context.temp_allocator)
+		if !path_ok {
+			return false
+		}
+		value_index := len(inputs)
+		value := lower_expr(ctx, binary.right)
+		if value == INVALID_VALUE_ID {
+			delete(path)
+			return false
+		}
+		append(inputs, value)
+		append(components, Intrinsic_Table_Component{path = path, value_index = value_index})
 	}
+	return true
+}
+
+lower_table_condition_inputs :: proc(
+	ctx: ^Lower_Context,
+	condition: ^ast.Expr,
+	inputs: ^[dynamic]Value_Id,
+	components: ^[dynamic]Intrinsic_Table_Component,
+	request_value_offset: int,
+) -> (int, bool) {
+	if condition == nil {
+		return 0, true
+	}
+	#partial switch n in condition.derived_expr {
+	case ^ast.Paren_Expr:
+		return lower_table_condition_inputs(ctx, n.expr, inputs, components, request_value_offset)
+	case ^ast.Binary_Expr:
+		if n.op == .And {
+			left_count, left_ok := lower_table_condition_inputs(ctx, n.left, inputs, components, request_value_offset)
+			right_count, right_ok := lower_table_condition_inputs(ctx, n.right, inputs, components, request_value_offset)
+			return left_count + right_count, left_ok && right_ok
+		}
+		if n.op != .Equal {
+			return 0, false
+		}
+		path, path_ok := lower_table_path_from_expr(n.left, context.temp_allocator)
+		if !path_ok {
+			return 0, false
+		}
+		value_index := request_value_offset + len(inputs)
+		value := lower_expr(ctx, n.right)
+		if value == INVALID_VALUE_ID {
+			delete(path)
+			return 0, false
+		}
+		append(inputs, value)
+		append(components, Intrinsic_Table_Component{path = path, value_index = value_index})
+		return 1, true
+	}
+	return 0, false
 }
 
 lower_table_expr_access :: proc "contextless" (expr: ^ast.Table_Expr) -> Table_Access_Kind {
@@ -3734,8 +4720,15 @@ lower_read_table_key_inputs :: proc(
 	ctx: ^Lower_Context,
 	entry: ast.Read_Table_Entry_Clause,
 	inputs: ^[dynamic]Value_Id,
+	components: ^[dynamic]Intrinsic_Table_Component,
+) -> (
+	bool,
+	bool,
 ) {
+	dynamic_key := false
+	dynamic_component := false
 	if entry.using_key.dynamic_name != nil {
+		dynamic_key = true
 		value := lower_expr(ctx, entry.using_key.dynamic_name)
 		if value != INVALID_VALUE_ID {
 			append(inputs, value)
@@ -3743,30 +4736,49 @@ lower_read_table_key_inputs :: proc(
 	}
 	for key in entry.key_values {
 		if key.dynamic_name != nil {
+			dynamic_component = true
 			value := lower_expr(ctx, key.dynamic_name)
 			if value != INVALID_VALUE_ID {
 				append(inputs, value)
 			}
 		}
+		if key.is_dynamic {
+			dynamic_component = true
+		}
+		path, path_ok := lower_table_path_from_read_key(key, context.temp_allocator)
+		if !path_ok {
+			dynamic_component = true
+		}
+		value_index := len(inputs)
 		value := lower_expr(ctx, key.value)
 		if value != INVALID_VALUE_ID {
 			append(inputs, value)
 		}
+		if path_ok && !key.is_dynamic && key.dynamic_name == nil && value != INVALID_VALUE_ID {
+			append(components, Intrinsic_Table_Component{path = path, value_index = value_index})
+		} else if path_ok {
+			delete(path)
+		}
 	}
+	return dynamic_key, dynamic_component
 }
 
 lower_read_table_payload :: proc "contextless" (
 	entry: ast.Read_Table_Entry_Clause,
-	ast_stmt: ^ast.Stmt,
-) -> Op_Payload {
-	return Op_Payload {
-		table_access = lower_read_table_access(entry),
-		table_key_kind = lower_read_table_key_kind(entry),
-		table_result_kind = lower_read_table_result_kind(entry),
-		table_key_name = lower_read_table_key_name(entry),
-		table_component_count = len(entry.key_values) + len(entry.transporting_fields) + len(entry.comparing),
-		table_binary_search = entry.binary_search,
-		ast_stmt = ast_stmt,
+	components: [dynamic]Intrinsic_Table_Component,
+	dynamic_key: bool,
+	dynamic_component: bool,
+) -> Intrinsic_Table_Payload {
+	return Intrinsic_Table_Payload {
+		access = lower_read_table_access(entry),
+		key_kind = lower_read_table_key_kind(entry),
+		result_kind = lower_read_table_result_kind(entry),
+		key_name = lower_read_table_key_name(entry),
+		component_count = len(entry.key_values) + len(entry.transporting_fields) + len(entry.comparing),
+		components = components,
+		binary_search = entry.binary_search,
+		dynamic_key = dynamic_key,
+		dynamic_component = dynamic_component,
 	}
 }
 
@@ -3810,6 +4822,142 @@ lower_read_table_key_name :: proc "contextless" (entry: ast.Read_Table_Entry_Cla
 		return entry.using_key.name.text
 	}
 	return entry.key_name.text
+}
+
+lower_sort_components :: proc(stmt: ^ast.Sort_Stmt, components: ^[dynamic]Intrinsic_Table_Sort_Component) -> bool {
+	if stmt == nil {
+		return true
+	}
+	for field in stmt.fields {
+		path, path_ok := lower_table_path_from_sort_field(field, context.temp_allocator)
+		if !path_ok {
+			return false
+		}
+		append(
+			components,
+			Intrinsic_Table_Sort_Component {
+				path = path,
+				descending = field.descending || (stmt.descending && !field.ascending),
+			},
+		)
+	}
+	return true
+}
+
+lower_table_path_from_read_key :: proc(
+	key: ast.Read_Table_Key_Value_Clause,
+	allocator: mem.Allocator,
+) -> ([dynamic]string, bool) {
+	out := make([dynamic]string, 0, 1 + len(key.path), allocator)
+	if len(key.path) > 0 {
+		for segment in key.path {
+			if segment.name.text == "" || segment.selector != .Dash {
+				delete(out)
+				return nil, false
+			}
+			append(&out, segment.name.text)
+		}
+		return out, true
+	}
+	if key.table_line {
+		append(&out, "table_line")
+	} else if key.name.text != "" {
+		append(&out, key.name.text)
+	} else {
+		delete(out)
+		return nil, false
+	}
+	return out, true
+}
+
+lower_table_path_from_sort_field :: proc(
+	field: ast.Sort_Field_Clause,
+	allocator: mem.Allocator,
+) -> ([dynamic]string, bool) {
+	if field.expr != nil {
+		return lower_table_path_from_expr(field.expr, allocator)
+	}
+	if field.name.text != "" {
+		out := make([dynamic]string, 0, 1, allocator)
+		append(&out, field.name.text)
+		return out, true
+	}
+	return nil, false
+}
+
+lower_table_path_from_expr :: proc(
+	expr: ^ast.Expr,
+	allocator: mem.Allocator,
+) -> ([dynamic]string, bool) {
+	out := make([dynamic]string, 0, 4, allocator)
+	if !lower_table_path_append_expr(&out, expr) {
+		delete(out)
+		return nil, false
+	}
+	return out, true
+}
+
+lower_table_path_append_expr :: proc(out: ^[dynamic]string, expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		if n.name == "" {
+			return false
+		}
+		append(out, n.name)
+		return true
+	case ^ast.Selector_Expr:
+		if n.op != .Dash || !lower_table_path_append_expr(out, n.base) {
+			return false
+		}
+		name := lower_table_expr_name(n.field)
+		if name == "" {
+			return false
+		}
+		append(out, name)
+		return true
+	case ^ast.Paren_Expr:
+		return lower_table_path_append_expr(out, n.expr)
+	}
+	return false
+}
+
+lower_table_expr_name :: proc "contextless" (expr: ^ast.Expr) -> string {
+	if expr == nil {
+		return ""
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return n.name
+	case ^ast.Type_Ref_Expr:
+		if n.name.text != "" {
+			return n.name.text
+		}
+		return n.base_name.text
+	}
+	return ""
+}
+
+lower_table_components_destroy_scratch :: proc(components: ^[dynamic]Intrinsic_Table_Component) {
+	if components == nil {
+		return
+	}
+	for &component in components^ {
+		delete(component.path)
+	}
+	delete(components^)
+}
+
+lower_table_sort_components_destroy_scratch :: proc(components: ^[dynamic]Intrinsic_Table_Sort_Component) {
+	if components == nil {
+		return
+	}
+	for &component in components^ {
+		delete(component.path)
+	}
+	delete(components^)
 }
 
 lower_read_table_result_kind :: proc "contextless" (entry: ast.Read_Table_Entry_Clause) -> Table_Result_Kind {
@@ -3953,7 +5101,6 @@ lower_semantic_table_row_type :: proc "contextless" (typ: ^semantic.Type, depth 
 }
 
 lower_entity_for_node :: proc(ctx: ^Lower_Context, node: ^ast.Node) -> ^semantic.Entity {
-	assert(node != nil)
 	if use := semantic.semantic_ref_use_for_node(ctx.ref_query, node); use != nil {
 		return use.entity
 	}
@@ -3974,41 +5121,45 @@ lower_entity_at_range :: proc(
 	return semantic.semantic_decl_entity_with_kind_and_decl_range(query, kind, range)
 }
 
-lower_binary_op_kind :: proc "contextless" (op: ast.Binary_Op) -> Op_Kind {
+lower_binary_op_kind :: proc "contextless" (op: ast.Binary_Op) -> Intrinsic_Op {
 	#partial switch op {
 	case .Add:
-		return .Abap_Add
+		return .ABAP_Add
 	case .Subtract:
-		return .Abap_Subtract
+		return .ABAP_Subtract
 	case .Multiply:
-		return .Abap_Multiply
-	case .Divide, .Integer_Divide, .Modulo:
-		return .Abap_Divide
+		return .ABAP_Multiply
+	case .Divide:
+		return .ABAP_Divide
+	case .Integer_Divide:
+		return .ABAP_Integer_Divide
+	case .Modulo:
+		return .ABAP_Modulo
 	case .Equal, .Is, .Between, .In:
-		return .Abap_Equal
+		return .ABAP_Equal
 	case .Not_Equal, .Not_In:
-		return .Abap_Not_Equal
+		return .ABAP_Not_Equal
 	case .Less:
-		return .Abap_Less
+		return .ABAP_Less
 	case .Less_Equal:
-		return .Abap_Less_Equal
+		return .ABAP_Less_Equal
 	case .Greater:
-		return .Abap_Greater
+		return .ABAP_Greater
 	case .Greater_Equal:
-		return .Abap_Greater_Equal
+		return .ABAP_Greater_Equal
 	case .And:
-		return .Abap_And
+		return .ABAP_And
 	case .Or:
-		return .Abap_Or
+		return .ABAP_Or
 	case .Concatenate:
-		return .Abap_String_Concat
+		return .ABAP_String_Concat
 	}
-	return .Core_Unsupported
+	return .Unsupported
 }
 
 lower_current_block_open :: proc(ctx: ^Lower_Context) -> bool {
 	block := block_ptr(builder_function(ctx.builder), ctx.builder.block)
-	return block.term.kind == .Invalid
+	return block.terminator == INVALID_INSTRUCTION_ID
 }
 
 lower_push_control_target :: proc(ctx: ^Lower_Context, target: Lower_Control_Target) {
@@ -4026,6 +5177,23 @@ lower_current_control_target :: proc(ctx: ^Lower_Context) -> (^Lower_Control_Tar
 		return nil, false
 	}
 	return &ctx.control_targets[len(ctx.control_targets) - 1], true
+}
+
+lower_push_exception_target :: proc(ctx: ^Lower_Context, target: Lower_Exception_Target) {
+	assert(target.dispatch_block != INVALID_BLOCK_ID)
+	append(&ctx.exception_targets, target)
+}
+
+lower_pop_exception_target :: proc(ctx: ^Lower_Context) {
+	assert(len(ctx.exception_targets) > 0)
+	pop(&ctx.exception_targets)
+}
+
+lower_current_exception_target :: proc(ctx: ^Lower_Context) -> (^Lower_Exception_Target, bool) {
+	if len(ctx.exception_targets) == 0 {
+		return nil, false
+	}
+	return &ctx.exception_targets[len(ctx.exception_targets) - 1], true
 }
 
 lower_branch_to_control_continue :: proc(ctx: ^Lower_Context, source: Source_Loc) {
@@ -4246,7 +5414,6 @@ lower_method_entity :: proc(
 	ref_query: semantic.Semantic_Ref_Query,
 	method: ^ast.Method_Decl,
 ) -> ^semantic.Entity {
-	assert(method != nil)
 	if entity := lower_entity_at_range(decl_query, method.name.range, .Method); entity != nil {
 		return entity
 	}
@@ -4291,7 +5458,6 @@ lower_method_entity_at_range :: proc(
 }
 
 lower_method_name :: proc(method: ^ast.Method_Decl, allocator: mem.Allocator = context.temp_allocator) -> string {
-	assert(method != nil)
 	if method.qualifier.text == "" {
 		return method.name.text
 	}

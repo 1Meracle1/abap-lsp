@@ -434,6 +434,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.target = clone(n.target, allocator)
 		r.places = clone(n.places, allocator)
+		r.up_to = clone(n.up_to, allocator)
 		r.delete_pattern = clone(n.delete_pattern, allocator)
 		return r
 	case ^Find_Stmt:
