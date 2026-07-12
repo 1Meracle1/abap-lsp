@@ -2,12 +2,28 @@ package abap_frontend_vm
 
 import runtime "src:vm/runtime"
 
+exec_alloca :: proc(vm: ^VM, frame: ^Frame, instruction: Prepared_Instruction) {
+	initial := runtime.initial_for_type(
+		result_reference_target_descriptor(vm.module, frame.function, instruction, 1),
+		vm.allocator,
+	)
+	defer runtime.value_destroy(&initial)
+	cell := runtime.cell_make(initial, vm.allocator)
+	address := runtime.value_alias_cell(cell, vm.allocator)
+	runtime.cell_release(cell)
+	defer runtime.value_destroy(&address)
+	set_result(vm, frame, instruction, 0, get_operand(frame, instruction, 0))
+	set_result(vm, frame, instruction, 1, address)
+	frame.ip += 1
+}
+
 exec_addr_of :: proc(vm: ^VM, frame: ^Frame, instruction: Prepared_Instruction) {
 	slot, ok := slot_debug(frame.function, instruction.payload)
 	if !ok {
 		vm_trap(vm, .Invalid_Instruction, "slot index is invalid", instruction.source)
 		return
 	}
+	assert(slot.type != nil, "runtime slots require type descriptors")
 	value := runtime.Value{}
 	value_owned := false
 	slot_index := int(instruction.payload)
@@ -16,7 +32,8 @@ exec_addr_of :: proc(vm: ^VM, frame: ^Frame, instruction: Prepared_Instruction) 
 		if slot.is_field_symbol {
 			value = runtime.context_global_read(&vm.runtime_context, slot.name)
 		} else {
-			if runtime.value_kind(runtime.context_global_read(&vm.runtime_context, slot.name)) == .Initial {
+			if runtime.value_kind(runtime.context_global_read(&vm.runtime_context, slot.name)) == .Initial &&
+			   slot.type.family != .Numeric {
 				initial := runtime.initial_for_type(slot.type, vm.allocator)
 				defer runtime.value_destroy(&initial)
 				if runtime.value_kind(initial) != .Initial {
@@ -37,7 +54,9 @@ exec_addr_of :: proc(vm: ^VM, frame: ^Frame, instruction: Prepared_Instruction) 
 		if slot.is_field_symbol {
 			value = cell.value
 		} else {
-			if runtime.value_kind(cell.value) == .Initial {
+			// Generic numeric parameters and results have no concrete initial
+			// representation. Calls populate them before use or assignment.
+			if runtime.value_kind(cell.value) == .Initial && slot.type.family != .Numeric {
 				initial := runtime.initial_for_type(slot.type, vm.allocator)
 				defer runtime.value_destroy(&initial)
 				if runtime.value_kind(initial) != .Initial {
@@ -157,6 +176,52 @@ exec_store_address :: proc(vm: ^VM, frame: ^Frame, instruction: Prepared_Instruc
 	frame.ip += 1
 }
 
+exec_struct_init :: proc(vm: ^VM, frame: ^Frame, instruction: Prepared_Instruction) {
+	typ := result_type_descriptor(frame.function, instruction, 0)
+	value := runtime.initial_for_type(typ, vm.allocator)
+	defer runtime.value_destroy(&value)
+	structure := runtime.value_structure_data(value)
+	if structure == nil || typ == nil {
+		vm_trap(vm, .Type, "struct_init result is not a structure", instruction.source)
+		return
+	}
+	for operand_index in 0 ..< int(instruction.operand_count) {
+		if operand_index >= len(typ.structure.fields) {
+			vm_trap(vm, .Invalid_Instruction, "struct_init has more operands than fields", instruction.source)
+			return
+		}
+		field := typ.structure.fields[operand_index]
+		runtime.structure_set_field(structure, field.name, get_operand(frame, instruction, operand_index))
+	}
+	set_result(vm, frame, instruction, 0, value)
+	frame.ip += 1
+}
+
+exec_extract_value :: proc(vm: ^VM, frame: ^Frame, instruction: Prepared_Instruction) {
+	field, ok := field_debug(frame.function, instruction.payload)
+	if !ok {
+		vm_trap(vm, .Invalid_Instruction, "field index is invalid", instruction.source)
+		return
+	}
+	request := runtime.Field_Request {
+		base = get_operand(frame, instruction, 0),
+		name = field.name,
+		result_type = field.result_type,
+	}
+	value, value_ok := runtime.context_field_load(
+		&vm.runtime_context,
+		request,
+		instruction_runtime_source(instruction),
+	)
+	defer runtime.value_destroy(&value)
+	if !value_ok {
+		vm_sync_runtime_trap(vm)
+		return
+	}
+	set_result(vm, frame, instruction, 0, value)
+	frame.ip += 1
+}
+
 frame_slot_cell :: #force_inline proc "contextless" (frame: ^Frame, slot_index: int) -> ^runtime.Cell_Data {
 	if slot_index < 0 || slot_index >= len(frame.slot_cells) {
 		return nil
@@ -212,6 +277,3 @@ store_global_field_symbol :: proc(
 	}
 	return true
 }
-
-
-

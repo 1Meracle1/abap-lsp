@@ -24,6 +24,17 @@ This section has priority over every other convention in this file.
   maintainability over minimizing line count.
 - Do not add error handling for impossible scenarios; use assertions if these
   conditions can be verified in debug builds.
+- Do not silently accept, skip, or substitute fallback behavior for unsupported
+  scenarios or violated internal invariants. Assert on impossible states and
+  make supported cases explicit, preferably with exhaustive switches over
+  closed enums. Add ordinary diagnostics only when the input is allowed to be
+  invalid at that subsystem boundary.
+- Keep validation ownership aligned with the compilation pipeline. Semantic
+  analysis validates the parsed AST and reports invalid source programs. IR
+  verification validates the structural integrity of the IR and catches
+  incorrect construction or API usage. Runtime code may rely on verified IR
+  and should assert when those invariants are violated instead of treating the
+  state as a valid runtime value.
 
 ## Project Structure & Module Organization
 

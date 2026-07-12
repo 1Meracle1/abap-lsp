@@ -890,6 +890,7 @@ builder_verifier_rejects_object_reference_deref_by_descriptor :: proc(t: ^testin
 	verify := verify_module(&module, context.allocator)
 	defer verify_result_destroy(&verify)
 	testing.expect(t, !verify.ok)
+	testing.expect(t, verify_has_diagnostic_message(verify, .Invalid_Type, "constant type cannot be materialized from a literal"))
 	testing.expect(t, verify_has_diagnostic_message(verify, .Bad_Op_Signature, "deref operand must be a data reference"))
 }
 

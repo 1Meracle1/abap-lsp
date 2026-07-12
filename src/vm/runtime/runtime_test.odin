@@ -36,6 +36,37 @@ test_reference_descriptor :: proc(
 }
 
 @(test)
+initial_values_cover_supported_runtime_families :: proc(t: ^testing.T) {
+	cases := [?]struct {
+		family: ir.Runtime_Type_Family,
+		kind:   Value_Kind,
+	}{
+		{.Predicate, .Predicate},
+		{.Integer, .Integer},
+		{.Decimal, .Decimal},
+		{.Float, .Float},
+		{.Text, .String},
+		{.Date, .String},
+		{.Time, .String},
+		{.Structure, .Structure},
+		{.Table, .Table},
+	}
+	for test_case in cases {
+		typ := test_type_descriptor("test", test_case.family)
+		value := initial_for_type(&typ, context.allocator)
+		testing.expect_value(t, value_kind(value), test_case.kind)
+		value_destroy(&value)
+	}
+}
+
+@(test)
+reference_initial_value_is_intentionally_initial :: proc(t: ^testing.T) {
+	typ := test_reference_descriptor("ref:test", .Data)
+	value := initial_for_type(&typ, context.allocator)
+	testing.expect_value(t, value_kind(value), Value_Kind.Initial)
+}
+
+@(test)
 context_keeps_values_and_captures_output :: proc(t: ^testing.T) {
 	ctx := context_make({}, context.allocator)
 	defer context_destroy(&ctx)
@@ -120,7 +151,25 @@ context_exception_helpers_match_catch_and_report_unhandled :: proc(t: ^testing.T
 }
 
 @(test)
-literal_conversion_treats_abap_character_types_as_text :: proc(t: ^testing.T) {
+literal_conversion_covers_supported_runtime_families :: proc(t: ^testing.T) {
+	integer_type := test_type_descriptor("i", .Integer)
+	integer := value_from_literal("42", &integer_type, context.allocator)
+	testing.expect_value(t, value_kind(integer), Value_Kind.Integer)
+	testing.expect_value(t, value_int(integer), i64(42))
+
+	decimal_type := test_type_descriptor("p", .Decimal)
+	decimal := value_from_literal("12.50", &decimal_type, context.allocator)
+	testing.expect_value(t, value_kind(decimal), Value_Kind.Decimal)
+
+	float_type := test_type_descriptor("f", .Float)
+	float := value_from_literal("1.5", &float_type, context.allocator)
+	testing.expect_value(t, value_kind(float), Value_Kind.Float)
+
+	predicate_type := test_type_descriptor("predicate", .Predicate)
+	predicate := value_from_literal("1", &predicate_type, context.allocator)
+	testing.expect_value(t, value_kind(predicate), Value_Kind.Predicate)
+	testing.expect_value(t, value_int(predicate), i64(1))
+
 	char_type := test_type_descriptor("c", .Text, .Fixed)
 	bare := value_from_literal("'I'", &char_type, context.allocator)
 	defer value_destroy(&bare)
@@ -132,6 +181,36 @@ literal_conversion_treats_abap_character_types_as_text :: proc(t: ^testing.T) {
 	defer value_destroy(&sized)
 	testing.expect_value(t, value_kind(sized), Value_Kind.String)
 	testing.expect_value(t, value_text(sized), "hello")
+
+	date_type := test_type_descriptor("d", .Date, .Date)
+	date := value_from_literal("'20260712'", &date_type, context.allocator)
+	defer value_destroy(&date)
+	testing.expect_value(t, value_text(date), "20260712")
+
+	time_type := test_type_descriptor("t", .Time, .Time)
+	time := value_from_literal("'121530'", &time_type, context.allocator)
+	defer value_destroy(&time)
+	testing.expect_value(t, value_text(time), "121530")
+}
+
+@(test)
+casts_reject_values_outside_target_runtime_family :: proc(t: ^testing.T) {
+	numeric_type := test_type_descriptor("numeric", .Numeric)
+	numeric, numeric_ok := value_cast(value_integer_make(7), &numeric_type, context.allocator)
+	testing.expect(t, numeric_ok)
+	testing.expect_value(t, value_int(numeric), i64(7))
+	text := value_string("seven", context.allocator)
+	defer value_destroy(&text)
+	_, text_numeric_ok := value_cast(text, &numeric_type, context.allocator)
+	testing.expect(t, !text_numeric_ok)
+
+	structure_type := test_type_descriptor("structure", .Structure)
+	_, scalar_structure_ok := value_cast(value_integer_make(7), &structure_type, context.allocator)
+	testing.expect(t, !scalar_structure_ok)
+
+	table_type := test_type_descriptor("table", .Table)
+	_, scalar_table_ok := value_cast(value_integer_make(7), &table_type, context.allocator)
+	testing.expect(t, !scalar_table_ok)
 }
 
 @(test)

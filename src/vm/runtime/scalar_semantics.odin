@@ -17,7 +17,7 @@ abap_numeric_arithmetic :: proc(
 		context_trap(ctx, .Type, "numeric arithmetic requires a concrete numeric result type", source)
 		return {}, false
 	}
-	if type_is_float(result_type) || value_kind(left) == .Float || value_kind(right) == .Float {
+	if result_type.family == .Float || value_kind(left) == .Float || value_kind(right) == .Float {
 		left_float, left_ok := value_float(left)
 		right_float, right_ok := value_float(right)
 		if !left_ok || !right_ok {
@@ -45,7 +45,7 @@ abap_numeric_arithmetic :: proc(
 		}
 		return value_float_make(result), true
 	}
-	if type_is_decimal(result_type) || value_kind(left) == .Decimal || value_kind(right) == .Decimal {
+	if result_type.family == .Decimal || value_kind(left) == .Decimal || value_kind(right) == .Decimal {
 		result_scale := type_decimal_places(result_type)
 		left_value, left_ok := value_to_decimal(left, result_scale)
 		right_value, right_ok := value_to_decimal(right, result_scale)
@@ -514,6 +514,16 @@ abap_construct :: proc(
 ) -> (Value, bool) {
 	switch callee_name {
 	case "", "value":
+		if result_type != nil && result_type.family == .Structure {
+			assert(len(values) <= len(result_type.structure.fields))
+			result := initial_for_type(result_type, ctx.allocator)
+			structure := value_structure_data(result)
+			assert(structure != nil)
+			for value, i in values {
+				structure_set_field(structure, result_type.structure.fields[i].name, value)
+			}
+			return result, true
+		}
 		if len(values) > 0 {
 			return value_storage_clone(values[0], ctx.allocator), true
 		}
@@ -542,9 +552,9 @@ abap_construct :: proc(
 			return value_data_reference_cell(cell, ctx.allocator), true
 		}
 		if type_is_object_reference(result_type) {
-			return value_object(type_display_name(result_type), ctx.allocator), true
+			return value_object(result_type.display_name, ctx.allocator), true
 		}
-		return value_structure(type_display_name(result_type), ctx.allocator), true
+		return value_structure(result_type.display_name, ctx.allocator), true
 	case "conv", "exact", "cast":
 		if len(values) == 1 {
 			value, ok := value_cast(values[0], result_type, ctx.allocator)

@@ -241,6 +241,102 @@ prepare_module_rejects_verified_non_executable_core_opcode :: proc(t: ^testing.T
 }
 
 @(test)
+runtime_executes_alloca_storage :: proc(t: ^testing.T) {
+	module := ir.module_make(context.allocator)
+	defer ir.module_destroy(&module)
+
+	builder := ir.builder_begin_function(&module, "main", role = .Report_Entry)
+	ref_type := ir.module_reference_type(&module, ir.BUILTIN_TYPE_INTEGER)
+	result_types := [?]ir.Type_Id{ref_type}
+	alloca_id := ir.builder_emit_effect_op(
+		&builder,
+		.Alloca,
+		result_types = result_types[:],
+		effects = {.Write_Local},
+	)
+	address := ir.op_ptr(ir.builder_function(&builder), alloca_id).results[1]
+	seven := ir.builder_emit_const(&builder, "7", ir.BUILTIN_TYPE_INTEGER)
+	store_inputs := [?]ir.Value_Id{address, seven}
+	ir.builder_emit_effect_op(&builder, .Store, store_inputs[:], effects = {.Write_Local})
+	load_operands := [?]ir.Value_Id{builder.current_world, address}
+	load_types := [?]ir.Type_Id{ir.BUILTIN_TYPE_INTEGER}
+	load_id := ir.builder_emit_op(&builder, .Load, load_operands[:], load_types[:], effects = {.Read_Local})
+	loaded := ir.op_ptr(ir.builder_function(&builder), load_id).results[0]
+	write_inputs := [?]ir.Value_Id{loaded}
+	ir.builder_emit_write(&builder, write_inputs[:])
+	ir.builder_set_return_world(&builder)
+	ir.module_add_entry(&module, builder.function_id)
+
+	verify := ir.verify_module(&module, context.allocator)
+	defer ir.verify_result_destroy(&verify)
+	testing.expect(t, verify.ok)
+	if !verify.ok {
+		return
+	}
+
+	run := runtime_test_execute_ir(t, &module)
+	defer run_result_destroy(&run)
+	testing.expect_value(t, run.status, Run_Status.Completed)
+	testing.expect_value(t, len(run.events), 1)
+	if len(run.events) == 1 {
+		testing.expect_value(t, run.events[0].text, "7")
+	}
+}
+
+@(test)
+runtime_executes_struct_init_and_extract_value :: proc(t: ^testing.T) {
+	module := ir.module_make(context.allocator)
+	defer ir.module_destroy(&module)
+
+	fields := [?]ir.Aggregate_Field{
+		{name = "left", type = ir.BUILTIN_TYPE_INTEGER},
+		{name = "right", type = ir.BUILTIN_TYPE_INTEGER},
+	}
+	struct_type := ir.module_add_type(
+		&module,
+		ir.Type{kind = .Struct, name = "pair", data = ir.Struct_Type_Data{fields = fields[:]}},
+	)
+	builder := ir.builder_begin_function(&module, "main", role = .Report_Entry)
+	one := ir.builder_emit_const(&builder, "1", ir.BUILTIN_TYPE_INTEGER)
+	two := ir.builder_emit_const(&builder, "2", ir.BUILTIN_TYPE_INTEGER)
+	init_operands := [?]ir.Value_Id{one, two}
+	init_types := [?]ir.Type_Id{struct_type}
+	init_id := ir.builder_emit_op(&builder, .Struct_Init, init_operands[:], init_types[:])
+	structure := ir.op_ptr(ir.builder_function(&builder), init_id).results[0]
+	segments := [?]ir.Projection_Segment{{kind = .Field, name = "right", field_index = 1}}
+	projection := ir.function_add_projection(ir.builder_function(&builder), segments[:], module.allocator)
+	extract_operands := [?]ir.Value_Id{structure}
+	extract_types := [?]ir.Type_Id{ir.BUILTIN_TYPE_INTEGER}
+	extract_id := ir.builder_emit_op(
+		&builder,
+		.Extract_Value,
+		extract_operands[:],
+		extract_types[:],
+		attrs = projection,
+	)
+	extracted := ir.op_ptr(ir.builder_function(&builder), extract_id).results[0]
+	write_inputs := [?]ir.Value_Id{extracted}
+	ir.builder_emit_write(&builder, write_inputs[:])
+	ir.builder_set_return_world(&builder)
+	ir.module_add_entry(&module, builder.function_id)
+
+	verify := ir.verify_module(&module, context.allocator)
+	defer ir.verify_result_destroy(&verify)
+	testing.expect(t, verify.ok)
+	if !verify.ok {
+		return
+	}
+
+	run := runtime_test_execute_ir(t, &module)
+	defer run_result_destroy(&run)
+	testing.expect_value(t, run.status, Run_Status.Completed)
+	testing.expect_value(t, len(run.events), 1)
+	if len(run.events) == 1 {
+		testing.expect_value(t, run.events[0].text, "2")
+	}
+}
+
+@(test)
 runtime_vm_exposes_in_memory_state_for_stepping_and_snapshot :: proc(t: ^testing.T) {
 	module := ir.module_make(context.allocator)
 	defer ir.module_destroy(&module)
@@ -590,6 +686,26 @@ WRITE lr_new->*.`
 		testing.expect_value(t, run.events[2].text, "15")
 	}
 	testing.expect(t, runtime_test_named_value_is_int(run.final_values[:], "global", "lv", 11))
+}
+
+@(test)
+runtime_executes_value_structure_field_reads :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_pair,
+         left  TYPE i,
+         right TYPE i,
+       END OF ty_pair.
+DATA pair TYPE ty_pair.
+pair = VALUE ty_pair( left = 7 right = 11 ).
+WRITE pair-left.
+WRITE pair-right.`
+	run := runtime_test_execute_source(t, source)
+	defer run_result_destroy(&run)
+	testing.expect_value(t, run.status, Run_Status.Completed)
+	testing.expect_value(t, len(run.events), 2)
+	if len(run.events) == 2 {
+		testing.expect_value(t, run.events[0].text, "7")
+		testing.expect_value(t, run.events[1].text, "11")
+	}
 }
 
 @(test)

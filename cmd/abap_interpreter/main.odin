@@ -513,6 +513,8 @@ runtime_trap_kind_text :: proc(kind: runtime.Trap_Kind) -> string {
 		return "exception"
 	case .Type:
 		return "type"
+	case .Overflow:
+		return "overflow"
 	case .Divide_By_Zero:
 		return "divide-by-zero"
 	case .Step_Limit:
@@ -539,6 +541,10 @@ runtime_value_kind_text :: proc(kind: runtime.Value_Kind) -> string {
 		return "world"
 	case .Integer:
 		return "integer"
+	case .Decimal:
+		return "decimal"
+	case .Float:
+		return "float"
 	case .String:
 		return "string"
 	case .Structure:

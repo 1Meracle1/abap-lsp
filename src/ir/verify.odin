@@ -571,6 +571,13 @@ verify_module_tables :: proc(module: ^Module, result: ^Verify_Result) {
 	for constant, i in module.constants {
 		if !verify_type_valid(module, constant.type) {
 			verify_add(result, .Invalid_Type, "constant has invalid type", value = Value_Id(i))
+			continue
+		}
+		switch module.types[int(constant.type)].runtime.family {
+		case .Predicate, .Integer, .Decimal, .Float, .Text, .Date, .Time:
+		case .Unknown, .Void, .World, .Numeric, .Bytes, .Structure, .Table,
+		     .Table_Iterator, .Reference, .Object, .Interface, .Exception, .Routine:
+			verify_add(result, .Invalid_Type, "constant type cannot be materialized from a literal", value = Value_Id(i))
 		}
 	}
 	for global, i in module.globals {
@@ -883,8 +890,8 @@ verify_canonical_instruction :: proc(
 			verify_result_reference_like(module, function, function_id, block_id, op, 0, "reference/address cast result must be reference-like", result)
 		}
 	case .Alloca:
-		verify_op_arity(result, function_id, block_id, op, 0, 1, 1, 1)
-		verify_result_reference_like(module, function, function_id, block_id, op, 0, "alloca result must be reference-like", result)
+		verify_op_arity(result, function_id, block_id, op, 1, 1, 2, 2)
+		verify_result_reference_like(module, function, function_id, block_id, op, 1, "alloca result must be reference-like", result)
 	case .Addr_Of:
 		verify_op_arity(result, function_id, block_id, op, 0, 0, 1, 1)
 		verify_slot_address_attrs(function, function_id, block_id, op, result)
@@ -1841,6 +1848,9 @@ verify_memory_requirements :: proc(
 	}
 	if op.opcode == .Store && !verify_memory_has_kind(op.memory[:], .Write) {
 		verify_add(result, .Bad_Memory_Alias, "store instruction must carry write memory metadata", function_id, block_id, op.id, source = op.source)
+	}
+	if op.opcode == .Alloca && !verify_memory_has_kind(op.memory[:], .Allocate) {
+		verify_add(result, .Bad_Memory_Alias, "alloca instruction must carry allocate memory metadata", function_id, block_id, op.id, source = op.source)
 	}
 }
 

@@ -1409,6 +1409,16 @@ op_memory_access :: proc(
 		if len(op.operands) > int(access.value_operand) {
 			access.type = value_type(function, op.operands[int(access.value_operand)])
 		}
+	case .Alloca:
+		access.kind = .Allocate
+		if len(op.results) > 1 {
+			result_type := value_type(function, op.results[1])
+			if result_type != INVALID_TYPE_ID && int(result_type) < len(module.types) {
+				if data, ok := type_ptr(module, result_type).data.(Reference_Type_Data); ok {
+					access.type = data.pointee
+				}
+			}
+		}
 	case:
 		if .Read_Table in effects || .SQL in effects || .Read_System in effects {
 			access.kind = .Read

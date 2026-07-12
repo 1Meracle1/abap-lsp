@@ -171,6 +171,8 @@ vm_step :: proc(vm: ^VM) -> VM_State {
 		exec_cmp(vm, frame, instruction)
 	case .Select:
 		exec_select(vm, frame, instruction)
+	case .Alloca:
+		exec_alloca(vm, frame, instruction)
 	case .Addr_Of:
 		exec_addr_of(vm, frame, instruction)
 	case .Deref:
@@ -181,6 +183,10 @@ vm_step :: proc(vm: ^VM) -> VM_State {
 		exec_load(vm, frame, instruction)
 	case .Store:
 		exec_store(vm, frame, instruction)
+	case .Struct_Init:
+		exec_struct_init(vm, frame, instruction)
+	case .Extract_Value:
+		exec_extract_value(vm, frame, instruction)
 	case .Cast, .Int_Extend, .Int_Truncate, .Ref_Cast, .Addr_Cast:
 		exec_cast(vm, frame, instruction)
 	case .Debug_Value:

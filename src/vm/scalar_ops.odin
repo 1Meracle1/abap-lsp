@@ -98,7 +98,7 @@ exec_logical_not :: proc(vm: ^VM, frame: ^Frame, instruction: Prepared_Instructi
 
 set_logical_result :: proc(vm: ^VM, frame: ^Frame, instruction: Prepared_Instruction, result: bool) {
 	typ := result_type_descriptor(frame.function, instruction, 0)
-	if runtime.type_is_integer(typ) && !runtime.type_is_predicate(typ) {
+	if typ != nil && typ.family == .Integer {
 		set_result(vm, frame, instruction, 0, runtime.value_integer_make(1 if result else 0))
 		return
 	}

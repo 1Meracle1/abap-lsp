@@ -109,28 +109,23 @@ value_iterator_data :: proc "contextless" (value: Value) -> ^Table_Iterator_Data
 }
 
 value_from_literal :: proc(literal: string, typ: Type_Descriptor, allocator: mem.Allocator) -> Value {
-	if type_is_integer(typ) {
+	assert(typ != nil, "runtime literal materialization requires a type descriptor")
+	switch typ.family {
+	case .Integer:
 		parsed, ok := strconv.parse_int(strings.trim_space(literal), 10)
-		if ok {
-			return value_integer_make(i64(parsed))
-		}
-	}
-	if type_is_decimal(typ) {
+		assert(ok, "integer runtime literals must be valid")
+		return value_integer_make(i64(parsed))
+	case .Decimal:
 		value, ok := value_decimal_parse(strings.trim_space(literal))
-		if ok {
-			return value
-		}
-	}
-	if type_is_float(typ) {
+		assert(ok, "decimal runtime literals must be valid")
+		return value
+	case .Float:
 		parsed, ok := strconv.parse_f64(strings.trim_space(literal))
-		if ok {
-			return value_float_make(parsed)
-		}
-	}
-	if type_is_predicate(typ) {
+		assert(ok, "floating-point runtime literals must be valid")
+		return value_float_make(parsed)
+	case .Predicate:
 		return value_predicate(literal != "" && literal != "0" && literal != " ")
-	}
-	if type_is_text(typ) {
+	case .Text, .Date, .Time:
 		text := literal
 		if len(literal) >= 2 &&
 		   ((literal[0] == '\'' && literal[len(literal) - 1] == '\'') ||
@@ -138,120 +133,110 @@ value_from_literal :: proc(literal: string, typ: Type_Descriptor, allocator: mem
 			text = literal[1:len(literal) - 1]
 		}
 		return value_string(text, allocator)
+	case .Unknown, .Void, .World, .Numeric, .Bytes, .Structure, .Table,
+	     .Table_Iterator, .Reference, .Object, .Interface, .Exception, .Routine:
+		assert(false, "runtime type family cannot be materialized from a literal")
 	}
-	if type_is_table(typ) {
-		return value_table(allocator)
-	}
-	if type_is_reference(typ) {
-		return value_initial()
-	}
-	if typ == nil || typ.family == .Unknown {
-		if parsed, ok := strconv.parse_int(strings.trim_space(literal), 10); ok {
-			return value_integer_make(i64(parsed))
-		}
-		text := literal
-		if len(literal) >= 2 &&
-		   ((literal[0] == '\'' && literal[len(literal) - 1] == '\'') ||
-		    (literal[0] == '`' && literal[len(literal) - 1] == '`')) {
-			text = literal[1:len(literal) - 1]
-		}
-		return value_string(text, allocator)
-	}
-	if type_is_structure(typ) {
-		return value_structure(type_display_name(typ), allocator)
-	}
-	text := literal
-	if len(literal) >= 2 &&
-	   ((literal[0] == '\'' && literal[len(literal) - 1] == '\'') ||
-	    (literal[0] == '`' && literal[len(literal) - 1] == '`')) {
-		text = literal[1:len(literal) - 1]
-	}
-	return value_string(text, allocator)
+	unreachable()
 }
 
 value_cast :: proc(value: Value, typ: Type_Descriptor, allocator: mem.Allocator) -> (Value, bool) {
+	assert(typ != nil, "runtime casts require a target type descriptor")
 	resolved := value
 	if value_is_alias_reference(value) {
 		resolved = value_borrow_alias(value)
 	}
-	if type_is_integer(typ) {
+	switch typ.family {
+	case .Integer:
 		int_value, ok := value_integer(resolved)
 		return value_integer_make(int_value), ok && integer_fits_type(int_value, typ)
-	}
-	if type_is_decimal(typ) {
+	case .Decimal:
 		decimal, ok := value_to_decimal(resolved, type_decimal_places(typ))
 		if !ok { return {}, false }
 		return decimal, decimal_fits_type(decimal.(Value_Decimal), typ)
-	}
-	if type_is_float(typ) {
+	case .Float:
 		float_value, ok := value_float(resolved)
 		return value_float_make(float_value), ok
-	}
-	if type_is_predicate(typ) {
+	case .Predicate:
 		return value_predicate(value_truthy(resolved)), true
-	}
-	if type_is_text(typ) || typ == nil {
+	case .Text, .Date, .Time:
 		text, text_ok := value_scalar_text(resolved, context.temp_allocator)
 		if !text_ok {
 			return {}, false
 		}
 		return value_string(text, allocator), true
-	}
-	if type_is_reference(typ) {
+	case .Reference:
 		kind := value_kind(resolved)
 		if kind == .Initial || kind == .Object || kind == .Reference {
 			return value_clone(resolved, allocator), true
 		}
 		return {}, false
+	case .Numeric:
+		kind := value_kind(resolved)
+		if kind == .Integer || kind == .Decimal || kind == .Float {
+			return value_clone(resolved, allocator), true
+		}
+		return {}, false
+	case .Structure:
+		if value_kind(resolved) == .Structure {
+			return value_clone(resolved, allocator), true
+		}
+		return {}, false
+	case .Table:
+		if value_kind(resolved) == .Table {
+			return value_clone(resolved, allocator), true
+		}
+		return {}, false
+	case .Unknown, .Void, .World, .Bytes, .Table_Iterator,
+	     .Object, .Interface, .Exception, .Routine:
+		assert(false, "runtime type family cannot be a cast target")
 	}
-	return value_clone(resolved, allocator), true
+	unreachable()
 }
 
 initial_for_type :: proc(typ: Type_Descriptor, allocator: mem.Allocator) -> Value {
-	if type_is_integer(typ) {
+	assert(typ != nil, "runtime value initialization requires a type descriptor")
+	switch typ.family {
+	case .Integer:
 		return value_integer_make(0)
-	}
-	if type_is_decimal(typ) {
+	case .Decimal:
 		return value_decimal_make(0, type_decimal_places(typ))
-	}
-	if type_is_float(typ) {
+	case .Float:
 		return value_float_make(0)
-	}
-	if type_is_predicate(typ) {
+	case .Predicate:
 		return value_predicate(false)
-	}
-	if type_is_text(typ) {
+	case .Text, .Date, .Time:
 		return value_string("", allocator)
-	}
-	if type_is_table(typ) {
+	case .Table:
 		return value_table(allocator)
-	}
-	if type_is_reference(typ) {
+	case .Reference:
+		// An unbound reference is intentionally represented by Value_Initial.
 		return value_initial()
+	case .Structure:
+		return value_structure(typ.display_name, allocator)
+	case .Unknown:
+		assert(false, "unknown runtime types cannot be initialized as values")
+	case .Void:
+		assert(false, "void runtime types cannot be initialized as values")
+	case .World:
+		assert(false, "world runtime types cannot be initialized as values")
+	case .Numeric:
+		assert(false, "generic numeric runtime types cannot be initialized as values")
+	case .Bytes:
+		assert(false, "byte runtime types cannot be initialized as values")
+	case .Table_Iterator:
+		assert(false, "table iterator runtime types cannot be initialized as values")
+	case .Object:
+		// Objects enter runtime through object references and construction.
+		assert(false, "object runtime types cannot be initialized directly")
+	case .Interface:
+		assert(false, "interface runtime types cannot be initialized directly")
+	case .Exception:
+		assert(false, "exception runtime types cannot be initialized directly")
+	case .Routine:
+		assert(false, "routine runtime types cannot be initialized as values")
 	}
-	if type_is_structure(typ) {
-		return value_structure(type_display_name(typ), allocator)
-	}
-	return value_initial()
-}
-
-type_display_name :: #force_inline proc "contextless" (typ: Type_Descriptor) -> string {
-	if typ == nil {
-		return ""
-	}
-	return typ.display_name
-}
-
-type_is_integer :: #force_inline proc "contextless" (typ: Type_Descriptor) -> bool {
-	return typ != nil && typ.family == .Integer
-}
-
-type_is_decimal :: #force_inline proc "contextless" (typ: Type_Descriptor) -> bool {
-	return typ != nil && typ.family == .Decimal
-}
-
-type_is_float :: #force_inline proc "contextless" (typ: Type_Descriptor) -> bool {
-	return typ != nil && typ.family == .Float
+	unreachable()
 }
 
 type_is_numeric :: #force_inline proc "contextless" (typ: Type_Descriptor) -> bool {
@@ -267,22 +252,6 @@ type_decimal_places :: #force_inline proc "contextless" (typ: Type_Descriptor) -
 
 type_is_text :: #force_inline proc "contextless" (typ: Type_Descriptor) -> bool {
 	return typ != nil && (typ.family == .Text || typ.family == .Date || typ.family == .Time)
-}
-
-type_is_predicate :: #force_inline proc "contextless" (typ: Type_Descriptor) -> bool {
-	return typ != nil && typ.family == .Predicate
-}
-
-type_is_table :: #force_inline proc "contextless" (typ: Type_Descriptor) -> bool {
-	return typ != nil && typ.family == .Table
-}
-
-type_is_reference :: #force_inline proc "contextless" (typ: Type_Descriptor) -> bool {
-	return typ != nil && typ.family == .Reference
-}
-
-type_is_structure :: #force_inline proc "contextless" (typ: Type_Descriptor) -> bool {
-	return typ != nil && (typ.family == .Structure || typ.family == .Object || typ.family == .Interface || typ.family == .Exception)
 }
 
 type_is_fixed_text :: #force_inline proc "contextless" (typ: Type_Descriptor) -> bool {

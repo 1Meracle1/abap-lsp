@@ -18,6 +18,9 @@ while [[ $# -gt 0 ]]; do
 		abap_frontend)
 			APP="abap_frontend"
 			;;
+		abap_interpreter | interpreter)
+			APP="abap_interpreter"
+			;;
 		adt_cli | adt)
 			APP="adt_cli"
 			;;

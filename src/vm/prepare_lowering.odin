@@ -158,11 +158,14 @@ op_supported :: proc "contextless" (op: ir.Op) -> (bool, string) {
 	     .Int_Truncate,
 	     .Ref_Cast,
 	     .Addr_Cast,
+	     .Alloca,
 	     .Addr_Of,
 	     .Deref,
 	     .Field_Addr,
 	     .Load,
 	     .Store,
+	     .Struct_Init,
+	     .Extract_Value,
 	     .Call,
 	     .Invoke,
 	     .Debug_Value,
@@ -177,16 +180,10 @@ op_supported :: proc "contextless" (op: ir.Op) -> (bool, string) {
 		return false, "VM executable IR does not support global_addr opcode"
 	case .Function_Addr:
 		return false, "VM executable IR does not support function_addr opcode"
-	case .Alloca:
-		return false, "VM executable IR does not support alloca opcode"
 	case .Index_Addr:
 		return false, "VM executable IR does not support index_addr opcode"
 	case .Table_Row_Addr:
 		return false, "VM executable IR does not support table_row_addr opcode"
-	case .Struct_Init:
-		return false, "VM executable IR does not support struct_init opcode"
-	case .Extract_Value:
-		return false, "VM executable IR does not support extract_value opcode"
 	case .Insert_Value:
 		return false, "VM executable IR does not support insert_value opcode"
 	case .Br, .Cond_Br, .Switch, .Return, .Unreachable:
@@ -268,6 +265,11 @@ prepare_op :: proc(ctx: ^Prepare_Context, op: ir.Op) -> Prepare_Result {
 		prepared_instruction_set_registers(ctx, &instruction, op.operands[:], op.results[:])
 		prepared_emit(ctx, instruction)
 		return Prepare_Result{ok = true}
+	case .Alloca:
+		instruction := prepared_instruction_make(.Alloca, op.source, ctx.module.allocator)
+		prepared_instruction_set_registers(ctx, &instruction, op.operands[:], op.results[:])
+		prepared_emit(ctx, instruction)
+		return Prepare_Result{ok = true}
 	case .Add,
 	     .Sub,
 	     .Mul,
@@ -340,6 +342,22 @@ prepare_op :: proc(ctx: ^Prepare_Context, op: ir.Op) -> Prepare_Result {
 		}
 		instruction := prepared_instruction_make(.Store, op.source, ctx.module.allocator)
 		prepared_instruction_set_address_from_operand(ctx, &instruction, op.operands[1])
+		prepared_instruction_set_registers(ctx, &instruction, op.operands[:], op.results[:])
+		prepared_emit(ctx, instruction)
+		return Prepare_Result{ok = true}
+	case .Struct_Init:
+		instruction := prepared_instruction_make(.Struct_Init, op.source, ctx.module.allocator)
+		prepared_instruction_set_registers(ctx, &instruction, op.operands[:], op.results[:])
+		prepared_emit(ctx, instruction)
+		return Prepare_Result{ok = true}
+	case .Extract_Value:
+		projection, ok := op.attrs.(ir.Projection_Id)
+		if !ok || projection == ir.INVALID_PROJECTION_ID || int(projection) >= len(ctx.ir_function.projections) {
+			return prepare_error("extract_value operation is missing canonical projection attribute", op.source, ctx.module.allocator)
+		}
+		instruction := prepared_instruction_make(.Extract_Value, op.source, ctx.module.allocator)
+		result_type := ir.value_type(ctx.ir_function, op.results[0])
+		instruction.payload = prepared_function_add_field_projection(ctx, projection, result_type)
 		prepared_instruction_set_registers(ctx, &instruction, op.operands[:], op.results[:])
 		prepared_emit(ctx, instruction)
 		return Prepare_Result{ok = true}
