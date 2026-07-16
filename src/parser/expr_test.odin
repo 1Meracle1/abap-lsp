@@ -518,6 +518,42 @@ reduce_constructor_allows_for_until_without_then :: proc(t: ^testing.T) {
 }
 
 @(test)
+constructor_for_then_clone_prints_owned_operands :: proc(t: ^testing.T) {
+	source := `DATA(result) = VALUE i( FOR index = start THEN index + step WHILE state-ready = abap_true ( index ) ).`
+	parsed := parse(source, "constructor_for_then_shape.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Inline_Decl)
+	constructor := decl.expr.derived_expr.(^ast.Constructor_Expr)
+	for_clause := constructor.args[0].derived_expr.(^ast.Constructor_For_Clause_Expr)
+	clone := ast.clone_node(&for_clause.node, context.allocator).derived.(^ast.Constructor_For_Clause_Expr)
+	testing.expect_value(t, clone.kind, ast.Constructor_For_Kind.For_Then_While)
+	testing.expect_value(t, ast.print_node(clone.init, context.allocator), "start")
+	testing.expect_value(t, ast.print_node(clone.then_expr, context.allocator), "index + step")
+	testing.expect_value(t, ast.print_node(clone.condition, context.allocator), "state-ready = abap_true")
+	testing.expect_value(t, ast.print_node(clone, context.allocator), "FOR index = start THEN index + step WHILE state-ready = abap_true ( index )")
+}
+
+@(test)
+constructor_for_then_reports_missing_owned_operands :: proc(t: ^testing.T) {
+	missing_then := parse(
+		"DATA(result) = VALUE i( FOR index = 1 THEN ).\nDATA keep TYPE i.",
+		"constructor_for_then_missing_then.abap",
+		context.allocator,
+	)
+	expect_error_contains(t, missing_then, "expected expression")
+	testing.expect(t, strings.contains(ast.print_node(missing_then.root, context.allocator), "DATA keep TYPE i."))
+
+	missing_condition := parse(
+		"DATA(result) = VALUE i( FOR index = 1 UNTIL ).\nDATA keep TYPE i.",
+		"constructor_for_then_missing_condition.abap",
+		context.allocator,
+	)
+	expect_error_contains(t, missing_condition, "expected expression")
+	testing.expect(t, strings.contains(ast.print_node(missing_condition.root, context.allocator), "DATA keep TYPE i."))
+}
+
+@(test)
 filter_constructor_accepts_using_key_before_where :: proc(t: ^testing.T) {
 	source := `DATA(lt_filtered) = FILTER #( lt_rows USING KEY primary_key WHERE id = lv_id ).`
 	parsed := parse(source, "filter_using_key.abap", context.allocator)
@@ -553,6 +589,45 @@ cond_constructor_builds_let_when_and_else_clauses :: proc(t: ^testing.T) {
 	testing.expect_value(t, counts.let_expr, 1)
 	testing.expect_value(t, counts.constructor_when, 1)
 	testing.expect_value(t, counts.constructor_else, 1)
+}
+
+@(test)
+cond_when_clone_prints_owned_condition_result_and_else :: proc(t: ^testing.T) {
+	source := `DATA(result) = COND i( WHEN state-ready = abap_true THEN 1 ELSE 0 ).`
+	parsed := parse(source, "cond_when_clone.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Inline_Decl)
+	constructor := decl.expr.derived_expr.(^ast.Constructor_Expr)
+	when_clause := constructor.args[0].derived_expr.(^ast.Constructor_When_Clause_Expr)
+	else_clause := constructor.args[1].derived_expr.(^ast.Constructor_Else_Clause_Expr)
+	when_clone := ast.clone_node(&when_clause.node, context.allocator).derived.(^ast.Constructor_When_Clause_Expr)
+	else_clone := ast.clone_node(&else_clause.node, context.allocator).derived.(^ast.Constructor_Else_Clause_Expr)
+	testing.expect_value(t, ast.print_node(when_clone.condition, context.allocator), "state-ready = abap_true")
+	testing.expect_value(t, ast.print_node(when_clone.result, context.allocator), "1")
+	testing.expect_value(t, ast.print_node(when_clone, context.allocator), "WHEN state-ready = abap_true THEN 1")
+	testing.expect_value(t, ast.print_node(else_clone, context.allocator), "ELSE 0")
+}
+
+@(test)
+cond_when_missing_operands_recover_following_statement :: proc(t: ^testing.T) {
+	missing_condition := parse(
+		`DATA(result) = COND i( WHEN ).
+DATA keep TYPE i.`,
+		"cond_when_missing_condition.abap",
+		context.allocator,
+	)
+	expect_error_contains(t, missing_condition, "syntax error: expected expression")
+	testing.expect(t, strings.contains(ast.print_node(missing_condition.root, context.allocator), "DATA keep TYPE i."))
+
+	missing_then := parse(
+		`DATA(result) = COND i( WHEN abap_true 1 ELSE 0 ).
+DATA keep TYPE i.`,
+		"cond_when_missing_then.abap",
+		context.allocator,
+	)
+	expect_error_contains(t, missing_then, "syntax error: expected keyword")
+	testing.expect(t, strings.contains(ast.print_node(missing_then.root, context.allocator), "DATA keep TYPE i."))
 }
 
 @(test)

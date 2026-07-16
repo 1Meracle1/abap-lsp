@@ -2159,6 +2159,44 @@ CONSTANTS: BEGIN OF gc_pair,
 }
 
 @(test)
+root_semantic_checker_validates_selection_declaration_addition_expressions :: proc(t: ^testing.T) {
+	source := `DATA lv_value TYPE i.
+PARAMETERS p_mem TYPE i MEMORY ID missing_pm.
+PARAMETERS p_match TYPE i MATCHCODE OBJECT missing_po.
+PARAMETERS p_len TYPE i VISIBLE LENGTH missing_pl.
+SELECT-OPTIONS s_to FOR lv_value TO missing_st.
+SELECT-OPTIONS s_mem FOR lv_value MEMORY ID missing_sm.
+SELECT-OPTIONS s_match FOR lv_value MATCHCODE OBJECT missing_so.
+SELECT-OPTIONS s_len FOR lv_value VISIBLE LENGTH missing_sl.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://selection_decl_additions.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 7)
+	parameter_exprs := [?]^ast.Expr {
+		file.root.stmts[1].derived_stmt.(^ast.Parameters_Decl).parameters[0].memory_id,
+		file.root.stmts[2].derived_stmt.(^ast.Parameters_Decl).parameters[0].matchcode_object,
+		file.root.stmts[3].derived_stmt.(^ast.Parameters_Decl).parameters[0].visible_length,
+	}
+	select_exprs := [?]^ast.Expr {
+		file.root.stmts[4].derived_stmt.(^ast.Select_Options_Decl).options[0].to_expr,
+		file.root.stmts[5].derived_stmt.(^ast.Select_Options_Decl).options[0].memory_id,
+		file.root.stmts[6].derived_stmt.(^ast.Select_Options_Decl).options[0].matchcode_object,
+		file.root.stmts[7].derived_stmt.(^ast.Select_Options_Decl).options[0].visible_length,
+	}
+	for expr in parameter_exprs {
+		_, ok := checker_test_expr_info_for_node(t, &checker, &expr.expr_base)
+		testing.expect(t, ok)
+	}
+	for expr in select_exprs {
+		_, ok := checker_test_expr_info_for_node(t, &checker, &expr.expr_base)
+		testing.expect(t, ok)
+	}
+}
+
+@(test)
 root_semantic_constant_payload_records_integer_literal_values :: proc(t: ^testing.T) {
 	source := `CONSTANTS gc_limit TYPE i VALUE 42.`
 
@@ -3084,6 +3122,864 @@ ENDIF.`
 }
 
 @(test)
+root_semantic_stmt_checker_reports_unresolved_condition_operands :: proc(t: ^testing.T) {
+	source := `ASSERT missing_assert IS INITIAL.
+CHECK missing_check IS NOT INITIAL.
+WHILE missing_while = abap_true.
+ENDWHILE.
+WAIT UNTIL missing_wait = abap_true UP TO 1 SECONDS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_conditions_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 4)
+	names := [?]string{"missing_assert", "missing_check", "missing_while", "missing_wait"}
+	for name in names {
+		testing.expect_value(
+			t,
+			checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name),
+			1,
+		)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_simple_statement_operands :: proc(t: ^testing.T) {
+	source := `SEARCH missing_search_target FOR missing_search_pattern STARTING AT missing_search_start ENDING AT missing_search_end.
+WRITE AT missing_write_position(missing_write_length) missing_write_value.
+SET CURSOR FIELD missing_cursor_field OFFSET missing_cursor_offset.
+SET CURSOR missing_cursor_line missing_cursor_column.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_simple_operands_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 11)
+	names := [?]string {
+		"missing_search_target",
+		"missing_search_pattern",
+		"missing_search_start",
+		"missing_search_end",
+		"missing_write_position",
+		"missing_write_length",
+		"missing_write_value",
+		"missing_cursor_field",
+		"missing_cursor_offset",
+		"missing_cursor_line",
+		"missing_cursor_column",
+	}
+	for name in names {
+		testing.expect_value(
+			t,
+			checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name),
+			1,
+		)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_authority_check_operands :: proc(t: ^testing.T) {
+	source := `AUTHORITY-CHECK OBJECT missing_object
+  ID missing_id FIELD missing_field.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_authority_check_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 3)
+	names := [?]string{"missing_object", "missing_id", "missing_field"}
+	for name in names {
+		testing.expect_value(
+			t,
+			checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name),
+			1,
+		)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_set_handler_value_operands :: proc(t: ^testing.T) {
+	source := `FORM on_event.
+ENDFORM.
+SET HANDLER on_event FOR missing_sender ACTIVATION missing_activation.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_set_handler_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+	names := [?]string{"missing_sender", "missing_activation"}
+	for name in names {
+		testing.expect_value(
+			t,
+			checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name),
+			1,
+		)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_case_operands :: proc(t: ^testing.T) {
+	source := `CASE missing_case.
+WHEN missing_when OR missing_alternative.
+ENDCASE.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_case_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 3)
+	names := [?]string{"missing_case", "missing_when", "missing_alternative"}
+	for name in names {
+		testing.expect_value(
+			t,
+			checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name),
+			1,
+		)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_at_group_operands :: proc(t: ^testing.T) {
+	source := `DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+LOOP AT lt_values INTO DATA(lv_value).
+  AT NEW missing_new.
+  ENDAT.
+  AT END OF missing_end.
+  ENDAT.
+ENDLOOP.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_at_group_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+	names := [?]string{"missing_new", "missing_end"}
+	for name in names {
+		testing.expect_value(
+			t,
+			checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name),
+			1,
+		)
+	}
+}
+
+@(test)
+root_semantic_expr_checker_rejects_non_scalar_unary_arithmetic_operands :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_value,
+         component TYPE i,
+       END OF ty_value.
+DATA ls_value TYPE ty_value.
+DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+DATA lr_value TYPE REF TO i.
+DATA lv_result TYPE i.
+lv_result = -ls_value.
+lv_result = +lt_values.
+lv_result = -lr_value.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://expr_unary_arithmetic_invalid.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"unary arithmetic operand is not scalar",
+		),
+		3,
+	)
+}
+
+@(test)
+root_semantic_stmt_checker_validates_arithmetic_statement_targets :: proc(t: ^testing.T) {
+	source := `CONSTANTS gc_value TYPE i VALUE 1.
+DATA lv_value TYPE i.
+ADD 1 TO gc_value.
+ADD 1 TO lv_value GIVING gc_value.
+SUBTRACT 1 FROM gc_value.
+SUBTRACT 1 FROM lv_value GIVING gc_value.
+MULTIPLY gc_value BY 2.
+MULTIPLY lv_value BY 2 GIVING gc_value.
+DIVIDE 2 INTO gc_value.
+DIVIDE lv_value BY 2 GIVING gc_value.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_arithmetic_targets.abap")
+
+	messages := [?]string {
+		"ADD target is not writable",
+		"ADD result is not writable",
+		"SUBTRACT target is not writable",
+		"SUBTRACT result is not writable",
+		"MULTIPLY target is not writable",
+		"MULTIPLY result is not writable",
+		"DIVIDE target is not writable",
+		"DIVIDE result is not writable",
+	}
+	for message in messages {
+		testing.expect_value(
+			t,
+			checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, message),
+			1,
+		)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_arithmetic_operands :: proc(t: ^testing.T) {
+	source := `ADD missing_add_source TO missing_add_target.
+SUBTRACT missing_subtract_source FROM missing_subtract_input GIVING missing_subtract_result.
+MULTIPLY missing_multiply_target BY missing_multiply_source.
+DIVIDE missing_divide_input BY missing_divide_source GIVING missing_divide_result.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_arithmetic_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 10)
+}
+
+@(test)
+root_semantic_stmt_checker_marks_only_arithmetic_outputs_as_lhs :: proc(t: ^testing.T) {
+	source := `DATA lv_input TYPE i.
+DATA lv_result TYPE i.
+ADD 1 TO lv_input GIVING lv_result.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_arithmetic_lhs.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	add := file.root.stmts[2].derived_stmt.(^ast.Add_Stmt)
+	input_info, input_ok := checker_test_expr_info_for_node(t, &checker, &add.entries[0].target.expr_base)
+	result_info, result_ok := checker_test_expr_info_for_node(t, &checker, &add.entries[0].result.expr_base)
+	testing.expect(t, input_ok && result_ok)
+	if input_ok {
+		testing.expect(t, !input_info.is_lhs)
+	}
+	if result_ok {
+		testing.expect(t, result_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_marks_get_bit_target_as_lhs :: proc(t: ^testing.T) {
+	source := `DATA lv_source TYPE x.
+DATA lv_target TYPE i.
+GET BIT 1 OF lv_source INTO lv_target.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_get_bit.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	get_bit := file.root.stmts[2].derived_stmt.(^ast.Bit_Stmt)
+	source_info, source_ok := checker_test_expr_info_for_node(t, &checker, &get_bit.source.expr_base)
+	target_info, target_ok := checker_test_expr_info_for_node(t, &checker, &get_bit.target.expr_base)
+	testing.expect(t, source_ok && target_ok)
+	if source_ok {
+		testing.expect(t, !source_info.is_lhs)
+	}
+	if target_ok {
+		testing.expect(t, target_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_validates_text_transform_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lv_mask TYPE string.
+DATA lv_only TYPE string.
+DATA lv_packed TYPE p.
+DATA lv_unpacked TYPE c.
+DATA lv_sortable TYPE xstring.
+OVERLAY lv_text WITH lv_mask ONLY lv_only.
+PACK lv_text TO lv_packed.
+UNPACK lv_packed TO lv_unpacked.
+CONVERT TEXT lv_text INTO SORTABLE CODE lv_sortable.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_text_transform.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	for stmt in file.root.stmts[6:] {
+		transform := stmt.derived_stmt.(^ast.Text_Transform_Stmt)
+		source_info, source_ok := checker_test_expr_info_for_node(t, &checker, &transform.source.expr_base)
+		target_info, target_ok := checker_test_expr_info_for_node(t, &checker, &transform.target.expr_base)
+		testing.expect(t, source_ok && target_ok)
+		if source_ok {
+			testing.expect(t, !source_info.is_lhs)
+		}
+		if target_ok {
+			testing.expect(t, target_info.is_lhs)
+		}
+	}
+	overlay := file.root.stmts[6].derived_stmt.(^ast.Text_Transform_Stmt)
+	only_info, only_ok := checker_test_expr_info_for_node(t, &checker, &overlay.only.expr_base)
+	testing.expect(t, only_ok)
+	if only_ok {
+		testing.expect(t, !only_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_rejects_non_writable_text_transform_targets :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lv_packed TYPE p.
+CONSTANTS gc_text TYPE string VALUE ''.
+CONSTANTS gc_packed TYPE p VALUE 0.
+CONSTANTS gc_bytes TYPE xstring VALUE ''.
+OVERLAY gc_text WITH lv_text.
+PACK lv_text TO gc_packed.
+UNPACK lv_packed TO gc_text.
+CONVERT TEXT lv_text INTO SORTABLE CODE gc_bytes.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_text_transform_targets_invalid.abap")
+
+	messages := [?]string {
+		"OVERLAY target is not writable",
+		"PACK target is not writable",
+		"UNPACK target is not writable",
+		"CONVERT target is not writable",
+	}
+	for message in messages {
+		testing.expect_value(
+			t,
+			checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, message),
+			1,
+		)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_text_transform_operands :: proc(t: ^testing.T) {
+	source := `OVERLAY missing_overlay_target WITH missing_overlay_source ONLY missing_overlay_only.
+PACK missing_pack_source TO missing_pack_target.
+UNPACK missing_unpack_source TO missing_unpack_target.
+CONVERT TEXT missing_convert_source INTO SORTABLE CODE missing_convert_target.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_text_transform_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 9)
+}
+
+@(test)
+root_semantic_stmt_checker_validates_field_group_and_dynpro_field_operands :: proc(t: ^testing.T) {
+	source := `DATA header TYPE string.
+DATA lv_field TYPE string.
+FIELD-GROUPS header flight_info.
+INSERT DUMMY INTO header.
+FIELD lv_field MODULE validate_field ON INPUT.
+MODULE validate_field INPUT.
+ENDMODULE.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_field_group.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	header := checker_test_lookup(t, &project, file.root_scope, .Value, "header", .Variable)
+	module := checker_test_lookup(t, &project, file.root_scope, .Routine, "validate_field", .Module)
+	testing.expect(t, header != nil && .Used not_in header.flags)
+	testing.expect(t, module != nil && .Used in module.flags)
+	field_stmt := file.root.stmts[4].derived_stmt.(^ast.Field_Stmt)
+	field_info, field_ok := checker_test_expr_info_for_node(t, &checker, &field_stmt.operands[0].expr_base)
+	module_info, module_ok := checker_test_expr_info_for_node(t, &checker, &field_stmt.module.expr_base)
+	testing.expect(t, field_ok && module_ok)
+	if field_ok {
+		testing.expect(t, field_info.is_lhs)
+	}
+	if module_ok {
+		testing.expect(t, !module_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_rejects_invalid_dynpro_field_operands :: proc(t: ^testing.T) {
+	source := `CONSTANTS gc_field TYPE string VALUE ''.
+FIELD-GROUPS missing_group.
+INSERT DUMMY INTO missing_group.
+FIELD gc_field MODULE missing_module.
+FIELD missing_field MODULE missing_module_2.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_field_group_invalid.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "FIELD target is not writable"),
+		1,
+	)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Global_Symbol,
+			.Routine,
+			"missing_module",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Global_Symbol,
+			.Routine,
+			"missing_module_2",
+		),
+		1,
+	)
+}
+
+@(test)
+root_semantic_stmt_checker_resolves_raise_operands_in_their_namespaces :: proc(t: ^testing.T) {
+	source := `CLASS lcl_events DEFINITION.
+  PUBLIC SECTION.
+    EVENTS changed EXPORTING VALUE(value) TYPE i.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_events IMPLEMENTATION.
+  METHOD run.
+    DATA lv_value TYPE i.
+    DATA lo_error TYPE REF TO object.
+    RAISE EVENT changed EXPORTING value = lv_value.
+    RAISE EXCEPTION lo_error.
+  ENDMETHOD.
+ENDCLASS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_raise_namespaces.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_events", .Class)
+	if class == nil {
+		return
+	}
+	class_payload := class.payload.(^Entity_Object_Payload)
+	event := checker_test_lookup(t, &project, class_payload.definition_scope, .Routine, "changed", .Event)
+	run := checker_test_lookup(t, &project, class_payload.definition_scope, .Routine, "run", .Method)
+	if event != nil {
+		testing.expect(t, .Used in event.flags)
+	}
+	if run == nil {
+		return
+	}
+	run_payload := run.payload.(^Entity_Routine_Payload)
+	lv_value := checker_test_lookup(t, &project, run_payload.body_scope, .Value, "lv_value", .Variable)
+	lo_error := checker_test_lookup(t, &project, run_payload.body_scope, .Value, "lo_error", .Variable)
+	testing.expect(t, lv_value != nil && .Used in lv_value.flags)
+	testing.expect(t, lo_error != nil && .Used in lo_error.flags)
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_raise_operands_by_role :: proc(t: ^testing.T) {
+	source := `RAISE EXCEPTION missing_object.
+RAISE EXCEPTION TYPE zcx_missing EXPORTING text = missing_exception_value.
+RAISE SHORTDUMP TYPE zcx_missing_dump EXPORTING text = missing_dump_value.
+RAISE EVENT missing_event EXPORTING value = missing_event_value.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_raise_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 4)
+	type_names := [?]string{"zcx_missing", "zcx_missing_dump"}
+	for name in type_names {
+		testing.expect_value(
+			t,
+			checker_test_unresolved_candidate_namespace_count(
+				&checker,
+				&project,
+				.Global_Symbol,
+				.Type,
+				name,
+			),
+			1,
+		)
+	}
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Global_Symbol,
+			.Routine,
+			"missing_event",
+		),
+		1,
+	)
+}
+
+@(test)
+root_semantic_stmt_checker_validates_generated_output_targets :: proc(t: ^testing.T) {
+	source := `CONSTANTS gc_i TYPE i VALUE 1.
+CONSTANTS gc_c TYPE c VALUE 'X'.
+CONSTANTS gc_table TYPE string VALUE ''.
+DATA lt_source TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+GET BIT 1 OF gc_c INTO gc_i.
+GET LOCALE LANGUAGE gc_c COUNTRY gc_c MODIFIER gc_c.
+READ TEXTPOOL gc_c INTO gc_table LANGUAGE gc_c.
+GENERATE SUBROUTINE POOL lt_source NAME gc_c MESSAGE gc_c LINE gc_i WORD gc_c OFFSET gc_i.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_generated_output_targets.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 11)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "BIT target is not writable"), 1)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "GET LOCALE LANGUAGE target is not writable"), 1)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "GET LOCALE COUNTRY target is not writable"), 1)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "GET LOCALE MODIFIER target is not writable"), 1)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "READ TEXTPOOL target is not writable"), 1)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "TEXTPOOL table operand is not an internal table"), 1)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "GENERATE NAME target is not writable"), 1)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "GENERATE MESSAGE target is not writable"), 1)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "GENERATE LINE target is not writable"), 1)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "GENERATE WORD target is not writable"), 1)
+	testing.expect_value(t, checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "GENERATE OFFSET target is not writable"), 1)
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_generated_operands :: proc(t: ^testing.T) {
+	source := `GET BIT missing_position OF missing_source INTO missing_bit_target.
+GET LOCALE LANGUAGE missing_language.
+READ TEXTPOOL missing_program INTO missing_textpool LANGUAGE missing_textpool_language.
+GENERATE SUBROUTINE POOL missing_source_table NAME missing_name MESSAGE missing_message.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_generated_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 10)
+}
+
+@(test)
+root_semantic_stmt_checker_validates_call_transformation_arguments :: proc(t: ^testing.T) {
+	source := `DATA lv_result TYPE string.
+CONSTANTS gc_source TYPE string VALUE ''.
+CONSTANTS gc_result TYPE string VALUE ''.
+CALL TRANSFORMATION id SOURCE XML gc_source RESULT XML lv_result.
+CALL TRANSFORMATION id SOURCE XML gc_source RESULT XML gc_result.
+CALL TRANSFORMATION id SOURCE XML missing_source RESULT XML missing_result.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_call_transformation_arguments.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"CALL TRANSFORMATION RESULT target is not writable",
+		),
+		1,
+	)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+
+	call := file.root.stmts[3].derived_stmt.(^ast.Call_Stmt)
+	source_info, source_ok := checker_test_expr_info_for_node(
+		t,
+		&checker,
+		&call.transformation_args[0].value.expr_base,
+	)
+	result_info, result_ok := checker_test_expr_info_for_node(
+		t,
+		&checker,
+		&call.transformation_args[1].value.expr_base,
+	)
+	testing.expect(t, source_ok && result_ok)
+	if source_ok {
+		testing.expect(t, !source_info.is_lhs)
+	}
+	if result_ok {
+		testing.expect(t, result_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_validates_message_into_target :: proc(t: ^testing.T) {
+	source := `DATA lv_message TYPE string.
+	DATA lv_number TYPE i.
+CONSTANTS gc_message TYPE string VALUE ''.
+MESSAGE 'mutable' INTO lv_message.
+MESSAGE 'constant' INTO gc_message.
+MESSAGE 'number' INTO lv_number.
+MESSAGE 'missing' INTO missing_message.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_message_into_target.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"MESSAGE INTO target is not writable",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"MESSAGE INTO target is not character-like",
+		),
+		1,
+	)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+
+	message := file.root.stmts[3].derived_stmt.(^ast.Message_Stmt)
+	into_info, into_ok := checker_test_expr_info_for_node(t, &checker, &message.into.expr_base)
+	testing.expect(t, into_ok)
+	if into_ok {
+		testing.expect(t, into_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_validates_message_value_operands_and_classic_exception :: proc(t: ^testing.T) {
+	source := `FUNCTION z_message
+  EXCEPTIONS failed = 1.
+  DATA lv_id TYPE string.
+  DATA lv_type TYPE c.
+  DATA lv_number TYPE n.
+  DATA lv_value TYPE string.
+  DATA lv_other TYPE string.
+  MESSAGE ID lv_id TYPE lv_type NUMBER lv_number WITH lv_value DISPLAY LIKE lv_type RAISING failed.
+  MESSAGE ID missing_id TYPE missing_type NUMBER missing_number WITH missing_value DISPLAY LIKE missing_like RAISING missing_exception.
+  MESSAGE '001' RAISING lv_other.
+ENDFUNCTION.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_message_operands.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 6)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"MESSAGE RAISING target is not a classic exception",
+		),
+		1,
+	)
+
+	message := file.root.stmts[0].derived_stmt.(^ast.Function_Decl).body[5].derived_stmt.(^ast.Message_Stmt)
+	expressions := [?]^ast.Expr {
+		message.head.id,
+		message.head.msg_type,
+		message.head.number,
+		message.with_args[0],
+		message.display_like,
+		message.raising,
+	}
+	for expr in expressions {
+		info, ok := checker_test_expr_info_for_node(t, &checker, &expr.expr_base)
+		testing.expect(t, ok)
+		if ok {
+			testing.expect(t, !info.is_lhs)
+		}
+	}
+	raising_info, raising_ok := checker_test_expr_info_for_node(t, &checker, &message.raising.expr_base)
+	testing.expect(t, raising_ok)
+	if raising_ok {
+		testing.expect_value(t, raising_info.mode, ast.Addressing_Mode.Variable)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_validates_assign_target :: proc(t: ^testing.T) {
+	source := `DATA lv_source TYPE string.
+FIELD-SYMBOLS <lv_target> TYPE string.
+CONSTANTS gc_target TYPE string VALUE ''.
+ASSIGN lv_source TO <lv_target>.
+ASSIGN lv_source TO gc_target.
+ASSIGN lv_source TO missing_target.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_assign_target.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"ASSIGN target is not writable",
+		),
+		1,
+	)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+
+	assign := file.root.stmts[3].derived_stmt.(^ast.Assign_Field_Stmt)
+	target_info, target_ok := checker_test_expr_info_for_node(t, &checker, &assign.target.expr_base)
+	testing.expect(t, target_ok)
+	if target_ok {
+		testing.expect(t, target_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_validates_create_targets :: proc(t: ^testing.T) {
+	source := `DATA lo_object TYPE REF TO object.
+DATA lr_data TYPE REF TO data.
+CONSTANTS gc_object TYPE REF TO object VALUE IS INITIAL.
+CONSTANTS gc_data TYPE REF TO data VALUE IS INITIAL.
+CREATE OBJECT lo_object.
+CREATE DATA lr_data TYPE i.
+CREATE OBJECT gc_object.
+CREATE DATA gc_data TYPE i.
+CREATE OBJECT missing_object.
+CREATE DATA missing_data TYPE i.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_create_targets.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"CREATE OBJECT target is not writable",
+		),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"CREATE DATA target is not writable",
+		),
+		1,
+	)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+
+	create_object := file.root.stmts[4].derived_stmt.(^ast.Create_Object_Stmt)
+	object_info, object_ok := checker_test_expr_info_for_node(t, &checker, &create_object.target.expr_base)
+	testing.expect(t, object_ok)
+	if object_ok {
+		testing.expect(t, object_info.is_lhs)
+	}
+	create_data := file.root.stmts[5].derived_stmt.(^ast.Create_Data_Stmt)
+	data_info, data_ok := checker_test_expr_info_for_node(t, &checker, &create_data.target.expr_base)
+	testing.expect(t, data_ok)
+	if data_ok {
+		testing.expect(t, data_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_validates_refresh_free_and_unassign_targets :: proc(t: ^testing.T) {
+	source := `DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+DATA lv_value TYPE i.
+DATA lr_value TYPE REF TO object.
+FIELD-SYMBOLS <lv_value> TYPE i.
+CONSTANTS gc_value TYPE i VALUE 1.
+REFRESH lt_values.
+REFRESH lv_value.
+FREE lr_value.
+UNASSIGN <lv_value>.
+REFRESH gc_value.
+FREE gc_value.
+UNASSIGN gc_value.
+REFRESH missing_refresh.
+FREE missing_free.
+UNASSIGN <missing_unassign>.
+FREE MEMORY ID missing_memory_id.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_mutating_targets_invalid.abap")
+
+	messages := [?]string {
+		"REFRESH target is not writable",
+		"REFRESH target is not an internal table",
+		"FREE target is not writable",
+		"UNASSIGN target is not writable",
+	}
+	for message in messages {
+		testing.expect_value(
+			t,
+			checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, message),
+			1,
+		)
+	}
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 4)
+}
+
+@(test)
+root_semantic_stmt_checker_validates_clear_targets :: proc(t: ^testing.T) {
+	source := `DATA lv_value TYPE i.
+CONSTANTS gc_value TYPE i VALUE 1.
+CLEAR lv_value.
+CLEAR gc_value.
+CLEAR missing_value.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_clear_target_invalid.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"CLEAR target is not writable",
+		),
+		1,
+	)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+}
+
+@(test)
 root_semantic_stmt_checker_reports_forward_inline_data_initializer_reference :: proc(t: ^testing.T) {
 	source := `DATA(lv_val) = lv_val1.
 DATA(lv_val1) = 1.`
@@ -3374,6 +4270,162 @@ CONVERT TIME STAMP lv_ts TIME ZONE lv_zone INTO DATE lv_date TIME lv_time DAYLIG
 }
 
 @(test)
+root_semantic_stmt_checker_records_convert_time_stamp_operand_directions :: proc(t: ^testing.T) {
+	source := `DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+DATA lv_dst TYPE c.
+DATA lv_ts TYPE timestamp.
+DATA lv_zone TYPE string.
+CONVERT DATE lv_date TIME lv_time DAYLIGHT SAVING TIME lv_dst
+  INTO TIME STAMP lv_ts TIME ZONE lv_zone.
+CONVERT TIME STAMP lv_ts TIME ZONE lv_zone
+  INTO DATE lv_date TIME lv_time DAYLIGHT SAVING TIME lv_dst.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_convert_timestamp_directions.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	to_timestamp := file.root.stmts[5].derived_stmt.(^ast.Convert_Time_Stamp_Stmt)
+	from_timestamp := file.root.stmts[6].derived_stmt.(^ast.Convert_Time_Stamp_Stmt)
+	readable := [?]^ast.Expr {
+		to_timestamp.date,
+		to_timestamp.time,
+		to_timestamp.daylight_saving_time,
+		to_timestamp.time_zone,
+		from_timestamp.time_stamp,
+		from_timestamp.time_zone,
+	}
+	for expr in readable {
+		info, ok := checker_test_expr_info_for_node(t, &checker, &expr.expr_base)
+		testing.expect(t, ok)
+		if ok {
+			testing.expect(t, !info.is_lhs)
+			testing.expect_value(t, info.mode, ast.Addressing_Mode.Variable)
+		}
+	}
+	writable := [?]^ast.Expr {
+		to_timestamp.time_stamp,
+		from_timestamp.date,
+		from_timestamp.time,
+		from_timestamp.daylight_saving_time,
+	}
+	for expr in writable {
+		info, ok := checker_test_expr_info_for_node(t, &checker, &expr.expr_base)
+		testing.expect(t, ok)
+		if ok {
+			testing.expect(t, info.is_lhs)
+			testing.expect_value(t, info.mode, ast.Addressing_Mode.Variable)
+		}
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_checks_list_control_operands_as_readable_values :: proc(t: ^testing.T) {
+	source := `DATA lv_line TYPE i.
+DATA lv_length TYPE i.
+DATA lv_color TYPE i.
+DATA lv_hidden TYPE c LENGTH 10.
+CONSTANTS gc_line TYPE i VALUE 2.
+SKIP TO LINE lv_line.
+ULINE AT lv_length.
+NEW-LINE NO-SCROLLING.
+NEW-PAGE LINE-SIZE gc_line.
+RESERVE gc_line LINES.
+BACK.
+FORMAT COLOR lv_color.
+POSITION gc_line.
+HIDE lv_hidden.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_list_control_values.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	for stmt in file.root.stmts[5:] {
+		list_stmt, ok := stmt.derived_stmt.(^ast.List_Control_Stmt)
+		testing.expect(t, ok)
+		if !ok || len(list_stmt.operands) == 0 {
+			continue
+		}
+		info, info_ok := checker_test_expr_info_for_node(t, &checker, &list_stmt.operands[0].expr_base)
+		testing.expect(t, info_ok)
+		if info_ok {
+			testing.expect(t, !info.is_lhs)
+			testing.expect(
+				t,
+				info.mode == .Value || info.mode == .Variable || info.mode == .Constant,
+			)
+		}
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_list_control_operands :: proc(t: ^testing.T) {
+	source := `SKIP TO LINE missing_skip.
+ULINE AT missing_uline.
+NEW-LINE missing_new_line.
+NEW-PAGE LINE-SIZE missing_new_page.
+RESERVE missing_reserve LINES.
+BACK.
+FORMAT COLOR missing_format.
+POSITION missing_position.
+HIDE missing_hide.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_list_control_unresolved.abap")
+
+	names := [?]string {
+		"missing_skip",
+		"missing_uline",
+		"missing_new_line",
+		"missing_new_page",
+		"missing_reserve",
+		"missing_format",
+		"missing_position",
+		"missing_hide",
+	}
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), len(names))
+	for name in names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 1)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_reports_unresolved_convert_time_stamp_operands :: proc(t: ^testing.T) {
+	source := `CONVERT DATE missing_date TIME missing_time DAYLIGHT SAVING TIME missing_dst
+  INTO TIME STAMP missing_ts_target TIME ZONE missing_zone.
+CONVERT TIME STAMP missing_ts_source TIME ZONE missing_zone_source
+  INTO DATE missing_date_target TIME missing_time_target DAYLIGHT SAVING TIME missing_dst_target.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_convert_timestamp_unresolved.abap")
+
+	names := [?]string {
+		"missing_date",
+		"missing_time",
+		"missing_dst",
+		"missing_ts_target",
+		"missing_zone",
+		"missing_ts_source",
+		"missing_zone_source",
+		"missing_date_target",
+		"missing_time_target",
+		"missing_dst_target",
+	}
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), len(names))
+	for name in names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 1)
+	}
+}
+
+@(test)
 root_semantic_stmt_checker_infers_get_time_stamp_inline_target :: proc(t: ^testing.T) {
 	source := `GET TIME STAMP FIELD DATA(lv_modify_timestamp).`
 
@@ -3389,6 +4441,44 @@ root_semantic_stmt_checker_infers_get_time_stamp_inline_target :: proc(t: ^testi
 		return
 	}
 	testing.expect_value(t, checker_test_type_name(&project, lv_modify_timestamp.type), "timestamp")
+}
+
+@(test)
+root_semantic_stmt_checker_rejects_non_writable_type_hinted_targets :: proc(t: ^testing.T) {
+	source := `DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+DATA lv_ts TYPE timestamp.
+DATA lv_zone TYPE string.
+CONSTANTS gc_date TYPE d VALUE '20260101'.
+CONSTANTS gc_time TYPE t VALUE '120000'.
+CONSTANTS gc_dst TYPE c VALUE 'X'.
+CONSTANTS gc_ts TYPE timestamp VALUE '20260101120000'.
+CONSTANTS gc_length TYPE i VALUE 0.
+CONVERT DATE lv_date TIME lv_time INTO TIME STAMP gc_ts TIME ZONE lv_zone.
+CONVERT TIME STAMP lv_ts TIME ZONE lv_zone INTO DATE gc_date TIME gc_time DAYLIGHT SAVING TIME gc_dst.
+DESCRIBE FIELD lv_date LENGTH gc_length IN CHARACTER MODE.
+GET TIME STAMP FIELD gc_ts.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_type_hinted_targets_invalid.abap")
+
+	messages := [?]string {
+		"CONVERT TIME STAMP target is not writable",
+		"CONVERT DATE target is not writable",
+		"CONVERT TIME target is not writable",
+		"CONVERT DAYLIGHT SAVING TIME target is not writable",
+		"DESCRIBE target is not writable",
+		"GET TIME STAMP target is not writable",
+	}
+	for message in messages {
+		testing.expect_value(
+			t,
+			checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, message),
+			1,
+		)
+	}
 }
 
 @(test)
@@ -3450,6 +4540,29 @@ ENDTRY.`
 	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_catch_into_object_ref.abap")
 
 	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Incompatible_Assignment_Type), 0)
+}
+
+@(test)
+root_semantic_stmt_checker_rejects_non_writable_catch_into_target :: proc(t: ^testing.T) {
+	source := `CONSTANTS gc_error TYPE REF TO object VALUE IS INITIAL.
+TRY.
+CATCH cx_root INTO gc_error.
+ENDTRY.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_catch_into_constant.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"CATCH INTO target is not writable",
+		),
+		1,
+	)
 }
 
 @(test)
@@ -4060,6 +5173,125 @@ SHIFT lv_text BY missing_places PLACES.`
 	testing.expect(t, seen_missing_target)
 	testing.expect(t, seen_missing_pattern)
 	testing.expect(t, seen_missing_places)
+}
+
+@(test)
+root_semantic_stmt_checker_validates_replace_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_offset TYPE i.
+REPLACE 'old' IN lv_text WITH 'new'.
+REPLACE 'old' IN TABLE lt_text WITH 'new'.
+REPLACE SECTION OFFSET lv_offset LENGTH 1 OF lv_text WITH 'x'.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_replace.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	replace := file.root.stmts[3].derived_stmt.(^ast.Replace_Stmt)
+	target_info, target_ok := checker_test_expr_info_for_node(t, &checker, &replace.target.expr_base)
+	testing.expect(t, target_ok)
+	if target_ok {
+		testing.expect(t, target_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_diagnoses_invalid_replace_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+CONSTANTS gc_text TYPE string VALUE ''.
+REPLACE lt_text IN lv_text WITH 'new'.
+REPLACE 'old' IN lt_text WITH 'new'.
+REPLACE 'old' IN gc_text WITH 'new'.
+REPLACE 'old' IN TABLE lv_text WITH lt_text.
+REPLACE SECTION OFFSET lt_text LENGTH lt_text OF lv_text WITH 'x'.
+REPLACE missing_pattern IN missing_target WITH missing_replacement.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_replace_invalid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 7)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 3)
+	messages := [?]string {
+		"REPLACE pattern is not character-like or byte-like",
+		"REPLACE target is not character-like or byte-like",
+		"REPLACE target is not writable",
+		"REPLACE IN TABLE target is not an internal table",
+		"REPLACE replacement is not character-like or byte-like",
+		"REPLACE SECTION OFFSET operand is not integer-compatible",
+		"REPLACE SECTION LENGTH operand is not integer-compatible",
+	}
+	for message in messages {
+		testing.expect_value(
+			t,
+			checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, message),
+			1,
+		)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_validates_translate_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lv_mask TYPE c LENGTH 4.
+TRANSLATE lv_text TO UPPER CASE.
+TRANSLATE lv_text TO LOWER CASE.
+TRANSLATE lv_text USING lv_mask.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_translate.abap")
+
+	testing.expect_value(t, len(checker.info.diagnostics), 0)
+	translate := file.root.stmts[2].derived_stmt.(^ast.Translate_Stmt)
+	target_info, target_ok := checker_test_expr_info_for_node(t, &checker, &translate.target.expr_base)
+	testing.expect(t, target_ok)
+	if target_ok {
+		testing.expect(t, target_info.is_lhs)
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_diagnoses_invalid_translate_operands :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lv_num TYPE i.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+CONSTANTS gc_text TYPE string VALUE ''.
+TRANSLATE lt_text TO UPPER CASE.
+TRANSLATE gc_text TO LOWER CASE.
+TRANSLATE lv_num TO UPPER CASE.
+TRANSLATE lv_text USING lv_num.
+TRANSLATE missing_target TO UPPER CASE.
+TRANSLATE lv_text USING missing_mask.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_translate_invalid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 4)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 2)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "TRANSLATE target is not writable"),
+		1,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "TRANSLATE target is not character-like"),
+		2,
+	)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(&checker, .Invalid_Syntax_Form, "TRANSLATE USING mask is not character-like"),
+		1,
+	)
 }
 
 @(test)
@@ -4736,6 +5968,52 @@ START-OF-SELECTION.
 }
 
 @(test)
+root_semantic_stmt_checker_uses_report_namespace_for_static_submit_target :: proc(t: ^testing.T) {
+	source := `SUBMIT zmissing_report AND RETURN.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://submit_static_target.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 0)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Report, "zmissing_report"), 1)
+	testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "zmissing_report"), 0)
+}
+
+@(test)
+root_semantic_stmt_checker_diagnoses_unresolved_submit_value_operands :: proc(t: ^testing.T) {
+	source := `SUBMIT (missing_report)
+  WITH p_bukrs EQ missing_low
+  WITH s_erdat BETWEEN missing_between_low AND missing_high SIGN missing_sign
+  VIA JOB missing_job NUMBER missing_count
+  USER missing_user
+  LANGUAGE missing_language
+  AND RETURN.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://submit_unresolved_operands.abap")
+
+	names := [?]string {
+		"missing_report",
+		"missing_low",
+		"missing_between_low",
+		"missing_high",
+		"missing_sign",
+		"missing_job",
+		"missing_count",
+		"missing_user",
+		"missing_language",
+	}
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), len(names))
+	for name in names {
+		testing.expect_value(t, checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, name), 1)
+	}
+}
+
+@(test)
 root_semantic_checker_collects_structured_form_header_parameters :: proc(t: ^testing.T) {
 	source := `FORM plain.
 ENDFORM.
@@ -5037,6 +6315,104 @@ CALL FUNCTION 'Z_DEMO' DESTINATION c_s4_dest
 }
 
 @(test)
+root_semantic_stmt_checker_validates_receive_results_targets_without_signature :: proc(t: ^testing.T) {
+	source := `CONSTANTS gc_value TYPE i VALUE 1.
+DATA lv_value TYPE i.
+RECEIVE RESULTS FROM FUNCTION 'Z_DEMO'
+  IMPORTING
+    constant = gc_value
+    variable = lv_value.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_receive_results_targets.abap")
+
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Incompatible_Argument_Type,
+			"argument is not writable",
+		),
+		1,
+	)
+	receive := file.root.stmts[2].derived_stmt.(^ast.Receive_Results_Stmt)
+	for arg in receive.named_args {
+		info, ok := checker_test_expr_info_for_node(t, &checker, &arg.value.expr_base)
+		testing.expect(t, ok)
+		if ok {
+			testing.expect(t, info.is_lhs)
+		}
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_resolves_receive_function_and_writable_results :: proc(t: ^testing.T) {
+	source := `FUNCTION z_receive
+  EXPORTING ev_value TYPE i.
+ENDFUNCTION.
+DATA lv_value TYPE i.
+DATA lv_message TYPE c.
+RECEIVE RESULTS FROM FUNCTION 'Z_RECEIVE'
+  IMPORTING ev_value = lv_value
+  EXCEPTIONS system_failure = 1 MESSAGE lv_message.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://stmt_receive_resolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Named_Parameter), 0)
+	receive := file.root.stmts[3].derived_stmt.(^ast.Receive_Results_Stmt)
+	target_info, target_ok := checker_test_expr_info_for_node(t, &checker, &receive.target.expr_base)
+	testing.expect(t, target_ok)
+	if target_ok {
+		testing.expect(t, !target_info.is_lhs)
+	}
+	for arg in receive.named_args {
+		if arg.value != nil && arg.section == .Importing {
+			info, ok := checker_test_expr_info_for_node(t, &checker, &arg.value.expr_base)
+			testing.expect(t, ok)
+			if ok {
+				testing.expect(t, info.is_lhs)
+			}
+		}
+		if arg.message != nil {
+			info, ok := checker_test_expr_info_for_node(t, &checker, &arg.message.expr_base)
+			testing.expect(t, ok)
+			if ok {
+				testing.expect(t, info.is_lhs)
+			}
+		}
+	}
+}
+
+@(test)
+root_semantic_stmt_checker_records_receive_function_candidate_without_value_diagnostic :: proc(t: ^testing.T) {
+	source := `RECEIVE RESULTS FROM FUNCTION 'Z_REMOTE_RECEIVE'.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_receive_unresolved.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 0)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_namespace_count(
+			&checker,
+			&project,
+			.Function_Module,
+			.Routine,
+			"z_remote_receive",
+		),
+		1,
+	)
+}
+
+@(test)
 root_semantic_stmt_checker_skips_required_function_parameters_for_parameter_table :: proc(t: ^testing.T) {
 	source := `FUNCTION z_required
   IMPORTING iv_required TYPE i
@@ -5204,6 +6580,76 @@ WRITE lv_count TO lv_target.`
 	lv_target := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_target", .Variable)
 	testing.expect(t, lv_count != nil && .Used in lv_count.flags)
 	testing.expect(t, lv_target != nil && .Used in lv_target.flags)
+}
+
+@(test)
+root_semantic_stmt_checker_validates_do_times_count :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+DO lv_text TIMES.
+ENDDO.
+DO lt_values TIMES.
+ENDDO.
+DO missing_count TIMES.
+ENDDO.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_do_times_invalid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 2)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"DO TIMES count is not integer-compatible",
+		),
+		2,
+	)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_count(&checker, &project, .Global_Symbol, "missing_count"),
+		1,
+	)
+}
+
+@(test)
+root_semantic_stmt_checker_validates_wait_duration :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+WAIT UP TO lv_text SECONDS.
+WAIT UP TO lt_values SECONDS.
+WAIT UP TO missing_duration SECONDS.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://stmt_wait_duration_invalid.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Syntax_Form), 2)
+	testing.expect_value(
+		t,
+		checker_test_diagnostic_message_count(
+			&checker,
+			.Invalid_Syntax_Form,
+			"WAIT duration is not numeric",
+		),
+		2,
+	)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Reference), 1)
+	testing.expect_value(
+		t,
+		checker_test_unresolved_candidate_count(
+			&checker,
+			&project,
+			.Global_Symbol,
+			"missing_duration",
+		),
+		1,
+	)
 }
 
 @(test)

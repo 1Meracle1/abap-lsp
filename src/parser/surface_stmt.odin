@@ -3196,9 +3196,10 @@ parse_line_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 		if allow_keyword(p, "FIELD") {
 			allow_keyword(p, "VALUE")
-			field := data_expr(p, body_start, []string{"INTO", "FIELD"})
+			separator := "INTO" if stmt.kind == .Read else "FROM"
+			field := data_expr(p, body_start, []string{separator, "FIELD"})
 			target: ^ast.Expr
-			if allow_keyword(p, "INTO") {
+			if allow_keyword(p, separator) {
 				target = data_expr(p, body_start, []string{"FIELD"})
 			}
 			append(&stmt.fields, ast.Line_Field_Value_Clause{field = field, target = target})

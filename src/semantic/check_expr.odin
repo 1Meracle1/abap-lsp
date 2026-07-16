@@ -79,6 +79,18 @@ checker_check_expr :: proc(
 		return checker_record_operand(ctx, node, .Value, checker_binary_result_type(ctx, n.op, left, right), lhs = lhs)
 	case ^ast.Unary_Expr:
 		operand := checker_check_expr(ctx, n.expr)
+		if (n.op == .Minus || n.op == .Plus) &&
+		   !checker_type_is_unknown(operand.type) &&
+		   (checker_type_structure(operand.type) != nil ||
+		    checker_type_is_table_like(ctx, operand.type) ||
+		    checker_type_is_ref(operand.type)) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(n.expr),
+				"unary arithmetic operand is not scalar",
+			)
+		}
 		return checker_record_operand(ctx, node, .Value, operand.type, lhs = lhs)
 	case ^ast.Paren_Expr:
 		operand := checker_check_expr(ctx, n.expr, namespace, lhs)
@@ -420,13 +432,13 @@ checker_check_ident_name :: proc(
 			checker_use_range(node, use_range),
 			node,
 		)
-		if namespace == .Value && ctx.diagnose_unresolved_value_refs {
+		if namespace == .Value && checker_should_diagnose_unresolved_value_operand(ctx) {
 			checker_add_unresolved_variable_diagnostic(ctx, name, checker_use_range(node, use_range))
 		}
 		return nil, false
 	}
 	if namespace == .Value &&
-	   ctx.diagnose_unresolved_value_refs &&
+	   checker_should_diagnose_unresolved_value_operand(ctx) &&
 	   !entity_kind_occupies(entity.kind, .Value) {
 		checker_add_unresolved_variable_diagnostic(ctx, name, checker_use_range(node, use_range))
 		return nil, false
@@ -1215,7 +1227,7 @@ checker_check_cond_sequence :: proc(
 				)
 			}
 			state.when_seen = true
-			checker_check_expr_with_unresolved_value_diagnostics(ctx, n.condition)
+			checker_check_logical_condition(ctx, n.condition, "COND WHEN")
 			result := checker_check_cond_result_expr(ctx, n.result, state)
 			checker_record_operand(ctx, &arg.expr_base, .Value, result.type)
 		case ^ast.Constructor_Else_Clause_Expr:
@@ -1289,15 +1301,22 @@ checker_check_cond_result_expr :: proc(
 		}
 		return result
 	}
-	checker_check_cond_result_compatibility(ctx, result.type, state.result_type, checker_expr_range(expr))
+	checker_check_branch_result_compatibility(
+		ctx,
+		result.type,
+		state.result_type,
+		checker_expr_range(expr),
+		"COND branch result is not compatible",
+	)
 	return result
 }
 
-checker_check_cond_result_compatibility :: proc(
+checker_check_branch_result_compatibility :: proc(
 	ctx: ^Checker_Context,
 	actual: ^Type,
 	expected: ^Type,
 	range: Range,
+	message: string,
 ) {
 	if checker_type_is_unknown(actual) || checker_type_is_unknown(expected) {
 		return
@@ -1308,7 +1327,7 @@ checker_check_cond_result_compatibility :: proc(
 				ctx,
 				.Incompatible_Assignment_Type,
 				range,
-				checker_type_mismatch_message(ctx, "COND branch result is not compatible", actual, expected),
+				checker_type_mismatch_message(ctx, message, actual, expected),
 			)
 		}
 		return
@@ -1326,7 +1345,7 @@ checker_check_cond_result_compatibility :: proc(
 			ctx,
 			.Incompatible_Assignment_Type,
 			range,
-			checker_type_mismatch_message(ctx, "COND branch result is not compatible", actual, expected),
+			checker_type_mismatch_message(ctx, message, actual, expected),
 		)
 	}
 }
@@ -2355,7 +2374,8 @@ checker_check_constructor_for_then_clause :: proc(
 			"FOR THEN requires an UNTIL or WHILE condition",
 		)
 	} else {
-		checker_check_expr_with_unresolved_value_diagnostics(ctx, expr.condition)
+		condition_name := "FOR WHILE" if expr.kind == .For_Then_While else "FOR UNTIL"
+		checker_check_logical_condition(ctx, expr.condition, condition_name)
 	}
 	return iter_type
 }

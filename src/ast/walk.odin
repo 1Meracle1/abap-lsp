@@ -437,9 +437,15 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.column)
 	case ^Receive_Results_Stmt:
 		walk(next, n.target)
+		for arg in n.named_args {
+			walk(next, arg.value)
+			walk(next, arg.message)
+		}
 	case ^Raise_Stmt:
 		walk(next, n.target)
-		walk_expr_list(next, n.operands)
+		for arg in n.named_args {
+			walk(next, arg.value)
+		}
 	case ^Authority_Check_Stmt:
 		walk_expr_list(next, n.operands)
 		walk(next, n.object)
@@ -453,6 +459,8 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.target)
 	case ^Field_Stmt:
 		walk_expr_list(next, n.operands)
+		walk(next, n.module)
+		walk(next, n.condition)
 	case ^Assign_Field_Stmt:
 		walk(next, n.source)
 		walk(next, n.component)
@@ -474,7 +482,9 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.type_handle)
 		walk_expr_list(next, n.operands)
 	case ^Text_Transform_Stmt:
-		walk_expr_list(next, n.operands)
+		walk(next, n.source)
+		walk(next, n.target)
+		walk(next, n.only)
 	case ^Wait_Stmt:
 		walk(next, n.condition)
 		walk(next, n.duration)
@@ -724,6 +734,8 @@ walk_else_clause :: proc(v: ^Visitor, clause: ^Else_Clause) {
 walk_when_clause :: proc(v: ^Visitor, clause: ^When_Clause) {
 	if clause != nil {
 		walk_expr_list(v, clause.operands)
+		walk_expr_list(v, clause.type_operands)
+		walk(v, clause.into)
 		walk_stmt_list(v, clause.body)
 	}
 }

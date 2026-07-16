@@ -763,6 +763,7 @@ raw_operand_skip_keyword :: proc(text: string) -> bool {
 		"RECEIVING", "EXCEPTIONS", "USING", "RAISING", "RESUMABLE", "MESSAGE",
 		"COMPONENT", "OF", "STRUCTURE", "REF", "TO", "INTO", "FROM", "BY", "WITH",
 		"FIELDS", "LINES", "LINE", "TABLE", "OBJECT", "EXCEPTION", "EVENT",
+		"AT", "NO", "SCROLLING", "SIZE", "COLOR",
 	}
 	for keyword in keywords {
 		if strings.equal_fold(text, keyword) {
@@ -1190,7 +1191,7 @@ parse_data_cluster_parameter :: proc(
 
 parse_runtime_detail :: proc(p: ^Parser, stmt: ^ast.Runtime_Stmt) -> bool {
 	body_start := p.index
-	if stmt.kind == .Get {
+	if stmt.kind == .Get || stmt.kind == .Get_Badi {
 		if allow_keyword(p, "RUN") {
 			allow_keyword(p, "TIME")
 			allow_keyword(p, "FIELD")
@@ -1355,11 +1356,9 @@ parse_set_cursor_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 }
 
 RECEIVE_RESULTS_FUNCTION_STOP_KEYWORDS :: []string {
-	"EXPORTING",
+	"KEEPING",
 	"IMPORTING",
-	"CHANGING",
 	"TABLES",
-	"RECEIVING",
 	"EXCEPTIONS",
 }
 
@@ -1369,8 +1368,38 @@ parse_receive_results_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	expect_keyword(p, "FROM")
 	expect_keyword(p, "FUNCTION")
 	stmt := ast.new(ast.Receive_Results_Stmt, start.range, p.allocator)
-	stmt.target = parse_raw_operand_to_period(p, RECEIVE_RESULTS_FUNCTION_STOP_KEYWORDS)
+	stmt.target = simple_expr(p, p.index, RECEIVE_RESULTS_FUNCTION_STOP_KEYWORDS)
+	if stmt.target == nil {
+		error_current(p, "syntax error: expected function module name after RECEIVE RESULTS FROM FUNCTION")
+	}
+	if allow_keyword(p, "KEEPING") {
+		expect_keyword(p, "TASK")
+		stmt.keeping_task = true
+	}
 	parse_raw_call_arguments(p, &stmt.arg_sections, &stmt.named_args)
+	last_rank := -1
+	seen_sections: [3]bool
+	for section in stmt.arg_sections {
+		rank := -1
+		#partial switch section.kind {
+		case .Importing: rank = 0
+		case .Tables: rank = 1
+		case .Exceptions: rank = 2
+		case:
+			error(p, section.range, "syntax error: parameter section is not allowed in RECEIVE RESULTS FROM FUNCTION")
+		}
+		if rank >= 0 {
+			if seen_sections[rank] {
+				error(p, section.range, "syntax error: duplicate RECEIVE RESULTS FROM FUNCTION parameter section")
+			}
+			seen_sections[rank] = true
+			if rank < last_rank {
+				error(p, section.range, "syntax error: RECEIVE RESULTS FROM FUNCTION parameter sections are out of order")
+			} else {
+				last_rank = rank
+			}
+		}
+	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
@@ -1403,17 +1432,33 @@ parse_raise_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Raise_Stmt, start.range, p.allocator)
 	if allow_keyword(p, "EVENT") {
 		stmt.kind = .Event
+	} else if allow_keyword(p, "SHORTDUMP") {
+		stmt.kind = .Shortdump
 	} else {
 		stmt.kind = .Exception
 		allow_keyword(p, "EXCEPTION")
 	}
-	if stmt.kind == .Exception && allow_keyword(p, "TYPE") {
+	if stmt.kind != .Event && allow_keyword(p, "TYPE") {
 		stmt.target_type = true
-		stmt.target = parse_raw_operand_to_period(p, []string{"EXPORTING", "MESSAGE", "RESUMABLE"})
+		stmt.target = parse_raw_operand_to_period(
+			p,
+			[]string{"EXPORTING", "MESSAGE", "RESUMABLE"},
+			false,
+			false,
+			false,
+			true,
+		)
 	} else {
-		stmt.target = parse_raw_operand_to_period(p, []string{"EXPORTING", "TYPE", "MESSAGE", "RESUMABLE"})
+		stmt.target = parse_raw_operand_to_period(
+			p,
+			[]string{"EXPORTING", "TYPE", "MESSAGE", "RESUMABLE"},
+			false,
+			false,
+			false,
+			true,
+		)
 	}
-	stmt.operands = parse_generic_operands_to_period(p, []string{})
+	parse_raw_call_arguments(p, &stmt.arg_sections, &stmt.named_args)
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
@@ -1473,7 +1518,14 @@ parse_field_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "FIELD")
 	body_start := p.index
 	stmt := ast.new(ast.Field_Stmt, start.range, p.allocator)
-	stmt.operands = parse_generic_simple_operands(p, body_start, []string{})
+	stmt.operands = parse_generic_simple_operands(p, body_start, []string{"MODULE"})
+	if allow_keyword(p, "MODULE") {
+		stmt.module = required_simple_expr(p, body_start, []string{"ON"})
+		if allow_keyword(p, "ON") {
+			stmt.condition = parse_raw_operand_to_period(p, []string{})
+		}
+		consume_simple_entry_tail(p, body_start)
+	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
@@ -1905,14 +1957,31 @@ parse_text_transform_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Text_Transform_Stmt, start.range, p.allocator)
 	if token_is_keyword(p, start, "OVERLAY") {
 		stmt.kind = .Overlay
+		stmt.target = required_simple_expr(p, body_start, []string{"WITH"})
+		expect_keyword(p, "WITH")
+		stmt.source = required_simple_expr(p, body_start, []string{"ONLY"})
+		if allow_keyword(p, "ONLY") {
+			stmt.only = required_simple_expr(p, body_start, []string{})
+		}
 	} else if token_is_keyword(p, start, "PACK") {
 		stmt.kind = .Pack
+		stmt.source = required_simple_expr(p, body_start, []string{"TO"})
+		expect_keyword(p, "TO")
+		stmt.target = required_simple_expr(p, body_start, []string{})
 	} else if token_is_keyword(p, start, "UNPACK") {
 		stmt.kind = .Unpack
+		stmt.source = required_simple_expr(p, body_start, []string{"TO"})
+		expect_keyword(p, "TO")
+		stmt.target = required_simple_expr(p, body_start, []string{})
 	} else if token_is_keyword(p, start, "CONVERT") {
 		stmt.kind = .Convert
+		expect_keyword(p, "TEXT")
+		stmt.source = required_simple_expr(p, body_start, []string{"INTO"})
+		expect_keyword(p, "INTO")
+		expect_keyword(p, "SORTABLE")
+		expect_keyword(p, "CODE")
+		stmt.target = required_simple_expr(p, body_start, []string{})
 	}
-	stmt.operands = parse_generic_simple_operands(p, body_start, []string{})
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
@@ -5263,7 +5332,7 @@ parse_raw_call_arguments :: proc(
 		_, name_text, name_range := parse_call_stmt_arg_name(p)
 		eq := expect_token(p, .Eq)
 		value_start := p.index
-		value_end := call_stmt_arg_value_end(p, value_start)
+		value_end := call_stmt_arg_value_end(p, value_start, section == .Exceptions)
 		value_range := tokenizer.text_range(eq.range.end, eq.range.end)
 		raw_decls := make([dynamic]ast.Raw_Operand_Inline_Decl, 0, 1, p.allocator)
 		raw_refs := make([dynamic]ast.Raw_Operand_Ref, 0, 2, p.allocator)
@@ -5273,6 +5342,11 @@ parse_raw_call_arguments :: proc(
 				p.tokens[value_start].range.start,
 				p.tokens[value_end - 1].range.end,
 			)
+			group := Raw_Group_State{}
+			for i := value_start; i < value_end; i += 1 {
+				raw_group_note_token(p, &group, p.tokens[i])
+			}
+			raw_group_report_unclosed(p, group)
 			populate_raw_operand_fact_lists(p, value_start, value_end, &raw_decls, &raw_refs)
 			value = parse_required_complete_expr_with(
 				p,
@@ -5284,9 +5358,7 @@ parse_raw_call_arguments :: proc(
 		} else {
 			error_current(p, "syntax error: expected call argument value")
 		}
-		append(
-			named_args,
-			ast.Call_Stmt_Named_Arg {
+		arg := ast.Call_Stmt_Named_Arg {
 				section = section,
 				has_section = has_section,
 				name = parser_ast_token(name_text, name_range),
@@ -5294,11 +5366,33 @@ parse_raw_call_arguments :: proc(
 				value = value,
 				raw_decls = raw_decls,
 				raw_refs = raw_refs,
-			},
-		)
+			}
 		for p.index < value_end {
 			bump_token(p)
 		}
+		if section == .Exceptions && allow_keyword(p, "MESSAGE") {
+			message_start := p.index
+			message_end := call_stmt_arg_value_end(p, message_start)
+			if message_start < message_end {
+				arg.message_range = tokenizer.text_range(
+					p.tokens[message_start].range.start,
+					p.tokens[message_end - 1].range.end,
+				)
+				arg.message = parse_required_complete_expr_with(
+					p,
+					message_start,
+					message_end,
+					parse_logical_expr,
+					"syntax error: expected message variable after MESSAGE",
+				)
+			} else {
+				error_current(p, "syntax error: expected message variable after MESSAGE")
+			}
+			for p.index < message_end {
+				bump_token(p)
+			}
+		}
+		append(named_args, arg)
 	}
 }
 
@@ -5325,14 +5419,20 @@ parse_call_stmt_arg_name :: proc(p: ^Parser) -> (Token, string, tokenizer.Range)
 	return tok, parser_intern_token_name(p, tok), tok.range
 }
 
-call_stmt_arg_value_end :: proc(p: ^Parser, start: int) -> int {
+call_stmt_arg_value_end :: proc(p: ^Parser, start: int, stop_at_message := false) -> int {
 	i := start
 	paren, bracket, brace := 0, 0, 0
 	for i < len(p.tokens) {
 		tok := p.tokens[i]
+		if tok.kind == .Period || tok.kind == .Eof {
+			break
+		}
 		top := paren == 0 && bracket == 0 && brace == 0
 		if top {
-			if tok.kind == .Period || tok.kind == .Eof || tok.kind == .RParen {
+			if stop_at_message && keyword_phrase_at(p, i, "MESSAGE") {
+				break
+			}
+			if tok.kind == .RParen {
 				break
 			}
 			if call_argument_section_starts_at(p, i) {

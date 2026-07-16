@@ -1795,6 +1795,7 @@ Set_Cursor_Stmt :: struct {
 Receive_Results_Stmt :: struct {
 	using node:   Stmt,
 	target:       ^Expr,
+	keeping_task: bool,
 	arg_sections: [dynamic]Call_Stmt_Arg_Section,
 	named_args:   [dynamic]Call_Stmt_Named_Arg,
 }
@@ -1808,15 +1809,17 @@ Authority_Check_ID_Clause :: struct {
 Raise_Kind :: enum {
 	Exception,
 	Event,
+	Shortdump,
 }
 
-// ABAP syntax: `RAISE EXCEPTION ...` or `RAISE EVENT ...`.
+// ABAP syntax: `RAISE EXCEPTION ...`, `RAISE EVENT ...`, or `RAISE SHORTDUMP TYPE ...`.
 Raise_Stmt :: struct {
-	using node:  Stmt,
-	kind:        Raise_Kind,
-	target_type: bool,
-	target:      ^Expr,
-	operands:    [dynamic]^Expr,
+	using node:   Stmt,
+	kind:         Raise_Kind,
+	target_type:  bool,
+	target:       ^Expr,
+	arg_sections: [dynamic]Call_Stmt_Arg_Section,
+	named_args:   [dynamic]Call_Stmt_Named_Arg,
 }
 
 // ABAP syntax: `AUTHORITY-CHECK ...`.
@@ -1843,6 +1846,8 @@ Insert_Dummy_Stmt :: struct {
 Field_Stmt :: struct {
 	using node: Stmt,
 	operands:   [dynamic]^Expr,
+	module:     ^Expr,
+	condition:  ^Expr,
 }
 
 // ABAP syntax: field-symbol assignment `ASSIGN ... TO <fs> [CASTING ...]`.
@@ -1892,7 +1897,9 @@ Text_Transform_Kind :: enum {
 Text_Transform_Stmt :: struct {
 	using node: Stmt,
 	kind:       Text_Transform_Kind,
-	operands:   [dynamic]^Expr,
+	source:     ^Expr,
+	target:     ^Expr,
+	only:       ^Expr,
 }
 
 // ABAP syntax: `WAIT [UNTIL cond] [UP TO n SECONDS].`
@@ -2138,10 +2145,12 @@ If_Stmt :: struct {
 
 // ABAP syntax: `WHEN ... .` arm inside a CASE block.
 When_Clause :: struct {
-	range:     tokenizer.Range,
-	operands:  [dynamic]^Expr,
-	is_others: bool,
-	body:      [dynamic]^Stmt,
+	range:         tokenizer.Range,
+	operands:      [dynamic]^Expr,
+	type_operands: [dynamic]^Expr,
+	into:          ^Expr,
+	is_others:     bool,
+	body:          [dynamic]^Stmt,
 }
 
 // ABAP syntax: `CASE expr. WHEN ... ENDCASE.`

@@ -2602,8 +2602,8 @@ lower_emit_routine_may_throw :: proc(
 
 lower_raise_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Raise_Stmt, source: Source_Loc) {
 	if stmt.kind == .Event {
-		for operand in stmt.operands {
-			lower_expr(ctx, operand)
+		for arg in stmt.named_args {
+			lower_expr(ctx, arg.value)
 		}
 		builder_emit_unsupported(ctx.builder, "RAISE EVENT semantics", source = source)
 		return
@@ -2612,15 +2612,15 @@ lower_raise_stmt :: proc(ctx: ^Lower_Context, stmt: ^ast.Raise_Stmt, source: Sou
 		if stmt.target != nil {
 			lower_expr(ctx, stmt.target)
 		}
-		for operand in stmt.operands {
-			lower_expr(ctx, operand)
+		for arg in stmt.named_args {
+			lower_expr(ctx, arg.value)
 		}
 		builder_emit_unsupported(ctx.builder, "RAISE EXCEPTION object semantics", source = source)
 		return
 	}
-	if len(stmt.operands) > 0 {
-		for operand in stmt.operands {
-			lower_expr(ctx, operand)
+	if len(stmt.named_args) > 0 {
+		for arg in stmt.named_args {
+			lower_expr(ctx, arg.value)
 		}
 		builder_emit_unsupported(ctx.builder, "RAISE EXCEPTION constructor operands", source = source)
 		return

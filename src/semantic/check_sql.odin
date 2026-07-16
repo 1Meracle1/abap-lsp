@@ -233,9 +233,41 @@ checker_check_sql_select_query :: proc(ctx: ^Checker_Context, query: ^ast.Select
 	shape := checker_sql_query_shape(ctx, fields[:], query.result)
 	checker_check_sql_select_result(ctx, query.result, shape)
 	for_all_entries := checker_check_sql_for_all_entries(ctx, query.for_all_entries)
-	checker_check_sql_expr(ctx, &sql, query.where_cond, true, validate_where_hosts = true, for_all_entries = for_all_entries)
-	checker_check_expr(ctx, query.package_size)
-	checker_check_expr(ctx, query.up_to_rows)
+	checker_check_sql_expr(ctx, &sql, query.where_cond, !query.dynamic_where, validate_where_hosts = true, for_all_entries = for_all_entries)
+	if query.package_size != nil {
+		package_size := checker_check_expr(ctx, query.package_size)
+		if !checker_type_is_unknown(package_size.type) {
+			name, ok := checker_type_builtin_name(ctx, package_size.type)
+			if checker_type_structure(package_size.type) != nil ||
+			   checker_type_is_table_like(ctx, package_size.type) ||
+			   checker_type_is_ref(package_size.type) ||
+			   ok && name != "int1" && name != "int2" && name != "i" && name != "int4" && name != "int8" {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(query.package_size),
+					"Open SQL PACKAGE SIZE operand is not an integer row count",
+				)
+			}
+		}
+	}
+	if query.up_to_rows != nil {
+		row_limit := checker_check_expr(ctx, query.up_to_rows)
+		if !checker_type_is_unknown(row_limit.type) {
+			name, ok := checker_type_builtin_name(ctx, row_limit.type)
+			if checker_type_structure(row_limit.type) != nil ||
+			   checker_type_is_table_like(ctx, row_limit.type) ||
+			   checker_type_is_ref(row_limit.type) ||
+			   ok && name != "int1" && name != "int2" && name != "i" && name != "int4" && name != "int8" {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(query.up_to_rows),
+					"Open SQL UP TO operand is not an integer row count",
+				)
+			}
+		}
+	}
 	checker_sql_record_query_fact(ctx, query, shape, sql.sources[:], for_all_entries)
 	for _, i in query.set_ops {
 		checker_check_sql_select_query(ctx, &query.set_ops[i].query)
@@ -289,7 +321,7 @@ checker_check_sql_update_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Update_S
 	for assignment in stmt.assignments {
 		checker_check_sql_assignment(ctx, &sql, assignment)
 	}
-	checker_check_sql_expr(ctx, &sql, stmt.where_cond, true)
+	checker_check_sql_expr(ctx, &sql, stmt.where_cond, !stmt.dynamic_where)
 }
 
 checker_check_sql_modify_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt) {
@@ -304,7 +336,7 @@ checker_check_sql_modify_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_S
 		expected := project_type_table(ctx.project, row_type, .Standard_Table) if stmt.from_table else row_type
 		checker_check_assignment_compatibility(ctx, value.type, expected, checker_expr_range(stmt.source))
 	}
-	checker_check_sql_expr(ctx, &sql, stmt.where_cond, true)
+	checker_check_sql_expr(ctx, &sql, stmt.where_cond, !stmt.dynamic_where)
 }
 
 checker_check_sql_delete_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Delete_Stmt) {
@@ -313,8 +345,8 @@ checker_check_sql_delete_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Delete_S
 
 	source := checker_sql_add_db_source(ctx, &sql, stmt.target, "", Range{}, stmt.dynamic_source)
 	checker_sql_record_dml_fact(ctx, &stmt.node, .Delete, source, 0, stmt.from_table, stmt.dynamic_where)
-	checker_check_expr(ctx, stmt.source)
-	checker_check_sql_expr(ctx, &sql, stmt.where_cond, true)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.source)
+	checker_check_sql_expr(ctx, &sql, stmt.where_cond, !stmt.dynamic_where)
 }
 
 checker_sql_source_scope_make :: proc() -> Sql_Source_Scope {
@@ -501,7 +533,23 @@ checker_check_sql_group_by :: proc(
 		if group_expr.is_dynamic {
 			checker_check_sql_dynamic_expr(ctx, group_expr.value)
 		} else {
-			checker_check_sql_expr(ctx, sql, group_expr.value, false)
+			typ := checker_check_sql_expr(ctx, sql, group_expr.value, false)
+			if !checker_type_resolves_to_unknown(typ) &&
+			   (checker_type_structure(typ) != nil ||
+			    checker_type_is_table_like(ctx, typ) ||
+			    checker_type_is_ref(typ)) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Open_Sql_Group_By,
+					checker_expr_range(group_expr.value),
+					"Open SQL GROUP BY expression is not scalar",
+				)
+			}
+			visitor := ast.Visitor {
+				visit = checker_sql_group_by_aggregate_visit,
+				data  = rawptr(ctx),
+			}
+			ast.walk(&visitor, group_expr.value)
 		}
 	}
 	if len(query.group_by) > 0 {
@@ -515,6 +563,23 @@ checker_check_sql_group_by :: proc(
 			OPEN_SQL_REQUIRED_GROUP_BY_MESSAGE,
 		)
 	}
+}
+
+checker_sql_group_by_aggregate_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil {
+		return v
+	}
+	call, ok := node.derived.(^ast.Sql_Call_Expr)
+	if ok && call.kind == .Aggregate {
+		ctx := (^Checker_Context)(v.data)
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Open_Sql_Group_By,
+			node.range,
+			"Open SQL GROUP BY cannot contain aggregate expressions",
+		)
+	}
+	return v
 }
 
 checker_sql_required_group_by_field :: proc(query: ast.Select_Query_Clause) -> (Range, bool) {
@@ -650,6 +715,17 @@ checker_sql_append_projection :: proc(
 		return
 	}
 	typ := checker_check_sql_expr(ctx, sql, expr, false)
+	if !checker_type_resolves_to_unknown(typ) &&
+	   (checker_type_structure(typ) != nil ||
+	    checker_type_is_table_like(ctx, typ) ||
+	    checker_type_is_ref(typ)) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"Open SQL projection expression is not scalar",
+		)
+	}
 	name, name_range := checker_sql_projection_name(ctx, expr, alias, range)
 	if name == "" {
 		return
@@ -743,10 +819,86 @@ checker_check_sql_expr :: proc(
 	validate_where_hosts := false,
 	for_all_entries: Sql_For_All_Entries_Info = {},
 ) -> ^Type {
+	typ := checker_check_sql_expr_type(ctx, sql, expr, validate_where_hosts, for_all_entries)
+	if predicate {
+		checker_validate_logical_condition_type(ctx, expr, typ, "SQL")
+	}
+	return typ
+}
+
+checker_check_sql_arithmetic_operand :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, typ: ^Type) {
+	if checker_type_is_unknown(typ) {
+		return
+	}
+	name, ok := checker_type_builtin_name(ctx, typ)
+	if checker_type_structure(typ) != nil ||
+	   checker_type_is_table_like(ctx, typ) ||
+	   checker_type_is_ref(typ) ||
+	   ok && checker_scalar_group(name) != .Numeric && name != "numeric" {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"SQL arithmetic operand is not numeric",
+		)
+	}
+}
+
+checker_check_sql_concatenate_operand :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, typ: ^Type) {
+	if ok, known := checker_character_like_type_supported(ctx, typ); known && !ok {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"SQL concatenation operand is not character-like",
+		)
+	}
+}
+
+checker_check_sql_like_operand :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, typ: ^Type) {
+	if ok, known := checker_character_like_type_supported(ctx, typ); known && !ok {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"SQL LIKE operand is not character-like",
+		)
+	}
+}
+
+checker_check_sql_in_collection :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, typ: ^Type) -> ^Type {
+	if checker_type_resolves_to_unknown(typ) {
+		return project_type_unknown(ctx.project)
+	}
+	if !checker_type_is_table_like(ctx, typ) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			"SQL IN operand is not an internal table",
+		)
+		return project_type_unknown(ctx.project)
+	}
+	row_type := checker_type_row(ctx, typ)
+	if structure := checker_type_structure(row_type); structure != nil {
+		if low, ok := checker_lookup_structure_field(structure, project_intern_lower_ascii(ctx.project, "low")); ok {
+			return low.type
+		}
+	}
+	return row_type
+}
+
+checker_check_sql_expr_type :: proc(
+	ctx: ^Checker_Context,
+	sql: ^Sql_Source_Scope,
+	expr: ^ast.Expr,
+	validate_where_hosts := false,
+	for_all_entries: Sql_For_All_Entries_Info = {},
+	allow_star := false,
+) -> ^Type {
 	if expr == nil {
 		return project_type_unknown(ctx.project)
 	}
-	_ = predicate
 	#partial switch n in expr.derived_expr {
 	case ^ast.Host_Expr:
 		operand := checker_check_host_expr(ctx, &expr.expr_base, n, .Value, false)
@@ -765,13 +917,54 @@ checker_check_sql_expr :: proc(
 		if n.qualifier.text != "" {
 			checker_sql_source_for_qualifier(ctx, sql, project_intern_lower_ascii(ctx.project, n.qualifier.text))
 		}
+		if !allow_star {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				n.star_range if n.star_range.end > n.star_range.start else expr.range,
+				"SQL star is only valid as a projection or COUNT(*) argument",
+			)
+		}
 		return project_type_unknown(ctx.project)
 	case ^ast.Sql_Call_Expr:
 		result := project_type_unknown(ctx.project)
 		for arg in n.args {
-			arg_type := checker_check_sql_expr(ctx, sql, arg, false, validate_where_hosts, for_all_entries)
+			_, star_arg := arg.derived_expr.(^ast.Sql_Star_Expr)
+			count_star := n.kind == .Aggregate &&
+			               strings.equal_fold(n.name.text, "count") &&
+			               n.modifier == .None &&
+			               len(n.args) == 1 &&
+			               star_arg
+			arg_type := checker_check_sql_expr_type(
+				ctx,
+				sql,
+				arg,
+				validate_where_hosts,
+				for_all_entries,
+				allow_star = count_star,
+			)
+			if n.kind == .Function &&
+			   !checker_type_resolves_to_unknown(arg_type) &&
+			   (checker_type_structure(arg_type) != nil ||
+			    checker_type_is_table_like(ctx, arg_type) ||
+			    checker_type_is_ref(arg_type)) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(arg),
+					"SQL function argument is not scalar",
+				)
+			}
 			if checker_type_is_unknown(result) {
 				result = arg_type
+			} else if strings.equal_fold(n.name.text, "coalesce") {
+				checker_check_branch_result_compatibility(
+					ctx,
+					arg_type,
+					result,
+					checker_expr_range(arg),
+					"SQL COALESCE operand is not compatible",
+				)
 			}
 		}
 		if strings.equal_fold(n.name.text, "count") {
@@ -779,40 +972,159 @@ checker_check_sql_expr :: proc(
 		}
 		return result
 	case ^ast.Sql_Case_When_Expr:
-		checker_check_sql_expr(ctx, sql, n.condition, true, validate_where_hosts, for_all_entries)
-		return checker_check_sql_expr(ctx, sql, n.result, false, validate_where_hosts, for_all_entries)
+		condition_type := checker_check_sql_expr_type(ctx, sql, n.condition, validate_where_hosts, for_all_entries)
+		checker_validate_logical_condition_type(ctx, n.condition, condition_type, "SQL CASE WHEN")
+		return checker_check_sql_expr_type(ctx, sql, n.result, validate_where_hosts, for_all_entries)
 	case ^ast.Sql_Case_Expr:
-		checker_check_sql_expr(ctx, sql, n.operand, false, validate_where_hosts, for_all_entries)
+		selector_type := checker_check_sql_expr_type(ctx, sql, n.operand, validate_where_hosts, for_all_entries)
 		result := project_type_unknown(ctx.project)
 		for when_expr in n.whens {
-			when_type := checker_check_sql_expr(ctx, sql, when_expr, false, validate_where_hosts, for_all_entries)
+			arm := when_expr.derived_expr.(^ast.Sql_Case_When_Expr)
+			condition_type := checker_check_sql_expr_type(ctx, sql, arm.condition, validate_where_hosts, for_all_entries)
+			if n.operand == nil {
+				checker_validate_logical_condition_type(ctx, arm.condition, condition_type, "SQL CASE WHEN")
+			} else if ok, known := checker_type_assignment_compatible(ctx, condition_type, selector_type); known && !ok {
+				checker_add_diagnostic(
+					ctx,
+					.Incompatible_Argument_Type,
+					checker_expr_range(arm.condition),
+					checker_type_mismatch_message(
+						ctx,
+						"SQL CASE WHEN operand is not compatible",
+						condition_type,
+						selector_type,
+					),
+				)
+			}
+			when_type := checker_check_sql_expr_type(ctx, sql, arm.result, validate_where_hosts, for_all_entries)
 			if checker_type_is_unknown(result) {
 				result = when_type
+			} else {
+				checker_check_branch_result_compatibility(
+					ctx,
+					when_type,
+					result,
+					checker_expr_range(arm.result),
+					"SQL CASE branch result is not compatible",
+				)
 			}
 		}
-		else_type := checker_check_sql_expr(ctx, sql, n.else_expr, false, validate_where_hosts, for_all_entries)
+		else_type := checker_check_sql_expr_type(ctx, sql, n.else_expr, validate_where_hosts, for_all_entries)
 		if checker_type_is_unknown(result) {
 			result = else_type
+		} else {
+			checker_check_branch_result_compatibility(
+				ctx,
+				else_type,
+				result,
+				checker_expr_range(n.else_expr),
+				"SQL CASE branch result is not compatible",
+			)
 		}
 		return result
 	case ^ast.Binary_Expr:
-		checker_check_sql_expr(ctx, sql, n.left, true, validate_where_hosts, for_all_entries)
-		checker_check_sql_expr(ctx, sql, n.right, true, validate_where_hosts, for_all_entries)
+		left_type := checker_check_sql_expr_type(ctx, sql, n.left, validate_where_hosts, for_all_entries)
+		right_type := checker_check_sql_expr_type(ctx, sql, n.right, validate_where_hosts, for_all_entries)
+		switch n.op {
+		case .Add, .Subtract, .Multiply, .Divide, .Integer_Divide, .Modulo:
+			checker_check_sql_arithmetic_operand(ctx, n.left, left_type)
+			checker_check_sql_arithmetic_operand(ctx, n.right, right_type)
+			return checker_binary_result_type(
+				ctx,
+				n.op,
+				Operand{type = left_type},
+				Operand{type = right_type},
+			)
+		case .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+			checker_check_branch_result_compatibility(
+				ctx,
+				right_type,
+				left_type,
+				checker_expr_range(n.right),
+				"SQL comparison operand is not compatible",
+			)
+		case .And, .Or:
+			operator := "SQL AND" if n.op == .And else "SQL OR"
+			checker_validate_logical_condition_type(ctx, n.left, left_type, operator)
+			checker_validate_logical_condition_type(ctx, n.right, right_type, operator)
+		case .Concatenate:
+			checker_check_sql_concatenate_operand(ctx, n.left, left_type)
+			checker_check_sql_concatenate_operand(ctx, n.right, right_type)
+			return checker_binary_result_type(
+				ctx,
+				n.op,
+				Operand{type = left_type},
+				Operand{type = right_type},
+			)
+		case .Like, .Not_Like:
+			checker_check_sql_like_operand(ctx, n.left, left_type)
+			checker_check_sql_like_operand(ctx, n.right, right_type)
+		case .In, .Not_In:
+			if raw, ok := n.right.derived_expr.(^ast.Type_Ref_Expr); !ok || !raw.raw_operand {
+				item_type := checker_check_sql_in_collection(ctx, n.right, right_type)
+				checker_check_branch_result_compatibility(
+					ctx,
+					item_type,
+					left_type,
+					checker_expr_range(n.right),
+					"SQL IN table row is not compatible",
+				)
+			}
+		case .Contains_Only, .Contains_Not_Only, .Contains_Any,
+		     .Contains_Not_Any, .Contains_String, .Contains_No_String,
+		     .Covers_Pattern, .Covers_No_Pattern, .Bit_And,
+		     .Bit_Or, .Bit_Xor, .Bit_O, .Bit_Z, .Bit_M, .Is,
+		     .Between:
+		}
 		return checker_builtin_type_from_name(ctx.checker, "abap_bool")
 	case ^ast.Unary_Expr:
-		return checker_check_sql_expr(ctx, sql, n.expr, predicate, validate_where_hosts, for_all_entries)
+		operand_type := checker_check_sql_expr_type(ctx, sql, n.expr, validate_where_hosts, for_all_entries)
+		switch n.op {
+		case .Plus, .Minus:
+			checker_check_sql_arithmetic_operand(ctx, n.expr, operand_type)
+		case .Not:
+			checker_validate_logical_condition_type(ctx, n.expr, operand_type, "SQL NOT")
+			return checker_builtin_type_from_name(ctx.checker, "abap_bool")
+		}
+		return operand_type
 	case ^ast.Paren_Expr:
-		return checker_check_sql_expr(ctx, sql, n.expr, predicate, validate_where_hosts, for_all_entries)
+		return checker_check_sql_expr_type(ctx, sql, n.expr, validate_where_hosts, for_all_entries)
 	case ^ast.Between_Expr:
-		checker_check_sql_expr(ctx, sql, n.subject, true, validate_where_hosts, for_all_entries)
-		checker_check_sql_expr(ctx, sql, n.low, true, validate_where_hosts, for_all_entries)
-		checker_check_sql_expr(ctx, sql, n.high, true, validate_where_hosts, for_all_entries)
+		subject_type := checker_check_sql_expr_type(ctx, sql, n.subject, validate_where_hosts, for_all_entries)
+		low_type := checker_check_sql_expr_type(ctx, sql, n.low, validate_where_hosts, for_all_entries)
+		checker_check_branch_result_compatibility(
+			ctx,
+			low_type,
+			subject_type,
+			checker_expr_range(n.low),
+			"SQL BETWEEN bound is not compatible",
+		)
+		high_type := checker_check_sql_expr_type(ctx, sql, n.high, validate_where_hosts, for_all_entries)
+		checker_check_branch_result_compatibility(
+			ctx,
+			high_type,
+			subject_type,
+			checker_expr_range(n.high),
+			"SQL BETWEEN bound is not compatible",
+		)
 		return checker_builtin_type_from_name(ctx.checker, "abap_bool")
 	case ^ast.Is_Predicate_Expr:
-		checker_check_sql_expr(ctx, sql, n.subject, true, validate_where_hosts, for_all_entries)
+		subject_type := checker_check_sql_expr_type(ctx, sql, n.subject, validate_where_hosts, for_all_entries)
+		if n.kind == .Null &&
+		   !checker_type_resolves_to_unknown(subject_type) &&
+		   (checker_type_structure(subject_type) != nil ||
+		    checker_type_is_table_like(ctx, subject_type) ||
+		    checker_type_is_ref(subject_type)) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(n.subject),
+				"SQL IS NULL subject is not scalar",
+			)
+		}
 		return checker_builtin_type_from_name(ctx.checker, "abap_bool")
 	case ^ast.Instance_Of_Predicate_Expr:
-		checker_check_sql_expr(ctx, sql, n.subject, true, validate_where_hosts, for_all_entries)
+		checker_check_sql_expr_type(ctx, sql, n.subject, validate_where_hosts, for_all_entries)
 		checker_check_expr(ctx, n.type_ref, .Type)
 		return checker_builtin_type_from_name(ctx.checker, "abap_bool")
 	case ^ast.Table_Expr:
@@ -837,16 +1149,16 @@ checker_check_sql_expr :: proc(
 		return checker_check_expr(ctx, expr).type
 	case ^ast.Call_Expr:
 		checker_check_expr(ctx, n.callee)
-		checker_check_sql_expr(ctx, sql, n.args, false, validate_where_hosts, for_all_entries)
+		checker_check_sql_expr_type(ctx, sql, n.args, validate_where_hosts, for_all_entries)
 		return project_type_unknown(ctx.project)
 	case ^ast.Call_Arg_List_Expr:
 		for arg in n.args {
-			checker_check_sql_expr(ctx, sql, arg, false, validate_where_hosts, for_all_entries)
+			checker_check_sql_expr_type(ctx, sql, arg, validate_where_hosts, for_all_entries)
 		}
 	case ^ast.Call_Named_Arg_Expr:
-		return checker_check_sql_expr(ctx, sql, n.value, false, validate_where_hosts, for_all_entries)
+		return checker_check_sql_expr_type(ctx, sql, n.value, validate_where_hosts, for_all_entries)
 	case ^ast.Call_Positional_Arg_Expr:
-		return checker_check_sql_expr(ctx, sql, n.value, false, validate_where_hosts, for_all_entries)
+		return checker_check_sql_expr_type(ctx, sql, n.value, validate_where_hosts, for_all_entries)
 	case:
 		return checker_check_expr(ctx, expr).type
 	}
@@ -1078,6 +1390,16 @@ checker_check_sql_select_result :: proc(
 	local.type_hint = expected
 	local.type_hint_expr = result.target
 	target := checker_check_expr(&local, result.target, .Value, true)
+	if !checker_check_unresolved_variable_operand(ctx, result.target, target) &&
+	   !checker_type_is_unknown(target.type) &&
+	   !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Open_Sql_Into_Target,
+			checker_expr_range(result.target),
+			"Open SQL target is not writable",
+		)
+	}
 	if result.corresponding_fields || checker_type_is_unknown(expected) || checker_type_is_unknown(target.type) {
 		return
 	}

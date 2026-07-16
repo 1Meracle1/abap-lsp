@@ -195,7 +195,9 @@ parse_parenthesized_raw_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	for p.index <= close_i {
 		bump_token(p)
 	}
-	return type_ref_expr_from_tokens(p, start, p.index, -1, false, false)
+	expr := type_ref_expr_from_tokens(p, start, p.index, -1, false, false)
+	populate_raw_operand_facts(p, expr, start, p.index, false)
+	return expr
 }
 
 parse_additive_expr :: proc(p: ^Parser) -> ^ast.Expr {

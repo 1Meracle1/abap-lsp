@@ -497,6 +497,14 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 			emit_space(p)
 			emit_expr_list(p, n.operands, " ")
 		}
+		if n.module != nil {
+			emit(p, " MODULE ")
+			emit_node(p, n.module)
+		}
+		if n.condition != nil {
+			emit(p, " ON ")
+			emit_node(p, n.condition)
+		}
 		emit(p, ".")
 	case ^Assign_Field_Stmt:
 		emit(p, "ASSIGN")
@@ -563,9 +571,26 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit(p, ".")
 	case ^Text_Transform_Stmt:
 		emit(p, text_transform_kind_text(n.kind))
-		if len(n.operands) > 0 {
+		switch n.kind {
+		case .Overlay:
 			emit_space(p)
-			emit_expr_list(p, n.operands, " ")
+			emit_node(p, n.target)
+			emit(p, " WITH ")
+			emit_node(p, n.source)
+			if n.only != nil {
+				emit(p, " ONLY ")
+				emit_node(p, n.only)
+			}
+		case .Pack, .Unpack:
+			emit_space(p)
+			emit_node(p, n.source)
+			emit(p, " TO ")
+			emit_node(p, n.target)
+		case .Convert:
+			emit(p, " TEXT ")
+			emit_node(p, n.source)
+			emit(p, " INTO SORTABLE CODE ")
+			emit_node(p, n.target)
 		}
 		emit(p, ".")
 	case ^Wait_Stmt:
@@ -2510,7 +2535,8 @@ emit_runtime_stmt :: proc(p: ^Printer, stmt: ^Runtime_Stmt) {
 		emit(p, " USER-COMMAND ")
 		emit_node(p, stmt.target)
 	case .Badi:
-		emit(p, " BADI ")
+		assert(stmt.kind == .Get_Badi)
+		emit_space(p)
 		emit_node(p, stmt.target)
 	case .Update_Task_Local:
 		emit(p, " UPDATE TASK LOCAL")
@@ -2692,6 +2718,32 @@ emit_receive_results_stmt :: proc(p: ^Printer, stmt: ^Receive_Results_Stmt) {
 		emit_space(p)
 		emit_node(p, stmt.target)
 	}
+	if stmt.keeping_task {
+		emit(p, " KEEPING TASK")
+	}
+	current_section := Call_Arg_Section_Kind.Unknown
+	for arg in stmt.named_args {
+		if arg.has_section && arg.section != current_section {
+			emit_space(p)
+			#partial switch arg.section {
+			case .Importing: emit(p, "IMPORTING")
+			case .Tables: emit(p, "TABLES")
+			case .Exceptions: emit(p, "EXCEPTIONS")
+			case .Exporting: emit(p, "EXPORTING")
+			case .Changing: emit(p, "CHANGING")
+			case .Receiving: emit(p, "RECEIVING")
+			}
+			current_section = arg.section
+		}
+		emit_space(p)
+		emit(p, arg.name.text)
+		emit(p, " = ")
+		emit_node(p, arg.value)
+		if arg.message != nil {
+			emit(p, " MESSAGE ")
+			emit_node(p, arg.message)
+		}
+	}
 	emit(p, ".")
 }
 
@@ -2738,7 +2790,7 @@ emit_line_stmt :: proc(p: ^Printer, stmt: ^Line_Stmt) {
 		emit(p, " FIELD VALUE ")
 		emit_node(p, clause.field)
 		if clause.target != nil {
-			emit(p, " INTO ")
+			emit(p, " INTO " if stmt.kind == .Read else " FROM ")
 			emit_node(p, clause.target)
 		}
 	}
@@ -2747,7 +2799,14 @@ emit_line_stmt :: proc(p: ^Printer, stmt: ^Line_Stmt) {
 
 emit_raise_stmt :: proc(p: ^Printer, stmt: ^Raise_Stmt) {
 	emit(p, "RAISE ")
-	emit(p, "EVENT" if stmt.kind == .Event else "EXCEPTION")
+	switch stmt.kind {
+	case .Exception:
+		emit(p, "EXCEPTION")
+	case .Event:
+		emit(p, "EVENT")
+	case .Shortdump:
+		emit(p, "SHORTDUMP")
+	}
 	if stmt.target != nil {
 		emit_space(p)
 		if stmt.target_type {
@@ -2755,9 +2814,26 @@ emit_raise_stmt :: proc(p: ^Printer, stmt: ^Raise_Stmt) {
 		}
 		emit_node(p, stmt.target)
 	}
-	if len(stmt.operands) > 0 {
+	current_section := Call_Arg_Section_Kind.Exporting
+	has_section := false
+	for arg in stmt.named_args {
+		if arg.has_section && (!has_section || arg.section != current_section) {
+			emit_space(p)
+			#partial switch arg.section {
+			case .Exporting: emit(p, "EXPORTING")
+			case .Importing: emit(p, "IMPORTING")
+			case .Changing: emit(p, "CHANGING")
+			case .Tables: emit(p, "TABLES")
+			case .Receiving: emit(p, "RECEIVING")
+			case .Exceptions: emit(p, "EXCEPTIONS")
+			}
+			current_section = arg.section
+			has_section = true
+		}
 		emit_space(p)
-		emit_expr_list(p, stmt.operands, " ")
+		emit(p, arg.name.text)
+		emit(p, " = ")
+		emit_node(p, arg.value)
 	}
 	emit(p, ".")
 }
@@ -3278,6 +3354,13 @@ emit_case_stmt :: proc(p: ^Printer, stmt: ^Case_Stmt) {
 		emit(p, "WHEN")
 		if clause.is_others {
 			emit(p, " OTHERS")
+		} else if stmt.is_type_of && len(clause.type_operands) > 0 {
+			emit(p, " TYPE ")
+			emit_expr_list(p, clause.type_operands, " OR TYPE ")
+			if clause.into != nil {
+				emit(p, " INTO ")
+				emit_node(p, clause.into)
+			}
 		} else if len(clause.operands) > 0 {
 			emit_space(p)
 			emit_expr_list(p, clause.operands, " OR ")

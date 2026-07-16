@@ -1294,6 +1294,12 @@ checker_collect_select_options_decl :: proc(
 	for clause in decl.options {
 		entity := checker_collect_variable_decl(ctx, ctx.scope, clause.name.text, .Variable, clause.name.range, &decl.node.decl_base.stmt_base, nil, nil, clause.default_expr)
 		if entity != nil {
+			entity.decl_info.addition_exprs = {
+				clause.to_expr,
+				clause.memory_id,
+				clause.matchcode_object,
+				clause.visible_length,
+			}
 			structure, scope := checker_attach_structure_to_entity(ctx, entity, decl.range)
 			checker_collect_range_component(ctx, structure, scope, entity, "sign", Range{}, &decl.node.decl_base.stmt_base)
 			checker_collect_range_component(ctx, structure, scope, entity, "option", Range{}, &decl.node.decl_base.stmt_base)
@@ -1339,6 +1345,14 @@ checker_collect_parameters_decl :: proc(
 		if entity != nil && .As_Checkbox in clause.flags {
 			entity.flags += {.Has_Declared_Type}
 			entity.flags -= {.Untyped}
+		}
+		if entity != nil {
+			entity.decl_info.addition_exprs = {
+				clause.memory_id,
+				clause.matchcode_object,
+				clause.visible_length,
+				nil,
+			}
 		}
 		checker_note_member_owner(entity, owner, .Attribute, visibility)
 	}
@@ -2193,6 +2207,9 @@ checker_check_variable_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl
 	}
 	checker_check_value_clause(ctx, decl.value_clause)
 	checker_check_default_expr(ctx, decl.default_expr)
+	for expr in decl.addition_exprs {
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
+	}
 	if entity.type == nil {
 		entity.type = project_type_unknown(ctx.project)
 	}

@@ -445,6 +445,7 @@ collect_flat_stmt :: proc(
 			for operand in clause.operands {
 				collect_expr_lints(out, operand, allocator, fact_scope = clause_scope)
 			}
+			collect_expr_lints(out, clause.into, allocator, fact_scope = clause_scope)
 			collect_flat_stmt_list(out, clause.body[:], allocator, policy, loop_depth, guarded_tables, loop_kind, clause_scope, leave_list_processing_exits)
 		}
 	case ^ast.While_Stmt:

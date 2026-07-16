@@ -2,6 +2,7 @@ package abap_frontend_semantic2
 
 import "src:ast"
 
+import "core:fmt"
 import "core:strings"
 
 Checker_Call_Argument :: struct {
@@ -94,7 +95,6 @@ checker_check_stmt :: proc(
 	     ^ast.Type_Pools_Decl,
 	     ^ast.Function_Pool_Decl,
 	     ^ast.Include_Stmt,
-	     ^ast.Report_Stmt,
 	     ^ast.Class_Decl,
 	     ^ast.Interface_Decl,
 	     ^ast.Method_Decl,
@@ -135,21 +135,63 @@ checker_check_stmt :: proc(
 		checker_check_expr(ctx, n.expr)
 	case ^ast.Clear_Stmt:
 		for operand in n.operands {
-			checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.target, .Value, true)
+			target := checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.target, .Value, true)
+			if !checker_type_is_unknown(target.type) && !checker_operand_is_writable(target) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(operand.target),
+					"CLEAR target is not writable",
+				)
+			}
 			checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.value)
 		}
 	case ^ast.Refresh_Stmt:
 		for operand in n.operands {
-			checker_check_expr(ctx, operand.target, .Value, true)
+			target := checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.target, .Value, true)
+			if checker_type_is_unknown(target.type) {
+				continue
+			}
+			if !checker_operand_is_writable(target) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(operand.target),
+					"REFRESH target is not writable",
+				)
+			} else if !checker_type_is_table_like(ctx, target.type) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(operand.target),
+					"REFRESH target is not an internal table",
+				)
+			}
 		}
 	case ^ast.Free_Stmt:
 		for operand in n.operands {
-			checker_check_expr(ctx, operand.target, .Value, true)
+			target := checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.target, .Value, true)
+			if !checker_type_is_unknown(target.type) && !checker_operand_is_writable(target) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(operand.target),
+					"FREE target is not writable",
+				)
+			}
 		}
-		checker_check_expr(ctx, n.memory_id)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.memory_id)
 	case ^ast.Unassign_Stmt:
 		for operand in n.operands {
-			checker_check_expr(ctx, operand.target, .Value, true)
+			target := checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.target, .Value, true)
+			if !checker_type_is_unknown(target.type) && !checker_operand_is_writable(target) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(operand.target),
+					"UNASSIGN target is not writable",
+				)
+			}
 		}
 	case ^ast.Move_Stmt:
 		for entry in n.entries {
@@ -159,27 +201,43 @@ checker_check_stmt :: proc(
 		checker_check_move_corresponding_stmt(ctx, n)
 	case ^ast.Add_Stmt:
 		for entry in n.entries {
-			checker_check_expr(ctx, entry.source)
-			checker_check_expr(ctx, entry.target, .Value, true)
-			checker_check_expr(ctx, entry.result, .Value, true)
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, entry.source)
+			if entry.result == nil {
+				checker_check_writable_target(ctx, entry.target, "ADD target is not writable")
+			} else {
+				checker_check_expr_with_unresolved_value_diagnostics(ctx, entry.target)
+				checker_check_writable_target(ctx, entry.result, "ADD result is not writable")
+			}
 		}
 	case ^ast.Subtract_Stmt:
 		for entry in n.entries {
-			checker_check_expr(ctx, entry.source)
-			checker_check_expr(ctx, entry.target, .Value, true)
-			checker_check_expr(ctx, entry.result, .Value, true)
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, entry.source)
+			if entry.result == nil {
+				checker_check_writable_target(ctx, entry.target, "SUBTRACT target is not writable")
+			} else {
+				checker_check_expr_with_unresolved_value_diagnostics(ctx, entry.target)
+				checker_check_writable_target(ctx, entry.result, "SUBTRACT result is not writable")
+			}
 		}
 	case ^ast.Multiply_Stmt:
 		for entry in n.entries {
-			checker_check_expr(ctx, entry.target, .Value, true)
-			checker_check_expr(ctx, entry.source)
-			checker_check_expr(ctx, entry.result, .Value, true)
+			if entry.result == nil {
+				checker_check_writable_target(ctx, entry.target, "MULTIPLY target is not writable")
+			} else {
+				checker_check_expr_with_unresolved_value_diagnostics(ctx, entry.target)
+				checker_check_writable_target(ctx, entry.result, "MULTIPLY result is not writable")
+			}
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, entry.source)
 		}
 	case ^ast.Divide_Stmt:
 		for entry in n.entries {
-			checker_check_expr(ctx, entry.source)
-			checker_check_expr(ctx, entry.target, .Value, true)
-			checker_check_expr(ctx, entry.result, .Value, true)
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, entry.source)
+			if entry.result == nil {
+				checker_check_writable_target(ctx, entry.target, "DIVIDE target is not writable")
+			} else {
+				checker_check_expr_with_unresolved_value_diagnostics(ctx, entry.target)
+				checker_check_writable_target(ctx, entry.result, "DIVIDE result is not writable")
+			}
 		}
 	case ^ast.Compute_Stmt:
 		for entry in n.entries {
@@ -192,23 +250,15 @@ checker_check_stmt :: proc(
 	case ^ast.Condense_Stmt:
 		checker_check_condense_stmt(ctx, n)
 	case ^ast.Replace_Stmt:
-		checker_check_expr(ctx, n.pattern)
-		checker_check_expr(ctx, n.target, .Value, true)
-		checker_check_expr(ctx, n.replacement)
-		checker_check_expr(ctx, n.section_offset)
-		checker_check_expr(ctx, n.section_length)
+		checker_check_replace_stmt(ctx, n)
 	case ^ast.Translate_Stmt:
-		checker_check_expr(ctx, n.target, .Value, true)
-		checker_check_expr(ctx, n.operand)
+		checker_check_translate_stmt(ctx, n)
 	case ^ast.Shift_Stmt:
 		checker_check_shift_stmt(ctx, n)
 	case ^ast.Find_Stmt:
 		checker_check_find_stmt(ctx, n)
 	case ^ast.Search_Stmt:
-		checker_check_expr(ctx, n.target)
-		checker_check_expr(ctx, n.pattern)
-		checker_check_expr(ctx, n.starting_at)
-		checker_check_expr(ctx, n.ending_at)
+		checker_check_search_stmt(ctx, n)
 	case ^ast.Perform_Stmt:
 		checker_check_perform_stmt(ctx, n)
 	case ^ast.Call_Stmt:
@@ -218,19 +268,15 @@ checker_check_stmt :: proc(
 	case ^ast.Message_Stmt:
 		checker_check_message_stmt(ctx, n)
 	case ^ast.Write_Stmt:
-		for operand in n.operands {
-			checker_check_expr(ctx, operand.value)
-			checker_check_expr(ctx, operand.position)
-			checker_check_expr(ctx, operand.length)
-		}
+		checker_check_write_stmt(ctx, n)
 	case ^ast.Write_To_Stmt:
 		for entry in n.entries {
 			checker_check_assignment_stmt(ctx, entry.target, entry.source)
 		}
 	case ^ast.Assert_Stmt:
-		checker_check_expr(ctx, n.condition)
+		checker_check_logical_condition(ctx, n.condition, "ASSERT")
 	case ^ast.Check_Stmt:
-		checker_check_expr(ctx, n.condition)
+		checker_check_logical_condition(ctx, n.condition, "CHECK")
 	case ^ast.Flow_Stmt, ^ast.Transaction_Stmt, ^ast.Macro_Def_Stmt, ^ast.Exec_Sql_Stmt, ^ast.Invalid_Stmt:
 	case ^ast.Describe_Stmt:
 		checker_check_describe_stmt(ctx, n)
@@ -238,51 +284,198 @@ checker_check_stmt :: proc(
 		checker_check_runtime_stmt(ctx, n)
 	case ^ast.Set_Handler_Stmt:
 		checker_check_expr_list(ctx, n.handlers[:], .Routine)
-		checker_check_expr(ctx, n.sender)
-		checker_check_expr(ctx, n.activation)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.sender)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.activation)
 	case ^ast.Import_Stmt:
 		checker_check_data_cluster_parameters(ctx, n.parameters[:], true)
-		checker_check_data_cluster_medium(ctx, n.medium)
+		checker_check_data_cluster_medium(ctx, n.medium, true)
 	case ^ast.Export_Stmt:
 		checker_check_data_cluster_parameters(ctx, n.parameters[:])
-		checker_check_data_cluster_medium(ctx, n.medium)
+		checker_check_data_cluster_medium(ctx, n.medium, false)
 	case ^ast.Bit_Stmt:
-		checker_check_expr(ctx, n.position)
-		checker_check_expr(ctx, n.source)
-		checker_check_expr(ctx, n.target, .Value, n.kind == .Set)
-		checker_check_expr(ctx, n.value)
+		position := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.position)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.source)
+		checker_check_writable_target(ctx, n.target, "BIT target is not writable")
+		value := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.value)
+		if n.kind == .Set {
+			operands := [?]struct {
+				expr:    ^ast.Expr,
+				info:    Operand,
+				message: string,
+			} {
+				{n.position, position, "SET BIT position operand does not have type i"},
+				{n.value, value, "SET BIT TO operand does not have type i"},
+			}
+			for operand in operands {
+				if operand.expr == nil || checker_type_is_unknown(operand.info.type) {
+					continue
+				}
+				name, builtin_ok := checker_type_builtin_name(ctx, operand.info.type)
+				if checker_type_structure(operand.info.type) != nil ||
+				   checker_type_is_table_like(ctx, operand.info.type) ||
+				   checker_type_is_ref(operand.info.type) ||
+				   builtin_ok && name != "i" {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(operand.expr),
+						operand.message,
+					)
+				}
+			}
+		}
 	case ^ast.Locale_Stmt:
-		checker_check_expr(ctx, n.language, .Value, n.kind == .Get)
-		checker_check_expr(ctx, n.country, .Value, n.kind == .Get)
-		checker_check_expr(ctx, n.modifier, .Value, n.kind == .Get)
+		if n.kind == .Get {
+			checker_check_writable_target(ctx, n.language, "GET LOCALE LANGUAGE target is not writable")
+			checker_check_writable_target(ctx, n.country, "GET LOCALE COUNTRY target is not writable")
+			checker_check_writable_target(ctx, n.modifier, "GET LOCALE MODIFIER target is not writable")
+		} else {
+			operands := [?]struct {
+				expr:    ^ast.Expr,
+				message: string,
+			} {
+				{n.language, "SET LOCALE LANGUAGE operand is not character-like"},
+				{n.country, "SET LOCALE COUNTRY operand is not character-like"},
+				{n.modifier, "SET LOCALE MODIFIER operand is not character-like"},
+			}
+			for operand in operands {
+				if operand.expr == nil {
+					continue
+				}
+				info := checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.expr)
+				if ok, known := checker_character_like_type_supported(ctx, info.type); known && !ok {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(operand.expr),
+						operand.message,
+					)
+				}
+			}
+		}
 	case ^ast.Set_Cursor_Stmt:
-		checker_check_expr(ctx, n.field)
-		checker_check_expr(ctx, n.offset)
-		checker_check_expr(ctx, n.line)
-		checker_check_expr(ctx, n.column)
+		if n.field != nil {
+			field := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.field)
+			name, name_known := checker_type_builtin_name(ctx, field.type)
+			_, character_literal := checker_expr_character_literal_text(n.field)
+			if ok, known := checker_character_like_type_supported(ctx, field.type); known &&
+			   (!ok || name_known && name == "string" && !character_literal) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(n.field),
+					"SET CURSOR FIELD operand is not flat character-like",
+				)
+			}
+		}
+		messages := [?]string {
+			"SET CURSOR OFFSET operand does not have type i",
+			"SET CURSOR LINE operand does not have type i",
+			"SET CURSOR COLUMN operand does not have type i",
+		}
+		operands := [?]^ast.Expr {n.offset, n.line, n.column}
+		for operand, operand_index in operands {
+			if operand == nil {
+				continue
+			}
+			info := checker_check_expr_with_unresolved_value_diagnostics(ctx, operand)
+			if checker_type_is_unknown(info.type) {
+				continue
+			}
+			name, builtin_ok := checker_type_builtin_name(ctx, info.type)
+			if checker_type_structure(info.type) != nil ||
+			   checker_type_is_table_like(ctx, info.type) ||
+			   checker_type_is_ref(info.type) ||
+			   builtin_ok && name != "i" {
+				checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(operand), messages[operand_index])
+			}
+		}
 	case ^ast.Receive_Results_Stmt:
-		checker_check_expr(ctx, n.target)
-		checker_check_call_stmt_args(ctx, n.named_args[:], nil, n.range)
+		routine := checker_lookup_call_function_entity(ctx, n.target)
+		checker_check_call_stmt_args(
+			ctx,
+			n.named_args[:],
+			routine,
+			n.range,
+			has_parameter_table = true,
+			exception_message_writable = true,
+		)
 	case ^ast.Raise_Stmt:
 		if n.target_type {
-			checker_check_expr(ctx, n.target, .Type)
+			target := checker_check_expr(ctx, n.target, .Type)
+			constructor: ^Entity
+			if n.kind == .Shortdump && target.entity != nil {
+				is_exception, exception_known := checker_class_is_exception(ctx, target.entity)
+				if exception_known && !is_exception {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(n.target),
+						"RAISE SHORTDUMP TYPE target is not an exception class",
+					)
+				} else {
+					constructor = checker_constructor_method_for_type(ctx, target.type)
+				}
+			}
+			checker_check_call_stmt_args(ctx, n.named_args[:], constructor, n.range)
+		} else if n.kind == .Event {
+			target := checker_check_expr(ctx, n.target, .Routine)
+			if target.entity != nil && target.entity.kind == .Event {
+				checker_check_call_stmt_args(ctx, n.named_args[:], target.entity, n.range)
+			} else {
+				checker_check_call_stmt_args(ctx, n.named_args[:], nil, n.range)
+			}
 		} else {
-			checker_check_expr(ctx, n.target)
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, n.target)
+			checker_check_call_stmt_args(ctx, n.named_args[:], nil, n.range)
 		}
-		checker_check_expr_list(ctx, n.operands[:])
 	case ^ast.Authority_Check_Stmt:
-		checker_check_expr(ctx, n.object)
-		checker_check_expr_list(ctx, n.operands[:])
-		for id in n.ids {
-			checker_check_expr(ctx, id.id)
-			checker_check_expr(ctx, id.field)
+		if n.object == nil {
+			for operand in n.operands {
+				checker_check_expr_with_unresolved_value_diagnostics(ctx, operand)
+			}
+		} else {
+			object := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.object)
+			object_name, object_name_known := checker_type_builtin_name(ctx, object.type)
+			if ok, known := checker_character_like_type_supported(ctx, object.type); known &&
+			   (!ok || object_name_known && object_name == "string") {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(n.object),
+					"AUTHORITY-CHECK OBJECT operand is not flat character-like",
+				)
+			}
+			for id in n.ids {
+				operands := [?]struct {
+					expr:    ^ast.Expr,
+					message: string,
+				} {
+					{id.id, "AUTHORITY-CHECK ID operand is not flat character-like"},
+					{id.field, "AUTHORITY-CHECK FIELD operand is not flat character-like"},
+				}
+				for operand in operands {
+					info := checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.expr)
+					name, name_known := checker_type_builtin_name(ctx, info.type)
+					if ok, known := checker_character_like_type_supported(ctx, info.type); known &&
+					   (!ok || name_known && name == "string") {
+						checker_add_diagnostic(
+							ctx,
+							.Invalid_Syntax_Form,
+							checker_expr_range(operand.expr),
+							operand.message,
+						)
+					}
+				}
+			}
 		}
 	case ^ast.Field_Groups_Stmt:
-		checker_check_expr_list(ctx, n.groups[:])
 	case ^ast.Insert_Dummy_Stmt:
-		checker_check_expr(ctx, n.target, .Value, true)
 	case ^ast.Field_Stmt:
-		checker_check_expr_list(ctx, n.operands[:])
+		for operand in n.operands {
+			checker_check_writable_target(ctx, operand, "FIELD target is not writable")
+		}
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.module, .Routine)
 	case ^ast.Assign_Field_Stmt:
 		checker_check_assign_field_stmt(ctx, n)
 	case ^ast.Create_Object_Stmt:
@@ -290,14 +483,84 @@ checker_check_stmt :: proc(
 	case ^ast.Create_Data_Stmt:
 		checker_check_create_data_stmt(ctx, n)
 	case ^ast.Text_Transform_Stmt:
-		checker_check_expr_list(ctx, n.operands[:], .Value, true)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.source)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.only)
+		switch n.kind {
+		case .Overlay:
+			checker_check_writable_target(ctx, n.target, "OVERLAY target is not writable")
+		case .Pack:
+			checker_check_writable_target(ctx, n.target, "PACK target is not writable")
+		case .Unpack:
+			checker_check_writable_target(ctx, n.target, "UNPACK target is not writable")
+		case .Convert:
+			checker_check_writable_target(ctx, n.target, "CONVERT target is not writable")
+		}
 	case ^ast.Wait_Stmt:
-		checker_check_expr(ctx, n.condition)
-		checker_check_expr(ctx, n.duration)
+		checker_check_logical_condition(ctx, n.condition, "WAIT UNTIL")
+		if n.duration != nil {
+			duration := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.duration)
+			if !checker_type_is_unknown(duration.type) {
+				name, ok := checker_type_builtin_name(ctx, duration.type)
+				if checker_type_structure(duration.type) != nil ||
+				   checker_type_is_table_like(ctx, duration.type) ||
+				   checker_type_is_ref(duration.type) ||
+				   ok && checker_scalar_group(name) != .Numeric {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(n.duration),
+						"WAIT duration is not numeric",
+					)
+				}
+			}
+		}
 	case ^ast.Convert_Time_Stamp_Stmt:
 		checker_check_convert_time_stamp_stmt(ctx, n)
 	case ^ast.List_Control_Stmt:
-		checker_check_expr_list(ctx, n.operands[:])
+		for operand in n.operands {
+			info := checker_check_expr_with_unresolved_value_diagnostics(ctx, operand)
+			if checker_type_is_unknown(info.type) {
+				continue
+			}
+			#partial switch n.kind {
+			case .Position:
+				if name, known := checker_type_builtin_name(ctx, info.type); known &&
+				   !checker_generic_builtin_type_name(name) && name != "i" {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(operand),
+						"POSITION operand is not type i",
+					)
+				} else if checker_type_structure(info.type) != nil ||
+				          checker_type_is_table_like(ctx, info.type) ||
+				          checker_type_is_ref(info.type) {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(operand),
+						"POSITION operand is not type i",
+					)
+				}
+			case .Hide:
+				if !checker_operand_is_writable(info) {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(operand),
+						"HIDE operand is not writable",
+					)
+				}
+				if !checker_hide_type_is_flat(ctx, info.type) {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(operand),
+						"HIDE operand is not flat",
+					)
+				}
+			}
+		}
 	case ^ast.Line_Stmt:
 		checker_check_line_stmt(ctx, n)
 	case ^ast.Macro_Call_Stmt:
@@ -305,10 +568,10 @@ checker_check_stmt :: proc(
 	case ^ast.Selection_Screen_Stmt:
 		checker_check_selection_screen_stmt(ctx, n)
 	case ^ast.If_Stmt:
-		checker_check_expr_with_unresolved_value_diagnostics(ctx, n.condition)
+		checker_check_logical_condition(ctx, n.condition, "IF")
 		checker_check_stmt_list(ctx, n.body)
 		for clause in n.elseif_clauses {
-			checker_check_expr_with_unresolved_value_diagnostics(ctx, clause.condition)
+			checker_check_logical_condition(ctx, clause.condition, "IF")
 			checker_check_stmt_list(ctx, clause.body)
 		}
 		if n.else_clause != nil {
@@ -317,15 +580,36 @@ checker_check_stmt :: proc(
 	case ^ast.Case_Stmt:
 		checker_check_case_stmt(ctx, n)
 	case ^ast.While_Stmt:
-		checker_check_expr(ctx, n.condition)
+		checker_check_logical_condition(ctx, n.condition, "WHILE")
 		checker_check_stmt_list(ctx, n.body)
 	case ^ast.Do_Stmt:
-		checker_check_expr(ctx, n.count)
+		if n.count != nil {
+			count := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.count)
+			checker_check_integer_compatible_type(
+				ctx,
+				count.type,
+				checker_expr_range(n.count),
+				"DO TIMES count is not integer-compatible",
+			)
+		}
 		checker_check_stmt_list(ctx, n.body)
 	case ^ast.Loop_Stmt:
 		checker_check_loop_stmt(ctx, n)
 	case ^ast.At_Stmt:
-		checker_check_expr(ctx, n.expr)
+		if n.field_name.text != "" {
+			local := ctx^
+			local.diagnose_unresolved_value_refs = true
+			checker_check_ident_name(
+				&local,
+				nil,
+				n.field_name.text,
+				.Value,
+				false,
+				n.field_name.range,
+			)
+		} else {
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, n.expr)
+		}
 		checker_check_stmt_list(ctx, n.body)
 	case ^ast.Try_Stmt:
 		checker_check_stmt_list(ctx, n.body)
@@ -358,7 +642,23 @@ checker_check_stmt :: proc(
 			shape = checker_sql_unknown_query_shape(ctx)
 		}
 		checker_check_sql_select_result(ctx, n.result, shape)
-		checker_check_expr(ctx, n.package_size)
+		if n.package_size != nil {
+			package_size := checker_check_expr_with_unresolved_value_diagnostics(ctx, n.package_size)
+			if !checker_type_is_unknown(package_size.type) {
+				name, builtin_ok := checker_type_builtin_name(ctx, package_size.type)
+				if checker_type_structure(package_size.type) != nil ||
+				   checker_type_is_table_like(ctx, package_size.type) ||
+				   checker_type_is_ref(package_size.type) ||
+				   builtin_ok && name != "int1" && name != "int2" && name != "i" && name != "int4" && name != "int8" {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(n.package_size),
+						"FETCH PACKAGE SIZE operand is not an integer row count",
+					)
+				}
+			}
+		}
 	case ^ast.Close_Cursor_Stmt:
 		checker_check_cursor_handle_expr(ctx, n.handle, false)
 	case ^ast.Insert_Stmt:
@@ -378,18 +678,232 @@ checker_check_stmt :: proc(
 	case ^ast.Dataset_Stmt:
 		checker_check_dataset_stmt(ctx, n)
 	case ^ast.Textpool_Stmt:
-		checker_check_expr(ctx, n.program)
-		checker_check_expr(ctx, n.table, .Value, n.kind == .Read)
-		checker_check_expr(ctx, n.language)
+		checker_check_textpool_stmt(ctx, n)
+	case ^ast.Report_Stmt:
+		if n.kind == .Report || n.kind == .Program {
+			if collect_declarations {
+				checker_collect_stmt_entities(ctx, stmt)
+			}
+		} else {
+			checker_check_report_stmt(ctx, n)
+		}
 	case ^ast.Generate_Stmt:
-		checker_check_expr(ctx, n.source)
-		checker_check_expr(ctx, n.name, .Value, true)
-		checker_check_expr(ctx, n.program)
-		checker_check_expr(ctx, n.dynpro)
-		checker_check_expr(ctx, n.message, .Value, true)
-		checker_check_expr(ctx, n.line, .Value, true)
-		checker_check_expr(ctx, n.word, .Value, true)
-		checker_check_expr(ctx, n.offset, .Value, true)
+		checker_check_generate_stmt(ctx, n)
+	}
+}
+
+checker_check_generate_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Generate_Stmt) {
+	if stmt.kind == .Dynpro {
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.program)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.dynpro)
+		return
+	}
+
+	assert(stmt.kind == .Subroutine_Pool)
+	source := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.source)
+	if !checker_type_resolves_to_unknown(source.type) {
+		if !checker_type_is_table_like(ctx, source.type) {
+			checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.source), "GENERATE source operand is not an internal table")
+		} else if form, known := checker_type_table_form(source.type); known && form != .Standard_Table && form != .Like_Standard_Table {
+			checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.source), "GENERATE source operand is not a standard table")
+		} else {
+			type_entity := checker_table_type_entity(source.type)
+			entities := [?]^Entity{source.entity, type_entity}
+			has_secondary_key := false
+			for root, index in entities {
+				if root == nil || index == 1 && root == source.entity {
+					continue
+				}
+				entity := root
+				for depth := 0; depth <= 16 && entity != nil; depth += 1 {
+					decl := entity.decl_info
+					if decl != nil && decl.type_clause != nil && decl.type_clause.type_ref != nil {
+						if ref, ok := decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr); ok && len(ref.keys) > 1 {
+							has_secondary_key = true
+							break
+						}
+					}
+					entity = checker_table_next_type_entity(entity.type, entity)
+				}
+				if has_secondary_key {
+					break
+				}
+			}
+			if has_secondary_key {
+				checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.source), "GENERATE source table has secondary keys")
+			} else if ok, row_known := checker_character_like_type_supported(ctx, checker_type_row(ctx, source.type)); row_known && !ok {
+				checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.source), "GENERATE source table row is not character-like")
+			}
+		}
+	}
+
+	character_targets := [?]struct {
+		expr:     ^ast.Expr,
+		addition: string,
+	} {
+		{stmt.name, "NAME"},
+		{stmt.message, "MESSAGE"},
+		{stmt.word, "WORD"},
+	}
+	for target in character_targets {
+		if target.expr == nil {
+			continue
+		}
+		info := checker_check_writable_target(ctx, target.expr, fmt.tprintf("GENERATE %s target is not writable", target.addition))
+		if ok, known := checker_character_like_type_supported(ctx, info.type); known && !ok {
+			checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(target.expr), fmt.tprintf("GENERATE %s target is not character-like", target.addition))
+		}
+	}
+	integer_targets := [?]struct {
+		expr:     ^ast.Expr,
+		addition: string,
+	} {
+		{stmt.line, "LINE"},
+		{stmt.offset, "OFFSET"},
+	}
+	for target in integer_targets {
+		if target.expr == nil {
+			continue
+		}
+		info := checker_check_writable_target(ctx, target.expr, fmt.tprintf("GENERATE %s target is not writable", target.addition))
+		if checker_type_is_unknown(info.type) {
+			continue
+		}
+		if name, known := checker_type_builtin_name(ctx, info.type); known && name != "i" {
+			checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(target.expr), fmt.tprintf("GENERATE %s target does not have type i", target.addition))
+		}
+	}
+}
+
+checker_check_report_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Report_Stmt) {
+	if stmt.kind == .Delete_Report {
+		return
+	}
+	assert(stmt.kind == .Read_Report || stmt.kind == .Insert_Report)
+
+	program := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.name)
+	if ok, known := checker_character_like_type_supported(ctx, program.type); known && !ok {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.name), "REPORT program operand is not flat character-like")
+	}
+
+	if stmt.source == nil {
+		return
+	}
+	source := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.source, .Value, stmt.kind == .Read_Report)
+	if stmt.kind == .Read_Report && !checker_type_is_unknown(source.type) && !checker_operand_is_writable(source) {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.source), "READ REPORT target is not writable")
+	}
+	if checker_type_resolves_to_unknown(source.type) {
+		return
+	}
+	if !checker_type_is_table_like(ctx, source.type) {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.source), "REPORT source operand is not an internal table")
+		return
+	}
+	if form, known := checker_type_table_form(source.type); known && form != .Standard_Table && form != .Like_Standard_Table {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.source), "REPORT source operand is not a standard table")
+		return
+	}
+	type_entity := checker_table_type_entity(source.type)
+	entities := [?]^Entity{source.entity, type_entity}
+	for root, index in entities {
+		if root == nil || index == 1 && root == source.entity {
+			continue
+		}
+		entity := root
+		for depth := 0; depth <= 16 && entity != nil; depth += 1 {
+			decl := entity.decl_info
+			if decl != nil && decl.type_clause != nil && decl.type_clause.type_ref != nil {
+				if ref, ok := decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr); ok && len(ref.keys) > 1 {
+					checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.source), "REPORT source table has secondary keys")
+					return
+				}
+			}
+			entity = checker_table_next_type_entity(entity.type, entity)
+		}
+	}
+	row_type := checker_type_row(ctx, source.type)
+	if ok, known := checker_character_like_type_supported(ctx, row_type); known && !ok {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.source), "REPORT source table row is not character-like")
+	}
+}
+
+checker_check_logical_condition :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, statement: string) {
+	condition := checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
+	checker_validate_logical_condition_type(ctx, expr, condition.type, statement)
+}
+
+checker_validate_logical_condition_type :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, typ: ^Type, statement: string) {
+	if checker_type_is_unknown(typ) {
+		return
+	}
+	name, known := checker_type_builtin_name(ctx, typ)
+	invalid := checker_type_structure(typ) != nil ||
+	           checker_type_is_table_like(ctx, typ) ||
+	           checker_type_is_ref(typ) ||
+	           known && name != "abap_bool"
+	if invalid {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			fmt.tprintf("%s condition is not logical", statement),
+		)
+	}
+}
+
+checker_check_writable_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, message: string) -> Operand {
+	target := checker_check_expr_with_unresolved_value_diagnostics(ctx, expr, .Value, true)
+	if !checker_type_is_unknown(target.type) && !checker_operand_is_writable(target) {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(expr), message)
+	}
+	return target
+}
+
+checker_check_textpool_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Textpool_Stmt) {
+	character_operands := [?]struct {
+		expr:    ^ast.Expr,
+		message: string,
+	} {
+		{stmt.program, "TEXTPOOL program operand is not flat character-like"},
+		{stmt.language, "TEXTPOOL LANGUAGE operand is not flat character-like"},
+	}
+	for operand in character_operands {
+		if operand.expr == nil {
+			continue
+		}
+		info := checker_check_expr_with_unresolved_value_diagnostics(ctx, operand.expr)
+		if ok, known := checker_character_like_type_supported(ctx, info.type); known && !ok {
+			checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(operand.expr), operand.message)
+		}
+	}
+
+	if stmt.table == nil {
+		return
+	}
+	table := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.table, .Value, stmt.kind == .Read)
+	if stmt.kind == .Read && !checker_type_is_unknown(table.type) && !checker_operand_is_writable(table) {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.table), "READ TEXTPOOL target is not writable")
+	}
+	if checker_type_resolves_to_unknown(table.type) {
+		return
+	}
+	if !checker_type_is_table_like(ctx, table.type) {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.table), "TEXTPOOL table operand is not an internal table")
+		return
+	}
+	row_type := checker_type_row(ctx, table.type)
+	if checker_type_resolves_to_unknown(row_type) {
+		return
+	}
+	textpool_structure := checker_builtin_structure_by_name(ctx.checker, "textpool")
+	row_structure := checker_type_structure(row_type)
+	if row_structure == nil {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.table), "TEXTPOOL table row does not correspond to TEXTPOOL")
+		return
+	}
+	if same, known := checker_filter_structures_structurally_same(ctx, row_structure, textpool_structure, 0); known && !same {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.table), "TEXTPOOL table row does not correspond to TEXTPOOL")
 	}
 }
 
@@ -421,17 +935,17 @@ checker_check_convert_time_stamp_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.
 
 	switch stmt.kind {
 	case .Date_Time_To_Time_Stamp:
-		checker_check_expr(ctx, stmt.date)
-		checker_check_expr(ctx, stmt.time)
-		checker_check_expr(ctx, stmt.daylight_saving_time)
-		checker_check_type_hinted_target(ctx, stmt.time_stamp, timestamp_type)
-		checker_check_expr(ctx, stmt.time_zone)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.date)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.time)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.daylight_saving_time)
+		checker_check_type_hinted_target(ctx, stmt.time_stamp, timestamp_type, "CONVERT TIME STAMP target is not writable")
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.time_zone)
 	case .Time_Stamp_To_Date_Time:
-		checker_check_expr(ctx, stmt.time_stamp)
-		checker_check_expr(ctx, stmt.time_zone)
-		checker_check_type_hinted_target(ctx, stmt.date, date_type)
-		checker_check_type_hinted_target(ctx, stmt.time, time_type)
-		checker_check_type_hinted_target(ctx, stmt.daylight_saving_time, dst_type)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.time_stamp)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.time_zone)
+		checker_check_type_hinted_target(ctx, stmt.date, date_type, "CONVERT DATE target is not writable")
+		checker_check_type_hinted_target(ctx, stmt.time, time_type, "CONVERT TIME target is not writable")
+		checker_check_type_hinted_target(ctx, stmt.daylight_saving_time, dst_type, "CONVERT DAYLIGHT SAVING TIME target is not writable")
 	}
 }
 
@@ -439,6 +953,7 @@ checker_check_type_hinted_target :: proc(
 	ctx: ^Checker_Context,
 	expr: ^ast.Expr,
 	type_hint: ^Type,
+	diagnostic_message: string,
 ) -> Operand {
 	if expr == nil {
 		return checker_invalid_operand()
@@ -446,7 +961,18 @@ checker_check_type_hinted_target :: proc(
 	local := ctx^
 	local.type_hint = type_hint
 	local.type_hint_expr = expr
-	return checker_check_expr(&local, expr, .Value, true)
+	local.diagnose_unresolved_value_refs = true
+	target := checker_check_expr(&local, expr, .Value, true)
+	if !checker_type_is_unknown(target.type) &&
+	   !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(expr),
+			diagnostic_message,
+		)
+	}
+	return target
 }
 
 checker_check_describe_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Describe_Stmt) {
@@ -458,19 +984,43 @@ checker_check_describe_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Describe_S
 		target_ctx.type_hint = checker_describe_target_type_hint(ctx, entry.target_kind)
 		target_ctx.type_hint_expr = entry.target
 		target := checker_check_expr(&target_ctx, entry.target, .Value, true)
-		checker_check_unresolved_variable_operand(ctx, entry.target, target)
+		if !checker_check_unresolved_variable_operand(ctx, entry.target, target) &&
+		   !checker_type_is_unknown(target.type) &&
+		   !checker_operand_is_writable(target) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(entry.target),
+				"DESCRIBE target is not writable",
+			)
+		}
 	}
 }
 
 checker_check_catch_exceptions :: proc(ctx: ^Checker_Context, exceptions: []^ast.Expr) -> ^Type {
 	target_type := project_type_unknown(ctx.project)
 	for exception, i in exceptions {
-		typ, entity := checker_type_from_expr(ctx, exception, .Type)
+		type_ref := checker_type_ref_data_from_expr(ctx, exception, .Type)
+		typ, entity := checker_type_from_ref_data(
+			ctx,
+			type_ref,
+			&exception.expr_base,
+			preferred_external_kind = .Class,
+		)
+		checker_record_type_ref_raw_uses(ctx, exception)
 		node: ^ast.Node
 		if exception != nil {
 			node = &exception.expr_base
 		}
 		checker_record_operand(ctx, node, .Type, typ, entity)
+		if entity != nil && entity.kind != .Class {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(exception),
+				"CATCH exception type is not a class",
+			)
+		}
 		if i == 0 {
 			target_type = checker_catch_exception_target_type(ctx, typ)
 		}
@@ -500,6 +1050,16 @@ checker_check_catch_into :: proc(
 	local.type_hint = type_hint
 	local.type_hint_expr = into
 	target := checker_check_expr(&local, into, .Value, true)
+	if !checker_check_unresolved_variable_operand(ctx, into, target) &&
+	   !checker_type_is_unknown(target.type) &&
+	   !checker_operand_is_writable(target) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(into),
+			"CATCH INTO target is not writable",
+		)
+	}
 	checker_check_catch_into_compatibility(ctx, type_hint, target.type, checker_expr_range(into))
 	return target
 }
@@ -752,6 +1312,105 @@ checker_check_condense_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, ta
 	}
 }
 
+checker_check_translate_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Translate_Stmt) {
+	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	if !checker_check_unresolved_variable_operand(ctx, stmt.target, target) &&
+	   !checker_type_is_unknown(target.type) {
+		if !checker_operand_is_writable(target) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(stmt.target),
+				"TRANSLATE target is not writable",
+			)
+		} else if ok, known := checker_character_like_type_supported(ctx, target.type); known && !ok {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(stmt.target),
+				"TRANSLATE target is not character-like",
+			)
+		}
+	}
+	if stmt.operand == nil {
+		return
+	}
+	operand := checker_check_expr(ctx, stmt.operand)
+	if checker_check_unresolved_variable_operand(ctx, stmt.operand, operand) ||
+	   checker_type_is_unknown(operand.type) {
+		return
+	}
+	if stmt.form == .Using {
+		if ok, known := checker_character_like_type_supported(ctx, operand.type); known && !ok {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(stmt.operand),
+				"TRANSLATE USING mask is not character-like",
+			)
+		}
+	}
+}
+
+checker_check_replace_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Replace_Stmt) {
+	checker_check_shift_text_operand(
+		ctx,
+		stmt.pattern,
+		"REPLACE pattern is not character-like or byte-like",
+	)
+	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	if !checker_check_unresolved_variable_operand(ctx, stmt.target, target) &&
+	   !checker_type_is_unknown(target.type) {
+		if !checker_operand_is_writable(target) {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(stmt.target),
+				"REPLACE target is not writable",
+			)
+		} else if stmt.in_table {
+			if !checker_type_is_table_like(ctx, target.type) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(stmt.target),
+					"REPLACE IN TABLE target is not an internal table",
+				)
+			}
+		} else if ok, known := checker_text_or_byte_type_supported(ctx, target.type); known && !ok {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(stmt.target),
+				"REPLACE target is not character-like or byte-like",
+			)
+		}
+	}
+	checker_check_shift_text_operand(
+		ctx,
+		stmt.replacement,
+		"REPLACE replacement is not character-like or byte-like",
+	)
+	if stmt.section_offset != nil {
+		offset := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.section_offset)
+		checker_check_integer_compatible_type(
+			ctx,
+			offset.type,
+			checker_expr_range(stmt.section_offset),
+			"REPLACE SECTION OFFSET operand is not integer-compatible",
+		)
+	}
+	if stmt.section_length != nil {
+		length := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.section_length)
+		checker_check_integer_compatible_type(
+			ctx,
+			length.type,
+			checker_expr_range(stmt.section_length),
+			"REPLACE SECTION LENGTH operand is not integer-compatible",
+		)
+	}
+}
+
 checker_check_shift_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Shift_Stmt) {
 	target := checker_check_expr(ctx, stmt.target, .Value, true)
 	checker_check_shift_target(ctx, stmt.target, target)
@@ -839,6 +1498,139 @@ checker_check_find_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Find_Stmt) {
 	for submatch in stmt.submatches {
 		checker_check_find_write_target(ctx, submatch, nil, "FIND SUBMATCHES target is not writable")
 	}
+}
+
+checker_check_search_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Search_Stmt) {
+	target := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.target, .Value, stmt.mark)
+	if !checker_type_is_unknown(target.type) {
+		if stmt.mark && !checker_operand_is_writable(target) {
+			checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.target), "SEARCH target is not writable")
+		} else if ok, known := checker_character_like_type_supported(ctx, target.type); known && !ok {
+			checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.target), "SEARCH target is not character-like")
+		}
+	}
+
+	pattern := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.pattern)
+	if ok, known := checker_character_like_type_supported(ctx, pattern.type); known && !ok {
+		checker_add_diagnostic(ctx, .Invalid_Syntax_Form, checker_expr_range(stmt.pattern), "SEARCH pattern is not character-like")
+	}
+
+	int_type := checker_builtin_type_from_name(ctx.checker, "i")
+	range_operands := [?]struct {
+		expr:    ^ast.Expr,
+		addition: string,
+	} {
+		{stmt.starting_at, "STARTING AT"},
+		{stmt.ending_at, "ENDING AT"},
+	}
+	for range_operand in range_operands {
+		if range_operand.expr == nil {
+			continue
+		}
+		local := ctx^
+		local.type_hint = int_type
+		local.type_hint_expr = range_operand.expr
+		operand := checker_check_expr_with_unresolved_value_diagnostics(&local, range_operand.expr)
+		if checker_type_is_unknown(operand.type) {
+			continue
+		}
+		name, known := checker_type_builtin_name(ctx, operand.type)
+		if checker_type_structure(operand.type) != nil ||
+		   checker_type_is_table_like(ctx, operand.type) ||
+		   checker_type_is_ref(operand.type) ||
+		   known && name != "i" {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(range_operand.expr),
+				fmt.tprintf("SEARCH %s operand does not have type i", range_operand.addition),
+			)
+		}
+	}
+}
+
+checker_check_write_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Write_Stmt) {
+	int_type := checker_builtin_type_from_name(ctx.checker, "i")
+	for write_operand in stmt.operands {
+		value := checker_check_expr_with_unresolved_value_diagnostics(ctx, write_operand.value)
+		if ok, known := checker_write_value_type_supported(ctx, value.type); known && !ok {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(write_operand.value),
+				"WRITE value operand is not simple",
+			)
+		}
+		format_operands := [?]struct {
+			expr:    ^ast.Expr,
+			addition: string,
+		} {
+			{write_operand.position, "AT position"},
+			{write_operand.length, "output length"},
+		}
+		for format_operand in format_operands {
+			if format_operand.expr == nil {
+				continue
+			}
+			local := ctx^
+			local.type_hint = int_type
+			local.type_hint_expr = format_operand.expr
+			operand := checker_check_expr_with_unresolved_value_diagnostics(&local, format_operand.expr)
+			if checker_type_is_unknown(operand.type) {
+				continue
+			}
+			name, known := checker_type_builtin_name(ctx, operand.type)
+			if checker_type_structure(operand.type) != nil ||
+			   checker_type_is_table_like(ctx, operand.type) ||
+			   checker_type_is_ref(operand.type) ||
+			   known && name != "i" {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(format_operand.expr),
+					fmt.tprintf("WRITE %s operand does not have type i", format_operand.addition),
+				)
+			}
+		}
+	}
+}
+
+checker_write_value_type_supported :: proc(ctx: ^Checker_Context, typ: ^Type) -> (bool, bool) {
+	if checker_type_is_unknown(typ) {
+		return false, false
+	}
+	if structure := checker_type_structure(typ); structure != nil {
+		known := true
+		for field in structure.fields {
+			if checker_type_is_unknown(field.type) {
+				known = false
+				continue
+			}
+			if checker_type_structure(field.type) != nil ||
+			   checker_type_is_table_like(ctx, field.type) ||
+			   checker_type_is_ref(field.type) {
+				return false, true
+			}
+			name, ok := checker_type_builtin_name(ctx, field.type)
+			if !ok || name == "any" || name == "data" || name == "simple" ||
+			   name == "clike" || name == "csequence" {
+				known = false
+				continue
+			}
+			if name != "c" && name != "n" && name != "d" && name != "t" && name != "abap_bool" {
+				return false, true
+			}
+		}
+		return known, known
+	}
+	if checker_type_is_table_like(ctx, typ) || checker_type_is_ref(typ) {
+		return false, true
+	}
+	name, ok := checker_type_builtin_name(ctx, typ)
+	if !ok || name == "any" || name == "data" {
+		return false, false
+	}
+	return name != "object", true
 }
 
 checker_check_find_target :: proc(
@@ -948,8 +1740,35 @@ checker_check_integer_compatible_type :: proc(
 	}
 }
 
+checker_hide_type_is_flat :: proc(ctx: ^Checker_Context, typ: ^Type) -> bool {
+	if checker_type_is_unknown(typ) {
+		return true
+	}
+	if structure := checker_type_structure(typ); structure != nil {
+		for field in structure.fields {
+			if !checker_hide_type_is_flat(ctx, field.type) {
+				return false
+			}
+		}
+		return true
+	}
+	if checker_type_is_table_like(ctx, typ) || checker_type_is_ref(typ) {
+		return false
+	}
+	name, known := checker_type_builtin_name(ctx, typ)
+	return !known || checker_generic_builtin_type_name(name) || name != "string" && name != "xstring"
+}
+
 checker_check_case_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Case_Stmt) {
-	checker_check_expr(ctx, stmt.expr)
+	selector := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.expr)
+	if stmt.is_type_of && !checker_type_is_unknown(selector.type) && !checker_type_is_ref(selector.type) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(stmt.expr),
+			"CASE TYPE OF selector is not a reference",
+		)
+	}
 	if len(stmt.whens) == 0 {
 		checker_add_diagnostic(
 			ctx,
@@ -970,13 +1789,51 @@ checker_check_case_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Case_Stmt) {
 		}
 		if clause.is_others {
 			seen_others = true
-			if len(clause.operands) > 0 {
+			if len(clause.operands) > 0 || len(clause.type_operands) > 0 || clause.into != nil {
 				checker_add_diagnostic(
 					ctx,
 					.Invalid_Syntax_Form,
 					clause.range,
 					"WHEN OTHERS cannot have operands",
 				)
+			}
+		} else if stmt.is_type_of {
+			if len(clause.type_operands) == 0 {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					clause.range,
+					"WHEN TYPE requires at least one type",
+				)
+			}
+			target_type := project_type_unknown(ctx.project)
+			for type_operand, i in clause.type_operands {
+				typ, entity := checker_type_from_expr(ctx, type_operand, .Type)
+				checker_record_operand(ctx, &type_operand.expr_base, .Type, typ, entity)
+				if i == 0 && !checker_type_is_unknown(typ) {
+					target_type = project_type_ref(ctx.project, typ)
+				}
+			}
+			if clause.into != nil {
+				target := checker_check_type_hinted_target(
+					ctx,
+					clause.into,
+					target_type,
+					"CASE TYPE OF INTO target is not writable",
+				)
+				if ok, known := checker_type_assignment_compatible(ctx, target_type, target.type); known && !ok {
+					checker_add_diagnostic(
+						ctx,
+						.Incompatible_Assignment_Type,
+						checker_expr_range(clause.into),
+						checker_type_mismatch_message(
+							ctx,
+							"CASE TYPE OF INTO target is not compatible",
+							target_type,
+							target.type,
+						),
+					)
+				}
 			}
 		} else {
 			if len(clause.operands) == 0 {
@@ -987,7 +1844,26 @@ checker_check_case_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Case_Stmt) {
 					"WHEN requires at least one operand",
 				)
 			}
-			checker_check_expr_list(ctx, clause.operands[:])
+			for operand in clause.operands {
+				operand_ctx := ctx^
+				operand_ctx.type_hint = selector.type
+				operand_ctx.type_hint_expr = operand
+				operand_ctx.diagnose_unresolved_value_refs = true
+				value := checker_check_expr(&operand_ctx, operand)
+				if ok, known := checker_type_assignment_compatible(ctx, value.type, selector.type); known && !ok {
+					checker_add_diagnostic(
+						ctx,
+						.Incompatible_Argument_Type,
+						checker_expr_range(operand),
+						checker_type_mismatch_message(
+							ctx,
+							"CASE WHEN operand is not compatible",
+							value.type,
+							selector.type,
+						),
+					)
+				}
+			}
 		}
 		checker_check_stmt_list(ctx, clause.body)
 	}
@@ -1197,6 +2073,7 @@ checker_check_table_line_target :: proc(
 	target: ^ast.Expr,
 	row_type: ^Type,
 	target_kind: ast.Loop_Target_Kind,
+	diagnose_unresolved := false,
 ) {
 	if target == nil {
 		return
@@ -1208,7 +2085,20 @@ checker_check_table_line_target :: proc(
 	target_ctx := ctx^
 	target_ctx.type_hint = hint
 	target_ctx.type_hint_expr = target
+	target_ctx.diagnose_unresolved_value_refs = diagnose_unresolved
 	operand := checker_check_expr(&target_ctx, target, .Value, true)
+	if checker_type_is_unknown(operand.type) {
+		return
+	}
+	if !checker_operand_is_writable(operand) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(target),
+			"internal table result target is not writable",
+		)
+		return
+	}
 	checker_check_assignment_compatibility(ctx, hint, operand.type, checker_expr_range(target))
 }
 
@@ -1219,19 +2109,32 @@ checker_check_loop_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Loop_Stmt) {
 		return
 	}
 
-	source := checker_check_expr(ctx, stmt.source)
+	source := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.source)
 	row_type := checker_loop_source_row_type(ctx, stmt, source)
 	row_structure := checker_type_structure(row_type)
-	checker_check_table_line_target(ctx, stmt.target, row_type, stmt.target_kind)
-	checker_check_expr(ctx, stmt.target_casting_type)
-	checker_check_expr(ctx, stmt.from)
-	checker_check_expr(ctx, stmt.to)
-	checker_check_table_key_selector(ctx, stmt.using_key)
+	checker_check_table_line_target(ctx, stmt.target, row_type, stmt.target_kind, true)
+	checker_check_dynamic_or_static_type_expr(ctx, stmt.target_casting_type)
+	checker_check_loop_bound(ctx, stmt.from, "LOOP FROM operand is not integer-compatible")
+	checker_check_loop_bound(ctx, stmt.to, "LOOP TO operand is not integer-compatible")
+	checker_check_table_key_selector(ctx, stmt.using_key, true)
 	checker_check_loop_transporting_fields(ctx, stmt.transporting_fields[:], row_type, row_structure)
 	checker_check_internal_table_where_expr(ctx, stmt.where_cond, row_type, row_structure)
-	checker_check_expr(ctx, stmt.group_by)
-	checker_check_table_line_target(ctx, stmt.group_target, row_type, stmt.group_target_kind)
+	group_by := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.group_by)
+	checker_check_table_line_target(ctx, stmt.group_target, group_by.type, stmt.group_target_kind, true)
 	checker_check_stmt_list(ctx, stmt.body)
+}
+
+checker_check_loop_bound :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, message: string) {
+	if expr == nil {
+		return
+	}
+	int_type := checker_builtin_type_from_name(ctx.checker, "i")
+	local := ctx^
+	local.type_hint = int_type
+	local.type_hint_expr = expr
+	local.diagnose_unresolved_value_refs = true
+	operand := checker_check_expr(&local, expr)
+	checker_check_integer_compatible_type(ctx, operand.type, checker_expr_range(expr), message)
 }
 
 checker_loop_source_row_type :: proc(
@@ -1249,14 +2152,6 @@ checker_loop_source_row_type :: proc(
 		return source.type
 	}
 	if checker_type_is_unknown(source.type) && source.entity == nil {
-		if name, range, unresolved := checker_loop_source_unresolved_reference(stmt.source); unresolved {
-			checker_add_diagnostic(
-				ctx,
-				.Unresolved_Reference,
-				range,
-				checker_unresolved_variable_message(name),
-			)
-		}
 		return project_type_unknown(ctx.project)
 	}
 	if !checker_type_is_unknown(source.type) {
@@ -1268,26 +2163,6 @@ checker_loop_source_row_type :: proc(
 		)
 	}
 	return project_type_unknown(ctx.project)
-}
-
-checker_loop_source_unresolved_reference :: proc(expr: ^ast.Expr) -> (string, Range, bool) {
-	if expr == nil {
-		return "", {}, false
-	}
-	#partial switch n in expr.derived_expr {
-	case ^ast.Ident_Expr:
-		return n.name, n.range, n.name != ""
-	case ^ast.Type_Ref_Expr:
-		if n.raw_operand || n.name.text == "" || n.base_name.text != "" || len(n.path) > 0 {
-			return "", {}, false
-		}
-		return n.name.text, n.name.range, true
-	case ^ast.Host_Expr:
-		return checker_loop_source_unresolved_reference(n.value)
-	case ^ast.Paren_Expr:
-		return checker_loop_source_unresolved_reference(n.expr)
-	}
-	return "", {}, false
 }
 
 checker_type_is_range_like :: proc(ctx: ^Checker_Context, typ: ^Type) -> bool {
@@ -1363,12 +2238,12 @@ checker_check_read_table_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Read_Tab
 		checker_check_read_table_source(ctx, entry.table, table)
 		row_type := checker_type_row(ctx, table.type)
 		row_structure := checker_type_structure(row_type)
-		checker_check_table_line_target(ctx, entry.into, row_type, .Into)
-		checker_check_table_line_target(ctx, entry.assigning, row_type, .Assigning)
-		checker_check_table_line_target(ctx, entry.reference_into, row_type, .Reference_Into)
+		checker_check_table_line_target(ctx, entry.into, row_type, .Into, true)
+		checker_check_table_line_target(ctx, entry.assigning, row_type, .Assigning, true)
+		checker_check_table_line_target(ctx, entry.reference_into, row_type, .Reference_Into, true)
 		checker_check_read_table_index(ctx, entry.index)
 		checker_check_read_table_index_access(ctx, entry, table)
-		checker_check_table_key_selector(ctx, entry.using_key)
+		checker_check_table_key_selector(ctx, entry.using_key, true)
 		checker_check_loop_transporting_fields(ctx, entry.transporting_fields[:], row_type, row_structure)
 		checker_check_read_table_comparing(ctx, entry.comparing[:], row_type, row_structure)
 		for key in entry.key_values {
@@ -1480,7 +2355,7 @@ checker_check_read_table_comparing :: proc(
 		if _, ok := checker_check_table_component_expr(ctx, expr, row_type, row_structure, false); ok {
 			continue
 		}
-		checker_check_expr(ctx, expr)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
 	}
 }
 
@@ -1584,8 +2459,8 @@ checker_check_append_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Append_Stmt)
 			checker_warn_append_source_category_mismatch(ctx, source.type, expected, checker_expr_range(stmt.source))
 		}
 	}
-	checker_check_table_line_target(ctx, stmt.assigning, row_type, .Assigning)
-	checker_check_table_line_target(ctx, stmt.reference_into, row_type, .Reference_Into)
+	checker_check_table_line_target(ctx, stmt.assigning, row_type, .Assigning, true)
+	checker_check_table_line_target(ctx, stmt.reference_into, row_type, .Reference_Into, true)
 }
 
 checker_warn_append_source_category_mismatch :: proc(
@@ -1714,7 +2589,7 @@ checker_check_sort_field :: proc(
 	if _, ok := checker_check_table_component_expr(ctx, field.expr, row_type, row_structure, false); ok {
 		return
 	}
-	checker_check_expr(ctx, field.expr)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, field.expr)
 }
 
 checker_check_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_Stmt) {
@@ -1726,14 +2601,20 @@ checker_check_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_Stmt)
 	checker_check_insert_target(ctx, stmt.target, target)
 	row_type := checker_type_row(ctx, target.type)
 	if stmt.source != nil {
-		source := checker_check_expr(ctx, stmt.source)
 		expected := row_type if stmt.form == .Internal_Table && !stmt.from_table else target.type
-		checker_check_assignment_compatibility(ctx, source.type, expected, checker_expr_range(stmt.source))
+		source_ctx := ctx^
+		source_ctx.type_hint = expected
+		source_ctx.type_hint_expr = stmt.source
+		source_ctx.diagnose_unresolved_value_refs = true
+		source := checker_check_expr(&source_ctx, stmt.source)
+		if !checker_check_unresolved_variable_operand(ctx, stmt.source, source) {
+			checker_check_assignment_compatibility(ctx, source.type, expected, checker_expr_range(stmt.source))
+		}
 	}
 	checker_check_insert_index_access(ctx, stmt, target)
-	checker_check_expr(ctx, stmt.index)
-	checker_check_table_line_target(ctx, stmt.assigning, row_type, .Assigning)
-	checker_check_table_line_target(ctx, stmt.reference_into, row_type, .Reference_Into)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.index)
+	checker_check_table_line_target(ctx, stmt.assigning, row_type, .Assigning, true)
+	checker_check_table_line_target(ctx, stmt.reference_into, row_type, .Reference_Into, true)
 	for assignment in stmt.assignments {
 		checker_check_expr(ctx, assignment.name)
 		checker_check_expr(ctx, assignment.value)
@@ -1821,7 +2702,7 @@ checker_check_modify_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt)
 		}
 		checker_refine_modify_row_type_from_source(ctx, stmt, source.type, &row_type, &row_structure)
 	}
-	checker_check_expr(ctx, stmt.index)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.index)
 	checker_check_loop_transporting_fields(ctx, stmt.transporting[:], row_type, row_structure)
 	checker_check_internal_table_where_expr(ctx, stmt.where_cond, row_type, row_structure)
 }
@@ -1907,10 +2788,10 @@ checker_check_delete_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Delete_Stmt)
 	checker_check_delete_target(ctx, stmt.target, target)
 	row_type := checker_type_row(ctx, target.type)
 	row_structure := checker_type_structure(row_type)
-	checker_check_expr(ctx, stmt.source)
-	checker_check_expr(ctx, stmt.index)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.source)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.index)
 	checker_check_internal_table_where_expr(ctx, stmt.where_cond, row_type, row_structure)
-	checker_check_table_key_selector(ctx, stmt.using_key)
+	checker_check_table_key_selector(ctx, stmt.using_key, true)
 	for comparing in stmt.comparing {
 		if comparing.all_fields {
 			continue
@@ -1918,7 +2799,7 @@ checker_check_delete_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Delete_Stmt)
 		if _, ok := checker_check_table_component_expr(ctx, comparing.expr, row_type, row_structure, false); ok {
 			continue
 		}
-		checker_check_expr(ctx, comparing.expr)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, comparing.expr)
 	}
 }
 
@@ -1945,8 +2826,16 @@ checker_check_delete_target :: proc(ctx: ^Checker_Context, expr: ^ast.Expr, targ
 	}
 }
 
-checker_check_table_key_selector :: proc(ctx: ^Checker_Context, selector: ast.Table_Key_Selector) {
-	checker_check_expr(ctx, selector.dynamic_name)
+checker_check_table_key_selector :: proc(
+	ctx: ^Checker_Context,
+	selector: ast.Table_Key_Selector,
+	check_unresolved := false,
+) {
+	if check_unresolved {
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, selector.dynamic_name)
+	} else {
+		checker_check_expr(ctx, selector.dynamic_name)
+	}
 }
 
 checker_check_internal_table_where_expr :: proc(
@@ -2751,7 +3640,16 @@ checker_check_call_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Call_Stmt) {
 		checker_check_call_stmt_args(ctx, stmt.named_args[:], target.entity, stmt.range)
 	case .Transformation:
 		for arg in stmt.transformation_args {
-			checker_check_expr(ctx, arg.value)
+			switch arg.kind {
+			case .Options, .Parameters, .Source:
+				checker_check_expr_with_unresolved_value_diagnostics(ctx, arg.value)
+			case .Result:
+				checker_check_writable_target(
+					ctx,
+					arg.value,
+					"CALL TRANSFORMATION RESULT target is not writable",
+				)
+			}
 		}
 	case .Transaction:
 		checker_check_expr(ctx, stmt.target)
@@ -2767,6 +3665,7 @@ checker_check_call_stmt_args :: proc(
 	routine: ^Entity,
 	call_range: Range,
 	has_parameter_table := false,
+	exception_message_writable := false,
 ) {
 	args := make([dynamic]Checker_Call_Argument, 0, len(named_args), context.temp_allocator)
 	for named in named_args {
@@ -2786,13 +3685,26 @@ checker_check_call_stmt_args :: proc(
 		append(&args, arg)
 	}
 	if routine != nil {
-		checker_check_routine_call_arguments(ctx, routine, args[:], call_range, has_parameter_table)
+		checker_check_routine_call_arguments(
+			ctx,
+			routine,
+			args[:],
+			call_range,
+			has_parameter_table,
+			exception_message_writable,
+		)
 		return
 	}
 	for arg in args {
-		checker_check_call_argument_value(ctx, arg, nil, false, diagnose_unresolved_value_refs = true)
+		section := arg.section if arg.has_section else ast.Call_Arg_Section_Kind.Exporting
+		checker_check_call_argument_with_parameter(ctx, arg, section, nil)
 		if arg.message != nil {
-			checker_check_call_function_exception_message(ctx, arg.message, arg.message_range)
+			checker_check_call_function_exception_message(
+				ctx,
+				arg.message,
+				arg.message_range,
+				exception_message_writable,
+			)
 		}
 	}
 }
@@ -2816,13 +3728,18 @@ checker_lookup_call_function_entity :: proc(ctx: ^Checker_Context, target: ^ast.
 			checker_expr_range(target),
 			&target.expr_base if target != nil else nil,
 		)
+		checker_record_operand(
+			ctx,
+			&target.expr_base if target != nil else nil,
+			.Routine,
+			project_type_unknown(ctx.project),
+		)
 		return nil
 	}
 	if entity.kind != .Module {
 		return nil
 	}
-	checker_add_entity_use(ctx, &target.expr_base if target != nil else nil, entity)
-	checker_check_entity_for_operand(ctx, entity)
+	checker_record_entity_operand(ctx, &target.expr_base if target != nil else nil, entity)
 	return entity
 }
 
@@ -2898,6 +3815,7 @@ checker_check_routine_call_arguments :: proc(
 	args: []Checker_Call_Argument,
 	call_range: Range,
 	has_parameter_table := false,
+	exception_message_writable := false,
 ) {
 	if routine == nil || routine.kind == .Builtin {
 		for arg in args {
@@ -2935,7 +3853,12 @@ checker_check_routine_call_arguments :: proc(
 		if arg.section == .Exceptions {
 			checker_check_call_argument_value(ctx, arg, nil, false, diagnose_unresolved_value_refs = true)
 			if arg.message != nil {
-				checker_check_call_function_exception_message(ctx, arg.message, arg.message_range)
+				checker_check_call_function_exception_message(
+					ctx,
+					arg.message,
+					arg.message_range,
+					exception_message_writable,
+				)
 			}
 			continue
 		}
@@ -3307,8 +4230,14 @@ checker_check_call_function_exception_message :: proc(
 	ctx: ^Checker_Context,
 	expr: ^ast.Expr,
 	range: Range,
+	writable := false,
 ) {
-	operand := checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
+	local := ctx^
+	local.diagnose_unresolved_value_refs = true
+	operand := checker_check_expr(&local, expr, .Value, writable)
+	if writable && !checker_operand_is_writable(operand) {
+		checker_add_diagnostic(ctx, .Incompatible_Argument_Type, range, "exception message target is not writable")
+	}
 	if ok, known := checker_type_message_field_compatible(ctx, operand.type); known && !ok {
 		checker_add_diagnostic(ctx, .Incompatible_Argument_Type, range, "message field must be type c, n, d, or t")
 	}
@@ -3399,6 +4328,8 @@ checker_call_parameter_matches_section :: proc(
 	actual: ast.Call_Arg_Section_Kind,
 ) -> bool {
 	#partial switch routine_kind {
+	case .Event:
+		return (actual == .Exporting || actual == .Unknown) && formal == .Method_Exporting
 	case .Method:
 		#partial switch actual {
 		case .Exporting, .Unknown:
@@ -3504,6 +4435,8 @@ checker_parameter_required_for_call :: proc(routine: ^Entity, param: ^Entity) ->
 	}
 	section := checker_parameter_section(param)
 	#partial switch routine.kind {
+	case .Event:
+		return section == .Method_Exporting
 	case .Method:
 		return section == .Method_Importing || section == .Method_Changing
 	case .Module:
@@ -3535,37 +4468,50 @@ checker_parameter_supplied :: proc(supplied: []^Entity, param: ^Entity) -> bool 
 
 checker_check_message_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Message_Stmt) {
 	if stmt.head != nil {
-		checker_check_expr(ctx, stmt.head.code)
-		checker_check_expr(ctx, stmt.head.id)
-		checker_check_expr(ctx, stmt.head.msg_type)
-		checker_check_expr(ctx, stmt.head.number)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.head.code)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.head.id)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.head.msg_type)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.head.number)
 	}
-	checker_check_expr_list(ctx, stmt.with_args[:])
+	for arg in stmt.with_args {
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, arg)
+	}
 	string_type := checker_builtin_type_from_name(ctx.checker, "string")
 	if stmt.into != nil {
-		local := ctx^
-		local.type_hint = string_type
-		local.type_hint_expr = stmt.into
-		checker_check_expr(&local, stmt.into, .Value, true)
+		target := checker_check_type_hinted_target(ctx, stmt.into, string_type, "MESSAGE INTO target is not writable")
+		if ok, known := checker_character_like_type_supported(ctx, target.type); known && !ok {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(stmt.into),
+				"MESSAGE INTO target is not character-like",
+			)
+		}
 	}
-	checker_check_expr(ctx, stmt.display_like)
-	checker_check_expr(ctx, stmt.raising)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.display_like)
+	if stmt.raising != nil {
+		raising := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.raising)
+		if raising.entity != nil && raising.entity.kind != .Exception {
+			checker_add_diagnostic(
+				ctx,
+				.Invalid_Syntax_Form,
+				checker_expr_range(stmt.raising),
+				"MESSAGE RAISING target is not a classic exception",
+			)
+		}
+	}
 }
 
 checker_check_submit_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Submit_Stmt) {
-	target := checker_check_expr(ctx, stmt.target)
 	if stmt.target_kind == .Static {
 		checker_check_report_dependency_target(ctx, stmt.target, .Submit, false)
 	} else {
-		checker_check_unresolved_variable_operand(ctx, stmt.target, target)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.target)
 	}
 	for option in stmt.options {
-		value := checker_check_expr(ctx, option.value)
-		checker_check_unresolved_variable_operand(ctx, option.value, value)
-		high_value := checker_check_expr(ctx, option.high_value)
-		checker_check_unresolved_variable_operand(ctx, option.high_value, high_value)
-		sign_value := checker_check_expr(ctx, option.sign_value)
-		checker_check_unresolved_variable_operand(ctx, option.sign_value, sign_value)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, option.value)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, option.high_value)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, option.sign_value)
 	}
 }
 
@@ -3602,19 +4548,353 @@ checker_check_report_dependency_target :: proc(
 }
 
 checker_check_runtime_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Runtime_Stmt) {
-	checker_check_expr(ctx, stmt.id)
-	checker_check_expr(ctx, stmt.field, .Value, stmt.kind == .Get)
-	if stmt.kind == .Get && stmt.subject == .Time_Stamp_Field {
-		timestamp_type := checker_builtin_type_from_name(ctx.checker, "timestamp")
-		checker_check_type_hinted_target(ctx, stmt.target, timestamp_type)
+	id := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.id)
+	if stmt.kind == .Get || stmt.kind == .Get_Badi {
+		switch stmt.subject {
+		case .Run_Time_Field:
+			int_type := checker_builtin_type_from_name(ctx.checker, "i")
+			target := checker_check_type_hinted_target(ctx, stmt.target, int_type, "GET RUN TIME target is not writable")
+			if !checker_type_is_unknown(target.type) {
+				compatible, known := checker_type_assignment_compatible(ctx, int_type, target.type)
+				if known && !compatible ||
+				   checker_type_structure(target.type) != nil ||
+				   checker_type_is_table_like(ctx, target.type) ||
+				   checker_type_is_ref(target.type) {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(stmt.target),
+						"GET RUN TIME target cannot receive a value of type i",
+					)
+				}
+			}
+		case .Time_Stamp_Field:
+			timestamp_type := checker_builtin_type_from_name(ctx.checker, "timestamp")
+			target := checker_check_type_hinted_target(ctx, stmt.target, timestamp_type, "GET TIME STAMP target is not writable")
+			if !checker_type_is_unknown(target.type) {
+				name, name_known := checker_type_builtin_name(ctx, target.type)
+				valid := name_known && (name == "timestamp" || name == "timestampl")
+				if name_known && name == "p" {
+					length, length_known := type_length(target.type)
+					decimals, decimals_known := 0, false
+					for typ := target.type; typ != nil; typ = typ.base {
+						if typ.has_decimals {
+							decimals, decimals_known = typ.decimals, true
+							break
+						}
+					}
+					valid = length_known &&
+					        ((length == 8 && (!decimals_known || decimals == 0)) ||
+					         (length == 11 && decimals_known && decimals == 7))
+				}
+				if !valid && !checker_generic_builtin_type_name(name) {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(stmt.target),
+						"GET TIME STAMP target must have type timestamp or timestampl",
+					)
+				}
+			}
+		case .Parameter_ID_Field:
+			id_name, id_name_known := checker_type_builtin_name(ctx, id.type)
+			_, id_character_literal := checker_expr_character_literal_text(stmt.id)
+			if ok, known := checker_character_like_type_supported(ctx, id.type); known &&
+			   (!ok || id_name_known && id_name == "string" && !id_character_literal) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(stmt.id),
+					"GET PARAMETER ID operand is not flat character-like",
+				)
+			}
+			if value, ok := checker_expr_character_literal_text(stmt.id); ok &&
+			   (len(value) > 20 || strings.trim_space(value) == "") {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(stmt.id),
+					"GET PARAMETER ID literal must contain 1 to 20 non-blank characters",
+				)
+			}
+			xuvalue_type := checker_type_with_technical_attributes(
+				ctx,
+				checker_builtin_type_from_name(ctx.checker, "c"),
+				true,
+				255,
+				false,
+				0,
+			)
+			field := checker_check_type_hinted_target(
+				ctx,
+				stmt.field,
+				xuvalue_type,
+				"GET PARAMETER FIELD target is not writable",
+			)
+			field_name, field_name_known := checker_type_builtin_name(ctx, field.type)
+			if ok, known := checker_character_like_type_supported(ctx, field.type); known &&
+			   (!ok || field_name_known && field_name == "string") {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(stmt.field),
+					"GET PARAMETER FIELD target is not a flat character-like variable",
+				)
+			}
+		case .Cursor:
+			checker_check_writable_target(ctx, stmt.field, "GET CURSOR FIELD target is not writable")
+			checker_check_writable_target(ctx, stmt.line, "GET CURSOR LINE target is not writable")
+			checker_check_writable_target(ctx, stmt.offset, "GET CURSOR OFFSET target is not writable")
+			checker_check_writable_target(ctx, stmt.value, "GET CURSOR VALUE target is not writable")
+		case .Reference:
+			source := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.value)
+			if !checker_type_is_unknown(source.type) &&
+			   source.mode != .Variable &&
+			   source.mode != .Field &&
+			   source.mode != .Table_Line &&
+			   !(source.mode == .Constant && source.entity != nil) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(stmt.value),
+					"GET REFERENCE source is not a data object",
+				)
+			}
+			if stmt.target != nil {
+				inline, ok := stmt.target.derived_expr.(^ast.Type_Ref_Expr)
+				if ok && len(inline.raw_decls) > 0 {
+					if name, known := checker_type_builtin_name(ctx, source.type); known &&
+					   checker_generic_builtin_type_name(name) && name != "data" {
+						checker_add_diagnostic(
+							ctx,
+							.Invalid_Syntax_Form,
+							checker_expr_range(stmt.value),
+							"GET REFERENCE inline target requires a complete source type or generic data",
+						)
+					}
+				}
+			}
+			reference_type := project_type_ref(ctx.project, source.type)
+			target := checker_check_type_hinted_target(
+				ctx,
+				stmt.target,
+				reference_type,
+				"GET REFERENCE target is not writable",
+			)
+			if !checker_type_is_unknown(target.type) && !checker_type_is_ref(target.type) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(stmt.target),
+					"GET REFERENCE target is not a data reference variable",
+				)
+			} else if checker_type_is_ref(target.type) {
+				target_type := checker_type_ref_target(ctx, target.type)
+				if !checker_type_is_unknown(source.type) &&
+				   !checker_type_is_unknown(target_type) &&
+				   !checker_type_exact_or_generic(ctx, source.type, target_type, true) {
+					checker_add_diagnostic(
+						ctx,
+						.Incompatible_Assignment_Type,
+						checker_expr_range(stmt.target),
+						checker_type_mismatch_message(
+							ctx,
+							"GET REFERENCE target is not compatible",
+							reference_type,
+							target.type,
+						),
+					)
+				}
+			}
+		case .Badi:
+			target := checker_check_writable_target(ctx, stmt.target, "GET BADI target is not writable")
+			if stmt.target != nil {
+				if _, inline := stmt.target.derived_expr.(^ast.Data_Inline_Name_Expr); inline {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(stmt.target),
+						"GET BADI target cannot be declared inline",
+					)
+				} else if !checker_type_resolves_to_unknown(target.type) {
+					ref_target, ref_known := checker_ref_target(ctx, target.type)
+					if !checker_type_is_ref(target.type) ||
+					   ref_known && !checker_ref_target_kind_is_object(ref_target.kind) ||
+					   ref_known && ref_target.kind == .Object_Generic {
+						checker_add_diagnostic(
+							ctx,
+							.Invalid_Syntax_Form,
+							checker_expr_range(stmt.target),
+							"GET BADI target is not a BAdI reference variable",
+						)
+					}
+				}
+			}
+		case .None, .PF_Status, .Titlebar, .Screen, .User_Command, .Update_Task_Local:
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.field)
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.target)
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.value)
+		}
 	} else {
-		checker_check_expr(ctx, stmt.target, .Value, true)
+		if stmt.kind == .Set && stmt.subject == .Parameter_ID_Field {
+			operands := [?]struct {
+				expr:    ^ast.Expr,
+				info:    Operand,
+				message: string,
+			} {
+				{stmt.id, id, "SET PARAMETER ID operand is not flat character-like"},
+				{
+					stmt.field,
+					checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.field),
+					"SET PARAMETER FIELD operand is not flat character-like",
+				},
+			}
+			for operand in operands {
+				name, name_known := checker_type_builtin_name(ctx, operand.info.type)
+				_, character_literal := checker_expr_character_literal_text(operand.expr)
+				if ok, known := checker_character_like_type_supported(ctx, operand.info.type); known &&
+				   (!ok || name_known && name == "string" && !character_literal) {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(operand.expr),
+						operand.message,
+					)
+				}
+			}
+		} else if stmt.kind == .Set && stmt.subject == .PF_Status {
+			status := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.target)
+			if ok, known := checker_character_like_type_supported(ctx, status.type); known && !ok {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(stmt.target),
+					"SET PF-STATUS operand is not character-like",
+				)
+			}
+			for expr in stmt.excluding {
+				excluding := checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
+				typ := excluding.type
+				if checker_type_is_table_like(ctx, typ) {
+					typ = checker_type_row(ctx, typ)
+					name, name_known := checker_type_builtin_name(ctx, typ)
+					if ok, known := checker_character_like_type_supported(ctx, typ); known &&
+					   (!ok || name_known && name == "string") {
+						checker_add_diagnostic(
+							ctx,
+							.Invalid_Syntax_Form,
+							checker_expr_range(expr),
+							"SET PF-STATUS EXCLUDING table row is not flat character-like",
+						)
+					}
+				} else if ok, known := checker_character_like_type_supported(ctx, typ); known && !ok {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(expr),
+						"SET PF-STATUS EXCLUDING operand is not character-like or an internal table",
+					)
+				}
+			}
+		} else if stmt.kind == .Set && stmt.subject == .Titlebar {
+			title := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.target)
+			if ok, known := checker_character_like_type_supported(ctx, title.type); known && !ok {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(stmt.target),
+					"SET TITLEBAR operand is not character-like",
+				)
+			}
+			for expr in stmt.operands {
+				if raw, ok := expr.derived_expr.(^ast.Type_Ref_Expr); ok && raw.raw_operand {
+					local := ctx^
+					local.diagnose_unresolved_value_refs = true
+					for ref in raw.raw_refs {
+						operand := checker_check_raw_operand_ref(&local, ref, false, &expr.expr_base)
+						if supported, known := checker_write_value_type_supported(ctx, operand.type); known && !supported {
+							checker_add_diagnostic(
+								ctx,
+								.Invalid_Syntax_Form,
+								ref.name.range,
+								"SET TITLEBAR WITH operand is not a WRITE-compatible value",
+							)
+						}
+					}
+					checker_record_operand(ctx, &expr.expr_base, .Value, project_type_unknown(ctx.project))
+				} else {
+					operand := checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
+					if supported, known := checker_write_value_type_supported(ctx, operand.type); known && !supported {
+						checker_add_diagnostic(
+							ctx,
+							.Invalid_Syntax_Form,
+							checker_expr_range(expr),
+							"SET TITLEBAR WITH operand is not a WRITE-compatible value",
+						)
+					}
+				}
+			}
+		} else if stmt.kind == .Set && stmt.subject == .Screen {
+			screen := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.target)
+			literal, literal_ok := integer_literal_expr_value(stmt.target)
+			if literal_ok {
+				if literal < 0 || literal > 9999 {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(stmt.target),
+						"SET SCREEN literal is outside the range 0 to 9999",
+					)
+				}
+			} else if name, known := checker_type_builtin_name(ctx, screen.type); known {
+				length, length_known := type_length(screen.type)
+				if !checker_generic_builtin_type_name(name) &&
+				   (name != "n" || length_known && length != 4) {
+					checker_add_diagnostic(
+						ctx,
+						.Invalid_Syntax_Form,
+						checker_expr_range(stmt.target),
+						"SET SCREEN operand must have type n and length 4",
+					)
+				}
+			} else if !checker_type_is_unknown(screen.type) {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(stmt.target),
+					"SET SCREEN operand must have type n and length 4",
+				)
+			}
+		} else if stmt.kind == .Set && stmt.subject == .User_Command {
+			command := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.target)
+			if ok, known := checker_character_like_type_supported(ctx, command.type); known && !ok {
+				checker_add_diagnostic(
+					ctx,
+					.Invalid_Syntax_Form,
+					checker_expr_range(stmt.target),
+					"SET USER-COMMAND operand is not character-like",
+				)
+			}
+		} else {
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.field)
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.target)
+		}
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.value)
 	}
-	checker_check_expr(ctx, stmt.value)
-	checker_check_expr(ctx, stmt.line, .Value, true)
-	checker_check_expr(ctx, stmt.offset, .Value, true)
-	checker_check_expr_list(ctx, stmt.excluding[:])
-	checker_check_expr_list(ctx, stmt.operands[:])
+	if stmt.kind != .Get || stmt.subject != .Cursor {
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.line)
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.offset)
+	}
+	if stmt.kind != .Set || stmt.subject != .PF_Status {
+		for expr in stmt.excluding {
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
+		}
+	}
+	if stmt.kind != .Set || stmt.subject != .Titlebar {
+		for expr in stmt.operands {
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, expr)
+		}
+	}
 }
 
 checker_check_data_cluster_parameters :: proc(
@@ -3623,36 +4903,50 @@ checker_check_data_cluster_parameters :: proc(
 	lhs := false,
 ) {
 	for param in parameters {
-		value := checker_check_expr(ctx, param.value, .Value, lhs)
-		checker_check_unresolved_variable_operand(ctx, param.value, value)
+		if lhs {
+			checker_check_writable_target(ctx, param.value, "IMPORT parameter target is not writable")
+		} else {
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, param.value)
+		}
 	}
 }
 
-checker_check_data_cluster_medium :: proc(ctx: ^Checker_Context, medium: ast.Data_Cluster_Medium_Clause) {
-	checker_check_expr(ctx, medium.object)
-	checker_check_expr(ctx, medium.work_area)
-	checker_check_expr(ctx, medium.client)
-	id := checker_check_expr(ctx, medium.id)
-	if medium.kind == .Memory_ID {
-		checker_check_unresolved_variable_operand(ctx, medium.id, id)
+checker_check_data_cluster_medium :: proc(
+	ctx: ^Checker_Context,
+	medium: ast.Data_Cluster_Medium_Clause,
+	importing: bool,
+) {
+	switch medium.kind {
+	case .Data_Buffer, .Internal_Table:
+		if importing {
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, medium.object)
+		} else {
+			checker_check_writable_target(ctx, medium.object, "EXPORT medium target is not writable")
+		}
+	case .Memory_ID:
+	case .Database, .Shared_Memory, .Shared_Buffer:
+		if importing {
+			checker_check_writable_target(ctx, medium.work_area, "IMPORT work area target is not writable")
+		} else {
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, medium.work_area)
+		}
 	}
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, medium.client)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, medium.id)
 }
 
 checker_check_assign_field_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Assign_Field_Stmt) {
-	source := checker_check_expr(ctx, stmt.source)
-	checker_check_expr(ctx, stmt.component)
-	checker_check_expr(ctx, stmt.structure)
-	local := ctx^
-	local.type_hint = source.type
-	local.type_hint_expr = stmt.target
-	target := checker_check_expr(&local, stmt.target, .Value, true)
+	source := checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.source)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.component)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.structure)
+	target := checker_check_type_hinted_target(ctx, stmt.target, source.type, "ASSIGN target is not writable")
 	checker_check_assignment_compatibility(ctx, source.type, target.type, checker_expr_range(stmt.target))
 	checker_check_dynamic_or_static_type_expr(ctx, stmt.casting_type)
-	checker_check_expr(ctx, stmt.casting_decimals)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.casting_decimals)
 }
 
 checker_check_create_object_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Create_Object_Stmt) {
-	target := checker_check_expr(ctx, stmt.target, .Value, true)
+	target := checker_check_writable_target(ctx, stmt.target, "CREATE OBJECT target is not writable")
 	constructor_type := checker_type_ref_target(ctx, target.type)
 	if stmt.type_dynamic {
 		checker_check_dynamic_type_name_expr(ctx, stmt.type_dynamic_expr, stmt.type_ref)
@@ -3691,7 +4985,7 @@ checker_check_create_object_arguments :: proc(
 }
 
 checker_check_create_data_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Create_Data_Stmt) {
-	checker_check_expr(ctx, stmt.target, .Value, true)
+	checker_check_writable_target(ctx, stmt.target, "CREATE DATA target is not writable")
 	if stmt.type_dynamic {
 		checker_check_dynamic_type_name_expr(ctx, stmt.type_dynamic_expr, stmt.type_ref)
 		checker_check_create_type_clause_non_ref_operands(ctx, stmt.type_clause)
@@ -3734,7 +5028,7 @@ checker_check_dynamic_type_name_expr :: proc(
 	if dynamic_expr == nil {
 		return
 	}
-	checker_check_expr(ctx, dynamic_expr)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, dynamic_expr)
 	name, name_range, static_name := checker_dynamic_type_static_name(ctx, dynamic_expr)
 	if !static_name {
 		return
@@ -3825,12 +5119,24 @@ checker_dynamic_token_literal_name :: proc(token: ast.Token_Text) -> (string, Ra
 }
 
 checker_check_line_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Line_Stmt) {
-	checker_check_expr(ctx, stmt.line)
-	checker_check_expr(ctx, stmt.index)
-	checker_check_expr(ctx, stmt.into, .Value, true)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.line)
+	checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.index)
+	if stmt.kind == .Read {
+		checker_check_writable_target(ctx, stmt.into, "READ LINE INTO target is not writable")
+	} else {
+		checker_check_expr_with_unresolved_value_diagnostics(ctx, stmt.into)
+	}
 	for field in stmt.fields {
-		checker_check_expr(ctx, field.field)
-		checker_check_expr(ctx, field.target, .Value, true)
+		if stmt.kind == .Read && field.target == nil {
+			checker_check_writable_target(ctx, field.field, "READ LINE FIELD VALUE target is not writable")
+		} else {
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, field.field)
+		}
+		if stmt.kind == .Read {
+			checker_check_writable_target(ctx, field.target, "READ LINE FIELD VALUE INTO target is not writable")
+		} else {
+			checker_check_expr_with_unresolved_value_diagnostics(ctx, field.target)
+		}
 	}
 }
 
@@ -4053,7 +5359,18 @@ checker_check_cursor_handle_expr :: proc(ctx: ^Checker_Context, handle: ^ast.Exp
 	local := ctx^
 	local.type_hint = cursor_type
 	local.type_hint_expr = handle
+	local.diagnose_unresolved_value_refs = true
 	operand := checker_check_expr(&local, handle, .Value, lhs)
+	if lhs &&
+	   !checker_type_is_unknown(operand.type) &&
+	   !checker_operand_is_writable(operand) {
+		checker_add_diagnostic(
+			ctx,
+			.Invalid_Syntax_Form,
+			checker_expr_range(handle),
+			"OPEN CURSOR handle is not writable",
+		)
+	}
 	checker_check_cursor_handle_type(ctx, operand.type, cursor_type, checker_expr_range(handle))
 	return operand
 }
@@ -4321,6 +5638,32 @@ checker_class_is_or_inherits_from :: proc(
 		return false
 	}
 	return checker_class_is_or_inherits_from(ctx, super, target_name, depth + 1)
+}
+
+checker_class_is_exception :: proc(
+	ctx: ^Checker_Context,
+	class_entity: ^Entity,
+	depth := 0,
+) -> (is_exception, known: bool) {
+	if depth > 32 || class_entity == nil || class_entity.kind != .Class {
+		return false, true
+	}
+	if class_entity.name == "cx_root" {
+		return true, true
+	}
+	payload, ok := class_entity.payload.(^Entity_Object_Payload)
+	assert(ok && payload != nil)
+	if payload.superclass_name == "" {
+		return false, true
+	}
+	if payload.superclass_name == "cx_root" {
+		return true, true
+	}
+	super, super_ok := checker_lookup_type_name_from_scope(ctx, class_entity.scope, payload.superclass_name, .Class)
+	if !super_ok {
+		return false, false
+	}
+	return checker_class_is_exception(ctx, super, depth + 1)
 }
 
 checker_type_exposes_interface :: proc(

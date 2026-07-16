@@ -716,17 +716,18 @@ CALL FUNCTION 'Z_READ'
 	testing.expect_value(t, len(parsed.errors), 0)
 	raise := parsed.root.stmts[0].derived_stmt.(^ast.Raise_Stmt)
 	raise_target := raise.target.derived_expr.(^ast.Type_Ref_Expr)
-	raise_args := raise.operands[0].derived_expr.(^ast.Type_Ref_Expr)
+	raise_value_arg := raise.named_args[0]
+	raise_inline_arg := raise.named_args[1]
 	assign := parsed.root.stmts[1].derived_stmt.(^ast.Assign_Field_Stmt)
 	assign_component := assign.component.derived_expr.(^ast.Type_Ref_Expr)
 	assign_structure := assign.structure.derived_expr.(^ast.Type_Ref_Expr)
 	assign_target := assign.target.derived_expr.(^ast.Type_Ref_Expr)
 	call := parsed.root.stmts[2].derived_stmt.(^ast.Call_Stmt)
 
-	testing.expect_value(t, raise_target.raw_refs[0].name.text, "changed")
-	testing.expect_value(t, raise_args.raw_decls[0].name.text, "lv_raw")
-	testing.expect_value(t, raise_args.raw_refs[0].name.text, "ls_row")
-	testing.expect_value(t, raise_args.raw_refs[0].path[0].name.text, "field")
+	testing.expect_value(t, raise_target.name.text, "changed")
+	testing.expect_value(t, raise_inline_arg.raw_decls[0].name.text, "lv_raw")
+	testing.expect_value(t, raise_value_arg.raw_refs[0].name.text, "ls_row")
+	testing.expect_value(t, raise_value_arg.raw_refs[0].path[0].name.text, "field")
 	testing.expect_value(t, assign_component.raw_refs[0].name.text, "lv_name")
 	testing.expect_value(t, assign_structure.raw_refs[0].name.text, "ls_row")
 	testing.expect_value(t, assign_target.raw_decls[0].name.text, "<fs_raw>")

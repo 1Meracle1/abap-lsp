@@ -349,8 +349,14 @@ parse_loop_target_casting :: proc(
 	stmt.target_casting = true
 	if allow_keyword(p, "TYPE") {
 		stmt.target_casting_type_keyword = true
+		type_start := p.index
+		stmt.target_casting_type = parse_create_type_ref_expr(p, stop_keywords)
+		if dynamic_type := create_dynamic_type_expr_at(p, type_start); dynamic_type != nil {
+			create_type_ref_use_dynamic_facts(stmt.target_casting_type, dynamic_type, p.allocator)
+		}
+	} else {
+		stmt.target_casting_type = data_expr(p, body_start, stop_keywords)
 	}
-	stmt.target_casting_type = data_expr(p, body_start, stop_keywords)
 	end := start.range.end
 	if stmt.target_casting_type != nil {
 		end = stmt.target_casting_type.range.end
@@ -427,6 +433,9 @@ parse_loop_group_by :: proc(p: ^Parser, stmt: ^ast.Loop_Stmt, body_start: int, g
 		return false
 	}
 	stmt.group_by = type_ref_expr_from_tokens(p, key_start, p.index, -1, false, false)
+	if group_by, ok := stmt.group_by.derived_expr.(^ast.Type_Ref_Expr); ok {
+		populate_raw_operand_facts(p, group_by, key_start, p.index, false)
+	}
 	stmt.group_by_clause = tokenizer.text_range(group_start.range.start, previous_token(p).range.end)
 
 	if allow_keyword(p, "ASCENDING") {
@@ -659,6 +668,7 @@ parse_when_clause :: proc(p: ^Parser, is_type_of: bool) -> ^ast.When_Clause {
 	start := expect_keyword(p, "WHEN")
 	clause, _ := mem.new(ast.When_Clause, p.allocator)
 	clause.operands = make([dynamic]^ast.Expr, 0, 2, p.allocator)
+	clause.type_operands = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	if at_keyword(p, "OTHERS") {
 		clause.is_others = true
 		bump_token(p)
@@ -670,18 +680,29 @@ parse_when_clause :: proc(p: ^Parser, is_type_of: bool) -> ^ast.When_Clause {
 		if operand == nil {
 			return nil
 		}
-		append(&clause.operands, operand)
+		if is_type_of {
+			append(&clause.type_operands, operand)
+		} else {
+			append(&clause.operands, operand)
+		}
 		for allow_keyword(p, "OR") {
+			if is_type_of {
+				allow_keyword(p, "TYPE")
+			}
 			next := parse_when_operand(p)
 			if next == nil {
 				return nil
 			}
-			append(&clause.operands, next)
+			if is_type_of {
+				append(&clause.type_operands, next)
+			} else {
+				append(&clause.operands, next)
+			}
 		}
 		if is_type_of && allow_keyword(p, "INTO") {
-			target := parse_expr(p)
-			if target != nil {
-				append(&clause.operands, target)
+			clause.into = parse_required_expr_after(p, "syntax error: expected expression after INTO")
+			if clause.into == nil {
+				return nil
 			}
 		}
 	}

@@ -968,7 +968,7 @@ ENDEXEC.
 GENERATE SUBROUTINE POOL lt_source NAME lv_prog MESSAGE lv_msg LINE lv_line WORD lv_word OFFSET lv_off.
 GENERATE DYNPRO lv_prog lv_dynpro.
 READ LINE lv_line FIELD VALUE mara-matnr INTO lv_matnr.
-MODIFY CURRENT LINE FIELD VALUE mara-matnr INTO lv_matnr.`
+MODIFY CURRENT LINE FIELD VALUE mara-matnr FROM lv_matnr.`
 	parsed := parse(source, "islands_generated_line.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
@@ -1000,6 +1000,12 @@ MODIFY CURRENT LINE FIELD VALUE mara-matnr INTO lv_matnr.`
 	testing.expect_value(t, modify_line.kind, ast.Line_Kind.Modify)
 	testing.expect(t, modify_line.current)
 	testing.expect_value(t, len(modify_line.fields), 1)
+	testing.expect(t, modify_line.fields[0].target != nil)
+	testing.expect_value(
+		t,
+		ast.print_node(modify_line, context.allocator),
+		"MODIFY CURRENT LINE FIELD VALUE mara-matnr FROM lv_matnr.",
+	)
 }
 
 @(test)
@@ -1166,6 +1172,22 @@ open_sql_function_arguments_named_like_modifiers_are_not_aggregate_modifiers :: 
 	testing.expect_value(t, len(call.args), 2)
 	arg := call.args[0].derived_expr.(^ast.Sql_Column_Expr)
 	testing.expect_value(t, arg.name.text, "all")
+}
+
+@(test)
+open_sql_nested_function_argument_ranges_and_clone_are_modeled :: proc(t: ^testing.T) {
+	source := `SELECT SINGLE COALESCE( value, UPPER( @fallback ) ) AS result FROM ztab INTO @DATA(row).`
+	parsed := parse(source, "sql_nested_function_arguments.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	call := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt).query.projection_clauses[0].value.derived_expr.(^ast.Sql_Call_Expr)
+	nested := call.args[1].derived_expr.(^ast.Sql_Call_Expr)
+	testing.expect_value(t, source[call.range.start:call.range.end], "COALESCE( value, UPPER( @fallback ) )")
+	testing.expect_value(t, source[call.args[0].range.start:call.args[0].range.end], "value")
+	testing.expect_value(t, source[nested.range.start:nested.range.end], "UPPER( @fallback )")
+	testing.expect_value(t, source[nested.args[0].range.start:nested.args[0].range.end], "@fallback")
+	clone := ast.clone_node(&call.node, context.allocator).derived.(^ast.Sql_Call_Expr)
+	testing.expect_value(t, ast.print_node(clone, context.allocator), "COALESCE( value, UPPER( @fallback ) )")
 }
 
 @(test)
@@ -1589,7 +1611,8 @@ open_sql_null_and_like_predicates_are_modeled :: proc(t: ^testing.T) {
 	source := `SELECT * FROM mara WHERE matnr IS NULL INTO TABLE @lt_rows.
 SELECT * FROM mara WHERE matnr IS NOT NULL INTO TABLE @lt_rows.
 SELECT * FROM mara WHERE matnr LIKE @lv_pattern INTO TABLE @lt_rows.
-SELECT * FROM mara WHERE matnr NOT LIKE lv_pattern INTO TABLE lt_rows.`
+SELECT * FROM mara WHERE matnr NOT LIKE lv_pattern INTO TABLE lt_rows.
+SELECT * FROM ty_row WHERE amount + 1 IS NOT NULL AND prefix && suffix IS NULL INTO TABLE @lt_rows.`
 	parsed := parse(source, "sql_null_like.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -1597,13 +1620,87 @@ SELECT * FROM mara WHERE matnr NOT LIKE lv_pattern INTO TABLE lt_rows.`
 	is_not_null := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt).query.where_cond.derived_expr.(^ast.Is_Predicate_Expr)
 	like := parsed.root.stmts[2].derived_stmt.(^ast.Select_Stmt).query.where_cond.derived_expr.(^ast.Binary_Expr)
 	not_like := parsed.root.stmts[3].derived_stmt.(^ast.Select_Stmt).query.where_cond.derived_expr.(^ast.Binary_Expr)
+	and_expr := parsed.root.stmts[4].derived_stmt.(^ast.Select_Stmt).query.where_cond.derived_expr.(^ast.Binary_Expr)
 
 	testing.expect_value(t, is_null.kind, ast.Is_Predicate_Kind.Null)
 	testing.expect(t, !is_null.negated)
 	testing.expect_value(t, is_not_null.kind, ast.Is_Predicate_Kind.Null)
 	testing.expect(t, is_not_null.negated)
+	testing.expect_value(t, source[is_null.range.start:is_null.range.end], "matnr IS NULL")
+	testing.expect_value(t, source[is_null.subject.range.start:is_null.subject.range.end], "matnr")
+	testing.expect_value(t, source[is_not_null.range.start:is_not_null.range.end], "matnr IS NOT NULL")
+	testing.expect_value(t, source[is_not_null.subject.range.start:is_not_null.subject.range.end], "matnr")
+	is_null_clone := ast.clone_node(&is_null.node, context.allocator).derived.(^ast.Is_Predicate_Expr)
+	is_not_null_clone := ast.clone_node(&is_not_null.node, context.allocator).derived.(^ast.Is_Predicate_Expr)
+	testing.expect_value(t, ast.print_node(is_null_clone, context.allocator), "matnr IS NULL")
+	testing.expect_value(t, ast.print_node(is_not_null_clone, context.allocator), "matnr IS NOT NULL")
 	testing.expect_value(t, like.op, ast.Binary_Op.Like)
 	testing.expect_value(t, not_like.op, ast.Binary_Op.Not_Like)
+	testing.expect_value(t, source[like.expr_base.range.start:like.expr_base.range.end], "matnr LIKE @lv_pattern")
+	testing.expect_value(t, source[not_like.expr_base.range.start:not_like.expr_base.range.end], "matnr NOT LIKE lv_pattern")
+	like_clone := ast.clone_node(&like.node, context.allocator).derived.(^ast.Binary_Expr)
+	not_like_clone := ast.clone_node(&not_like.node, context.allocator).derived.(^ast.Binary_Expr)
+	testing.expect_value(t, ast.print_node(like_clone, context.allocator), "matnr LIKE @lv_pattern")
+	testing.expect_value(t, ast.print_node(not_like_clone, context.allocator), "matnr NOT LIKE lv_pattern")
+	testing.expect_value(t, and_expr.op, ast.Binary_Op.And)
+	left_null := and_expr.left.derived_expr.(^ast.Is_Predicate_Expr)
+	right_null := and_expr.right.derived_expr.(^ast.Is_Predicate_Expr)
+	left_add := left_null.subject.derived_expr.(^ast.Binary_Expr)
+	right_concat := right_null.subject.derived_expr.(^ast.Binary_Expr)
+	testing.expect_value(t, left_add.op, ast.Binary_Op.Add)
+	testing.expect_value(t, right_concat.op, ast.Binary_Op.Concatenate)
+	testing.expect_value(
+		t,
+		source[and_expr.range.start:and_expr.range.end],
+		"amount + 1 IS NOT NULL AND prefix && suffix IS NULL",
+	)
+	and_clone := ast.clone_node(&and_expr.node, context.allocator).derived.(^ast.Binary_Expr)
+	testing.expect_value(t, ast.print_node(and_clone, context.allocator), "amount + 1 IS NOT NULL AND prefix && suffix IS NULL")
+}
+
+@(test)
+open_sql_in_predicates_preserve_collection_forms_and_ranges :: proc(t: ^testing.T) {
+	source := `SELECT * FROM mara WHERE matnr IN @lr_matnr INTO TABLE @lt_rows.
+SELECT * FROM mara WHERE matnr NOT IN lr_matnr INTO TABLE lt_rows.
+SELECT * FROM mara WHERE matnr IN ( 'A', @lv_matnr, 'B' ) INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_in_predicates.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	in_host := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt).query.where_cond.derived_expr.(^ast.Binary_Expr)
+	not_in_host := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt).query.where_cond.derived_expr.(^ast.Binary_Expr)
+	in_list := parsed.root.stmts[2].derived_stmt.(^ast.Select_Stmt).query.where_cond.derived_expr.(^ast.Binary_Expr)
+	testing.expect_value(t, in_host.op, ast.Binary_Op.In)
+	testing.expect_value(t, not_in_host.op, ast.Binary_Op.Not_In)
+	testing.expect_value(t, in_list.op, ast.Binary_Op.In)
+	_, explicit_host := in_host.right.derived_expr.(^ast.Host_Expr)
+	implicit_host, implicit_host_ok := not_in_host.right.derived_expr.(^ast.Host_Expr)
+	raw_list, raw_list_ok := in_list.right.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect(t, explicit_host)
+	testing.expect(t, implicit_host_ok && implicit_host.implicit)
+	testing.expect(t, raw_list_ok && raw_list.raw_operand)
+	testing.expect_value(t, source[in_host.range.start:in_host.range.end], "matnr IN @lr_matnr")
+	testing.expect_value(t, source[not_in_host.range.start:not_in_host.range.end], "matnr NOT IN lr_matnr")
+	testing.expect_value(t, source[in_list.range.start:in_list.range.end], "matnr IN ( 'A', @lv_matnr, 'B' )")
+	clone := ast.clone_node(&in_list.node, context.allocator).derived.(^ast.Binary_Expr)
+	testing.expect_value(t, ast.print_node(clone, context.allocator), "matnr IN ( 'A', @lv_matnr, 'B' )")
+}
+
+@(test)
+open_sql_concatenation_precedence_and_ranges_are_modeled :: proc(t: ^testing.T) {
+	source := `SELECT prefix && amount + 1 && suffix AS value FROM ty_row INTO TABLE @rows.`
+	parsed := parse(source, "sql_concatenation.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	outer := stmt.query.projection_clauses[0].value.derived_expr.(^ast.Binary_Expr)
+	left := outer.left.derived_expr.(^ast.Binary_Expr)
+	addition := left.right.derived_expr.(^ast.Binary_Expr)
+	testing.expect_value(t, outer.op, ast.Binary_Op.Concatenate)
+	testing.expect_value(t, left.op, ast.Binary_Op.Concatenate)
+	testing.expect_value(t, addition.op, ast.Binary_Op.Add)
+	testing.expect_value(t, source[outer.expr_base.range.start:outer.expr_base.range.end], "prefix && amount + 1 && suffix")
+	clone := ast.clone_node(&outer.node, context.allocator).derived.(^ast.Binary_Expr)
+	testing.expect_value(t, ast.print_node(clone, context.allocator), "prefix && amount + 1 && suffix")
 }
 
 @(test)
@@ -1622,12 +1719,54 @@ SELECT CASE carrid WHEN 'AA' THEN connid ELSE carrid END AS value FROM sflight I
 	testing.expect(t, condition_is_binary)
 	testing.expect(t, when_expr.result != nil)
 	testing.expect(t, case_expr.else_expr != nil)
+	case_clone := ast.clone_node(&case_expr.node, context.allocator).derived.(^ast.Sql_Case_Expr)
+	when_clone := case_clone.whens[0].derived_expr.(^ast.Sql_Case_When_Expr)
+	testing.expect_value(t, ast.print_node(when_clone.condition, context.allocator), "carrid = @lv_carrid")
+	testing.expect_value(t, ast.print_node(when_clone.result, context.allocator), "connid")
+	testing.expect_value(t, ast.print_node(case_clone.else_expr, context.allocator), "carrid")
+	testing.expect_value(t, ast.print_node(case_clone, context.allocator), "CASE WHEN carrid = @lv_carrid THEN connid ELSE carrid END")
 	testing.expect_value(t, stmt.query.projection_clauses[0].alias.text, "value")
 	simple_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt)
 	simple_case := simple_stmt.query.projection_clauses[0].value.derived_expr.(^ast.Sql_Case_Expr)
 	testing.expect(t, simple_case.operand != nil)
 	testing.expect_value(t, len(simple_case.whens), 1)
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+open_sql_case_missing_operands_recover_following_statement :: proc(t: ^testing.T) {
+	missing_condition := parse(
+		`SELECT CASE WHEN THEN 1 END AS value FROM ty_row INTO TABLE @rows.
+DATA keep TYPE i.`,
+		"sql_case_missing_condition.abap",
+		context.allocator,
+	)
+	expect_error_contains(t, missing_condition, "syntax error: expected expression")
+	testing.expect(t, len(missing_condition.root.stmts) > 1)
+	_, condition_keep := missing_condition.root.stmts[len(missing_condition.root.stmts) - 1].derived_stmt.(^ast.Data_Chained_Decl)
+	testing.expect(t, condition_keep)
+
+	missing_then := parse(
+		`SELECT CASE WHEN value 1 END AS value FROM ty_row INTO TABLE @rows.
+DATA keep TYPE i.`,
+		"sql_case_missing_then.abap",
+		context.allocator,
+	)
+	expect_error_contains(t, missing_then, "syntax error: expected keyword")
+	testing.expect(t, len(missing_then.root.stmts) > 1)
+	_, then_keep := missing_then.root.stmts[len(missing_then.root.stmts) - 1].derived_stmt.(^ast.Data_Chained_Decl)
+	testing.expect(t, then_keep)
+
+	missing_else_result := parse(
+		`SELECT CASE WHEN value = 1 THEN value ELSE END AS value FROM ty_row INTO TABLE @rows.
+DATA keep TYPE i.`,
+		"sql_case_missing_else_result.abap",
+		context.allocator,
+	)
+	expect_error_contains(t, missing_else_result, "syntax error: expected expression")
+	testing.expect(t, len(missing_else_result.root.stmts) > 1)
+	_, else_keep := missing_else_result.root.stmts[len(missing_else_result.root.stmts) - 1].derived_stmt.(^ast.Data_Chained_Decl)
+	testing.expect(t, else_keep)
 }
 
 @(test)
@@ -1640,6 +1779,28 @@ open_sql_invalid_clause_placement_is_diagnosed_without_modeling_where :: proc(t:
 	testing.expect(t, stmt.query.source_clause != nil)
 	testing.expect(t, stmt.query.where_cond == nil)
 	testing.expect_value(t, stmt.query.where_clause.end, 0)
+}
+
+@(test)
+open_sql_unary_not_precedence_ranges_and_clone_are_modeled :: proc(t: ^testing.T) {
+	source := `SELECT amount FROM ty_row INTO TABLE @rows WHERE NOT ready OR NOT ( amount = @number AND ready ).`
+	parsed := parse(source, "sql_unary_not.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	condition := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt).query.where_cond.derived_expr.(^ast.Binary_Expr)
+	left := condition.left.derived_expr.(^ast.Unary_Expr)
+	right := condition.right.derived_expr.(^ast.Unary_Expr)
+	group := right.expr.derived_expr.(^ast.Paren_Expr)
+	and_expr := group.expr.derived_expr.(^ast.Binary_Expr)
+	testing.expect_value(t, condition.op, ast.Binary_Op.Or)
+	testing.expect_value(t, left.op, ast.Unary_Op.Not)
+	testing.expect_value(t, right.op, ast.Unary_Op.Not)
+	testing.expect_value(t, and_expr.op, ast.Binary_Op.And)
+	testing.expect_value(t, source[left.range.start:left.range.end], "NOT ready")
+	testing.expect_value(t, source[left.expr.range.start:left.expr.range.end], "ready")
+	testing.expect_value(t, source[right.range.start:right.range.end], "NOT ( amount = @number AND ready )")
+	clone := ast.clone_node(&condition.node, context.allocator).derived.(^ast.Binary_Expr)
+	testing.expect_value(t, ast.print_node(clone, context.allocator), "NOT ready OR NOT ( amount = @number AND ready )")
 }
 
 @(test)

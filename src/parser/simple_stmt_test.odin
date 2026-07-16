@@ -931,6 +931,25 @@ MESSAGE e001.`
 }
 
 @(test)
+assert_and_check_clone_print_and_missing_condition_recovery :: proc(t: ^testing.T) {
+	source := `ASSERT state-ready = abap_true.
+CHECK keep_running = abap_true.`
+	parsed := parse(source, "logical_simple_shape.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	assert_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Assert_Stmt)
+	check_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Check_Stmt)
+	assert_clone := ast.clone_node(&assert_stmt.node, context.allocator).derived.(^ast.Assert_Stmt)
+	check_clone := ast.clone_node(&check_stmt.node, context.allocator).derived.(^ast.Check_Stmt)
+	testing.expect_value(t, ast.print_node(assert_clone, context.allocator), "ASSERT state-ready = abap_true.")
+	testing.expect_value(t, ast.print_node(check_clone, context.allocator), "CHECK keep_running = abap_true.")
+
+	invalid := parse("ASSERT .\nCHECK .", "logical_simple_missing.abap", context.allocator)
+	expect_error_contains(t, invalid, "expected condition after ASSERT")
+	expect_error_contains(t, invalid, "expected condition after CHECK")
+}
+
+@(test)
 simple_runtime_flow_and_macro_statements_keep_nodes :: proc(t: ^testing.T) {
 	source := `ASSERT lo_ref IS BOUND.
 CHECK lv_ok = abap_true.
@@ -1098,6 +1117,27 @@ WAIT UNTIL mv_free <> lv_free UP TO 120 SECONDS.`
 	testing.expect(t, wait_until.condition != nil)
 	testing.expect(t, wait_until.duration != nil)
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+	wait_clone := ast.clone_node(&wait_until.node, context.allocator).derived.(^ast.Wait_Stmt)
+	testing.expect_value(
+		t,
+		ast.print_node(wait_clone, context.allocator),
+		"WAIT UNTIL mv_free <> lv_free UP TO 120 SECONDS.",
+	)
+}
+
+@(test)
+wait_stmt_reports_missing_operands_and_recovers_at_statement_boundaries :: proc(t: ^testing.T) {
+	source := `WAIT UNTIL UP TO 1 SECONDS.
+WAIT UP TO SECONDS.
+WAIT UNTIL ready = abap_true
+CLEAR next_value.`
+	parsed := parse(source, "wait_stmt_recovery.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected expression")
+	testing.expect(t, len(parsed.errors) >= 3)
+	counts := count_nodes(parsed.root)
+	testing.expect_value(t, counts.wait_stmt, 2)
+	testing.expect_value(t, counts.clear, 1)
 }
 
 @(test)
@@ -1165,7 +1205,8 @@ CONVERT TIME STAMP lv_ts TIME ZONE lc_utc INTO DATE lv_date TIME lv_time DAYLIGH
 
 @(test)
 runtime_get_set_variants_keep_detailed_fields :: proc(t: ^testing.T) {
-	source := `GET PARAMETER ID 'ABC' FIELD lv_value.
+	source := `GET RUN TIME FIELD DATA(runtime).
+GET PARAMETER ID 'ABC' FIELD lv_value.
 SET PARAMETER ID 'ABC' FIELD lv_value.
 GET CURSOR FIELD lv_field LINE lv_line OFFSET lv_off VALUE lv_value.
 SET PF-STATUS lv_status EXCLUDING lt_excluding.
@@ -1173,6 +1214,7 @@ SET SCREEN 100.
 SET USER-COMMAND lv_ok.
 SET UPDATE TASK LOCAL.
 GET TIME STAMP FIELD lv_timestamp.
+GET BADI lo_badi.
 GET LOCALE LANGUAGE lv_language COUNTRY lv_country MODIFIER lv_modifier.
 SET LOCALE LANGUAGE lv_language.
 GET REFERENCE OF ls_data INTO lr_data.`
@@ -1180,23 +1222,38 @@ GET REFERENCE OF ls_data INTO lr_data.`
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
-	testing.expect_value(t, counts.runtime_stmt, 9)
+	testing.expect_value(t, counts.runtime_stmt, 11)
 	testing.expect_value(t, counts.locale_stmt, 2)
-	get_parameter := parsed.root.stmts[0].derived_stmt.(^ast.Runtime_Stmt)
-	set_parameter := parsed.root.stmts[1].derived_stmt.(^ast.Runtime_Stmt)
-	cursor := parsed.root.stmts[2].derived_stmt.(^ast.Runtime_Stmt)
-	pf_status := parsed.root.stmts[3].derived_stmt.(^ast.Runtime_Stmt)
-	screen := parsed.root.stmts[4].derived_stmt.(^ast.Runtime_Stmt)
-	user_command := parsed.root.stmts[5].derived_stmt.(^ast.Runtime_Stmt)
-	update_task := parsed.root.stmts[6].derived_stmt.(^ast.Runtime_Stmt)
-	time_stamp := parsed.root.stmts[7].derived_stmt.(^ast.Runtime_Stmt)
-	locale := parsed.root.stmts[8].derived_stmt.(^ast.Locale_Stmt)
-	set_locale := parsed.root.stmts[9].derived_stmt.(^ast.Locale_Stmt)
-	reference := parsed.root.stmts[10].derived_stmt.(^ast.Runtime_Stmt)
+	run_time := parsed.root.stmts[0].derived_stmt.(^ast.Runtime_Stmt)
+	get_parameter := parsed.root.stmts[1].derived_stmt.(^ast.Runtime_Stmt)
+	set_parameter := parsed.root.stmts[2].derived_stmt.(^ast.Runtime_Stmt)
+	cursor := parsed.root.stmts[3].derived_stmt.(^ast.Runtime_Stmt)
+	pf_status := parsed.root.stmts[4].derived_stmt.(^ast.Runtime_Stmt)
+	screen := parsed.root.stmts[5].derived_stmt.(^ast.Runtime_Stmt)
+	user_command := parsed.root.stmts[6].derived_stmt.(^ast.Runtime_Stmt)
+	update_task := parsed.root.stmts[7].derived_stmt.(^ast.Runtime_Stmt)
+	time_stamp := parsed.root.stmts[8].derived_stmt.(^ast.Runtime_Stmt)
+	badi := parsed.root.stmts[9].derived_stmt.(^ast.Runtime_Stmt)
+	locale := parsed.root.stmts[10].derived_stmt.(^ast.Locale_Stmt)
+	set_locale := parsed.root.stmts[11].derived_stmt.(^ast.Locale_Stmt)
+	reference := parsed.root.stmts[12].derived_stmt.(^ast.Runtime_Stmt)
 
+	testing.expect_value(t, run_time.subject, ast.Runtime_Subject.Run_Time_Field)
+	testing.expect(t, run_time.target != nil)
+	if run_time.target != nil {
+		testing.expect_value(t, source[run_time.target.range.start:run_time.target.range.end], "DATA(runtime)")
+	}
+	testing.expect_value(t, ast.print_node(run_time, context.allocator), "GET RUN TIME FIELD DATA(runtime).")
 	testing.expect_value(t, get_parameter.subject, ast.Runtime_Subject.Parameter_ID_Field)
 	testing.expect(t, get_parameter.id != nil)
 	testing.expect(t, get_parameter.field != nil)
+	if get_parameter.id != nil {
+		testing.expect_value(t, source[get_parameter.id.range.start:get_parameter.id.range.end], "'ABC'")
+	}
+	if get_parameter.field != nil {
+		testing.expect_value(t, source[get_parameter.field.range.start:get_parameter.field.range.end], "lv_value")
+	}
+	testing.expect_value(t, ast.print_node(get_parameter, context.allocator), "GET PARAMETER ID 'ABC' FIELD lv_value.")
 	testing.expect_value(t, set_parameter.subject, ast.Runtime_Subject.Parameter_ID_Field)
 	testing.expect_value(t, cursor.subject, ast.Runtime_Subject.Cursor)
 	testing.expect(t, cursor.field != nil)
@@ -1208,10 +1265,36 @@ GET REFERENCE OF ls_data INTO lr_data.`
 	testing.expect_value(t, len(pf_status.excluding), 1)
 	testing.expect_value(t, screen.subject, ast.Runtime_Subject.Screen)
 	testing.expect_value(t, user_command.subject, ast.Runtime_Subject.User_Command)
+	testing.expect(t, user_command.target != nil)
+	if user_command.target != nil {
+		testing.expect_value(
+			t,
+			source[user_command.target.range.start:user_command.target.range.end],
+			"lv_ok",
+		)
+	}
+	testing.expect_value(t, ast.print_node(user_command, context.allocator), "SET USER-COMMAND lv_ok.")
 	testing.expect_value(t, update_task.subject, ast.Runtime_Subject.Update_Task_Local)
 	testing.expect_value(t, time_stamp.subject, ast.Runtime_Subject.Time_Stamp_Field)
 	testing.expect(t, time_stamp.target != nil)
+	if time_stamp.target != nil {
+		testing.expect_value(
+			t,
+			source[time_stamp.target.range.start:time_stamp.target.range.end],
+			"lv_timestamp",
+		)
+	}
 	testing.expect_value(t, ast.print_node(time_stamp, context.allocator), "GET TIME STAMP FIELD lv_timestamp.")
+	testing.expect_value(t, badi.kind, ast.Runtime_Kind.Get_Badi)
+	testing.expect_value(t, badi.subject, ast.Runtime_Subject.Badi)
+	testing.expect(t, badi.target != nil)
+	if badi.target != nil {
+		testing.expect_value(t, source[badi.target.range.start:badi.target.range.end], "lo_badi")
+	}
+	testing.expect_value(t, len(badi.operands), 0)
+	badi_clone := ast.clone_node(&badi.node, context.allocator).derived.(^ast.Runtime_Stmt)
+	testing.expect(t, badi_clone.target != badi.target)
+	testing.expect_value(t, ast.print_node(badi_clone, context.allocator), "GET BADI lo_badi.")
 	testing.expect_value(t, locale.kind, ast.Locale_Kind.Get)
 	testing.expect(t, locale.language != nil)
 	testing.expect(t, locale.country != nil)
@@ -1223,6 +1306,13 @@ GET REFERENCE OF ls_data INTO lr_data.`
 	testing.expect_value(t, reference.subject, ast.Runtime_Subject.Reference)
 	testing.expect(t, reference.value != nil)
 	testing.expect(t, reference.target != nil)
+	if reference.value != nil {
+		testing.expect_value(t, source[reference.value.range.start:reference.value.range.end], "ls_data")
+	}
+	if reference.target != nil {
+		testing.expect_value(t, source[reference.target.range.start:reference.target.range.end], "lr_data")
+	}
+	testing.expect_value(t, ast.print_node(reference, context.allocator), "GET REFERENCE OF ls_data INTO lr_data.")
 }
 
 @(test)
@@ -1298,9 +1388,10 @@ SET CURSOR 2 ls-cline.`
 @(test)
 receive_results_from_function_keeps_target_and_arguments :: proc(t: ^testing.T) {
 	source := `RECEIVE RESULTS FROM FUNCTION 'Z_DEMO'
+  KEEPING TASK
   IMPORTING ev_value = DATA(lv_value)
   TABLES et_rows = lt_rows
-  EXCEPTIONS failed = 1.`
+  EXCEPTIONS system_failure = 1 MESSAGE lv_message failed = 2.`
 	parsed := parse(source, "receive_results.abap", context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(t, len(parsed.root.stmts), 1)
@@ -1309,11 +1400,26 @@ receive_results_from_function_keeps_target_and_arguments :: proc(t: ^testing.T) 
 	testing.expect_value(t, counts.receive_results, 1)
 	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Receive_Results_Stmt)
 	testing.expect(t, stmt.target != nil)
+	testing.expect(t, stmt.keeping_task)
 	testing.expect_value(t, len(stmt.arg_sections), 3)
-	testing.expect_value(t, len(stmt.named_args), 3)
+	testing.expect_value(t, len(stmt.named_args), 4)
 	testing.expect_value(t, stmt.named_args[0].name.text, "ev_value")
 	testing.expect_value(t, stmt.named_args[1].name.text, "et_rows")
-	testing.expect_value(t, stmt.named_args[2].name.text, "failed")
+	testing.expect_value(t, stmt.named_args[2].name.text, "system_failure")
+	testing.expect(t, stmt.named_args[2].message != nil)
+	testing.expect_value(t, stmt.named_args[3].name.text, "failed")
+}
+
+@(test)
+receive_results_from_function_rejects_invalid_parameter_sections :: proc(t: ^testing.T) {
+	source := `RECEIVE RESULTS FROM FUNCTION 'Z_DEMO' EXPORTING iv_value = value.
+RECEIVE RESULTS FROM FUNCTION 'Z_DEMO' TABLES et_rows = rows IMPORTING ev_value = value.
+RECEIVE RESULTS FROM FUNCTION 'Z_DEMO' IMPORTING ev_one = one IMPORTING ev_two = two.`
+	parsed := parse(source, "receive_results_invalid.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "parameter section is not allowed in RECEIVE RESULTS FROM FUNCTION")
+	expect_error_contains(t, parsed, "RECEIVE RESULTS FROM FUNCTION parameter sections are out of order")
+	expect_error_contains(t, parsed, "duplicate RECEIVE RESULTS FROM FUNCTION parameter section")
 }
 
 @(test)
@@ -2125,7 +2231,8 @@ DATA lv_typed TYPE sy-datum.`
 	testing.expect_value(t, len(parsed.errors), 0)
 	raise := parsed.root.stmts[0].derived_stmt.(^ast.Raise_Stmt)
 	raise_target := raise.target.derived_expr.(^ast.Type_Ref_Expr)
-	raise_args := raise.operands[0].derived_expr.(^ast.Type_Ref_Expr)
+	raise_value_arg := raise.named_args[0]
+	raise_inline_arg := raise.named_args[1]
 	assign := parsed.root.stmts[1].derived_stmt.(^ast.Assign_Field_Stmt)
 	assign_component := assign.component.derived_expr.(^ast.Type_Ref_Expr)
 	assign_structure := assign.structure.derived_expr.(^ast.Type_Ref_Expr)
@@ -2133,15 +2240,14 @@ DATA lv_typed TYPE sy-datum.`
 	decl := single_data_branch(parsed.root.stmts[2])
 	type_ref := decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
-	testing.expect(t, raise_target.raw_operand)
-	testing.expect_value(t, len(raise_target.raw_refs), 1)
-	testing.expect_value(t, raise_target.raw_refs[0].name.text, "changed")
-	testing.expect_value(t, len(raise_args.raw_decls), 1)
-	testing.expect_value(t, raise_args.raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Data)
-	testing.expect_value(t, raise_args.raw_decls[0].name.text, "lv_raw")
-	testing.expect_value(t, len(raise_args.raw_refs), 1)
-	testing.expect_value(t, raise_args.raw_refs[0].name.text, "ls_row")
-	testing.expect_value(t, raise_args.raw_refs[0].path[0].name.text, "field")
+	testing.expect(t, !raise_target.raw_operand)
+	testing.expect_value(t, raise_target.name.text, "changed")
+	testing.expect_value(t, len(raise_inline_arg.raw_decls), 1)
+	testing.expect_value(t, raise_inline_arg.raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Data)
+	testing.expect_value(t, raise_inline_arg.raw_decls[0].name.text, "lv_raw")
+	testing.expect_value(t, len(raise_value_arg.raw_refs), 1)
+	testing.expect_value(t, raise_value_arg.raw_refs[0].name.text, "ls_row")
+	testing.expect_value(t, raise_value_arg.raw_refs[0].path[0].name.text, "field")
 	testing.expect_value(t, len(assign_component.raw_refs), 1)
 	testing.expect_value(t, assign_component.raw_refs[0].name.text, "lv_name")
 	testing.expect_value(t, len(assign_structure.raw_refs), 1)

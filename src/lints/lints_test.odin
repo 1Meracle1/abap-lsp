@@ -1896,6 +1896,24 @@ ENDFORM.
 }
 
 @(test)
+routine_flow_treats_set_user_command_operand_as_a_read :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  DATA assigned_command TYPE string.
+  assigned_command = 'ENTER'.
+  SET USER-COMMAND assigned_command.
+ENDFORM.
+`
+	semantic_analysis := test_analysis(source, "mem://set_user_command_flow.abap")
+	defer semantic.semantic_workspace_analysis_destroy(&semantic_analysis)
+
+	analysis_result := run_analysis(&semantic_analysis)
+	defer analysis_destroy(&analysis_result)
+
+	testing.expect_value(t, test_diagnostic_count(analysis_result, DEAD_STORE), 0)
+}
+
+@(test)
 routine_flow_treats_additional_write_like_overwrites_as_dead_stores :: proc(t: ^testing.T) {
 	source := `
 CLASS lcl_ref DEFINITION.

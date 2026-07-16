@@ -77,6 +77,7 @@ Decl_Info :: struct {
 	occurs:         ^ast.Expr,
 	value_clause:   ^ast.Value_Clause,
 	default_expr:   ^ast.Expr,
+	addition_exprs: [4]^ast.Expr,
 	docs:           []ast.Ast_Trivia,
 	comment:        []ast.Ast_Trivia,
 	state:          Decl_Info_State,

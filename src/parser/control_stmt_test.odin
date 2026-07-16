@@ -15,6 +15,48 @@ print_node_uses_formatting_options :: proc(t: ^testing.T) {
 }
 
 @(test)
+while_clone_and_print_preserve_condition_and_body :: proc(t: ^testing.T) {
+	source := `WHILE state-ready = abap_true.
+    CHECK keep_running = abap_true.
+ENDWHILE.`
+	parsed := parse(source, "while_shape.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.While_Stmt)
+	testing.expect(t, stmt.condition != nil)
+	testing.expect_value(t, len(stmt.body), 1)
+	cloned := ast.clone_node(&stmt.node, context.allocator).derived.(^ast.While_Stmt)
+	testing.expect_value(t, ast.print_node(cloned, context.allocator), source)
+}
+
+@(test)
+if_clone_and_print_preserve_ordered_elseif_and_else_branches :: proc(t: ^testing.T) {
+	source := `IF first = abap_true.
+    WRITE 'first'.
+ELSEIF second = abap_true.
+    WRITE 'second'.
+ELSEIF third = abap_true.
+    WRITE 'third'.
+ELSE.
+    WRITE 'else'.
+ENDIF.`
+	parsed := parse(source, "if_branch_shape.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.If_Stmt)
+	testing.expect_value(t, len(stmt.body), 1)
+	testing.expect_value(t, len(stmt.elseif_clauses), 2)
+	testing.expect_value(t, len(stmt.elseif_clauses[0].body), 1)
+	testing.expect_value(t, len(stmt.elseif_clauses[1].body), 1)
+	testing.expect(t, stmt.else_clause != nil)
+	if stmt.else_clause != nil {
+		testing.expect_value(t, len(stmt.else_clause.body), 1)
+	}
+	cloned := ast.clone_node(&stmt.node, context.allocator).derived.(^ast.If_Stmt)
+	testing.expect_value(t, ast.print_node(cloned, context.allocator), source)
+}
+
+@(test)
 statement_batch_control_blocks :: proc(t: ^testing.T) {
 	source := `IF a = 1. WRITE 'a'. ELSEIF a = 2. WRITE 'b'. ELSE. WRITE 'c'. ENDIF.
 CASE a. WHEN 1 OR 2. WRITE 'n'. WHEN OTHERS. WRITE 'o'. ENDCASE.
@@ -42,6 +84,22 @@ TRY. WRITE 'x'. CATCH cx_root INTO DATA(lo). WRITE 'y'. CLEANUP. WRITE 'z'. ENDT
 	testing.expect_value(t, len(case_stmt.whens), 2)
 	testing.expect_value(t, len(try_stmt.catches), 1)
 	testing.expect(t, try_stmt.cleanup != nil)
+}
+
+@(test)
+try_catch_models_multiple_exception_alternatives_and_into_target :: proc(t: ^testing.T) {
+	source := `TRY.
+CATCH cx_first cx_second INTO DATA(lx_error).
+ENDTRY.`
+	parsed := parse(source, "try_catch_alternatives.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	try_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Try_Stmt)
+	testing.expect_value(t, len(try_stmt.catches), 1)
+	clause := try_stmt.catches[0]
+	testing.expect_value(t, len(clause.exceptions), 2)
+	testing.expect(t, clause.into != nil)
+	testing.expect_value(t, ast.print_node(try_stmt, context.allocator), source)
 }
 
 @(test)
@@ -972,6 +1030,85 @@ ENDCASE.`
 }
 
 @(test)
+case_when_alternatives_and_others_round_trip_through_clone :: proc(t: ^testing.T) {
+	source := `CASE lv_kind.
+  WHEN 'A' OR 'B' OR lv_other.
+    WRITE lv_kind.
+  WHEN OTHERS.
+ENDCASE.`
+	parsed := parse(source, "case_alternatives.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Case_Stmt)
+	testing.expect_value(t, len(stmt.whens), 2)
+	testing.expect_value(t, len(stmt.whens[0].operands), 3)
+	testing.expect(t, stmt.whens[1].is_others)
+	cloned := ast.clone_node(&stmt.node, context.allocator).derived.(^ast.Case_Stmt)
+	testing.expect_value(
+		t,
+		ast.print_node(cloned, context.allocator),
+		"CASE lv_kind.\nWHEN 'A' OR 'B' OR lv_other.\n    WRITE lv_kind.\nWHEN OTHERS.\nENDCASE.",
+	)
+}
+
+@(test)
+case_type_of_roles_and_alternatives_round_trip_through_clone :: proc(t: ^testing.T) {
+	source := `CASE TYPE OF reference.
+  WHEN TYPE lcl_first OR TYPE lcl_second INTO DATA(typed_reference).
+  WHEN OTHERS.
+ENDCASE.`
+	parsed := parse(source, "case_type_of.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Case_Stmt)
+	testing.expect(t, stmt.is_type_of)
+	testing.expect_value(t, len(stmt.whens[0].operands), 0)
+	testing.expect_value(t, len(stmt.whens[0].type_operands), 2)
+	testing.expect(t, stmt.whens[0].into != nil)
+	cloned := ast.clone_node(&stmt.node, context.allocator).derived.(^ast.Case_Stmt)
+	testing.expect_value(
+		t,
+		ast.print_node(cloned, context.allocator),
+		"CASE TYPE OF reference.\nWHEN TYPE lcl_first OR TYPE lcl_second INTO DATA(typed_reference).\nWHEN OTHERS.\nENDCASE.",
+	)
+}
+
+@(test)
+case_type_of_missing_into_target_recovers_at_the_next_branch :: proc(t: ^testing.T) {
+	source := `CASE TYPE OF reference.
+  WHEN TYPE lcl_first INTO.
+  WHEN OTHERS.
+ENDCASE.`
+	parsed := parse(source, "case_type_of_missing_into.abap", context.allocator)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Case_Stmt)
+
+	expect_error_contains(t, parsed, "expected expression after INTO")
+	testing.expect_value(t, len(stmt.whens), 1)
+	testing.expect(t, stmt.whens[0].is_others)
+}
+
+@(test)
+case_when_missing_or_alternative_recovers_at_the_next_branch :: proc(t: ^testing.T) {
+	source := `CASE lv_kind.
+  WHEN 'A' OR.
+    WRITE 'bad'.
+  WHEN OTHERS.
+ENDCASE.
+DATA lv_after TYPE i.`
+	parsed := parse(source, "case_missing_alternative.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Case_Stmt)
+
+	expect_error_contains(t, parsed, "expected expression after WHEN")
+	expect_no_error_contains(t, parsed, "unexpected WHEN without matching CASE")
+	expect_no_error_contains(t, parsed, "unexpected ENDCASE without matching CASE")
+	testing.expect_value(t, len(stmt.whens), 1)
+	testing.expect(t, stmt.whens[0].is_others)
+	testing.expect(t, counts.invalid_stmt >= 1)
+	testing.expect_value(t, counts.data_decl, 1)
+}
+
+@(test)
 target_condition_operators_do_not_break_blocks :: proc(t: ^testing.T) {
 	source := `IF lv_langu NOT IN lt_language_filter.
 ENDIF.
@@ -1080,6 +1217,9 @@ ENDLOOP.`
 	testing.expect(t, first.target != nil)
 	testing.expect(t, first.group_by != nil)
 	testing.expect_value(t, source[first.group_by.range.start:first.group_by.range.end], "( unique_id = <fs_hu_por>-unique_id )")
+	first_group_by := first.group_by.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect(t, first_group_by.raw_operand)
+	testing.expect_value(t, len(first_group_by.raw_refs), 1)
 	testing.expect_value(t, first.group_order, ast.Loop_Group_Order.Ascending)
 	testing.expect_value(t, first.group_target_kind, ast.Loop_Target_Kind.Assigning)
 	testing.expect(t, first.group_target != nil)
@@ -1093,6 +1233,9 @@ ENDLOOP.`
 	third := parsed.root.stmts[2].derived_stmt.(^ast.Loop_Stmt)
 	testing.expect(t, third.group_by != nil)
 	testing.expect_value(t, source[third.group_by.range.start:third.group_by.range.end], "ls_row-id")
+	third_group_by := third.group_by.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect(t, third_group_by.raw_operand)
+	testing.expect_value(t, len(third_group_by.raw_refs), 1)
 	testing.expect(t, third.group_without_members)
 	testing.expect_value(t, source[third.group_without_members_range.start:third.group_without_members_range.end], "WITHOUT MEMBERS")
 }

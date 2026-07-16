@@ -566,6 +566,7 @@ routine_flow_form_parameter_analyze_stmt :: proc(
 				routine_flow_form_parameter_read_expr(states, operand, allocator)
 			}
 			clause_state := routine_flow_form_parameter_states_clone(states[:], allocator)
+			routine_flow_form_parameter_write_expr(&clause_state, clause.into, allocator)
 			routine_flow_form_parameter_analyze_stmt_list(effects, &clause_state, clause.body[:], allocator)
 			append(&branches, clause_state)
 		}
@@ -822,8 +823,8 @@ routine_flow_form_parameter_analyze_stmt :: proc(
 		}
 	case ^ast.Raise_Stmt:
 		routine_flow_form_parameter_read_expr(states, n.target, allocator)
-		for operand in n.operands {
-			routine_flow_form_parameter_read_expr(states, operand, allocator)
+		for arg in n.named_args {
+			routine_flow_form_parameter_read_expr(states, arg.value, allocator)
 		}
 	case ^ast.Write_Stmt:
 		for operand in n.operands {
@@ -857,7 +858,11 @@ routine_flow_form_parameter_analyze_stmt :: proc(
 			routine_flow_form_parameter_read_expr(states, excluding, allocator)
 		}
 		routine_flow_form_parameter_write_expr(states, n.field, allocator)
-		routine_flow_form_parameter_write_expr(states, n.target, allocator)
+		if n.kind == .Set && n.subject == .User_Command {
+			routine_flow_form_parameter_read_expr(states, n.target, allocator)
+		} else {
+			routine_flow_form_parameter_write_expr(states, n.target, allocator)
+		}
 	case ^ast.Import_Stmt:
 		for param in n.parameters {
 			routine_flow_form_parameter_write_expr(states, param.value, allocator)
@@ -1829,8 +1834,8 @@ routine_flow_analyze_stmt :: proc(
 		routine_flow_clear_last_success(&next)
 	case ^ast.Raise_Stmt:
 		routine_flow_read_expr(ctx, &next, n.target)
-		for operand in n.operands {
-			routine_flow_read_expr(ctx, &next, operand)
+		for arg in n.named_args {
+			routine_flow_read_expr(ctx, &next, arg.value)
 		}
 		next.terminated = true
 		routine_flow_clear_last_success(&next)
@@ -1908,7 +1913,11 @@ routine_flow_analyze_stmt :: proc(
 			routine_flow_read_expr(ctx, &next, excluding)
 		}
 		routine_flow_write_expr(ctx, &next, n.field)
-		routine_flow_write_expr(ctx, &next, n.target)
+		if n.kind == .Set && n.subject == .User_Command {
+			routine_flow_read_expr(ctx, &next, n.target)
+		} else {
+			routine_flow_write_expr(ctx, &next, n.target)
+		}
 		routine_flow_clear_last_success(&next)
 	case ^ast.Import_Stmt:
 		routine_flow_clear_last_success(&next)
@@ -2035,7 +2044,9 @@ routine_flow_merge_case_stmt :: proc(
 		for operand in clause.operands {
 			routine_flow_read_expr(ctx, &read_state, operand)
 		}
-		append(&branches, routine_flow_analyze_stmt_list(ctx, clause.body[:], routine_flow_state_clone(state, ctx.allocator)))
+		clause_state := routine_flow_state_clone(state, ctx.allocator)
+		routine_flow_write_expr(ctx, &clause_state, clause.into)
+		append(&branches, routine_flow_analyze_stmt_list(ctx, clause.body[:], clause_state))
 	}
 	append(&branches, routine_flow_state_clone(state, ctx.allocator))
 	merged := routine_flow_merge_states(branches[:], ctx.allocator)
@@ -3194,8 +3205,8 @@ routine_flow_dead_store_analyze_stmt :: proc(
 	case ^ast.Raise_Stmt:
 		transfer := routine_flow_dead_store_transfer_make(ctx.allocator)
 		routine_flow_dead_store_add_read_expr(ctx, &transfer, n.target)
-		for operand in n.operands {
-			routine_flow_dead_store_add_read_expr(ctx, &transfer, operand)
+		for arg in n.named_args {
+			routine_flow_dead_store_add_read_expr(ctx, &transfer, arg.value)
 		}
 		return routine_flow_dead_store_apply_reads(ctx, routine_flow_entity_list_make(ctx.allocator), transfer)
 	}
@@ -3279,6 +3290,7 @@ routine_flow_dead_store_analyze_case_stmt :: proc(
 		for operand in clause.operands {
 			routine_flow_dead_store_add_read_expr(ctx, &transfer, operand)
 		}
+		routine_flow_dead_store_add_write_expr(ctx, &transfer, clause.into)
 	}
 	return routine_flow_dead_store_apply_reads(ctx, live, transfer)
 }
@@ -3699,7 +3711,11 @@ routine_flow_dead_store_transfer_for_stmt :: proc(
 			routine_flow_dead_store_add_read_expr(ctx, &transfer, excluding)
 		}
 		routine_flow_dead_store_add_write_expr(ctx, &transfer, n.field)
-		routine_flow_dead_store_add_write_expr(ctx, &transfer, n.target)
+		if n.kind == .Set && n.subject == .User_Command {
+			routine_flow_dead_store_add_read_expr(ctx, &transfer, n.target)
+		} else {
+			routine_flow_dead_store_add_write_expr(ctx, &transfer, n.target)
+		}
 	case ^ast.Import_Stmt:
 		for param in n.parameters {
 			routine_flow_dead_store_add_write_expr(ctx, &transfer, param.value)

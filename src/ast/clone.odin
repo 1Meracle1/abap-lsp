@@ -572,7 +572,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 	case ^Raise_Stmt:
 		r := clone_shallow(n, allocator)
 		r.target = clone(n.target, allocator)
-		r.operands = clone_expr_list(n.operands, allocator)
+		r.arg_sections = clone_call_stmt_arg_sections(n.arg_sections, allocator)
+		r.named_args = clone_call_stmt_named_args(n.named_args, allocator)
 		return r
 	case ^Authority_Check_Stmt:
 		r := clone_shallow(n, allocator)
@@ -591,6 +592,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 	case ^Field_Stmt:
 		r := clone_shallow(n, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)
+		r.module = clone(n.module, allocator)
+		r.condition = clone(n.condition, allocator)
 		return r
 	case ^Assign_Field_Stmt:
 		r := clone_shallow(n, allocator)
@@ -620,7 +623,9 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return r
 	case ^Text_Transform_Stmt:
 		r := clone_shallow(n, allocator)
-		r.operands = clone_expr_list(n.operands, allocator)
+		r.source = clone(n.source, allocator)
+		r.target = clone(n.target, allocator)
+		r.only = clone(n.only, allocator)
 		return r
 	case ^Wait_Stmt:
 		r := clone_shallow(n, allocator)
@@ -2039,6 +2044,8 @@ clone_when_clause :: proc(clause: ^When_Clause, allocator: mem.Allocator) -> ^Wh
 	res, _ := mem.new(When_Clause, allocator)
 	res.range = clause.range
 	res.operands = clone_expr_list(clause.operands, allocator)
+	res.type_operands = clone_expr_list(clause.type_operands, allocator)
+	res.into = clone_expr(clause.into, allocator)
 	res.is_others = clause.is_others
 	res.body = clone_stmt_list(clause.body, allocator)
 	return res
