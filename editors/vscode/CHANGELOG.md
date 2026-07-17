@@ -6,6 +6,8 @@ All notable changes to the ABAP LSP VS Code extension are documented here.
 
 ### Added
 
+- Parser-backed hierarchical document symbols for classes, interfaces,
+  methods, forms, function modules, and screen modules.
 - Product metadata for the ABAP LSP extension package.
 - Onboarding documentation for stdio and TCP server startup, workspace
   manifests, SAP ADT connection setup, dependency cache behavior, and common
@@ -13,6 +15,9 @@ All notable changes to the ABAP LSP VS Code extension are documented here.
 
 ### Changed
 
+- Moved ABAP language registration, TextMate highlighting, snippets, language
+  configuration, and fallback folding into the declarative
+  `1meracle1.abap-language-basics` dependency.
 - Replaced generated sample-extension README content with ABAP LSP-specific
   setup and operation guidance.
 - Aligned the nested VS Code client package metadata with this repository.

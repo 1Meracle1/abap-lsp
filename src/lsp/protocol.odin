@@ -30,6 +30,7 @@ METHOD_RENAME :: "textDocument/rename"
 METHOD_CODE_ACTION :: "textDocument/codeAction"
 METHOD_SEMANTIC_TOKENS_FULL :: "textDocument/semanticTokens/full"
 METHOD_FOLDING_RANGE :: "textDocument/foldingRange"
+METHOD_DOCUMENT_SYMBOL :: "textDocument/documentSymbol"
 METHOD_PUBLISH_DIAGNOSTICS :: "textDocument/publishDiagnostics"
 METHOD_READ_DEPENDENCY_DOCUMENT :: "abapls/readDependencyDocument"
 
@@ -179,6 +180,15 @@ Folding_Range :: struct {
 	start_character: int `json:"startCharacter"`,
 	end_line:        int `json:"endLine"`,
 	end_character:   int `json:"endCharacter"`,
+}
+
+Document_Symbol :: struct {
+	name:            string `json:"name"`,
+	detail:          string `json:"detail,omitempty"`,
+	kind:            int `json:"kind"`,
+	range:           Range `json:"range"`,
+	selection_range: Range `json:"selectionRange"`,
+	children:        []Document_Symbol `json:"children,omitempty"`,
 }
 
 Text_Document_Position :: struct {

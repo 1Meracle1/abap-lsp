@@ -6,6 +6,12 @@ it analyzes local ABAP workspaces, can request missing repository/DDIC
 dependencies through SAP ADT, and projects cached remote artifacts as read-only
 `abapls-cache:` documents.
 
+The extension depends on `1meracle1.abap-language-basics`, which owns the ABAP
+language registration, syntax highlighting, snippets, language configuration,
+and folding-marker fallback. Those editor features remain available when the
+language server is not configured; the server augments them with parsed
+document symbols, semantic tokens, and project-aware language features.
+
 This extension is in preview. It is useful for local parsing, diagnostics,
 navigation, semantic tokens, folding, completion, rename, code actions, and
 remote dependency discovery, but it is not a replacement for SAP ADT activation,

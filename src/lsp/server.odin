@@ -246,6 +246,8 @@ handle_request :: proc(ctx: ^Request_Context, method: string, params: json.Value
 		handle_semantic_tokens(ctx, params)
 	case METHOD_FOLDING_RANGE:
 		handle_folding_ranges(ctx, params)
+	case METHOD_DOCUMENT_SYMBOL:
+		handle_document_symbols(ctx, params)
 	case METHOD_READ_DEPENDENCY_DOCUMENT:
 		handle_read_dependency_document(ctx, params)
 	case:

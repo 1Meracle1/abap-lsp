@@ -4,7 +4,10 @@ import { runTests } from '@vscode/test-electron';
 
 async function main() {
 	try {
-		const extensionDevelopmentPath = path.resolve(__dirname, '../../../');
+		const extensionDevelopmentPath = [
+			path.resolve(__dirname, '../../../'),
+			path.resolve(__dirname, '../../../../vscode-basic'),
+		];
 		const extensionTestsPath = path.resolve(__dirname, './index');
 		const testWorkspacePath = path.resolve(__dirname, '../../testFixture');
 		const testCachePath = path.resolve(__dirname, '../../.vscode-test');

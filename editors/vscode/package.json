@@ -33,6 +33,9 @@
   "extensionKind": [
     "workspace"
   ],
+  "extensionDependencies": [
+    "1meracle1.abap-language-basics"
+  ],
   "activationEvents": [
     "onLanguage:abap",
     "workspaceContains:abapls.toml",
@@ -125,31 +128,6 @@
           "default": "",
           "description": "Override the centralized ABAP dependency cache database path. Leave empty to use the operating system cache directory."
         }
-      }
-    },
-    "languages": [
-      {
-        "id": "abap",
-        "aliases": [
-          "ABAP",
-          "abap"
-        ],
-        "extensions": [
-          ".abap"
-        ],
-        "configuration": "./language-configuration.json"
-      }
-    ],
-    "grammars": [
-      {
-        "language": "abap",
-        "scopeName": "source.abap",
-        "path": "./syntaxes/abap.tmLanguage.json"
-      }
-    ],
-    "configurationDefaults": {
-      "[abap]": {
-        "editor.wordBasedSuggestions": "off"
       }
     }
   },

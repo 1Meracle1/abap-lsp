@@ -12,9 +12,11 @@ inspect from editors and scripts.
 
 - `abap_language_server`, an Odin language server binary for VS Code, Zed, and
   other LSP clients that can spawn a stdio server.
-- A VS Code client under `editors/vscode/` with ABAP syntax support, LSP
-  startup, workspace commands, SAP connection configuration, remote dependency
-  fetches, and virtual cached dependency documents.
+- A declarative VS Code language package under `editors/vscode-basic/` with
+  ABAP syntax highlighting, snippets, folding, and editor configuration.
+- An optional VS Code LSP client under `editors/vscode/` with server startup,
+  workspace commands, SAP connection configuration, remote dependency fetches,
+  and virtual cached dependency documents.
 - A Zed extension under `editors/zed/` that can launch `abap_language_server`
   from `PATH`, Zed LSP settings, or `__ABAP_LSP_SERVER_PATH`.
 - `abap_frontend`, a local analysis CLI for parsing, AST inspection, semantic
@@ -44,6 +46,21 @@ The language server currently advertises:
 
 The implementation is still under active development. Expect useful behavior on
 common custom ABAP source, but not full ABAP platform parity.
+
+## Clone
+
+Clone the repository together with the standalone ABAP Language Basics
+extension:
+
+```sh
+git clone --recurse-submodules https://github.com/1Meracle1/abap-lsp.git
+```
+
+For an existing checkout, initialize the extension submodule with:
+
+```sh
+git submodule update --init
+```
 
 ## Build And Test
 
@@ -244,8 +261,10 @@ groups, and aliases.
 - `src/lsp`: LSP protocol handlers, diagnostics, navigation, completion, and
   editor features.
 - `src/adt`: SAP ADT HTTP client and XML parsing helpers.
-- `editors/vscode`: VS Code client, commands, TextMate grammar, and remote
-  dependency orchestration.
+- `editors/vscode-basic`: declarative VS Code language registration, TextMate
+  grammar, snippets, and folding configuration.
+- `editors/vscode`: optional VS Code LSP client, commands, and remote dependency
+  orchestration.
 - `editors/zed`: Zed extension, language config, queries, and theme assets.
 - `docs`: reference notes for type checking and native lints.
 - `integration`: optional SAP-side helpers such as the type-pool resolver.

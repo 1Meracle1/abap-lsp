@@ -206,6 +206,13 @@ initialize_result_exposes_implementation_provider :: proc(t: ^testing.T) {
 }
 
 @(test)
+initialize_result_exposes_document_symbol_provider :: proc(t: ^testing.T) {
+	result := initialize_result(context.allocator)
+
+	testing.expect(t, result.capabilities.document_symbol_provider)
+}
+
+@(test)
 lsp_default_workspace_options_enable_dependency_resolution_diagnostics :: proc(t: ^testing.T) {
 	options := server_default_workspace_options()
 
@@ -5968,6 +5975,134 @@ rename_rejects_field_symbol_name_without_angle_brackets :: proc(t: ^testing.T) {
 
 	testing.expect(t, !ok)
 	testing.expect(t, strings.contains(error, "angle brackets"))
+}
+
+@(test)
+document_symbols_include_named_blocks_in_source_hierarchy :: proc(t: ^testing.T) {
+	source := `" π
+CLASS lcl_forward DEFINITION DEFERRED.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    IF abap_true = abap_true.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.
+INTERFACE lif_demo.
+ENDINTERFACE.
+FORM do_work.
+ENDFORM.
+FUNCTION z_demo.
+ENDFUNCTION.
+MODULE status_0100 OUTPUT.
+ENDMODULE.`
+
+	parsed := parser.parse(source, "mem://document_symbols.abap", context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+	symbols := document_symbols_for_file(parsed.root, source, context.allocator)
+
+	testing.expect_value(t, len(symbols), 7)
+	if len(symbols) != 7 {
+		return
+	}
+	testing.expect_value(t, symbols[0].name, "lcl_forward")
+	testing.expect_value(t, symbols[0].kind, SYMBOL_KIND_CLASS)
+	testing.expect_value(t, symbols[0].detail, "CLASS DEFINITION")
+	testing.expect_value(t, symbols[0].range.start.line, 1)
+	testing.expect_value(t, symbols[0].range.end.line, 1)
+	testing.expect_value(t, symbols[1].name, "lcl_demo")
+	testing.expect_value(t, symbols[1].detail, "CLASS DEFINITION")
+	testing.expect_value(t, len(symbols[1].children), 1)
+	if len(symbols[1].children) == 1 {
+		declaration := symbols[1].children[0]
+		testing.expect_value(t, declaration.name, "run")
+		testing.expect_value(t, declaration.detail, "METHOD DECLARATION")
+		testing.expect_value(t, declaration.kind, SYMBOL_KIND_METHOD)
+		testing.expect_value(t, declaration.range.start.line, 4)
+		testing.expect_value(t, declaration.range.end.line, 4)
+	}
+	testing.expect_value(t, symbols[2].name, "lcl_demo")
+	testing.expect_value(t, symbols[2].detail, "CLASS IMPLEMENTATION")
+	testing.expect_value(t, len(symbols[2].children), 1)
+	if len(symbols[2].children) == 1 {
+		method := symbols[2].children[0]
+		testing.expect_value(t, method.name, "run")
+		testing.expect_value(t, method.kind, SYMBOL_KIND_METHOD)
+		testing.expect_value(t, method.detail, "METHOD")
+		testing.expect_value(t, len(method.children), 0)
+		testing.expect_value(t, method.selection_range.start.line, 7)
+		testing.expect_value(t, method.selection_range.start.character, 9)
+		testing.expect_value(t, method.range.end.line, 10)
+	}
+	testing.expect_value(t, symbols[3].kind, SYMBOL_KIND_INTERFACE)
+	testing.expect_value(t, symbols[4].detail, "FORM")
+	testing.expect_value(t, symbols[4].kind, SYMBOL_KIND_FUNCTION)
+	testing.expect_value(t, symbols[5].detail, "FUNCTION")
+	testing.expect_value(t, symbols[5].kind, SYMBOL_KIND_FUNCTION)
+	testing.expect_value(t, symbols[6].detail, "MODULE OUTPUT")
+	testing.expect_value(t, symbols[6].kind, SYMBOL_KIND_MODULE)
+}
+
+@(test)
+document_symbols_preserve_utf16_selection_columns :: proc(t: ^testing.T) {
+	source := "WRITE |😀|. CLASS lcl_inline DEFINITION DEFERRED."
+	parsed := parser.parse(source, "mem://document_symbols_utf16.abap", context.allocator)
+	symbols := document_symbols_for_file(parsed.root, source, context.allocator)
+
+	testing.expect_value(t, len(symbols), 1)
+	if len(symbols) == 1 {
+		name_offset := strings.index(source, "lcl_inline")
+		expected := offset_to_position(source, name_offset)
+		testing.expect_value(t, symbols[0].selection_range.start, expected)
+	}
+}
+
+@(test)
+document_symbols_preserve_crlf_ranges :: proc(t: ^testing.T) {
+	source := "CLASS lcl_demo IMPLEMENTATION.\r\n  METHOD run.\r\n  ENDMETHOD.\r\nENDCLASS."
+	parsed := parser.parse(source, "mem://document_symbols_crlf.abap", context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+	symbols := document_symbols_for_file(parsed.root, source, context.allocator)
+
+	testing.expect_value(t, len(symbols), 1)
+	if len(symbols) == 1 {
+		testing.expect_value(t, symbols[0].range.end, Position{line = 3, character = 9})
+		testing.expect_value(t, len(symbols[0].children), 1)
+		if len(symbols[0].children) == 1 {
+			method := symbols[0].children[0]
+			testing.expect_value(t, method.selection_range.start, Position{line = 1, character = 9})
+			testing.expect_value(t, method.range.end, Position{line = 2, character = 12})
+		}
+	}
+}
+
+@(test)
+document_symbols_recover_around_invalid_statements :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+  METHODS choose IMPORTING rows TYPE TABLE OF PREFERRED PARAMETER.
+ENDCLASS.
+FORM do_work.
+ENDFORM.`
+	parsed := parser.parse(source, "mem://document_symbols_recovery.abap", context.allocator)
+	testing.expect(t, len(parsed.errors) > 0)
+	symbols := document_symbols_for_file(parsed.root, source, context.allocator)
+
+	testing.expect_value(t, len(symbols), 2)
+	if len(symbols) == 2 {
+		testing.expect_value(t, symbols[0].name, "lcl_demo")
+		testing.expect_value(t, symbols[1].name, "do_work")
+	}
+}
+
+@(test)
+document_symbols_for_missing_file_are_empty :: proc(t: ^testing.T) {
+	symbols := document_symbols_for_file(nil, "", context.allocator)
+
+	testing.expect_value(t, len(symbols), 0)
 }
 
 @(test)

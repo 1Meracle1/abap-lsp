@@ -1,0 +1,4 @@
+[submodule "editors/vscode-basic"]
+	path = editors/vscode-basic
+	url = https://github.com/1Meracle1/abap-language-basics.git
+	branch = main
