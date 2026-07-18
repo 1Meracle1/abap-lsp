@@ -2,3 +2,7 @@
 	path = editors/vscode-basic
 	url = https://github.com/1Meracle1/abap-language-basics.git
 	branch = main
+[submodule "web/collab"]
+	path = web/collab
+	url = https://github.com/1Meracle1/abap-collab.git
+	branch = main

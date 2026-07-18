@@ -17,6 +17,8 @@ inspect from editors and scripts.
 - An optional VS Code LSP client under `editors/vscode/` with server startup,
   workspace commands, SAP connection configuration, remote dependency fetches,
   and virtual cached dependency documents.
+- A browser-based collaborative ABAP editor under `web/collab/` with shared
+  room URLs, live cursors, persistent documents, and the VS Code Basics assets.
 - A Zed extension under `editors/zed/` that can launch `abap_language_server`
   from `PATH`, Zed LSP settings, or `__ABAP_LSP_SERVER_PATH`.
 - `abap_frontend`, a local analysis CLI for parsing, AST inspection, semantic
@@ -99,6 +101,17 @@ Run a built tool through the wrapper:
 .\run.bat debug abap_frontend lint --json --pretty path\to\workspace
 .\run.bat debug abap_interpreter run examples\ZPERF_PARSER_MIXED.abap
 ```
+
+Run the collaborative web editor:
+
+```sh
+cd web/collab
+npm ci
+npm run dev
+```
+
+See [web/collab/README.md](web/collab/README.md) for its architecture, commands,
+and current MVP limitations.
 
 ## Language Server
 
