@@ -1,0 +1,308 @@
+// Feature-dense ABAP Cloud CDS example.
+//
+// Assumed released/custom interface entities:
+//   ZI_SalesItemFact, ZI_SalesHeader, ZI_ProductText,
+//   ZI_ProductValueHelp, ZI_SalesOrganization, ZI_Customer.
+// Adjust their element names to the released APIs in the target system.
+
+@EndUserText.label: 'Sales performance workbench'
+@AccessControl.authorizationCheck: #CHECK
+@Metadata.ignorePropagatedAnnotations: false
+@VDM.viewType: #CONSUMPTION
+@Analytics.dataCategory: #CUBE
+@ObjectModel.usageType: {
+  serviceQuality: #D,
+  sizeCategory:    #XL,
+  dataClass:       #MIXED
+}
+@Search.searchable: true
+define view entity ZC_SalesPerformance
+  with parameters
+    @EndUserText.label: 'Reporting key date'
+    @Environment.systemField: #SYSTEM_DATE
+    p_key_date         : abap.dats,
+
+    @EndUserText.label: 'Logon language'
+    @Environment.systemField: #SYSTEM_LANGUAGE
+    p_language         : abap.lang,
+
+    @EndUserText.label: 'Display currency'
+    p_display_currency : abap.cuky,
+
+    @EndUserText.label: 'Target quantity unit'
+    p_target_unit      : abap.unit( 3 ),
+
+    @EndUserText.label: 'History in days'
+    p_history_days     : abap.int4,
+
+    @EndUserText.label: 'Minimum item count'
+    p_min_item_count   : abap.int4
+
+  as select from ZI_SalesItemFact as Item
+
+    inner join ZI_SalesHeader as Header
+      on  Header.SalesDocument = Item.SalesDocument
+
+    left outer to one join ZI_Customer as Customer
+      on  Customer.Customer = Item.SoldToParty
+
+    association of many to one ZI_ProductText as _ProductText
+      on  _ProductText.Product  = $projection.Product
+      and _ProductText.Language = $parameters.p_language
+
+    association of many to one ZI_SalesOrganization as _SalesOrganization
+      on  _SalesOrganization.SalesOrganization = $projection.SalesOrganization
+
+    association of many to one ZI_Customer as _Customer
+      on  _Customer.Customer = $projection.SoldToParty
+
+{
+  @UI.lineItem:       [{ position: 10, importance: #HIGH }]
+  @UI.selectionField: [{ position: 10 }]
+  @Consumption.filter: { selectionType: #SINGLE, multipleSelections: false }
+  @ObjectModel.foreignKey.association: '_SalesOrganization'
+  key Item.SalesOrganization                          as SalesOrganization,
+
+  @UI.lineItem:       [{ position: 20, importance: #HIGH }]
+  @UI.selectionField: [{ position: 20 }]
+  key Item.DistributionChannel                        as DistributionChannel,
+
+  @UI.lineItem:       [{ position: 30 }]
+  key Item.Division                                   as Division,
+
+  @UI.lineItem:       [{ position: 40, importance: #HIGH }]
+  @UI.selectionField: [{ position: 30 }]
+  @ObjectModel.foreignKey.association: '_Customer'
+  key Item.SoldToParty                                as SoldToParty,
+
+  @UI.lineItem:       [{ position: 50, importance: #HIGH }]
+  @UI.selectionField: [{ position: 40 }]
+  @ObjectModel.text.association: '_ProductText'
+  @Consumption.valueHelpDefinition: [{
+    entity: { name: 'ZI_ProductValueHelp', element: 'Product' }
+  }]
+  @Search.defaultSearchElement: true
+  @Search.fuzzinessThreshold: 0.8
+  key Item.Product                                    as Product,
+
+  @UI.lineItem: [{ position: 60 }]
+  @Semantics.calendar.yearMonth: true
+  key substring( cast( Item.PostingDate as abap.char( 8 ) ), 1, 6 )
+                                                       as CalendarYearMonth,
+
+  @EndUserText.label: 'Customer name'
+  @Search.defaultSearchElement: true
+  @Search.fuzzinessThreshold: 0.7
+  coalesce(
+    Customer.CustomerName,
+    cast( Item.SoldToParty as abap.char( 80 ) )
+  )                                                    as CustomerName,
+
+  @EndUserText.label: 'Product description'
+  @Search.defaultSearchElement: true
+  coalesce(
+    _ProductText.ProductName,
+    cast( Item.Product as abap.char( 80 ) )
+  )                                                    as ProductName,
+
+  @EndUserText.label: 'Normalized search term'
+  upper(
+    replace(
+      concat_with_space(
+        coalesce( Customer.CustomerName, cast( Item.SoldToParty as abap.char( 80 ) ) ),
+        coalesce( _ProductText.ProductName, cast( Item.Product as abap.char( 80 ) ) ),
+        1
+      ),
+      '-',
+      ' '
+    )
+  )                                                    as SearchTerm,
+
+  @Semantics.currencyCode: true
+  $parameters.p_display_currency                       as DisplayCurrency,
+
+  @Semantics.unitOfMeasure: true
+  $parameters.p_target_unit                            as TargetUnit,
+
+  @EndUserText.label: 'Gross amount'
+  @Semantics.amount.currencyCode: 'DisplayCurrency'
+  @DefaultAggregation: #SUM
+  sum(
+    currency_conversion(
+      amount             => Item.GrossAmount,
+      source_currency    => Item.TransactionCurrency,
+      target_currency    => $parameters.p_display_currency,
+      exchange_rate_date => $parameters.p_key_date,
+      exchange_rate_type => 'M',
+      round              => 'X',
+      error_handling     => 'SET_TO_NULL'
+    )
+  )                                                    as GrossAmount,
+
+  @EndUserText.label: 'Net amount'
+  @Semantics.amount.currencyCode: 'DisplayCurrency'
+  @DefaultAggregation: #SUM
+  sum(
+    currency_conversion(
+      amount             => Item.NetAmount,
+      source_currency    => Item.TransactionCurrency,
+      target_currency    => $parameters.p_display_currency,
+      exchange_rate_date => $parameters.p_key_date,
+      exchange_rate_type => 'M',
+      round              => 'X',
+      error_handling     => 'SET_TO_NULL'
+    )
+  )                                                    as NetAmount,
+
+  @EndUserText.label: 'Cost amount'
+  @Semantics.amount.currencyCode: 'DisplayCurrency'
+  @DefaultAggregation: #SUM
+  sum(
+    currency_conversion(
+      amount             => Item.CostAmount,
+      source_currency    => Item.TransactionCurrency,
+      target_currency    => $parameters.p_display_currency,
+      exchange_rate_date => $parameters.p_key_date,
+      exchange_rate_type => 'M',
+      round              => 'X',
+      error_handling     => 'SET_TO_NULL'
+    )
+  )                                                    as CostAmount,
+
+  @EndUserText.label: 'Margin amount'
+  @Semantics.amount.currencyCode: 'DisplayCurrency'
+  @DefaultAggregation: #SUM
+  $projection.NetAmount - $projection.CostAmount       as MarginAmount,
+
+  @EndUserText.label: 'Margin percent'
+  @DefaultAggregation: #FORMULA
+  case
+    when get_numeric_value( $projection.NetAmount ) = 0
+      then cast( 0 as abap.dec( 9, 2 ) )
+    else cast(
+      round(
+        division(
+          get_numeric_value( $projection.MarginAmount ),
+          get_numeric_value( $projection.NetAmount ),
+          4
+        ) * 100,
+        2
+      ) as abap.dec( 9, 2 )
+    )
+  end                                                  as MarginPercent,
+
+  @EndUserText.label: 'Quantity in target unit'
+  @Semantics.quantity.unitOfMeasure: 'TargetUnit'
+  @DefaultAggregation: #SUM
+  sum(
+    unit_conversion(
+      quantity       => Item.OrderQuantity,
+      source_unit    => Item.OrderQuantityUnit,
+      target_unit    => $parameters.p_target_unit,
+      error_handling => 'SET_TO_NULL'
+    )
+  )                                                    as OrderQuantity,
+
+  @EndUserText.label: 'Calculated amount/quantity unit'
+  @Semantics.unitOfMeasure: true
+  concat(
+    cast( $parameters.p_display_currency as abap.char( 5 ) ),
+    concat( '/', cast( $parameters.p_target_unit as abap.char( 3 ) ) )
+  )                                                    as NetPriceUnit,
+
+  @EndUserText.label: 'Net price per target unit'
+  @Semantics.quantity.unitOfMeasure: 'NetPriceUnit'
+  @DefaultAggregation: #FORMULA
+  case
+    when get_numeric_value( $projection.OrderQuantity ) = 0
+      then cast( 0 as abap.decfloat34 )
+    else cast(
+      get_numeric_value( $projection.NetAmount ) /
+      get_numeric_value( $projection.OrderQuantity )
+      as abap.decfloat34
+    )
+  end                                                  as NetPricePerUnit,
+
+  @EndUserText.label: 'Item count'
+  @DefaultAggregation: #SUM
+  count( * )                                           as ItemCount,
+
+  @EndUserText.label: 'Distinct sales documents'
+  @DefaultAggregation: #SUM
+  count( distinct Item.SalesDocument )                 as SalesDocumentCount,
+
+  @EndUserText.label: 'Rejected item count'
+  @DefaultAggregation: #SUM
+  sum(
+    case Item.IsRejected
+      when 'X' then 1
+      else 0
+    end
+  )                                                    as RejectedItemCount,
+
+  @EndUserText.label: 'Average delivery days'
+  @DefaultAggregation: #AVG
+  avg(
+    dats_days_between( Item.PostingDate, Item.ConfirmedDeliveryDate )
+  )                                                    as AverageDeliveryDays,
+
+  @EndUserText.label: 'Latest source change'
+  @Semantics.systemDateTime.lastChangedAt: true
+  max( Item.LastChangedAt )                            as LastChangedAt,
+
+  @EndUserText.label: 'Risk class'
+  case
+    when sum(
+      case Item.IsRejected
+        when 'X' then 1
+        else 0
+      end
+    ) > 10
+      then abap.char'HIGH'
+    when avg(
+      dats_days_between( Item.PostingDate, Item.ConfirmedDeliveryDate )
+    ) > 14
+      then abap.char'MEDIUM'
+    else abap.char'LOW'
+  end                                                  as RiskClass,
+
+  @EndUserText.label: 'Execution user'
+  cast( $session.user as abap.char( 12 ) )             as ExecutedBy,
+
+  @EndUserText.label: 'Execution date'
+  @Semantics.calendar.date: true
+  $session.system_date                                as ExecutedOn,
+
+  @EndUserText.label: 'Scenario'
+  abap.char'ACTUAL'                                    as Scenario,
+
+  _ProductText,
+  _SalesOrganization,
+  _Customer
+}
+where
+      Item.PostingDate between
+        dats_add_days(
+          $parameters.p_key_date,
+          0 - $parameters.p_history_days,
+          'NULL'
+        )
+        and $parameters.p_key_date
+  and Header.OverallProcessingStatus <> 'C'
+  and Item.IsCancelled = ' '
+  and Item.SalesOrganization <> ''
+group by
+  Item.SalesOrganization,
+  Item.DistributionChannel,
+  Item.Division,
+  Item.SoldToParty,
+  Item.Product,
+  substring( cast( Item.PostingDate as abap.char( 8 ) ), 1, 6 ),
+  Customer.CustomerName,
+  _ProductText.ProductName,
+  $parameters.p_display_currency,
+  $parameters.p_target_unit,
+  $session.user,
+  $session.system_date
+having
+  count( * ) >= $parameters.p_min_item_count;
